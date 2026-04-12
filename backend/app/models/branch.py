@@ -32,3 +32,4 @@ class Branch(Base):
     kol_records = relationship("KOLRecord", back_populates="branch")
     marketing_activities = relationship("MarketingActivity", back_populates="branch")
     keypoints = relationship("BranchKeypoint", back_populates="branch")
+    alerts = relationship("AlertHistory", back_populates="branch")

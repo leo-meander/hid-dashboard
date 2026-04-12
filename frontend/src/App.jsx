@@ -38,6 +38,9 @@ import GovVisitorData from "./pages/GovVisitorData";
 // Phase 5 — Holiday Intelligence
 import HolidayIntel from "./pages/HolidayIntel";
 
+// Alert System
+import Alerts from "./pages/Alerts";
+
 export default function App() {
   return (
     <AuthProvider>
@@ -100,6 +103,9 @@ function AppRoutes() {
 
             {/* Phase 5 — Holiday Intelligence */}
             <Route path="/holiday-intel" element={<HolidayIntel />} />
+
+            {/* Alert System */}
+            <Route path="/alerts" element={<Alerts />} />
 
             {/* Settings & Admin */}
             <Route path="/settings" element={<Settings />} />

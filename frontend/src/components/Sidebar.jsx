@@ -1,5 +1,7 @@
+import { useState, useEffect } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { getAlertsSummary } from "../api/alerts";
 
 const NAV = [
   {
@@ -37,6 +39,7 @@ const NAV = [
   {
     label: "Reports",
     items: [
+      { to: "/alerts", label: "Alerts", icon: "▲", badge: true },
       { to: "/report", label: "Weekly Report", icon: "◻" },
     ],
   },
@@ -45,6 +48,18 @@ const NAV = [
 export default function Sidebar() {
   const location = useLocation();
   const { user, logout, isAdmin } = useAuth();
+  const [alertCount, setAlertCount] = useState(0);
+
+  useEffect(() => {
+    const fetchCount = () => {
+      getAlertsSummary()
+        .then(d => setAlertCount(d?.critical || 0))
+        .catch(() => {});
+    };
+    fetchCount();
+    const interval = setInterval(fetchCount, 5 * 60 * 1000); // refresh every 5 min
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <aside className="w-52 bg-gray-900 text-white flex flex-col shrink-0">
@@ -62,7 +77,7 @@ export default function Sidebar() {
               {label}
             </p>
             <div className="space-y-0.5">
-              {items.map(({ to, label: itemLabel, icon }) => {
+              {items.map(({ to, label: itemLabel, icon, badge }) => {
                 const isPerformanceParent =
                   to === "/performance" && location.pathname.startsWith("/performance");
                 return (
@@ -80,6 +95,11 @@ export default function Sidebar() {
                   >
                     <span className="text-xs w-3 text-center">{icon}</span>
                     {itemLabel}
+                    {badge && alertCount > 0 && (
+                      <span className="ml-auto px-1.5 py-0.5 text-xs font-bold bg-red-600 text-white rounded-full leading-none">
+                        {alertCount}
+                      </span>
+                    )}
                   </NavLink>
                 );
               })}

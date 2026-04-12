@@ -236,6 +236,18 @@ def setup_scheduler(app):
             replace_existing=True,
         )
 
+        # Daily alert evaluation at 3:15am (after metrics, before verdict sync)
+        def _alert_evaluation_job():
+            from app.services.alert_engine import run_daily_alerts
+            run_daily_alerts(SessionLocal)
+
+        scheduler.add_job(
+            _alert_evaluation_job,
+            trigger=CronTrigger(hour=3, minute=15),
+            id="daily_alert_evaluation",
+            replace_existing=True,
+        )
+
         # Nightly combo performance sync at 3:30am (after metrics)
         def _verdict_sync_job():
             db = SessionLocal()
@@ -322,6 +334,7 @@ def setup_scheduler(app):
             "Scheduler started — "
             "Cloudbeds reservation sync at 02:00, 10:00 ICT, "
             "metrics compute (14-day lookback + next month) at 03:00 ICT, "
+            "alert evaluation at 03:15 ICT, "
             "Ads sync (Meta + Google) at 06:00 ICT, "
             "Insights refresh (14-day lookback) at 09:00 & 14:00 ICT, "
             "verdict sync at 03:30 ICT, "

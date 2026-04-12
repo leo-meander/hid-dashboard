@@ -22,6 +22,9 @@ from app.models.email_event import EmailEvent
 from app.models.email_campaign_stats import EmailCampaignStats
 from app.models.gov_visitor import GovVisitorData
 
+# Alert System
+from app.models.alert import AlertRule, AlertHistory, AlertNotificationLog
+
 __all__ = [
     "Branch", "KPITarget", "Reservation", "DailyMetrics", "Event",
     "WebsiteMetrics", "AdAngle", "AdsPerformance", "KOLRecord", "KOLBooking",
@@ -31,4 +34,5 @@ __all__ = [
     "AdAnalysisResult", "ReservationDaily",
     "EmailEvent", "EmailCampaignStats",
     "GovVisitorData",
+    "AlertRule", "AlertHistory", "AlertNotificationLog",
 ]

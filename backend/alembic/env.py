@@ -9,6 +9,7 @@ from app.models import (  # noqa: F401
     Branch, KPITarget, Reservation, DailyMetrics, Event, WebsiteMetrics,
     AdAngle, AdsPerformance, KOLRecord, KOLBooking, MarketingActivity, User,
     BranchKeypoint, AdCopy, AdMaterial, AdApproval, AdName,
+    AlertRule, AlertHistory, AlertNotificationLog,
 )
 from app.database import Base
 
