@@ -471,31 +471,18 @@ def compute_next_month_forecast(
     next_month_target = float(target_row.target_revenue_native) if (target_row and target_row.target_revenue_native) else None
 
     # ── Forecast ──────────────────────────────────────────────────────────
+    # Forecast = avg_adr × total_pred_sold (using split OCC for pred_sold)
     room_forecast = dorm_forecast = None
     forecast = None
 
-    can_split = (has_split
-                 and predicted_room_occ_next is not None
-                 and predicted_dorm_occ_next is not None
-                 and room_adr and dorm_adr)
-
-    if can_split:
+    if (has_split
+            and predicted_room_occ_next is not None
+            and predicted_dorm_occ_next is not None
+            and total_adr):
         pred_room_sold = round(total_days * total_room_count * predicted_room_occ_next)
         pred_dorm_sold = round(total_days * total_dorm_count * predicted_dorm_occ_next)
-        room_forecast = round(room_adr * pred_room_sold, 2)
-        dorm_forecast = round(dorm_adr * pred_dorm_sold, 2)
-        split_total = round(room_forecast + dorm_forecast, 2)
-
-        # Sanity check: same as current-month forecast
-        if total_adr and predicted_occ_next and total_rooms > 0:
-            total_forecast = round(total_adr * round(total_days * total_rooms * predicted_occ_next), 2)
-            if split_total < total_forecast * 0.5:
-                forecast = total_forecast
-                room_forecast = dorm_forecast = None
-            else:
-                forecast = split_total
-        else:
-            forecast = split_total
+        pred_sold = pred_room_sold + pred_dorm_sold
+        forecast = round(total_adr * pred_sold, 2)
     elif total_adr and predicted_occ_next and total_rooms > 0:
         pred_sold = round(total_days * total_rooms * predicted_occ_next)
         forecast = round(total_adr * pred_sold, 2)
@@ -595,36 +582,21 @@ def compute_kpi_summary(
         actual_dorm_occ = round(dorm_sold_total / (total_dorm_count * days_elapsed), 4) if total_dorm_count > 0 else None
 
     # ── Forecasts ─────────────────────────────────────────────────────────
+    # Forecast = avg_adr × total_pred_sold
+    # Use room/dorm split OCC for pred_sold, but apply single avg_adr.
+    # Split room/dorm ADR from daily_metrics is unreliable due to
+    # proportional revenue attribution — avg_adr is accurate from Insights API.
     room_forecast = dorm_forecast = None
     occ_forecast = None
 
-    can_split = (has_split
-                 and predicted_room_occ is not None
-                 and predicted_dorm_occ is not None
-                 and room_adr and dorm_adr)
-
-    if can_split:
+    if (has_split
+            and predicted_room_occ is not None
+            and predicted_dorm_occ is not None
+            and avg_adr):
         pred_room_sold = round(total_days * total_room_count * predicted_room_occ)
         pred_dorm_sold = round(total_days * total_dorm_count * predicted_dorm_occ)
-        room_forecast = round(room_adr * pred_room_sold, 2)
-        dorm_forecast = round(dorm_adr * pred_dorm_sold, 2)
-        split_total = round(room_forecast + dorm_forecast, 2)
-
-        # Sanity check: if split forecast < 50% of total-ADR forecast,
-        # the room/dorm ADR split from Cloudbeds is unreliable — use total instead
-        if avg_adr and predicted_occ_pct and total_rooms > 0:
-            total_forecast = round(avg_adr * round(total_days * total_rooms * predicted_occ_pct), 2)
-            if split_total < total_forecast * 0.5:
-                logger.warning(
-                    "Split forecast %.0f < 50%% of total forecast %.0f for %s — using total ADR",
-                    split_total, total_forecast, branch_id,
-                )
-                occ_forecast = total_forecast
-                room_forecast = dorm_forecast = None
-            else:
-                occ_forecast = split_total
-        else:
-            occ_forecast = split_total
+        pred_sold = pred_room_sold + pred_dorm_sold
+        occ_forecast = round(avg_adr * pred_sold, 2)
     elif avg_adr and predicted_occ_pct and total_rooms > 0:
         pred_sold = round(total_days * total_rooms * predicted_occ_pct)
         occ_forecast = round(avg_adr * pred_sold, 2)
