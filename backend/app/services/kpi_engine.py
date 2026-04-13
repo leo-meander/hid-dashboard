@@ -211,56 +211,14 @@ def _get_insights_filtered(
     dorm_rev = float(row[5])
 
     if total_sold > 0:
-        # ADR = Rev(excl) / Sold(excl).
-        # daily_metrics has Rev(excl) and Sold(all). To get Sold(excl),
-        # compute excl/all RATIO from reservation_daily (same date range
-        # for both, avoiding data source mismatch), then apply to daily_metrics sold.
-        total_adr = round(total_rev / total_sold, 2)  # fallback: excl/all
+        # ADR = Rev(excl) / Sold(all) from daily_metrics.
+        # Insights API revenue already excludes non-paying sources.
+        # Sold includes all sources — this gives a slightly lower ADR than
+        # pure excl/excl, but is reliable across all months (including
+        # future months with sparse reservation_daily data).
+        total_adr = round(total_rev / total_sold, 2)
         room_adr = round(room_rev / room_sold, 2) if room_sold > 0 else 0
         dorm_adr = round(dorm_rev / dorm_sold, 2) if dorm_sold > 0 else 0
-
-        try:
-            excl_q = _base_reservation_daily_query(
-                db, branch_id, first_day, last_day, exclude_sources=True)
-            all_q = _base_reservation_daily_query(
-                db, branch_id, first_day, last_day, exclude_sources=False)
-
-            rd_sold_excl = excl_q.with_entities(func.count(ReservationDaily.id)).scalar() or 0
-            rd_sold_all = all_q.with_entities(func.count(ReservationDaily.id)).scalar() or 0
-
-            if rd_sold_all > 0 and rd_sold_excl > 0:
-                # Total ADR adjusted
-                excl_ratio = rd_sold_excl / rd_sold_all
-                adj_total = max(round(total_sold * excl_ratio), 1)
-                total_adr = round(total_rev / adj_total, 2)
-
-                # Room excl ratio
-                rd_room_excl = excl_q.filter(
-                    func.lower(ReservationDaily.room_type_category) == "room",
-                ).with_entities(func.count(ReservationDaily.id)).scalar() or 0
-                rd_room_all = all_q.filter(
-                    func.lower(ReservationDaily.room_type_category) == "room",
-                ).with_entities(func.count(ReservationDaily.id)).scalar() or 0
-
-                if rd_room_all > 0 and rd_room_excl > 0 and room_sold > 0:
-                    room_ratio = rd_room_excl / rd_room_all
-                    adj_room = max(round(room_sold * room_ratio), 1)
-                    room_adr = round(room_rev / adj_room, 2)
-
-                # Dorm excl ratio
-                rd_dorm_excl = excl_q.filter(
-                    func.lower(ReservationDaily.room_type_category) == "dorm",
-                ).with_entities(func.count(ReservationDaily.id)).scalar() or 0
-                rd_dorm_all = all_q.filter(
-                    func.lower(ReservationDaily.room_type_category) == "dorm",
-                ).with_entities(func.count(ReservationDaily.id)).scalar() or 0
-
-                if rd_dorm_all > 0 and rd_dorm_excl > 0 and dorm_sold > 0:
-                    dorm_ratio = rd_dorm_excl / rd_dorm_all
-                    adj_dorm = max(round(dorm_sold * dorm_ratio), 1)
-                    dorm_adr = round(dorm_rev / adj_dorm, 2)
-        except Exception as e:
-            logger.warning("Excl ratio query failed, using fallback ADR: %s", e)
 
         result = {
             "total_rev": total_rev, "total_sold": total_sold, "total_adr": total_adr,
