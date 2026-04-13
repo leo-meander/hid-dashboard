@@ -5,15 +5,15 @@ Nightly rate attribution model:
               (reservations where check_in_date <= date < check_out_date)
   - Revenue = nightly rate attribution: SUM(nightly_rate) from reservation_daily for date
               (accurate per-night revenue distribution)
-  - total_sold / rooms_sold / dorms_sold = rooms occupied on date (from reservation_daily)
-  - ADR     = SUM(nightly_rate) / rooms_sold   (per-night, not lump-sum)
+  - total_sold / rooms_sold / dorms_sold = rooms occupied on date (from reservation_daily, OCC filter)
+  - ADR     = Revenue(excl sources) / rooms_sold(ALL sources)
   - RevPAR  = ADR × OCC%
 
 Split exclusion filters (v2.0):
-  OCC excludes:     cancelled/no-show statuses, maintenance
-  OCC includes:     blogger, kol, house use, special case, day use
-  Revenue excludes: cancelled/no-show statuses, blogger, kol, house use, special case, maintenance
-  Revenue includes: day use
+  OCC / rooms_sold excludes:  cancelled/no-show statuses, maintenance
+  OCC / rooms_sold includes:  blogger, kol, house use, special case, day use
+  Revenue excludes:           cancelled/no-show statuses, blogger, kol, house use, special case, maintenance
+  Revenue includes:           day use
 """
 from __future__ import annotations
 
@@ -137,11 +137,19 @@ def compute_day(db: Session, branch: Branch, target_date: date) -> DailyMetrics:
     # Apply REVENUE exclusion filter (excludes blogger/kol/house use but NOT day use)
     revenue_rows = [rd for rd in daily_rows if not _is_excluded_revenue(rd)]
 
+    # OCC filter for rooms_sold: include ALL sources (only exclude cancelled + maintenance)
+    occ_rows = [rd for rd in daily_rows if not _is_excluded_occ(rd)]
+
+    # rooms_sold / total_sold from OCC filter (ALL sources incl blogger/kol/house use)
+    room_occ = [rd for rd in occ_rows if (rd.room_type_category or "").lower() == "room"]
+    dorm_occ = [rd for rd in occ_rows if (rd.room_type_category or "").lower() == "dorm"]
+    rooms_sold = len(_room_expand_daily(room_occ))
+    dorms_sold = len(_room_expand_daily(dorm_occ))
+    total_sold = rooms_sold + dorms_sold
+
+    # Revenue from revenue-filtered rows only
     room_rev = [rd for rd in revenue_rows if (rd.room_type_category or "").lower() == "room"]
     dorm_rev = [rd for rd in revenue_rows if (rd.room_type_category or "").lower() == "dorm"]
-    rooms_sold = len(_room_expand_daily(room_rev))
-    dorms_sold = len(_room_expand_daily(dorm_rev))
-    total_sold = rooms_sold + dorms_sold
 
     revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in revenue_rows), 2)
     revenue_vnd    = round(sum(float(rd.nightly_rate_vnd or 0) for rd in revenue_rows), 2)
@@ -345,10 +353,17 @@ def recompute_branch_range(
     # Revenue filter: exclude cancelled/no-show + non-paying sources (NOT day use)
     valid_daily_revenue = [rd for rd in all_daily if not _is_excluded_revenue(rd)]
 
+    # OCC filter for rooms_sold: include ALL sources (only exclude cancelled + maintenance)
+    valid_daily_occ = [rd for rd in all_daily if not _is_excluded_occ(rd)]
+
     # Pre-index reservation_daily by date for O(1) lookup
     daily_by_date: dict = defaultdict(list)
     for rd in valid_daily_revenue:
         daily_by_date[rd.date].append(rd)
+
+    daily_occ_by_date: dict = defaultdict(list)
+    for rd in valid_daily_occ:
+        daily_occ_by_date[rd.date].append(rd)
 
     # Load existing daily_metrics for upsert
     existing_map: dict[date, DailyMetrics] = {
@@ -368,12 +383,18 @@ def recompute_branch_range(
     while current <= date_to:
         # ── Revenue from reservation_daily (v2.0 nightly rate) ───────────────
         day_revenue_rows = daily_by_date.get(current, [])
+        day_occ_rows = daily_occ_by_date.get(current, [])
 
+        # rooms_sold from OCC filter (ALL sources incl blogger/kol/house use)
+        room_occ = [rd for rd in day_occ_rows if (rd.room_type_category or "").lower() == "room"]
+        dorm_occ = [rd for rd in day_occ_rows if (rd.room_type_category or "").lower() == "dorm"]
+        rooms_sold = len(_room_expand_daily(room_occ))
+        dorms_sold = len(_room_expand_daily(dorm_occ))
+        total_sold = rooms_sold + dorms_sold
+
+        # Revenue from revenue-filtered rows only
         room_rev = [rd for rd in day_revenue_rows if (rd.room_type_category or "").lower() == "room"]
         dorm_rev = [rd for rd in day_revenue_rows if (rd.room_type_category or "").lower() == "dorm"]
-        rooms_sold = len(_room_expand_daily(room_rev))
-        dorms_sold = len(_room_expand_daily(dorm_rev))
-        total_sold = rooms_sold + dorms_sold
 
         revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in day_revenue_rows), 2)
         revenue_vnd    = round(sum(float(rd.nightly_rate_vnd or 0) for rd in day_revenue_rows), 2)
@@ -959,3 +980,49 @@ def get_country_yoy(
             "revenue_native": float(row.revenue_native),
         } for row in rows)
     return results
+
+
+def get_country_yoy_insights_local(
+    db: Session,
+    branch_id: Optional[UUID],
+    year: int,
+    month: int,
+) -> dict:
+    """
+    Country YoY comparison using local reservations table.
+    Returns {current: {country: {nights, revenue, guests}},
+             previous: {country: {nights, revenue, guests}}}
+    """
+
+    def _query_month(target_year: int, target_month: int) -> dict[str, dict]:
+        q = db.query(
+            Reservation.guest_country,
+            func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
+            func.coalesce(func.sum(Reservation.grand_total_native), 0).label("revenue"),
+            func.count(Reservation.id).label("guests"),
+        ).filter(
+            func.extract("year", Reservation.check_in_date) == target_year,
+            func.extract("month", Reservation.check_in_date) == target_month,
+            Reservation.status.notin_(list(EXCLUDED_STATUSES)),
+            Reservation.guest_country.isnot(None),
+            Reservation.guest_country != "",
+            Reservation.guest_country != "0",
+            func.length(Reservation.guest_country) > 1,
+        )
+        if branch_id:
+            q = q.filter(Reservation.branch_id == branch_id)
+
+        rows = q.group_by(Reservation.guest_country).all()
+        return {
+            row.guest_country: {
+                "nights": int(row.nights),
+                "revenue": float(row.revenue),
+                "guests": int(row.guests),
+            }
+            for row in rows
+        }
+
+    return {
+        "current": _query_month(year, month),
+        "previous": _query_month(year - 1, month),
+    }
