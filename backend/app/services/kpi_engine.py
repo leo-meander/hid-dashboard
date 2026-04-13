@@ -215,21 +215,10 @@ def _get_insights_filtered(
         room_adr = round(room_rev / room_sold, 2) if room_sold > 0 else 0
         dorm_adr = round(dorm_rev / dorm_sold, 2) if dorm_sold > 0 else 0
 
-        # Also try to get per-type ADR from daily_metrics if available
-        adr_row = db.query(
-            func.avg(DailyMetrics.room_adr_native),
-            func.avg(DailyMetrics.dorm_adr_native),
-        ).filter(
-            DailyMetrics.branch_id == branch_id,
-            DailyMetrics.date >= first_day,
-            DailyMetrics.date <= last_day,
-            DailyMetrics.room_adr_native.isnot(None),
-        ).one()
-
-        if adr_row[0] is not None:
-            room_adr = round(float(adr_row[0]), 2)
-        if adr_row[1] is not None:
-            dorm_adr = round(float(adr_row[1]), 2)
+        # NOTE: Do NOT override room/dorm ADR with func.avg(daily ADR).
+        # func.avg gives unweighted daily average (each day weighted equally),
+        # which is wrong — days with few rooms sold get equal weight as busy days.
+        # The correct ADR is the weighted calculation above: room_rev / room_sold.
 
         result = {
             "total_rev": total_rev, "total_sold": total_sold, "total_adr": total_adr,
