@@ -163,7 +163,7 @@ function RuleRow({ rule, onUpdate }) {
 
 /* ── Main Alerts Page ──────────────────────────────────────────────────── */
 export default function Alerts() {
-  const { selectedBranch } = useBranch();
+  const { selected: selectedBranch } = useBranch();
   const { isAdmin } = useAuth();
   const [tab, setTab] = useState("today");       // today | history | rules
   const [alerts, setAlerts] = useState([]);
