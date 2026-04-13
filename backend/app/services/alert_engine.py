@@ -106,6 +106,14 @@ def run_daily_alerts(session_factory) -> None:
             logger.info("No active alert rules — skipping")
             return
 
+        # Clear previous alerts for this date so rules that no longer trigger
+        # don't leave stale alerts behind (e.g. excluded countries)
+        db.query(AlertHistory).filter(
+            AlertHistory.alert_date == yesterday,
+            AlertHistory.status == "active",
+        ).delete(synchronize_session=False)
+        db.flush()
+
         total_alerts = 0
         for branch in branches:
             branch_rules = [r for r in rules if r.branch_id is None or r.branch_id == branch.id]
