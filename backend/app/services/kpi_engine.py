@@ -636,7 +636,7 @@ def compute_kpi_summary(
         "forecast_room_adr": room_adr,
         "forecast_dorm_adr": dorm_adr,
         # Room/Dorm capability flag
-        "has_room_dorm_split": can_split,
+        "has_room_dorm_split": has_split and room_adr and dorm_adr,
         # Sync metadata — when was the Insights cache last refreshed
         "data_synced_at": _get_last_synced(db, str(branch_id), year, month),
     }
