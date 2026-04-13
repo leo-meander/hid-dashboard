@@ -126,6 +126,9 @@ def run_daily_alerts(session_factory) -> None:
 
 EVALUATORS = {}  # metric_key → function
 
+# Countries to exclude from market alerts (no useful insight)
+EXCLUDED_COUNTRIES = {"Others", "Other", "Unknown", ""}
+
 
 def _register(metric_key):
     def decorator(fn):
@@ -606,7 +609,7 @@ def _check_country_booking_drop(db: Session, branch: Branch, target_date: date, 
     threshold = float(rule.threshold_value)
 
     for country_code, current_nights in current_countries:
-        if not country_code or current_nights < 5:
+        if not country_code or country_code in EXCLUDED_COUNTRIES or current_nights < 5:
             continue
 
         # Last year same month
@@ -669,7 +672,7 @@ def _check_country_surge(db: Session, branch: Branch, target_date: date, rule: A
     alerts_created = []
 
     for country_code, current_nights in current_countries:
-        if not country_code:
+        if not country_code or country_code in EXCLUDED_COUNTRIES:
             continue
 
         last_year_nights = (
@@ -745,6 +748,7 @@ def _check_country_concentration(db: Session, branch: Branch, target_date: date,
             Reservation.check_in_date >= start,
             Reservation.check_in_date <= target_date,
             ~Reservation.status.in_(["Cancelled", "No-show", "No Show"]),
+            Reservation.guest_country_code.notin_(EXCLUDED_COUNTRIES),
         )
         .group_by(Reservation.guest_country_code)
         .order_by(func.count(Reservation.id).desc())
