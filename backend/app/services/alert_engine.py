@@ -688,17 +688,7 @@ def _check_country_surge(db: Session, branch: Branch, target_date: date, rule: A
         ) or 0
 
         if last_year_nights <= 0:
-            # Brand new market — also interesting
-            composite_key = f"{rule.metric_key}_{country_code}"
-            alert = _upsert_alert(
-                db, branch_id=branch.id, metric_key=composite_key, alert_date=target_date,
-                severity=rule.severity, category=rule.category,
-                current_value=current_nights, threshold_value=0,
-                baseline_value=0, deviation_pct=100,
-                message=f"New market {country_code}: {current_nights} room nights this month (0 last year)",
-                recommendation=_fmt_rec(rule.metric_key, branch.name, 100, extra=country_code),
-            )
-            alerts_created.append(alert)
+            # No YoY baseline — skip (avoids noise for new branches)
             continue
 
         growth_pct = (current_nights - last_year_nights) / last_year_nights
