@@ -211,26 +211,41 @@ def _get_insights_filtered(
     dorm_rev = float(row[5])
 
     if total_sold > 0:
-        # ADR from daily_metrics: Rev(excl) / Sold(all) — used as fallback only
-        total_adr = round(total_rev / total_sold, 2)
+        # ADR = Rev(daily_metrics, excl) / Sold(reservation_daily, excl)
+        # Revenue from Insights API (trusted), sold(excl) from reservation_daily
+        # so ADR represents average rate per paying room only.
+        total_adr = round(total_rev / total_sold, 2)  # fallback: excl/all
         room_adr = round(room_rev / room_sold, 2) if room_sold > 0 else 0
         dorm_adr = round(dorm_rev / dorm_sold, 2) if dorm_sold > 0 else 0
 
-        # Override ADR with correct excl/excl from reservation_daily.
-        # ADR = Rev(excl sources) / Sold(excl sources) — only paying rooms count.
-        # daily_metrics has Sold(all) which dilutes ADR with non-paying rooms.
         try:
-            rd_room_adr, rd_dorm_adr, rd_r_rev, rd_r_sold, rd_d_rev, rd_d_sold = \
-                _get_room_dorm_adr_from_daily(db, branch_id, first_day, last_day)
-            if rd_room_adr is not None:
-                room_adr = rd_room_adr
-            if rd_dorm_adr is not None:
-                dorm_adr = rd_dorm_adr
-            rd_total_sold = rd_r_sold + rd_d_sold
-            if rd_total_sold > 0:
-                total_adr = round((rd_r_rev + rd_d_rev) / rd_total_sold, 2)
+            excl_base = _base_reservation_daily_query(
+                db, branch_id, first_day, last_day, exclude_sources=True)
+
+            # Total sold (excl sources) for ADR denominator
+            total_sold_excl = excl_base.with_entities(
+                func.count(ReservationDaily.id)).scalar() or 0
+
+            if total_sold_excl > 0:
+                total_adr = round(total_rev / total_sold_excl, 2)
+
+            # Room sold (excl) for room ADR
+            room_sold_excl = excl_base.filter(
+                func.lower(ReservationDaily.room_type_category) == "room",
+            ).with_entities(func.count(ReservationDaily.id)).scalar() or 0
+
+            if room_sold_excl > 0 and room_rev > 0:
+                room_adr = round(room_rev / room_sold_excl, 2)
+
+            # Dorm sold (excl) for dorm ADR
+            dorm_sold_excl = excl_base.filter(
+                func.lower(ReservationDaily.room_type_category) == "dorm",
+            ).with_entities(func.count(ReservationDaily.id)).scalar() or 0
+
+            if dorm_sold_excl > 0 and dorm_rev > 0:
+                dorm_adr = round(dorm_rev / dorm_sold_excl, 2)
         except Exception as e:
-            logger.warning("ADR override from reservation_daily failed: %s", e)
+            logger.warning("Sold(excl) query failed, using fallback ADR: %s", e)
 
         result = {
             "total_rev": total_rev, "total_sold": total_sold, "total_adr": total_adr,
@@ -277,8 +292,9 @@ def _get_room_dorm_adr_from_daily(
 ) -> tuple[Optional[float], Optional[float], float, int, float, int]:
     """
     Room/Dorm ADR from reservation_daily.
-    ADR = revenue (excl sources) / rooms_sold (excl sources).
-    Both numerator and denominator exclude: Blogger, KOL, House Use, Special Case.
+    ADR = revenue (excl sources) / rooms_sold (ALL sources).
+    Revenue excludes "House use", "Blogger", "KOL", "Special case".
+    Rooms sold / OCC counts ALL sources.
     For Dorm: counts per-BED (not per-reservation), excludes combo bookings.
 
     Returns: (room_adr, dorm_adr, room_revenue, room_sold, dorm_revenue, dorm_sold)
@@ -292,9 +308,9 @@ def _get_room_dorm_adr_from_daily(
     ).one()
     room_rev = float(room_rev_row[0])
 
-    # ── Room sold (EXCLUDE sources — ADR counts only paying rooms) ──────────
-    sold_base = _base_reservation_daily_query(db, branch_id, first_day, last_day, exclude_sources=True)
-    room_sold_row = sold_base.filter(
+    # ── Room sold (ALL sources) ─────────────────────────────────────────────
+    all_base = _base_reservation_daily_query(db, branch_id, first_day, last_day, exclude_sources=False)
+    room_sold_row = all_base.filter(
         func.lower(ReservationDaily.room_type_category) == "room",
     ).with_entities(
         func.count(ReservationDaily.id),
@@ -320,12 +336,12 @@ def _get_room_dorm_adr_from_daily(
             continue
         dorm_total_rev += float(row.nightly_rate or 0)
 
-    # Dorm beds sold (EXCLUDE sources — ADR counts only paying beds)
-    dorm_sold_q = (
-        _base_reservation_daily_query(db, branch_id, first_day, last_day, exclude_sources=True)
+    # Dorm beds sold (ALL sources)
+    dorm_all_q = (
+        _base_reservation_daily_query(db, branch_id, first_day, last_day, exclude_sources=False)
         .filter(func.lower(ReservationDaily.room_type_category) == "dorm")
     )
-    dorm_all_rows = dorm_sold_q.with_entities(
+    dorm_all_rows = dorm_all_q.with_entities(
         Reservation.room_number,
         Reservation.room_type,
     ).all()
