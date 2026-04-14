@@ -1199,71 +1199,62 @@ def trigger_sheets_kol(
 # ---------------------------------------------------------------------------
 
 @router.post("/backfill-vnd")
-async def backfill_grand_total_vnd(
+def backfill_grand_total_vnd(
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """
     Fill grand_total_vnd for reservations where it's NULL but grand_total_native
-    is available. Uses live exchange rates from the currency API.
+    is available. Uses fallback exchange rates. Runs in background.
     """
-    from app.services.currency import fetch_rate
-    from sqlalchemy import text
-
-    # Get branches with their currencies
-    branches = db.query(Branch).filter_by(is_active=True).all()
-    branch_currency = {str(b.id): b.currency for b in branches}
-
-    # Fetch exchange rates for each currency, with fallback defaults
     FALLBACK_RATES = {"VND": 1.0, "TWD": 795.0, "JPY": 170.0}
-    rates = {}
-    for currency in set(branch_currency.values()):
-        rate = await fetch_rate(currency, "VND")
-        if rate:
-            rates[currency] = rate
-        elif currency in FALLBACK_RATES:
-            rates[currency] = FALLBACK_RATES[currency]
 
-    # Batch update per branch (not per currency) to control scope
-    updated = 0
-    branch_results = []
-    for b in branches:
-        bid = str(b.id)
-        currency = b.currency
-        rate = rates.get(currency)
-        if not rate:
-            continue
+    def _run():
+        import logging
+        from sqlalchemy import text
+        from app.database import SessionLocal
+        log = logging.getLogger(__name__)
+        db2 = SessionLocal()
+        try:
+            branches = db2.query(Branch).filter_by(is_active=True).all()
+            total = 0
+            for b in branches:
+                rate = FALLBACK_RATES.get(b.currency)
+                if not rate:
+                    log.warning("No rate for %s (%s)", b.name, b.currency)
+                    continue
+                if b.currency == "VND":
+                    result = db2.execute(text("""
+                        UPDATE reservations
+                        SET grand_total_vnd = grand_total_native, updated_at = NOW()
+                        WHERE grand_total_vnd IS NULL
+                          AND grand_total_native IS NOT NULL
+                          AND branch_id = :bid
+                    """), {"bid": str(b.id)})
+                else:
+                    result = db2.execute(text("""
+                        UPDATE reservations
+                        SET grand_total_vnd = ROUND(CAST(grand_total_native AS NUMERIC) * :rate, 2),
+                            updated_at = NOW()
+                        WHERE grand_total_vnd IS NULL
+                          AND grand_total_native IS NOT NULL
+                          AND branch_id = :bid
+                    """), {"rate": rate, "bid": str(b.id)})
+                db2.commit()
+                log.info("Backfill VND %s: %d rows (rate=%s)", b.name, result.rowcount, rate)
+                total += result.rowcount
+            log.info("Backfill VND done: %d total rows updated", total)
+        except Exception as exc:
+            db2.rollback()
+            log.error("Backfill VND failed: %s", exc, exc_info=True)
+        finally:
+            db2.close()
 
-        if currency == "VND":
-            result = db.execute(text("""
-                UPDATE reservations
-                SET grand_total_vnd = grand_total_native, updated_at = NOW()
-                WHERE grand_total_vnd IS NULL
-                  AND grand_total_native IS NOT NULL
-                  AND branch_id = :bid
-            """), {"bid": bid})
-        else:
-            result = db.execute(text("""
-                UPDATE reservations
-                SET grand_total_vnd = ROUND(CAST(grand_total_native AS NUMERIC) * :rate, 2),
-                    updated_at = NOW()
-                WHERE grand_total_vnd IS NULL
-                  AND grand_total_native IS NOT NULL
-                  AND branch_id = :bid
-            """), {"rate": rate, "bid": bid})
-
-        branch_results.append({
-            "branch": b.name,
-            "currency": currency,
-            "rate": rate,
-            "rows_updated": result.rowcount,
-        })
-        updated += result.rowcount
-        db.commit()  # commit per branch to avoid timeout
-
+    background_tasks.add_task(_run)
     return _envelope({
-        "total_updated": updated,
-        "branches": branch_results,
-        "rates_used": rates,
+        "status": "started",
+        "message": "VND backfill running in background. Check logs for results.",
+        "rates": FALLBACK_RATES,
     })
 
 
