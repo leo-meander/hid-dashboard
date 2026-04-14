@@ -1223,46 +1223,36 @@ async def backfill_grand_total_vnd(
         elif currency in FALLBACK_RATES:
             rates[currency] = FALLBACK_RATES[currency]
 
-    # Diagnostic: count NULLs by type
-    diag = db.execute(text("""
-        SELECT
-            SUM(CASE WHEN grand_total_vnd IS NULL AND grand_total_native IS NOT NULL THEN 1 ELSE 0 END) AS vnd_null_native_ok,
-            SUM(CASE WHEN grand_total_vnd IS NULL AND grand_total_native IS NULL THEN 1 ELSE 0 END) AS both_null,
-            SUM(CASE WHEN grand_total_vnd IS NOT NULL THEN 1 ELSE 0 END) AS vnd_ok,
-            COUNT(*) AS total
-        FROM reservations
-    """)).fetchone()
-
-    # Find reservations with NULL grand_total_vnd but non-NULL grand_total_native
-    rows = db.execute(text("""
-        SELECT id, branch_id, grand_total_native
-        FROM reservations
-        WHERE grand_total_vnd IS NULL
-          AND grand_total_native IS NOT NULL
-    """)).fetchall()
-
+    # Batch update using SQL for each currency
     updated = 0
-    for row in rows:
-        rid, bid, native = row
-        currency = branch_currency.get(str(bid))
-        if not currency or currency not in rates:
-            continue
-        vnd = round(float(native) * rates[currency], 2)
-        db.execute(text("""
-            UPDATE reservations SET grand_total_vnd = :vnd, updated_at = NOW()
-            WHERE id = :rid
-        """), {"vnd": vnd, "rid": rid})
-        updated += 1
+    skipped_currencies = []
+    for currency, rate in rates.items():
+        if currency == "VND":
+            # For VND branches, just copy native → vnd
+            result = db.execute(text("""
+                UPDATE reservations
+                SET grand_total_vnd = grand_total_native, updated_at = NOW()
+                WHERE grand_total_vnd IS NULL
+                  AND grand_total_native IS NOT NULL
+                  AND branch_id IN (
+                      SELECT id FROM branches WHERE currency = :cur
+                  )
+            """), {"cur": currency})
+        else:
+            result = db.execute(text("""
+                UPDATE reservations
+                SET grand_total_vnd = ROUND(grand_total_native * :rate, 2), updated_at = NOW()
+                WHERE grand_total_vnd IS NULL
+                  AND grand_total_native IS NOT NULL
+                  AND branch_id IN (
+                      SELECT id FROM branches WHERE currency = :cur
+                  )
+            """), {"rate": rate, "cur": currency})
+        updated += result.rowcount
 
     db.commit()
     return _envelope({
         "updated": updated,
-        "diagnostic": {
-            "vnd_null_native_ok": diag[0],
-            "both_null": diag[1],
-            "vnd_ok": diag[2],
-            "total": diag[3],
-        },
         "rates_used": rates,
     })
 
