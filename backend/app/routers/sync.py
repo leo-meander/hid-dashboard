@@ -1226,9 +1226,9 @@ async def backfill_grand_total_vnd(
     # Diagnostic: count NULLs by type
     diag = db.execute(text("""
         SELECT
-            COUNT(*) FILTER (WHERE grand_total_vnd IS NULL AND grand_total_native IS NOT NULL) AS vnd_null_native_ok,
-            COUNT(*) FILTER (WHERE grand_total_vnd IS NULL AND grand_total_native IS NULL) AS both_null,
-            COUNT(*) FILTER (WHERE grand_total_vnd IS NOT NULL) AS vnd_ok,
+            SUM(CASE WHEN grand_total_vnd IS NULL AND grand_total_native IS NOT NULL THEN 1 ELSE 0 END) AS vnd_null_native_ok,
+            SUM(CASE WHEN grand_total_vnd IS NULL AND grand_total_native IS NULL THEN 1 ELSE 0 END) AS both_null,
+            SUM(CASE WHEN grand_total_vnd IS NOT NULL THEN 1 ELSE 0 END) AS vnd_ok,
             COUNT(*) AS total
         FROM reservations
     """)).fetchone()
