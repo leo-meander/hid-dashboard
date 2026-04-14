@@ -1213,12 +1213,15 @@ async def backfill_grand_total_vnd(
     branches = db.query(Branch).filter_by(is_active=True).all()
     branch_currency = {str(b.id): b.currency for b in branches}
 
-    # Fetch exchange rates for each currency
+    # Fetch exchange rates for each currency, with fallback defaults
+    FALLBACK_RATES = {"VND": 1.0, "TWD": 795.0, "JPY": 170.0}
     rates = {}
     for currency in set(branch_currency.values()):
         rate = await fetch_rate(currency, "VND")
         if rate:
             rates[currency] = rate
+        elif currency in FALLBACK_RATES:
+            rates[currency] = FALLBACK_RATES[currency]
 
     # Find reservations with NULL grand_total_vnd but non-NULL grand_total_native
     rows = db.execute(text("""
