@@ -1223,6 +1223,16 @@ async def backfill_grand_total_vnd(
         elif currency in FALLBACK_RATES:
             rates[currency] = FALLBACK_RATES[currency]
 
+    # Diagnostic: count NULLs by type
+    diag = db.execute(text("""
+        SELECT
+            COUNT(*) FILTER (WHERE grand_total_vnd IS NULL AND grand_total_native IS NOT NULL) AS vnd_null_native_ok,
+            COUNT(*) FILTER (WHERE grand_total_vnd IS NULL AND grand_total_native IS NULL) AS both_null,
+            COUNT(*) FILTER (WHERE grand_total_vnd IS NOT NULL) AS vnd_ok,
+            COUNT(*) AS total
+        FROM reservations
+    """)).fetchone()
+
     # Find reservations with NULL grand_total_vnd but non-NULL grand_total_native
     rows = db.execute(text("""
         SELECT id, branch_id, grand_total_native
@@ -1247,8 +1257,13 @@ async def backfill_grand_total_vnd(
     db.commit()
     return _envelope({
         "updated": updated,
-        "total_null": len(rows),
-        "rates_used": {k: v for k, v in rates.items()},
+        "diagnostic": {
+            "vnd_null_native_ok": diag[0],
+            "both_null": diag[1],
+            "vnd_ok": diag[2],
+            "total": diag[3],
+        },
+        "rates_used": rates,
     })
 
 
