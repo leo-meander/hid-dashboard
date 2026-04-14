@@ -1195,6 +1195,61 @@ def trigger_sheets_kol(
 
 
 # ---------------------------------------------------------------------------
+# Backfill grand_total_vnd for reservations where it's NULL
+# ---------------------------------------------------------------------------
+
+@router.post("/backfill-vnd")
+async def backfill_grand_total_vnd(
+    db: Session = Depends(get_db),
+):
+    """
+    Fill grand_total_vnd for reservations where it's NULL but grand_total_native
+    is available. Uses live exchange rates from the currency API.
+    """
+    from app.services.currency import fetch_rate
+    from sqlalchemy import text
+
+    # Get branches with their currencies
+    branches = db.query(Branch).filter_by(is_active=True).all()
+    branch_currency = {str(b.id): b.currency for b in branches}
+
+    # Fetch exchange rates for each currency
+    rates = {}
+    for currency in set(branch_currency.values()):
+        rate = await fetch_rate(currency, "VND")
+        if rate:
+            rates[currency] = rate
+
+    # Find reservations with NULL grand_total_vnd but non-NULL grand_total_native
+    rows = db.execute(text("""
+        SELECT id, branch_id, grand_total_native
+        FROM reservations
+        WHERE grand_total_vnd IS NULL
+          AND grand_total_native IS NOT NULL
+    """)).fetchall()
+
+    updated = 0
+    for row in rows:
+        rid, bid, native = row
+        currency = branch_currency.get(str(bid))
+        if not currency or currency not in rates:
+            continue
+        vnd = round(float(native) * rates[currency], 2)
+        db.execute(text("""
+            UPDATE reservations SET grand_total_vnd = :vnd, updated_at = NOW()
+            WHERE id = :rid
+        """), {"vnd": vnd, "rid": rid})
+        updated += 1
+
+    db.commit()
+    return _envelope({
+        "updated": updated,
+        "total_null": len(rows),
+        "rates_used": {k: v for k, v in rates.items()},
+    })
+
+
+# ---------------------------------------------------------------------------
 # KOL Engine sync (replaces Google Sheets source)
 # ---------------------------------------------------------------------------
 
