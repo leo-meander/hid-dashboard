@@ -1223,36 +1223,46 @@ async def backfill_grand_total_vnd(
         elif currency in FALLBACK_RATES:
             rates[currency] = FALLBACK_RATES[currency]
 
-    # Batch update using SQL for each currency
+    # Batch update per branch (not per currency) to control scope
     updated = 0
-    skipped_currencies = []
-    for currency, rate in rates.items():
+    branch_results = []
+    for b in branches:
+        bid = str(b.id)
+        currency = b.currency
+        rate = rates.get(currency)
+        if not rate:
+            continue
+
         if currency == "VND":
-            # For VND branches, just copy native → vnd
             result = db.execute(text("""
                 UPDATE reservations
                 SET grand_total_vnd = grand_total_native, updated_at = NOW()
                 WHERE grand_total_vnd IS NULL
                   AND grand_total_native IS NOT NULL
-                  AND branch_id IN (
-                      SELECT id FROM branches WHERE currency = :cur
-                  )
-            """), {"cur": currency})
+                  AND branch_id = :bid
+            """), {"bid": bid})
         else:
             result = db.execute(text("""
                 UPDATE reservations
-                SET grand_total_vnd = ROUND(grand_total_native * :rate, 2), updated_at = NOW()
+                SET grand_total_vnd = ROUND(CAST(grand_total_native AS NUMERIC) * :rate, 2),
+                    updated_at = NOW()
                 WHERE grand_total_vnd IS NULL
                   AND grand_total_native IS NOT NULL
-                  AND branch_id IN (
-                      SELECT id FROM branches WHERE currency = :cur
-                  )
-            """), {"rate": rate, "cur": currency})
-        updated += result.rowcount
+                  AND branch_id = :bid
+            """), {"rate": rate, "bid": bid})
 
-    db.commit()
+        branch_results.append({
+            "branch": b.name,
+            "currency": currency,
+            "rate": rate,
+            "rows_updated": result.rowcount,
+        })
+        updated += result.rowcount
+        db.commit()  # commit per branch to avoid timeout
+
     return _envelope({
-        "updated": updated,
+        "total_updated": updated,
+        "branches": branch_results,
         "rates_used": rates,
     })
 
