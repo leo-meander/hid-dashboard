@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     GMAIL_APP_PASSWORD: str = ""
     APP_ENV: str = "development"
     SECRET_KEY: str = "changeme"
+    FRONTEND_URL: str = ""
 
     # GoHighLevel (GHL) — Email Marketing (per-branch)
     GHL_LOCATION_ID_SAIGON: str = ""
@@ -51,6 +52,11 @@ class Settings(BaseSettings):
     GHL_LOCATION_ID_OSAKA: str = ""
     GHL_API_KEY_OSAKA: str = ""
     GHL_WEBHOOK_SECRET: str = ""
+
+    # KOL Media Engine
+    KOL_ENGINE_URL: str = "https://kol-media-engine.zeabur.app"
+    KOL_ENGINE_ORG_ID: str = "7c7b450e-ffa2-42fb-8742-f28916e811d8"
+    KOL_SYNC_API_KEY: str = ""
     GHL_BASE_URL: str = "https://services.leadconnectorhq.com"
     # Legacy single-location (kept for backward compat)
     GHL_LOCATION_ID: str = ""

@@ -1195,6 +1195,130 @@ def trigger_sheets_kol(
 
 
 # ---------------------------------------------------------------------------
+# KOL Engine sync (replaces Google Sheets source)
+# ---------------------------------------------------------------------------
+
+@router.post("/kol-engine")
+def trigger_kol_engine_sync(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    Sync KOL data from the KOL Media Engine API.
+    Upserts KOLRecord by (branch, kol_name) with enriched metadata.
+    Runs in background.
+    """
+    if not settings.KOL_SYNC_API_KEY:
+        raise HTTPException(status_code=400, detail="KOL_SYNC_API_KEY not configured")
+
+    def _run():
+        import logging
+        from app.database import SessionLocal
+        from app.models.kol import KOLRecord
+        from app.services.kol_engine import fetch_kol_data
+        log = logging.getLogger(__name__)
+        db2 = SessionLocal()
+        try:
+            # Build branch lookup: keyword → Branch object
+            branch_by_key: dict = {}
+            for b in db2.query(Branch).filter_by(is_active=True).all():
+                for word in b.name.lower().split():
+                    branch_by_key[word] = b
+
+            records = fetch_kol_data(
+                settings.KOL_ENGINE_URL,
+                settings.KOL_ENGINE_ORG_ID,
+                settings.KOL_SYNC_API_KEY,
+            )
+
+            kol_created = 0
+            kol_updated = 0
+            skipped = 0
+
+            for rec in records:
+                branch = branch_by_key.get(rec["branch_key"])
+                if not branch:
+                    log.debug("No branch match for key: %s", rec["branch_key"])
+                    skipped += 1
+                    continue
+
+                # Upsert KOLRecord by (branch_id, kol_name)
+                kol = db2.query(KOLRecord).filter_by(
+                    branch_id=branch.id, kol_name=rec["kol_name"]
+                ).first()
+
+                # Extract social links from platforms
+                link_ig = None
+                link_tiktok = None
+                link_youtube = None
+                for p in rec.get("platforms") or []:
+                    platform = (p.get("platform") or "").lower()
+                    url = p.get("profile_url") or ""
+                    if "instagram" in platform and url:
+                        link_ig = url
+                    elif "tiktok" in platform and url:
+                        link_tiktok = url
+                    elif "youtube" in platform and url:
+                        link_youtube = url
+
+                # Determine is_gifted_stay
+                is_gifted = rec.get("collab_type") == "hosted_stay"
+
+                if not kol:
+                    kol = KOLRecord(
+                        branch_id=branch.id,
+                        kol_name=rec["kol_name"],
+                        kol_nationality=rec.get("kol_nationality"),
+                        language=rec.get("language"),
+                        target_audience=rec.get("target_audience"),
+                        is_gifted_stay=is_gifted,
+                        link_ig=link_ig,
+                        link_tiktok=link_tiktok,
+                        link_youtube=link_youtube,
+                        notes=rec.get("case_id"),
+                    )
+                    db2.add(kol)
+                    db2.flush()
+                    kol_created += 1
+                else:
+                    # Update fields if they have new data
+                    if rec.get("kol_nationality"):
+                        kol.kol_nationality = rec["kol_nationality"]
+                    if rec.get("language"):
+                        kol.language = rec["language"]
+                    if rec.get("target_audience"):
+                        kol.target_audience = rec["target_audience"]
+                    if link_ig:
+                        kol.link_ig = link_ig
+                    if link_tiktok:
+                        kol.link_tiktok = link_tiktok
+                    if link_youtube:
+                        kol.link_youtube = link_youtube
+                    kol.is_gifted_stay = is_gifted
+                    if rec.get("case_id"):
+                        kol.notes = rec["case_id"]
+                    kol_updated += 1
+
+            db2.commit()
+            log.info(
+                "KOL Engine sync done: %d created, %d updated, %d skipped",
+                kol_created, kol_updated, skipped,
+            )
+        except Exception as exc:
+            db2.rollback()
+            log.error("KOL Engine sync failed: %s", exc, exc_info=True)
+        finally:
+            db2.close()
+
+    background_tasks.add_task(_run)
+    return _envelope({
+        "status": "started",
+        "message": "KOL Engine sync running in background.",
+        "source": "kol-media-engine",
+    })
+
+
+# ---------------------------------------------------------------------------
 # Cloudbeds Insights sync (manual trigger)
 # ---------------------------------------------------------------------------
 
