@@ -35,17 +35,23 @@ function AchievementBadge({ value }) {
 function AllBranchesTable({ data, loading }) {
   // Per-branch deduction % state — initialized from API data
   const [deductions, setDeductions] = useState({});
+  const [otherRevs, setOtherRevs] = useState({});
   const [saving, setSaving] = useState({});
+  const [savingOther, setSavingOther] = useState({});
   const saveTimers = useRef({});
+  const otherTimers = useRef({});
 
-  // Initialize deductions from API data
+  // Initialize from API data
   useEffect(() => {
     if (!data.length) return;
-    const init = {};
+    const initDed = {};
+    const initOther = {};
     for (const row of data) {
-      init[row.branch_id] = row.deduction_pct || 0;
+      initDed[row.branch_id] = row.deduction_pct || 0;
+      initOther[row.branch_id] = row.other_revenue_native || 0;
     }
-    setDeductions(init);
+    setDeductions(initDed);
+    setOtherRevs(initOther);
   }, [data]);
 
   // Save deduction to backend (debounced)
@@ -81,23 +87,48 @@ function AllBranchesTable({ data, loading }) {
     saveDeduction(branchId, num);
   };
 
-  // Compute adjusted forecasts
+  // Save other revenue to backend (debounced)
+  const saveOtherRev = useCallback((branchId, val) => {
+    const num = Math.max(0, parseFloat(val) || 0);
+    if (otherTimers.current[branchId]) clearTimeout(otherTimers.current[branchId]);
+    otherTimers.current[branchId] = setTimeout(() => {
+      setSavingOther(prev => ({ ...prev, [branchId]: true }));
+      axios.put("/api/kpi/other-revenue", {
+        branch_id: branchId,
+        year: YEAR,
+        month: MONTH,
+        other_revenue_native: num,
+      })
+        .then(() => setSavingOther(prev => ({ ...prev, [branchId]: false })))
+        .catch(() => setSavingOther(prev => ({ ...prev, [branchId]: false })));
+    }, 800);
+  }, []);
+
+  const setOtherRev = (branchId, val) => {
+    const num = Math.max(0, parseFloat(val) || 0);
+    setOtherRevs(prev => ({ ...prev, [branchId]: num }));
+    saveOtherRev(branchId, num);
+  };
+
+  // Compute adjusted forecasts (= forecast * (1 - ded%) + other revenue)
   const rows = useMemo(() => {
     return data.map(row => {
       const dedPct = deductions[row.branch_id] ?? row.deduction_pct ?? 0;
+      const otherRev = otherRevs[row.branch_id] ?? row.other_revenue_native ?? 0;
       const multiplier = 1 - dedPct / 100;
       return {
         ...row,
         deduction_pct_local: dedPct,
+        other_revenue_local: otherRev,
         adjusted_forecast: row.occ_forecast_native != null
-          ? row.occ_forecast_native * multiplier
+          ? row.occ_forecast_native * multiplier + otherRev
           : null,
         adjusted_next_forecast: row.next_month_forecast_native != null
-          ? row.next_month_forecast_native * multiplier
+          ? row.next_month_forecast_native * multiplier + otherRev
           : null,
       };
     });
-  }, [data, deductions]);
+  }, [data, deductions, otherRevs]);
 
   if (loading) return (
     <div className="bg-white rounded-xl border p-8 text-center">
@@ -128,6 +159,7 @@ function AllBranchesTable({ data, loading }) {
               <th className="px-3 py-3 text-center">KPI %</th>
               <th className="px-3 py-3 text-center">Forecast</th>
               <th className="px-3 py-3 text-center whitespace-nowrap">Deduct %</th>
+              <th className="px-3 py-3 text-center whitespace-nowrap">Other Rev</th>
               <th className="px-3 py-3 text-center">Adjusted</th>
               <th className="px-3 py-3 text-center whitespace-nowrap">Next Rev</th>
               <th className="px-3 py-3 text-center whitespace-nowrap">Next Forecast</th>
@@ -137,7 +169,9 @@ function AllBranchesTable({ data, loading }) {
             {rows.map((row) => {
               const cur = row.currency || "VND";
               const dedPct = row.deduction_pct_local;
+              const otherRev = row.other_revenue_local;
               const isSaving = saving[row.branch_id];
+              const isSavingOther = savingOther[row.branch_id];
               return (
                 <tr key={row.branch_id} className="hover:bg-gray-50">
                   <td className="px-5 py-3.5 font-medium text-gray-800">{row.branch_name}</td>
@@ -202,6 +236,28 @@ function AllBranchesTable({ data, loading }) {
                         }
                       />
                       {isSaving && (
+                        <span className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
+                      )}
+                    </div>
+                  </td>
+                  {/* Other Revenue input — auto-saves */}
+                  <td className="px-3 py-3.5 text-center">
+                    <div className="relative inline-block">
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={otherRev || ""}
+                        onChange={e => setOtherRev(row.branch_id, e.target.value)}
+                        placeholder="0"
+                        className={
+                          "w-24 px-1.5 py-1 text-right text-xs border rounded outline-none font-mono " +
+                          (isSavingOther
+                            ? "border-yellow-400 bg-yellow-50"
+                            : "border-gray-300 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400")
+                        }
+                      />
+                      {isSavingOther && (
                         <span className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
                       )}
                     </div>

@@ -73,6 +73,13 @@ class DeductionUpdate(BaseModel):
     deduction_pct: float
 
 
+class OtherRevenueUpdate(BaseModel):
+    branch_id: UUID
+    year: int
+    month: int
+    other_revenue_native: float
+
+
 def _envelope(data):
     return {
         "success": True,
@@ -200,6 +207,36 @@ def save_deduction(payload: DeductionUpdate, db: Session = Depends(get_db)):
         return _envelope({"saved": True, "deduction_pct": float(target.deduction_pct)})
 
 
+@router.put("/other-revenue")
+def save_other_revenue(payload: OtherRevenueUpdate, db: Session = Depends(get_db)):
+    """Save manual other revenue (native currency) for a branch/year/month.
+    Added on top of the deducted forecast in the All Branches summary."""
+    val = max(0, float(payload.other_revenue_native or 0))
+    existing = (
+        db.query(KPITarget)
+        .filter_by(branch_id=payload.branch_id, year=payload.year, month=payload.month)
+        .first()
+    )
+    if existing:
+        existing.other_revenue_native = val
+        db.commit()
+        db.refresh(existing)
+        return _envelope({"saved": True, "other_revenue_native": float(existing.other_revenue_native)})
+    else:
+        target = KPITarget(
+            branch_id=payload.branch_id,
+            year=payload.year,
+            month=payload.month,
+            target_revenue_native=0,
+            target_revenue_vnd=0,
+            other_revenue_native=val,
+        )
+        db.add(target)
+        db.commit()
+        db.refresh(target)
+        return _envelope({"saved": True, "other_revenue_native": float(target.other_revenue_native)})
+
+
 # ── Summary Endpoints (Phase 2) ────────────────────────────────────────────────
 
 def _branch_summary(db, branch, year, month):
@@ -229,6 +266,7 @@ def _branch_summary(db, branch, year, month):
         .first()
     )
     summary["deduction_pct"] = float(target.deduction_pct or 0) if target else 0
+    summary["other_revenue_native"] = float(target.other_revenue_native or 0) if target else 0
 
     # Always include next-month forecast
     next_data = compute_next_month_forecast(

@@ -20,6 +20,7 @@ class KPITarget(Base):
     predicted_room_occ_pct = Column(Numeric(5, 4), nullable=True)
     predicted_dorm_occ_pct = Column(Numeric(5, 4), nullable=True)
     deduction_pct = Column(Numeric(5, 2), nullable=True, default=0)
+    other_revenue_native = Column(Numeric(15, 2), nullable=True, default=0)  # Manual add-on (e.g. F&B, ancillary)
     actual_revenue_override = Column(Numeric(15, 2), nullable=True)  # Manual override from accounting
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
