@@ -472,8 +472,8 @@ def _build_kol_suggestions(db: Session, branch_id: Optional[UUID], d_from: date,
         FROM   reservations r
         JOIN   branches b ON r.branch_id = b.id
         WHERE  r.room_type ILIKE '%KOL_%%'
-          AND  r.check_in_date >= :d_from
-          AND  r.check_in_date <= :d_to
+          AND  r.reservation_date >= :d_from
+          AND  r.reservation_date <= :d_to
           {bid_filter}
     """), {
         "d_from": d_from,
