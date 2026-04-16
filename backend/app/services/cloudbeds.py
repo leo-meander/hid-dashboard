@@ -1301,59 +1301,13 @@ def sync_cloudbeds_filtered(
             .all()
         )
 
-        # ── Revenue from LOCAL reservation_daily (exact-match filter) ──────────
-        # Fixes Cloudbeds custom-report over-exclusion (substring not_contains matches
-        # extra sources like "Blogger_IG"). Pull nightly_rate per day directly from
-        # reservation_daily with metrics_engine._is_excluded_revenue() filter.
-        from app.models.reservation_daily import ReservationDaily
-        from app.services.metrics_engine import (
-            EXCLUDED_SOURCES_REVENUE,
-            EXCLUDED_STATUSES,
-        )
+        # Compute revenue exclusion ratio: filtered_rev / unfiltered_rev
+        # stock report 110 revenue (already in daily_metrics) is unfiltered
+        unfiltered_rev_month = sum(float(dm.revenue_native or 0) for dm in daily_rows)
+        filtered_rev_month = filtered["total_rev"]  # excl Blogger/House Use/Special Case
+        rev_scale = filtered_rev_month / unfiltered_rev_month if unfiltered_rev_month > 0 else 1.0
 
-        rd_rows = (
-            db.query(ReservationDaily)
-            .filter(
-                ReservationDaily.branch_id == branch_id,
-                ReservationDaily.date >= first_day,
-                ReservationDaily.date <= last_day,
-            )
-            .all()
-        )
-
-        # Per-day revenue from nightly_rate, exact-match excluded sources/statuses
-        from collections import defaultdict
-        day_rev_native: dict = defaultdict(float)
-        day_room_rev: dict = defaultdict(float)
-        day_dorm_rev: dict = defaultdict(float)
-        for rd in rd_rows:
-            status = (rd.status or "").lower().strip()
-            status_norm = status.replace("-", "_").replace(" ", "_")
-            if status in EXCLUDED_STATUSES or status_norm in EXCLUDED_STATUSES:
-                continue
-            src = (rd.source or "").lower().strip()
-            if src in EXCLUDED_SOURCES_REVENUE:
-                continue
-            nightly = float(rd.nightly_rate or 0)
-            day_rev_native[rd.date] += nightly
-            rt = (rd.room_type_category or "").lower()
-            if rt == "room":
-                day_room_rev[rd.date] += nightly
-            elif rt == "dorm":
-                day_dorm_rev[rd.date] += nightly
-
-        filtered_rev_month = sum(day_rev_native.values())
-        total_sold_from_insights = filtered["total_sold"]
-        filtered_adr = (
-            round(filtered_rev_month / total_sold_from_insights, 2)
-            if total_sold_from_insights > 0 else 0
-        )
-        logger.info(
-            "Local revenue for branch=%s %d/%d: rev=%.0f sold=%d adr=%.2f (excl %s)",
-            branch_id, year, month,
-            filtered_rev_month, total_sold_from_insights, filtered_adr,
-            sorted(EXCLUDED_SOURCES_REVENUE),
-        )
+        filtered_adr = filtered.get("total_adr", 0)
 
         # Room/Dorm split: use reservation_daily (local DB) for reliable
         # room/dorm ratio, then scale to match Cloudbeds total ADR.
@@ -1400,20 +1354,20 @@ def sync_cloudbeds_filtered(
         for dm in daily_rows:
             ts = int(dm.total_sold or 0)
 
-            # Revenue from LOCAL reservation_daily (exact-match filtered)
-            day_rev = round(day_rev_native.get(dm.date, 0.0), 2)
-            dm.revenue_native = day_rev
-            dm.revenue_vnd = round(day_rev * rate, 2) if rate else dm.revenue_vnd
+            # Scale revenue to exclude Blogger/House Use/Special Case
+            raw_rev = float(dm.revenue_native or 0)
+            dm.revenue_native = round(raw_rev * rev_scale, 2)
+            dm.revenue_vnd = round(dm.revenue_native * rate, 2) if rate else dm.revenue_vnd
 
             # ADR & RevPAR from filtered data
             dm.adr_native = round(filtered_adr, 2) if filtered_adr else dm.adr_native
             dm.revpar_native = round(filtered_adr * float(dm.occ_pct or 0), 2) if filtered_adr else dm.revpar_native
 
-            # Room/Dorm split — sold from insights ratio, revenue from local DB
+            # Room/Dorm split
             dm.rooms_sold = round(ts * room_sold_ratio)
             dm.dorms_sold = round(ts * dorm_sold_ratio)
-            dm.room_revenue_native = round(day_room_rev.get(dm.date, 0.0), 2)
-            dm.dorm_revenue_native = round(day_dorm_rev.get(dm.date, 0.0), 2)
+            dm.room_revenue_native = round(float(dm.revenue_native or 0) * room_rev_ratio, 2)
+            dm.dorm_revenue_native = round(float(dm.revenue_native or 0) * dorm_rev_ratio, 2)
             dm.room_adr_native = round(room_adr, 2) if room_adr else None
             dm.dorm_adr_native = round(dorm_adr, 2) if dorm_adr else None
 
