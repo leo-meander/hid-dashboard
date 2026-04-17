@@ -219,8 +219,10 @@ def import_csv_file(csv_path: Path, branch_id: str, currency: str,
                 skipped += 1
                 continue
 
-            grand_total_raw = row.get("Grand Total", "")
-            grand_total = _parse_amount(grand_total_raw, european_numbers)
+            # Revenue = accommodation only, NOT grand total (which includes tax/fees/extras).
+            # Cloudbeds CSV export has an "Accommodation Total" column for this.
+            accom_raw = row.get("Accommodation Total", "")
+            grand_total = _parse_amount(accom_raw, european_numbers)
             if grand_total is not None and grand_total < 0:
                 grand_total = None  # ignore negative / refund rows
 

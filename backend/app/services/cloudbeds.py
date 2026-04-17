@@ -498,7 +498,7 @@ def backfill_accommodation_total(
                             params["rc"] = map_room_type_category(rt)
                         result = _s.execute(_text(
                             f"UPDATE reservations SET {', '.join(set_parts)} "
-                            "WHERE cloudbeds_reservation_id=:cid AND grand_total_native IS NULL"
+                            "WHERE cloudbeds_reservation_id=:cid"
                         ), params)
                         if result.rowcount:
                             filled += 1
@@ -729,11 +729,19 @@ def ingest_reservations(
             continue
 
         nights = (check_out - check_in).days
-        # "total" is only present in full API responses (modifiedAt filter).
-        # CheckIn-filter responses return a lite payload without "total".
-        # Only update revenue fields when the API actually provides them.
-        has_total = "total" in raw
-        grand_total_native = _safe_decimal(raw.get("total")) if has_total else None
+        # Revenue = accommodation only (subTotal - additionalItems), NOT Cloudbeds "total"
+        # (which includes tax, fees, extras). balanceDetailed is only present in full
+        # payloads (modifiedAt filter); lite payloads skip revenue fields entirely
+        # and let backfill_accommodation_total fetch getReservation later.
+        bd = raw.get("balanceDetailed") or {}
+        bd_sub = _safe_decimal(bd.get("subTotal"))
+        bd_extra = _safe_decimal(bd.get("additionalItems")) or 0
+        accom_native = (
+            round(float(bd_sub) - float(bd_extra), 2)
+            if bd_sub is not None else None
+        )
+        has_revenue = accom_native is not None and accom_native > 0
+        grand_total_native = accom_native if has_revenue else None
         grand_total_vnd = (
             round(grand_total_native * rate, 2)
             if grand_total_native is not None and rate is not None
@@ -771,7 +779,7 @@ def ingest_reservations(
         if guest_country is not None:
             payload["guest_country"] = guest_country
             payload["guest_country_code"] = map_country_code(guest_country)
-        if has_total:
+        if has_revenue:
             payload["grand_total_native"] = grand_total_native
             payload["grand_total_vnd"] = grand_total_vnd
         if raw:
