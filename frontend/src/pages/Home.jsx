@@ -388,23 +388,52 @@ export default function Home() {
   const { isAll, currentBranch } = useBranch();
   const [allData, setAllData]       = useState([]);
   const [allLoading, setAllLoading] = useState(false);
+  const [syncing, setSyncing]       = useState(false);
 
-  useEffect(() => {
-    if (!isAll) return;
+  const loadAll = useCallback(() => {
     setAllLoading(true);
-    axios.get("/api/kpi/summary?year=" + YEAR + "&month=" + MONTH + "&months=current,next")
+    return axios.get("/api/kpi/summary?year=" + YEAR + "&month=" + MONTH + "&months=current,next")
       .then(r => setAllData(r.data.data || []))
       .catch(() => setAllData([]))
       .finally(() => setAllLoading(false));
-  }, [isAll]);
+  }, []);
+
+  useEffect(() => {
+    if (!isAll) return;
+    loadAll();
+  }, [isAll, loadAll]);
+
+  const syncInsights = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      await axios.post("/api/sync/insights", {}, { timeout: 600_000 });
+      alert("Cloudbeds Insights sync started. Data will refresh in ~1–2 minutes.");
+      setTimeout(() => { if (isAll) loadAll(); }, 90_000);
+    } catch (e) {
+      alert("Sync failed: " + (e.response?.data?.detail || e.message));
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-xl font-bold text-gray-800">
-          {isAll ? "All Branches" : (currentBranch ? currentBranch.name : "Dashboard")}
-        </h1>
-        <p className="text-xs text-gray-400 mt-0.5">{MONTH_NAME}</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-gray-800">
+            {isAll ? "All Branches" : (currentBranch ? currentBranch.name : "Dashboard")}
+          </h1>
+          <p className="text-xs text-gray-400 mt-0.5">{MONTH_NAME}</p>
+        </div>
+        <button
+          onClick={syncInsights}
+          disabled={syncing}
+          title="Re-sync OCC/ADR/RevPAR/Revenue from Cloudbeds Insights (last 14 days + current + next month)"
+          className="px-3 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+        >
+          {syncing ? "Syncing\u2026" : "\u21bb Sync Cloudbeds Insights"}
+        </button>
       </div>
       {isAll
         ? <AllBranchesTable data={allData} loading={allLoading} />

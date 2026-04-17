@@ -1172,9 +1172,13 @@ def sync_cloudbeds_occupancy(
     date_to: Optional[date] = None,
 ) -> dict:
     """
-    Sync OCC, ADR, RevPAR, Revenue from Cloudbeds Data Insights API
-    directly into daily_metrics. This overwrites computed values with
-    Cloudbeds' authoritative numbers (USALI-standard).
+    Sync OCC, ADR, RevPAR from Cloudbeds Data Insights API directly into
+    daily_metrics (USALI-standard authoritative numbers for those metrics).
+
+    Revenue is intentionally NOT synced here — the Cloudbeds report sums all
+    sources, but our business rule excludes Blogger, KOL, House Use, Special
+    Case, Maintenance. revenue_native / revenue_vnd stay as computed by
+    metrics_engine.recompute_branch_range().
 
     Returns: { branch_id, dates_updated, date_from, date_to }
     """
@@ -1190,7 +1194,6 @@ def sync_cloudbeds_occupancy(
         date_to = today.replace(day=last_day)
 
     occ_data = fetch_cloudbeds_occupancy(property_id, api_key, date_from, date_to)
-    rate = get_cached_rate(currency, "VND")
 
     updated = 0
     now = datetime.now(timezone.utc)
@@ -1200,8 +1203,6 @@ def sync_cloudbeds_occupancy(
         occ_pct = round(metrics["mfd_occupancy"] / 100.0, 4)  # mfd = modified occupancy (excludes blocked/OOS), matches Cloudbeds UI
         adr_native = round(metrics["adr"], 2)
         revpar_native = round(metrics["revpar"], 2)
-        revenue_native = round(metrics["room_revenue"], 2)
-        revenue_vnd = round(revenue_native * rate, 2) if rate else None
         capacity = int(metrics["capacity_count"])
 
         dm = db.query(DailyMetrics).filter_by(
@@ -1215,8 +1216,6 @@ def sync_cloudbeds_occupancy(
         dm.occ_pct = occ_pct
         dm.adr_native = adr_native
         dm.revpar_native = revpar_native
-        dm.revenue_native = revenue_native
-        dm.revenue_vnd = revenue_vnd
         dm.computed_at = now
         updated += 1
 
