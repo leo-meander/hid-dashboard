@@ -1473,6 +1473,115 @@ def trigger_insights_sync(
     })
 
 
+# ── Revenue diagnostic ───────────────────────────────────────────────────────
+
+@router.get("/diagnostic/revenue")
+def diagnostic_revenue(
+    year: int = Query(...),
+    month: int = Query(...),
+    branch_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Compare revenue across the 3 storage layers for a given branch/month:
+      - daily_metrics.revenue_native        (what the UI reads)
+      - reservation_daily.nightly_rate      (with source/status filter)
+      - reservations.grand_total_native     (stay-level, for cross-check)
+
+    Also returns counts grouped by source & status for outlier detection.
+    Use this when the Home / All Branches revenue looks wrong.
+    """
+    import calendar
+    from datetime import date as date_type
+    from app.models.reservation_daily import ReservationDaily
+    from app.models.daily_metrics import DailyMetrics
+    from app.services.metrics_engine import (
+        EXCLUDED_SOURCES_REVENUE, EXCLUDED_STATUSES,
+    )
+
+    first_day = date_type(year, month, 1)
+    last_day = date_type(year, month, calendar.monthrange(year, month)[1])
+
+    branches_q = db.query(Branch).filter_by(is_active=True)
+    if branch_id:
+        branches_q = branches_q.filter(Branch.id == branch_id)
+    branches = branches_q.all()
+
+    out = []
+    for b in branches:
+        dm_sum = (db.query(func.coalesce(func.sum(DailyMetrics.revenue_native), 0))
+                  .filter(DailyMetrics.branch_id == b.id,
+                          DailyMetrics.date >= first_day,
+                          DailyMetrics.date <= last_day)
+                  .scalar()) or 0
+
+        rd_rows = (db.query(ReservationDaily)
+                   .filter(ReservationDaily.branch_id == b.id,
+                           ReservationDaily.date >= first_day,
+                           ReservationDaily.date <= last_day)
+                   .all())
+        rd_filtered = 0.0
+        rd_zero_rate = 0
+        rd_total = len(rd_rows)
+        rd_src_breakdown: dict = {}
+        rd_status_breakdown: dict = {}
+        for rd in rd_rows:
+            status = (rd.status or "").lower().strip()
+            status_norm = status.replace("-", "_").replace(" ", "_")
+            src = (rd.source or "").lower().strip()
+            rd_src_breakdown[src or "(empty)"] = rd_src_breakdown.get(src or "(empty)", 0) + 1
+            rd_status_breakdown[status or "(empty)"] = rd_status_breakdown.get(status or "(empty)", 0) + 1
+            if status in EXCLUDED_STATUSES or status_norm in EXCLUDED_STATUSES:
+                continue
+            if src in EXCLUDED_SOURCES_REVENUE:
+                continue
+            night = float(rd.nightly_rate or 0)
+            rd_filtered += night
+            if night == 0:
+                rd_zero_rate += 1
+
+        # Reservations checking in this month — used to cross-check grand_total
+        res_rows = (db.query(Reservation)
+                    .filter(Reservation.branch_id == b.id,
+                            Reservation.check_in_date >= first_day,
+                            Reservation.check_in_date <= last_day)
+                    .all())
+        res_total = len(res_rows)
+        res_zero_grand = 0
+        res_grand_sum = 0.0
+        for r in res_rows:
+            status = (r.status or "").lower().strip()
+            status_norm = status.replace("-", "_").replace(" ", "_")
+            src = (r.source or "").lower().strip()
+            if status in EXCLUDED_STATUSES or status_norm in EXCLUDED_STATUSES:
+                continue
+            if src in EXCLUDED_SOURCES_REVENUE:
+                continue
+            g = float(r.grand_total_native or 0)
+            res_grand_sum += g
+            if g == 0:
+                res_zero_grand += 1
+
+        out.append({
+            "branch": b.name,
+            "currency": b.currency,
+            "daily_metrics_revenue": round(float(dm_sum), 2),
+            "reservation_daily_revenue_filtered": round(rd_filtered, 2),
+            "reservation_daily_rows": rd_total,
+            "reservation_daily_zero_rate_rows_after_filter": rd_zero_rate,
+            "reservation_daily_source_counts": rd_src_breakdown,
+            "reservation_daily_status_counts": rd_status_breakdown,
+            "reservations_checkin_in_month": res_total,
+            "reservations_grand_total_filtered_sum": round(res_grand_sum, 2),
+            "reservations_with_grand_total_zero_after_filter": res_zero_grand,
+        })
+
+    return _envelope({
+        "year": year, "month": month,
+        "branches": out,
+    })
+
+
 # ── Country normalization ────────────────────────────────────────────────────
 
 @router.post("/normalize-countries")
