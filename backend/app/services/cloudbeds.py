@@ -421,11 +421,15 @@ def backfill_accommodation_total(
     dt = checkin_to or (today + timedelta(days=CHECKIN_FUTURE_DAYS))
 
     db = SessionLocal()
+    from sqlalchemy import or_
     query = db.query(Reservation).filter(
         Reservation.branch_id == branch_id,
         Reservation.check_in_date >= df,
         Reservation.check_in_date <= dt,
-        Reservation.grand_total_native == None,  # noqa: E711
+        or_(
+            Reservation.grand_total_native == None,  # noqa: E711
+            Reservation.grand_total_native == 0,
+        ),
         Reservation.status.notin_(["cancelled", "canceled", "no_show", "noshow"]),
     )
     if limit:

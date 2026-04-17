@@ -1395,11 +1395,15 @@ def trigger_insights_sync(
     Manually trigger a full revenue + insights refresh.
 
     Per-branch pipeline:
-      1. sync_branch_revenue       — refresh Reservation.grand_total_native
+      1. backfill_accommodation_total — getReservation per booking where
+                                     grand_total_native is NULL or 0 (catches
+                                     future "confirmed" bookings that have no
+                                     Accommodation transactions yet)
+      2. sync_branch_revenue       — refresh Reservation.grand_total_native
                                      from Cloudbeds Accommodation transactions
-      2. populate_reservation_daily — rebuild per-night rows in reservation_daily
-      3. sync_cloudbeds_occupancy  — OCC/ADR/RevPAR from Cloudbeds Insights
-      4. sync_cloudbeds_filtered   — recompute daily_metrics.revenue from
+      3. populate_reservation_daily — rebuild per-night rows in reservation_daily
+      4. sync_cloudbeds_occupancy  — OCC/ADR/RevPAR from Cloudbeds Insights
+      5. sync_cloudbeds_filtered   — recompute daily_metrics.revenue from
                                      reservation_daily with source-exclusion filter
 
     Range: last 14 days through end of next month.
@@ -1408,6 +1412,7 @@ def trigger_insights_sync(
     import calendar
     from datetime import date, timedelta
     from app.services.cloudbeds import (
+        backfill_accommodation_total,
         sync_branch_revenue,
         populate_reservation_daily,
         sync_cloudbeds_occupancy,
@@ -1436,6 +1441,10 @@ def trigger_insights_sync(
                 if not pid or not api_key:
                     continue
                 try:
+                    backfill_accommodation_total(
+                        str(branch.id), pid, branch.currency, api_key,
+                        checkin_from=sync_start, checkin_to=sync_end,
+                    )
                     sync_branch_revenue(
                         str(branch.id), pid, branch.currency, api_key,
                         date_from=sync_start, date_to=sync_end,
