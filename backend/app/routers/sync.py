@@ -1392,16 +1392,27 @@ def trigger_insights_sync(
     db: Session = Depends(get_db),
 ):
     """
-    Manually trigger Cloudbeds Data Insights sync.
-    Syncs OCC/ADR/RevPAR/Revenue from Cloudbeds for:
-      - Last 14 days (catch retroactive updates)
-      - Current month (remaining days)
-      - Next month (forecast)
+    Manually trigger a full revenue + insights refresh.
+
+    Per-branch pipeline:
+      1. sync_branch_revenue       — refresh Reservation.grand_total_native
+                                     from Cloudbeds Accommodation transactions
+      2. populate_reservation_daily — rebuild per-night rows in reservation_daily
+      3. sync_cloudbeds_occupancy  — OCC/ADR/RevPAR from Cloudbeds Insights
+      4. sync_cloudbeds_filtered   — recompute daily_metrics.revenue from
+                                     reservation_daily with source-exclusion filter
+
+    Range: last 14 days through end of next month.
     Runs in background.
     """
     import calendar
     from datetime import date, timedelta
-    from app.services.cloudbeds import sync_cloudbeds_occupancy, sync_cloudbeds_filtered
+    from app.services.cloudbeds import (
+        sync_branch_revenue,
+        populate_reservation_daily,
+        sync_cloudbeds_occupancy,
+        sync_cloudbeds_filtered,
+    )
 
     today = date.today()
     sync_start = today - timedelta(days=14)
@@ -1425,6 +1436,15 @@ def trigger_insights_sync(
                 if not pid or not api_key:
                     continue
                 try:
+                    sync_branch_revenue(
+                        str(branch.id), pid, branch.currency, api_key,
+                        date_from=sync_start, date_to=sync_end,
+                    )
+                    populate_reservation_daily(
+                        db2, str(branch.id),
+                        date_from=sync_start, date_to=sync_end,
+                        property_id=pid, currency=branch.currency, api_key=api_key,
+                    )
                     sync_cloudbeds_occupancy(
                         db2, str(branch.id), pid, branch.currency, api_key,
                         date_from=sync_start, date_to=sync_end,
