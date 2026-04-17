@@ -1406,11 +1406,14 @@ def trigger_insights_sync(
       5. sync_cloudbeds_filtered   — recompute daily_metrics.revenue from
                                      reservation_daily with source-exclusion filter
 
-    Range: last 14 days through end of next month.
+    Range: first day of current month through end of next month.
+    (Earlier we used today-14 as start, but that caused populate_reservation_daily
+    to skip stays that checked out before today-14, leaving early-month nights
+    of short stays missing from reservation_daily — a direct revenue gap.)
     Runs in background.
     """
     import calendar
-    from datetime import date, timedelta
+    from datetime import date
     from app.services.cloudbeds import (
         backfill_accommodation_total,
         sync_branch_revenue,
@@ -1420,7 +1423,7 @@ def trigger_insights_sync(
     )
 
     today = date.today()
-    sync_start = today - timedelta(days=14)
+    sync_start = today.replace(day=1)
     if today.month == 12:
         next_month_year, next_month = today.year + 1, 1
     else:
