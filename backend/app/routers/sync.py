@@ -1482,6 +1482,109 @@ def trigger_insights_sync(
     })
 
 
+# ── Compare DB vs Cloudbeds API for a sample confirmed booking ──────────────
+
+@router.get("/diagnostic/confirmed-sample")
+def diagnostic_confirmed_sample(
+    branch_id: UUID = Query(...),
+    year: int = Query(...),
+    month: int = Query(...),
+    limit: int = Query(3, ge=1, le=10),
+    db: Session = Depends(get_db),
+):
+    """
+    Pick up to `limit` future "confirmed" reservations in the given month for
+    a branch, call Cloudbeds getReservation for each, and return a side-by-side
+    comparison of DB stored grand_total vs every money-related field in the
+    API response. Used to diagnose why future-booking accommodation totals
+    don't match Cloudbeds UI (e.g. finding the correct balanceDetailed key).
+    """
+    import calendar
+    import httpx
+    from datetime import date as date_type
+    from app.services.cloudbeds import CLOUDBEDS_BASE_URL
+
+    first_day = date_type(year, month, 1)
+    last_day = date_type(year, month, calendar.monthrange(year, month)[1])
+
+    branch = db.query(Branch).filter_by(id=branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    pid = branch.cloudbeds_property_id
+    api_key = settings.get_api_key_for_property(str(pid)) if pid else None
+    if not pid or not api_key:
+        raise HTTPException(status_code=400, detail="Branch has no Cloudbeds credentials")
+
+    rows = (
+        db.query(Reservation)
+        .filter(
+            Reservation.branch_id == branch_id,
+            Reservation.check_in_date >= first_day,
+            Reservation.check_in_date <= last_day,
+            Reservation.status.in_(["confirmed", "Confirmed"]),
+        )
+        .order_by(Reservation.check_in_date)
+        .limit(limit)
+        .all()
+    )
+
+    out = []
+    headers = {"Authorization": f"Bearer {api_key}"}
+    with httpx.Client(timeout=30) as client:
+        for r in rows:
+            try:
+                resp = client.get(
+                    f"{CLOUDBEDS_BASE_URL}/getReservation",
+                    params={"propertyID": str(pid), "reservationID": r.cloudbeds_reservation_id},
+                    headers=headers,
+                )
+                api_data = resp.json().get("data") or {}
+            except Exception as e:
+                api_data = {"_error": str(e)}
+
+            money_keys = {
+                k: v for k, v in api_data.items()
+                if any(kw in str(k).lower() for kw in
+                       ["total", "amount", "revenue", "price", "balance", "paid", "rate", "accommodation", "fee", "sub"])
+            }
+            bd = api_data.get("balanceDetailed") or {}
+
+            # rateDetailed often holds per-night base rates
+            rate_detailed = api_data.get("rateDetailed") or {}
+
+            assigned_rooms = api_data.get("assigned") or {}
+            if isinstance(assigned_rooms, dict):
+                assigned_rooms = list(assigned_rooms.values())
+            unassigned_rooms = api_data.get("unassigned") or {}
+            if isinstance(unassigned_rooms, dict):
+                unassigned_rooms = list(unassigned_rooms.values())
+
+            rooms_sample = []
+            for room in (assigned_rooms + unassigned_rooms)[:2]:
+                rooms_sample.append({
+                    k: v for k, v in room.items()
+                    if any(kw in str(k).lower() for kw in
+                           ["rate", "price", "total", "amount", "nights", "room"])
+                })
+
+            out.append({
+                "cloudbeds_reservation_id": r.cloudbeds_reservation_id,
+                "check_in": r.check_in_date.isoformat() if r.check_in_date else None,
+                "check_out": r.check_out_date.isoformat() if r.check_out_date else None,
+                "nights": r.nights,
+                "db_grand_total_native": float(r.grand_total_native) if r.grand_total_native is not None else None,
+                "db_room_type": r.room_type,
+                "db_source": r.source,
+                "api_top_level_money_fields": money_keys,
+                "api_balanceDetailed": bd,
+                "api_rateDetailed_keys": list(rate_detailed.keys()) if isinstance(rate_detailed, dict) else None,
+                "api_rateDetailed_sample": dict(list(rate_detailed.items())[:3]) if isinstance(rate_detailed, dict) else rate_detailed,
+                "api_rooms_sample": rooms_sample,
+            })
+
+    return _envelope({"branch": branch.name, "year": year, "month": month, "samples": out})
+
+
 # ── Revenue diagnostic ───────────────────────────────────────────────────────
 
 @router.get("/diagnostic/revenue")
