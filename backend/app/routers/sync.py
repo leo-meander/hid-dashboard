@@ -1676,6 +1676,7 @@ def diagnostic_revenue(
 
         out.append({
             "branch": b.name,
+            "branch_id": str(b.id),
             "currency": b.currency,
             "daily_metrics_revenue": round(float(dm_sum), 2),
             "reservation_daily_revenue_filtered": round(rd_filtered, 2),
