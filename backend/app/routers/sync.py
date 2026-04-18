@@ -1389,28 +1389,26 @@ def trigger_kol_engine_sync(
 @router.post("/insights")
 def trigger_insights_sync(
     background_tasks: BackgroundTasks,
+    full_ingest: bool = Query(False, description="If true, also bulk re-ingest reservations via sync_branch (slow, ~15-25 min)"),
     db: Session = Depends(get_db),
 ):
     """
-    Manually trigger a full revenue + insights refresh.
+    Manually trigger a revenue + insights refresh.
 
-    Per-branch pipeline:
-      1. sync_branch               — bulk-ingest every reservation whose check-in
-                                     falls in [first_of_current_month - 14d,
-                                     end_of_next_month]. Catches cross-month
-                                     stays and short early-month bookings that
-                                     the scheduler's rolling [today-14, today+180]
-                                     window would miss.
-      2. backfill_accommodation_total — getReservation per booking where
-                                     grand_total_native is NULL or 0 (catches
-                                     future "confirmed" bookings that have no
-                                     Accommodation transactions yet)
-      3. sync_branch_revenue       — refresh Reservation.grand_total_native
+    Per-branch pipeline (default — fast, ~5-8 min):
+      1. backfill_accommodation_total — getReservation per booking where
+                                     grand_total_native is NULL or 0
+      2. sync_branch_revenue       — refresh Reservation.grand_total_native
                                      from Cloudbeds Accommodation transactions
-      4. populate_reservation_daily — rebuild per-night rows in reservation_daily
-      5. sync_cloudbeds_occupancy  — OCC/ADR/RevPAR from Cloudbeds Insights
-      6. sync_cloudbeds_filtered   — recompute daily_metrics.revenue from
+      3. populate_reservation_daily — rebuild per-night rows in reservation_daily
+      4. sync_cloudbeds_occupancy  — OCC/ADR/RevPAR from Cloudbeds Insights
+      5. sync_cloudbeds_filtered   — recompute daily_metrics.revenue from
                                      reservation_daily with source-exclusion filter
+
+    With ?full_ingest=true: prepends sync_branch (bulk-ingest all reservations
+    with check-in in [first_of_current_month - 14d, end_of_next_month]).
+    Use only when diagnostic shows the reservations table itself is missing
+    bookings (e.g. after long downtime). Slow — can take 20+ min.
 
     Range: first day of current month through end of next month.
     (Earlier we used today-14 as start, but that caused populate_reservation_daily
@@ -1455,10 +1453,11 @@ def trigger_insights_sync(
                 if not pid or not api_key:
                     continue
                 try:
-                    sync_branch(
-                        str(branch.id), pid, branch.currency, api_key,
-                        checkin_from=ingest_start, checkin_to=sync_end,
-                    )
+                    if full_ingest:
+                        sync_branch(
+                            str(branch.id), pid, branch.currency, api_key,
+                            checkin_from=ingest_start, checkin_to=sync_end,
+                        )
                     backfill_accommodation_total(
                         str(branch.id), pid, branch.currency, api_key,
                         checkin_from=ingest_start, checkin_to=sync_end,
