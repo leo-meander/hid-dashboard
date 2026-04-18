@@ -408,8 +408,8 @@ export default function Home() {
     setSyncing(true);
     try {
       await axios.post("/api/sync/insights", {}, { timeout: 600_000 });
-      alert("Cloudbeds full sync started (backfill + revenue + per-night + insights). Data will refresh in ~5–8 minutes.");
-      setTimeout(() => { if (isAll) loadAll(); }, 360_000);
+      alert("Cloudbeds full sync started (ingest + backfill + revenue + per-night + insights). Data will refresh in ~8–12 minutes.");
+      setTimeout(() => { if (isAll) loadAll(); }, 600_000);
     } catch (e) {
       alert("Sync failed: " + (e.response?.data?.detail || e.message));
     } finally {

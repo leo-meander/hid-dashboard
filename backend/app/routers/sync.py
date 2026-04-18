@@ -1395,15 +1395,21 @@ def trigger_insights_sync(
     Manually trigger a full revenue + insights refresh.
 
     Per-branch pipeline:
-      1. backfill_accommodation_total — getReservation per booking where
+      1. sync_branch               — bulk-ingest every reservation whose check-in
+                                     falls in [first_of_current_month - 14d,
+                                     end_of_next_month]. Catches cross-month
+                                     stays and short early-month bookings that
+                                     the scheduler's rolling [today-14, today+180]
+                                     window would miss.
+      2. backfill_accommodation_total — getReservation per booking where
                                      grand_total_native is NULL or 0 (catches
                                      future "confirmed" bookings that have no
                                      Accommodation transactions yet)
-      2. sync_branch_revenue       — refresh Reservation.grand_total_native
+      3. sync_branch_revenue       — refresh Reservation.grand_total_native
                                      from Cloudbeds Accommodation transactions
-      3. populate_reservation_daily — rebuild per-night rows in reservation_daily
-      4. sync_cloudbeds_occupancy  — OCC/ADR/RevPAR from Cloudbeds Insights
-      5. sync_cloudbeds_filtered   — recompute daily_metrics.revenue from
+      4. populate_reservation_daily — rebuild per-night rows in reservation_daily
+      5. sync_cloudbeds_occupancy  — OCC/ADR/RevPAR from Cloudbeds Insights
+      6. sync_cloudbeds_filtered   — recompute daily_metrics.revenue from
                                      reservation_daily with source-exclusion filter
 
     Range: first day of current month through end of next month.
@@ -1413,8 +1419,9 @@ def trigger_insights_sync(
     Runs in background.
     """
     import calendar
-    from datetime import date
+    from datetime import date, timedelta
     from app.services.cloudbeds import (
+        sync_branch,
         backfill_accommodation_total,
         sync_branch_revenue,
         populate_reservation_daily,
@@ -1424,6 +1431,10 @@ def trigger_insights_sync(
 
     today = date.today()
     sync_start = today.replace(day=1)
+    # Bulk-sync reservations from 14 days before month start so cross-month
+    # stays (check_in in previous month, check_out in current month) are
+    # captured in our DB.
+    ingest_start = sync_start - timedelta(days=14)
     if today.month == 12:
         next_month_year, next_month = today.year + 1, 1
     else:
@@ -1444,9 +1455,13 @@ def trigger_insights_sync(
                 if not pid or not api_key:
                     continue
                 try:
+                    sync_branch(
+                        str(branch.id), pid, branch.currency, api_key,
+                        checkin_from=ingest_start, checkin_to=sync_end,
+                    )
                     backfill_accommodation_total(
                         str(branch.id), pid, branch.currency, api_key,
-                        checkin_from=sync_start, checkin_to=sync_end,
+                        checkin_from=ingest_start, checkin_to=sync_end,
                     )
                     sync_branch_revenue(
                         str(branch.id), pid, branch.currency, api_key,
