@@ -1390,6 +1390,8 @@ def trigger_kol_engine_sync(
 def trigger_insights_sync(
     background_tasks: BackgroundTasks,
     full_ingest: bool = Query(False, description="If true, also bulk re-ingest reservations via sync_branch (slow, ~15-25 min)"),
+    year: Optional[int] = Query(None, description="If provided, sync Jan 1 → Dec 31 of this year (instead of current month + next)"),
+    branch_id: Optional[UUID] = Query(None, description="If provided, sync only this branch"),
     db: Session = Depends(get_db),
 ):
     """
@@ -1406,14 +1408,13 @@ def trigger_insights_sync(
                                      reservation_daily with source-exclusion filter
 
     With ?full_ingest=true: prepends sync_branch (bulk-ingest all reservations
-    with check-in in [first_of_current_month - 14d, end_of_next_month]).
-    Use only when diagnostic shows the reservations table itself is missing
-    bookings (e.g. after long downtime). Slow — can take 20+ min.
+    with check-in in the window). Slow — can take 20+ min per branch.
 
-    Range: first day of current month through end of next month.
-    (Earlier we used today-14 as start, but that caused populate_reservation_daily
-    to skip stays that checked out before today-14, leaving early-month nights
-    of short stays missing from reservation_daily — a direct revenue gap.)
+    With ?year=YYYY: extends window to Jan 1 → Dec 31 of YYYY. Combine with
+    full_ingest=true for full-year reconcile (can take 30-90+ min for all
+    branches — single-branch at a time is safer; use ?branch_id=<uuid>).
+
+    Default range: first day of current month through end of next month.
     Runs in background.
     """
     import calendar
@@ -1428,53 +1429,75 @@ def trigger_insights_sync(
     )
 
     today = date.today()
-    sync_start = today.replace(day=1)
-    # Bulk-sync reservations from 14 days before month start so cross-month
-    # stays (check_in in previous month, check_out in current month) are
-    # captured in our DB.
-    ingest_start = sync_start - timedelta(days=14)
-    if today.month == 12:
-        next_month_year, next_month = today.year + 1, 1
+    if year is not None:
+        sync_start = date(year, 1, 1)
+        sync_end = date(year, 12, 31)
     else:
-        next_month_year, next_month = today.year, today.month + 1
-    sync_end = date(next_month_year, next_month,
-                    calendar.monthrange(next_month_year, next_month)[1])
+        sync_start = today.replace(day=1)
+        if today.month == 12:
+            next_month_year, next_month = today.year + 1, 1
+        else:
+            next_month_year, next_month = today.year, today.month + 1
+        sync_end = date(next_month_year, next_month,
+                        calendar.monthrange(next_month_year, next_month)[1])
+    # Bulk-sync reservations from 14 days before sync_start so cross-month
+    # stays (check_in before sync_start, check_out in-range) are captured.
+    ingest_start = sync_start - timedelta(days=14)
 
     def _run():
         import logging
+        import time as _time
         from app.database import SessionLocal
         log = logging.getLogger(__name__)
         db2 = SessionLocal()
         try:
-            branches = db2.query(Branch).filter_by(is_active=True).all()
+            q = db2.query(Branch).filter_by(is_active=True)
+            if branch_id:
+                q = q.filter(Branch.id == branch_id)
+            branches = q.all()
+            t_all = _time.time()
             for branch in branches:
                 pid = branch.cloudbeds_property_id
                 api_key = settings.get_api_key_for_property(str(pid)) if pid else None
                 if not pid or not api_key:
                     continue
+                t_branch = _time.time()
+                log.info("Insights sync START branch=%s [%s..%s] full_ingest=%s",
+                         branch.name, sync_start, sync_end, full_ingest)
                 try:
                     if full_ingest:
+                        t = _time.time()
                         sync_branch(
                             str(branch.id), pid, branch.currency, api_key,
                             checkin_from=ingest_start, checkin_to=sync_end,
                         )
+                        log.info("  sync_branch done branch=%s in %.1fs", branch.name, _time.time() - t)
+                    t = _time.time()
                     backfill_accommodation_total(
                         str(branch.id), pid, branch.currency, api_key,
                         checkin_from=ingest_start, checkin_to=sync_end,
                     )
+                    log.info("  backfill done branch=%s in %.1fs", branch.name, _time.time() - t)
+                    t = _time.time()
                     sync_branch_revenue(
                         str(branch.id), pid, branch.currency, api_key,
                         date_from=sync_start, date_to=sync_end,
                     )
+                    log.info("  revenue done branch=%s in %.1fs", branch.name, _time.time() - t)
+                    t = _time.time()
                     populate_reservation_daily(
                         db2, str(branch.id),
                         date_from=sync_start, date_to=sync_end,
                         property_id=pid, currency=branch.currency, api_key=api_key,
                     )
+                    log.info("  populate done branch=%s in %.1fs", branch.name, _time.time() - t)
+                    t = _time.time()
                     sync_cloudbeds_occupancy(
                         db2, str(branch.id), pid, branch.currency, api_key,
                         date_from=sync_start, date_to=sync_end,
                     )
+                    log.info("  occupancy done branch=%s in %.1fs", branch.name, _time.time() - t)
+                    t = _time.time()
                     sync_cloudbeds_filtered(
                         db2, str(branch.id), pid, branch.currency, api_key,
                         total_rooms=branch.total_rooms,
@@ -1482,9 +1505,11 @@ def trigger_insights_sync(
                         total_dorm_count=branch.total_dorm_count or 0,
                         date_from=sync_start, date_to=sync_end,
                     )
-                    log.info("Manual insights sync OK branch=%s [%s..%s]", branch.name, sync_start, sync_end)
+                    log.info("  filtered done branch=%s in %.1fs", branch.name, _time.time() - t)
+                    log.info("Insights sync OK branch=%s total %.1fs", branch.name, _time.time() - t_branch)
                 except Exception as e:
-                    log.warning("Manual insights sync FAIL branch=%s: %s", branch.name, e)
+                    log.warning("Insights sync FAIL branch=%s: %s", branch.name, e)
+            log.info("Insights sync ALL DONE in %.1fs", _time.time() - t_all)
         except Exception:
             log.exception("Manual insights sync job failed")
         finally:
