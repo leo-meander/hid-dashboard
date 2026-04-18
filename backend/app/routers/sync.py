@@ -1454,71 +1454,105 @@ def trigger_insights_sync(
         import time as _time
         from app.database import SessionLocal
         log = logging.getLogger(__name__)
-        db2 = SessionLocal()
+
+        # Load branches with a short-lived session, then close it so we don't
+        # hold a connection across the long per-branch sync. Each pipeline step
+        # that needs a DB session gets a fresh one below — Supabase/pgBouncer
+        # drops idle connections after a few minutes, which would cause
+        # "server closed the connection unexpectedly" on long runs.
+        _tmp = SessionLocal()
         try:
-            q = db2.query(Branch).filter_by(is_active=True)
+            q = _tmp.query(Branch).filter_by(is_active=True)
             if branch_id:
                 q = q.filter(Branch.id == branch_id)
             branches = q.all()
-            t_all = _time.time()
-            for branch in branches:
-                pid = branch.cloudbeds_property_id
-                api_key = settings.get_api_key_for_property(str(pid)) if pid else None
-                if not pid or not api_key:
-                    continue
-                t_branch = _time.time()
-                log.info("Insights sync START branch=%s [%s..%s] full_ingest=%s",
-                         branch.name, sync_start, sync_end, full_ingest)
-                try:
-                    if full_ingest:
-                        t = _time.time()
-                        sync_branch(
-                            str(branch.id), pid, branch.currency, api_key,
-                            checkin_from=ingest_start, checkin_to=sync_end,
-                        )
-                        log.info("  sync_branch done branch=%s in %.1fs", branch.name, _time.time() - t)
+            # Materialize the fields we need so later code doesn't touch the session.
+            branch_rows = [
+                {
+                    "id": str(b.id),
+                    "name": b.name,
+                    "currency": b.currency,
+                    "property_id": b.cloudbeds_property_id,
+                    "total_rooms": b.total_rooms,
+                    "total_room_count": b.total_room_count or 0,
+                    "total_dorm_count": b.total_dorm_count or 0,
+                }
+                for b in branches
+            ]
+        finally:
+            _tmp.close()
+
+        t_all = _time.time()
+        for br in branch_rows:
+            pid = br["property_id"]
+            api_key = settings.get_api_key_for_property(str(pid)) if pid else None
+            if not pid or not api_key:
+                continue
+            t_branch = _time.time()
+            log.info("Insights sync START branch=%s [%s..%s] full_ingest=%s",
+                     br["name"], sync_start, sync_end, full_ingest)
+            try:
+                if full_ingest:
                     t = _time.time()
-                    backfill_accommodation_total(
-                        str(branch.id), pid, branch.currency, api_key,
+                    sync_branch(
+                        br["id"], pid, br["currency"], api_key,
                         checkin_from=ingest_start, checkin_to=sync_end,
                     )
-                    log.info("  backfill done branch=%s in %.1fs", branch.name, _time.time() - t)
-                    t = _time.time()
-                    sync_branch_revenue(
-                        str(branch.id), pid, branch.currency, api_key,
-                        date_from=sync_start, date_to=sync_end,
-                    )
-                    log.info("  revenue done branch=%s in %.1fs", branch.name, _time.time() - t)
-                    t = _time.time()
+                    log.info("  sync_branch done branch=%s in %.1fs", br["name"], _time.time() - t)
+                t = _time.time()
+                backfill_accommodation_total(
+                    br["id"], pid, br["currency"], api_key,
+                    checkin_from=ingest_start, checkin_to=sync_end,
+                )
+                log.info("  backfill done branch=%s in %.1fs", br["name"], _time.time() - t)
+                t = _time.time()
+                sync_branch_revenue(
+                    br["id"], pid, br["currency"], api_key,
+                    date_from=sync_start, date_to=sync_end,
+                )
+                log.info("  revenue done branch=%s in %.1fs", br["name"], _time.time() - t)
+
+                # Fresh session per remaining step — avoids stale-connection drops.
+                t = _time.time()
+                s = SessionLocal()
+                try:
                     populate_reservation_daily(
-                        db2, str(branch.id),
+                        s, br["id"],
                         date_from=sync_start, date_to=sync_end,
-                        property_id=pid, currency=branch.currency, api_key=api_key,
+                        property_id=pid, currency=br["currency"], api_key=api_key,
                     )
-                    log.info("  populate done branch=%s in %.1fs", branch.name, _time.time() - t)
-                    t = _time.time()
+                finally:
+                    s.close()
+                log.info("  populate done branch=%s in %.1fs", br["name"], _time.time() - t)
+
+                t = _time.time()
+                s = SessionLocal()
+                try:
                     sync_cloudbeds_occupancy(
-                        db2, str(branch.id), pid, branch.currency, api_key,
+                        s, br["id"], pid, br["currency"], api_key,
                         date_from=sync_start, date_to=sync_end,
                     )
-                    log.info("  occupancy done branch=%s in %.1fs", branch.name, _time.time() - t)
-                    t = _time.time()
+                finally:
+                    s.close()
+                log.info("  occupancy done branch=%s in %.1fs", br["name"], _time.time() - t)
+
+                t = _time.time()
+                s = SessionLocal()
+                try:
                     sync_cloudbeds_filtered(
-                        db2, str(branch.id), pid, branch.currency, api_key,
-                        total_rooms=branch.total_rooms,
-                        total_room_count=branch.total_room_count or 0,
-                        total_dorm_count=branch.total_dorm_count or 0,
+                        s, br["id"], pid, br["currency"], api_key,
+                        total_rooms=br["total_rooms"],
+                        total_room_count=br["total_room_count"],
+                        total_dorm_count=br["total_dorm_count"],
                         date_from=sync_start, date_to=sync_end,
                     )
-                    log.info("  filtered done branch=%s in %.1fs", branch.name, _time.time() - t)
-                    log.info("Insights sync OK branch=%s total %.1fs", branch.name, _time.time() - t_branch)
-                except Exception as e:
-                    log.warning("Insights sync FAIL branch=%s: %s", branch.name, e)
-            log.info("Insights sync ALL DONE in %.1fs", _time.time() - t_all)
-        except Exception:
-            log.exception("Manual insights sync job failed")
-        finally:
-            db2.close()
+                finally:
+                    s.close()
+                log.info("  filtered done branch=%s in %.1fs", br["name"], _time.time() - t)
+                log.info("Insights sync OK branch=%s total %.1fs", br["name"], _time.time() - t_branch)
+            except Exception as e:
+                log.warning("Insights sync FAIL branch=%s: %s", br["name"], e)
+        log.info("Insights sync ALL DONE in %.1fs", _time.time() - t_all)
 
     background_tasks.add_task(_run)
     return _envelope({
