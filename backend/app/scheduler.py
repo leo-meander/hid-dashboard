@@ -1,9 +1,28 @@
+import asyncio
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.executors.pool import ThreadPoolExecutor
+from apscheduler.executors.asyncio import AsyncIOExecutor
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 logger = logging.getLogger(__name__)
-scheduler = AsyncIOScheduler(timezone="Asia/Ho_Chi_Minh")
+
+# Sync jobs run on a threadpool so blocking HTTP / DB calls NEVER freeze the
+# FastAPI event loop. Without this, a slow Cloudbeds / Meta / Google call at
+# 2am can hang the whole server until manual restart.
+scheduler = AsyncIOScheduler(
+    timezone="Asia/Ho_Chi_Minh",
+    executors={
+        "default": ThreadPoolExecutor(max_workers=8),
+        "asyncio": AsyncIOExecutor(),
+    },
+    job_defaults={
+        "coalesce": True,          # if many runs were missed, collapse to one
+        "max_instances": 1,         # never let a job overlap itself
+        "misfire_grace_time": 600,  # 10 min grace when resuming after a restart
+    },
+)
 
 
 def setup_scheduler(app):
@@ -16,23 +35,30 @@ def setup_scheduler(app):
         from app.services.verdict_sync import sync_combo_performance, compute_derived_verdicts
         from app.database import SessionLocal
 
+        # Sync wrapper so sync_all_branches (async def, but no real awaits inside)
+        # can run on the threadpool executor without touching the main event loop.
+        def _cloudbeds_sync_job(incremental: bool = True):
+            asyncio.run(sync_all_branches(incremental=incremental))
+
         # Nightly FULL Cloudbeds sync at 2:00am Vietnam time
         # Full sync pulls all reservations in lookback window (365d back + 180d forward)
         scheduler.add_job(
-            sync_all_branches,
+            _cloudbeds_sync_job,
             kwargs={"incremental": False},
             trigger=CronTrigger(hour=2, minute=0),
             id="nightly_cloudbeds_sync",
             replace_existing=True,
+            executor="default",
         )
 
         # Daytime incremental Cloudbeds sync at 10:00am Vietnam time
         # Catches new reservations + modifications from the morning (fast — last 2 days only)
         scheduler.add_job(
-            sync_all_branches,
+            _cloudbeds_sync_job,
             trigger=CronTrigger(hour=10, minute=0),
             id="daytime_cloudbeds_sync_morning",
             replace_existing=True,
+            executor="default",
         )
 
         # Nightly metrics recompute at 3:00am Vietnam time (after sync)
@@ -43,6 +69,7 @@ def setup_scheduler(app):
             trigger=CronTrigger(hour=3, minute=0),
             id="nightly_metrics_compute",
             replace_existing=True,
+            executor="default",
         )
 
         # Cloudbeds Insights sync at 9:00am and 2:00pm Vietnam time
@@ -54,6 +81,7 @@ def setup_scheduler(app):
             trigger=CronTrigger(hour=9, minute=0),
             id="insights_sync_morning",
             replace_existing=True,
+            executor="default",
         )
         scheduler.add_job(
             cloudbeds_insights_sync_job,
@@ -61,6 +89,7 @@ def setup_scheduler(app):
             trigger=CronTrigger(hour=14, minute=0),
             id="insights_sync_afternoon",
             replace_existing=True,
+            executor="default",
         )
 
         # Daily Meta + Google Ads sync at 6:00am Vietnam time
@@ -234,6 +263,7 @@ def setup_scheduler(app):
             trigger=CronTrigger(hour=6, minute=0),
             id="daily_ads_sync",
             replace_existing=True,
+            executor="default",
         )
 
         # Daily alert evaluation at 3:15am (after metrics, before verdict sync)
@@ -246,6 +276,7 @@ def setup_scheduler(app):
             trigger=CronTrigger(hour=3, minute=15),
             id="daily_alert_evaluation",
             replace_existing=True,
+            executor="default",
         )
 
         # Nightly combo performance sync at 3:30am (after metrics)
@@ -265,6 +296,7 @@ def setup_scheduler(app):
             trigger=CronTrigger(hour=3, minute=30),
             id="nightly_verdict_sync",
             replace_existing=True,
+            executor="default",
         )
 
         # Nightly email stats aggregation at 4:00am (after verdict sync)
@@ -289,6 +321,7 @@ def setup_scheduler(app):
             trigger=CronTrigger(hour=4, minute=0),
             id="nightly_email_stats",
             replace_existing=True,
+            executor="default",
         )
 
         # Daily GHL email stats sync at 5:00am (after aggregation)
@@ -308,6 +341,7 @@ def setup_scheduler(app):
             trigger=CronTrigger(hour=5, minute=0),
             id="daily_ghl_email_sync",
             replace_existing=True,
+            executor="default",
         )
 
         # Nightly Holiday Intelligence index refresh at 1:00am (before Cloudbeds sync)
@@ -327,6 +361,20 @@ def setup_scheduler(app):
             trigger=CronTrigger(hour=1, minute=0),
             id="nightly_holiday_index_refresh",
             replace_existing=True,
+            executor="default",
+        )
+
+        # Heartbeat every 10 minutes — lightweight "I'm alive" log so that if
+        # the server hangs again we can tell from the log exactly when it froze.
+        def _heartbeat():
+            logger.info("Scheduler heartbeat — server alive")
+
+        scheduler.add_job(
+            _heartbeat,
+            trigger=IntervalTrigger(minutes=10),
+            id="scheduler_heartbeat",
+            replace_existing=True,
+            executor="default",
         )
 
         scheduler.start()
