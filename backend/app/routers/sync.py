@@ -1390,7 +1390,9 @@ def trigger_kol_engine_sync(
 def trigger_insights_sync(
     background_tasks: BackgroundTasks,
     full_ingest: bool = Query(False, description="If true, also bulk re-ingest reservations via sync_branch (slow, ~15-25 min)"),
-    year: Optional[int] = Query(None, description="If provided, sync Jan 1 → Dec 31 of this year (instead of current month + next)"),
+    year: Optional[int] = Query(None, description="If provided, sync Jan 1 → Dec 31 of this year"),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD — overrides year/default. Used as check_in lower bound."),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD — overrides year/default. Used as check_in upper bound."),
     branch_id: Optional[UUID] = Query(None, description="If provided, sync only this branch"),
     db: Session = Depends(get_db),
 ):
@@ -1429,7 +1431,10 @@ def trigger_insights_sync(
     )
 
     today = date.today()
-    if year is not None:
+    if date_from and date_to:
+        sync_start = date.fromisoformat(date_from)
+        sync_end = date.fromisoformat(date_to)
+    elif year is not None:
         sync_start = date(year, 1, 1)
         sync_end = date(year, 12, 31)
     else:
