@@ -1257,11 +1257,21 @@ def sync_cloudbeds_filtered(
     date_to: Optional[date] = None,
 ) -> dict:
     """
-    Sync room/dorm split data from Cloudbeds Insights API into daily_metrics.
+    Write per-day filtered revenue into daily_metrics using Cloudbeds Data
+    Insights custom reports (exclude Blogger / KOL / House Use / Special Case).
 
-    Uses fetch_occupancy_filtered() (custom reports) to get monthly room/dorm
-    split, then distributes proportionally across daily rows already populated
-    by sync_cloudbeds_occupancy().
+    For each month in range, runs 3 custom reports at stay_date granularity
+    (total / room / dorm) and writes per-day:
+      - revenue_native, revenue_vnd
+      - room_revenue_native, dorm_revenue_native
+      - adr_native, room_adr_native, dorm_adr_native
+      - revpar_native
+
+    rooms_sold / dorms_sold / occ_pct are left untouched — sync_cloudbeds_occupancy
+    already populated them from stock report 110 (unfiltered, correct for OCC).
+
+    If a property's API key lacks Custom Reports permission (403), falls back
+    to leaving revenue fields as-is (logged as warning).
 
     Returns: { branch_id, months_synced }
     """
@@ -1275,8 +1285,6 @@ def sync_cloudbeds_filtered(
         last_day = calendar.monthrange(today.year, today.month)[1]
         date_to = today.replace(day=last_day)
 
-    has_split = total_room_count > 0 and total_dorm_count > 0
-
     # Collect unique months in the date range
     months_to_sync = set()
     d = date_from.replace(day=1)
@@ -1289,158 +1297,66 @@ def sync_cloudbeds_filtered(
 
     months_synced = 0
     now = datetime.now(timezone.utc)
+    rate = get_cached_rate(currency, "VND")
 
     for year, month in sorted(months_to_sync):
         try:
-            filtered = fetch_occupancy_filtered(str(property_id), api_key, year, month)
+            daily = fetch_filtered_daily(str(property_id), api_key, year, month)
         except Exception as e:
-            logger.warning("Filtered sync failed branch=%s %d/%d: %s", branch_id, year, month, e)
+            logger.warning("Filtered daily sync failed branch=%s %d/%d: %s", branch_id, year, month, e)
             continue
 
-        total_sold_month = filtered["total_sold"]
-        if total_sold_month <= 0:
+        if not daily:
+            # 403 or empty month — skip without clobbering existing data
             continue
 
-        # Update daily rows for this month
         first_day = date(year, month, 1)
         last_day = date(year, month, calendar.monthrange(year, month)[1])
 
-        daily_rows = (
-            db.query(DailyMetrics)
-            .filter_by(branch_id=branch_id)
-            .filter(DailyMetrics.date >= first_day, DailyMetrics.date <= last_day)
-            .all()
-        )
-
-        # ── Revenue from LOCAL reservation_daily (exact-match filter) ──────────
-        # Fixes Cloudbeds custom-report over-exclusion (substring not_contains matches
-        # extra sources like "Blogger_IG"). Pull nightly_rate per day directly from
-        # reservation_daily with metrics_engine._is_excluded_revenue() filter.
-        from app.models.reservation_daily import ReservationDaily
-        from app.services.metrics_engine import (
-            EXCLUDED_SOURCES_REVENUE,
-            EXCLUDED_STATUSES,
-        )
-
-        rd_rows = (
-            db.query(ReservationDaily)
-            .filter(
-                ReservationDaily.branch_id == branch_id,
-                ReservationDaily.date >= first_day,
-                ReservationDaily.date <= last_day,
+        existing = {
+            dm.date: dm for dm in (
+                db.query(DailyMetrics)
+                .filter(
+                    DailyMetrics.branch_id == branch_id,
+                    DailyMetrics.date >= first_day,
+                    DailyMetrics.date <= last_day,
+                )
+                .all()
             )
-            .all()
-        )
+        }
 
-        # Per-day revenue from nightly_rate, exact-match excluded sources/statuses
-        from collections import defaultdict
-        day_rev_native: dict = defaultdict(float)
-        day_room_rev: dict = defaultdict(float)
-        day_dorm_rev: dict = defaultdict(float)
-        for rd in rd_rows:
-            status = (rd.status or "").lower().strip()
-            status_norm = status.replace("-", "_").replace(" ", "_")
-            if status in EXCLUDED_STATUSES or status_norm in EXCLUDED_STATUSES:
-                continue
-            src = (rd.source or "").lower().strip()
-            if src in EXCLUDED_SOURCES_REVENUE:
-                continue
-            nightly = float(rd.nightly_rate or 0)
-            day_rev_native[rd.date] += nightly
-            rt = (rd.room_type_category or "").lower()
-            if rt == "room":
-                day_room_rev[rd.date] += nightly
-            elif rt == "dorm":
-                day_dorm_rev[rd.date] += nightly
+        for dday, vals in sorted(daily.items()):
+            dm = existing.get(dday)
+            if dm is None:
+                dm = DailyMetrics(branch_id=branch_id, date=dday)
+                db.add(dm)
+                existing[dday] = dm
 
-        filtered_rev_month = sum(day_rev_native.values())
-        total_sold_from_insights = filtered["total_sold"]
-        filtered_adr = (
-            round(filtered_rev_month / total_sold_from_insights, 2)
-            if total_sold_from_insights > 0 else 0
-        )
-        logger.info(
-            "Local revenue for branch=%s %d/%d: rev=%.0f sold=%d adr=%.2f (excl %s)",
-            branch_id, year, month,
-            filtered_rev_month, total_sold_from_insights, filtered_adr,
-            sorted(EXCLUDED_SOURCES_REVENUE),
-        )
+            rev = round(vals["total_rev"], 2)
+            rrev = round(vals["room_rev"], 2)
+            drev = round(vals["dorm_rev"], 2)
+            rsold = int(vals["room_sold"] or 0)
+            dsold = int(vals["dorm_sold"] or 0)
+            tsold = int(vals["total_sold"] or 0)
 
-        # Room/Dorm split: use reservation_daily (local DB) for reliable
-        # room/dorm ratio, then scale to match Cloudbeds total ADR.
-        room_adr = 0
-        dorm_adr = 0
-        room_sold_ratio = 1.0
-        dorm_sold_ratio = 0.0
-        room_rev_ratio = 1.0
-        dorm_rev_ratio = 0.0
-
-        if has_split:
-            from app.services.kpi_engine import _get_room_dorm_adr_from_daily
-            raw_room_adr, raw_dorm_adr, r_rev, r_sold, d_rev, d_sold = \
-                _get_room_dorm_adr_from_daily(db, branch_id, first_day, last_day)
-
-            local_total_rev = r_rev + d_rev
-            local_total_sold = r_sold + d_sold
-
-            if local_total_sold > 0:
-                room_sold_ratio = r_sold / local_total_sold
-                dorm_sold_ratio = d_sold / local_total_sold
-
-            if local_total_rev > 0:
-                room_rev_ratio = r_rev / local_total_rev
-                dorm_rev_ratio = d_rev / local_total_rev
-
-            # Scale local ADR to match Cloudbeds total ADR
-            if raw_room_adr and raw_dorm_adr and local_total_rev > 0 and local_total_sold > 0:
-                local_avg_adr = local_total_rev / local_total_sold
-                scale = filtered_adr / local_avg_adr if local_avg_adr else 1
-                room_adr = round(raw_room_adr * scale, 2)
-                dorm_adr = round(raw_dorm_adr * scale, 2)
-            elif raw_room_adr:
-                room_adr = round(raw_room_adr, 2)
-            elif raw_dorm_adr:
-                dorm_adr = round(raw_dorm_adr, 2)
-
-        # For rooms-only branches, room_adr = total_adr
-        if total_room_count > 0 and total_dorm_count == 0:
-            room_adr = filtered_adr
-
-        rate = get_cached_rate(currency, "VND")
-
-        for dm in daily_rows:
-            ts = int(dm.total_sold or 0)
-
-            # Revenue from LOCAL reservation_daily (exact-match filtered)
-            day_rev = round(day_rev_native.get(dm.date, 0.0), 2)
-            dm.revenue_native = day_rev
-            dm.revenue_vnd = round(day_rev * rate, 2) if rate else dm.revenue_vnd
-
-            # ADR & RevPAR from filtered data
-            dm.adr_native = round(filtered_adr, 2) if filtered_adr else dm.adr_native
-            dm.revpar_native = round(filtered_adr * float(dm.occ_pct or 0), 2) if filtered_adr else dm.revpar_native
-
-            # Room/Dorm split — sold from insights ratio, revenue from local DB
-            dm.rooms_sold = round(ts * room_sold_ratio)
-            dm.dorms_sold = round(ts * dorm_sold_ratio)
-            dm.room_revenue_native = round(day_room_rev.get(dm.date, 0.0), 2)
-            dm.dorm_revenue_native = round(day_dorm_rev.get(dm.date, 0.0), 2)
-            dm.room_adr_native = round(room_adr, 2) if room_adr else None
-            dm.dorm_adr_native = round(dorm_adr, 2) if dorm_adr else None
-
-            # Room/Dorm OCC
-            if total_room_count > 0 and dm.rooms_sold:
-                dm.room_occ_pct = round(dm.rooms_sold / total_room_count, 4)
-            if total_dorm_count > 0 and dm.dorms_sold:
-                dm.dorm_occ_pct = round(dm.dorms_sold / total_dorm_count, 4)
-
+            dm.revenue_native = rev
+            dm.revenue_vnd = round(rev * rate, 2) if rate else None
+            dm.room_revenue_native = rrev if rsold > 0 else None
+            dm.dorm_revenue_native = drev if dsold > 0 else None
+            dm.adr_native = round(rev / tsold, 2) if tsold > 0 else dm.adr_native
+            dm.room_adr_native = round(rrev / rsold, 2) if rsold > 0 else None
+            dm.dorm_adr_native = round(drev / dsold, 2) if dsold > 0 else None
+            dm.revpar_native = (
+                round(float(dm.adr_native) * float(dm.occ_pct or 0), 2)
+                if dm.adr_native else dm.revpar_native
+            )
             dm.computed_at = now
 
         months_synced += 1
 
     db.commit()
     logger.info(
-        "Filtered split sync complete branch %s: %d months synced",
+        "Filtered daily sync complete branch %s: %d months synced",
         branch_id, months_synced,
     )
     return {"branch_id": branch_id, "months_synced": months_synced}
@@ -1534,6 +1450,118 @@ def _fetch_custom_report(
             months[m]["rev"] += v.get("room_revenue", {}).get("sum", 0)
             months[m]["sold"] += v.get("rooms_sold", {}).get("sum", 0)
         return months
+
+
+def _fetch_custom_report_daily(
+    api_key: str,
+    property_id: str,
+    title: str,
+    filters: list[dict],
+) -> dict:
+    """
+    Like _fetch_custom_report but preserves per-day granularity.
+    Returns { date: {"rev": float, "sold": float} }.
+    """
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "X-PROPERTY-ID": str(property_id),
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "title": title,
+        "dataset_id": 7,
+        "property_id": str(property_id),
+        "property_ids": [str(property_id)],
+        "columns": [
+            {"cdf": {"type": "default", "column": "rooms_sold"}, "metrics": ["sum"]},
+            {"cdf": {"type": "default", "column": "room_revenue"}, "metrics": ["sum"]},
+            {"cdf": {"type": "default", "column": "adr"}},
+        ],
+        "group_rows": [{"cdf": {"type": "default", "column": "stay_date"}}],
+        "filters": {"and": filters},
+    }
+    out: dict = {}
+    with httpx.Client(timeout=60) as client:
+        resp = client.post(f"{INSIGHTS_BASE_URL}/reports", headers=headers, json=payload)
+        if resp.status_code not in (200, 201):
+            logger.warning("Custom report create failed: %s %s", resp.status_code, resp.text[:200])
+            return out
+        report_id = resp.json().get("id")
+        try:
+            resp2 = client.get(
+                f"{INSIGHTS_BASE_URL}/reports/{report_id}/data",
+                headers=headers,
+                params={"property_ids": str(property_id)},
+            )
+        finally:
+            client.delete(f"{INSIGHTS_BASE_URL}/reports/{report_id}", headers=headers)
+
+        if resp2.status_code != 200:
+            return out
+
+        for k, v in (resp2.json().get("records", {}) or {}).items():
+            try:
+                d = date.fromisoformat(k[:10])
+            except ValueError:
+                continue
+            out[d] = {
+                "rev": float(v.get("room_revenue", {}).get("sum", 0) or 0),
+                "sold": float(v.get("rooms_sold", {}).get("sum", 0) or 0),
+            }
+    return out
+
+
+def fetch_filtered_daily(
+    property_id: str,
+    api_key: str,
+    year: int,
+    month: int,
+) -> dict:
+    """
+    Per-day filtered revenue + sold, for one branch/month.
+
+    Returns { date: {
+        total_rev, total_sold,
+        room_rev, room_sold,
+        dorm_rev, dorm_sold,
+    } }
+    All values exclude Blogger / KOL / House Use / Special Case sources.
+    Returns empty dict on 403 or other failure (caller skips month).
+    """
+    import calendar
+    last_day = calendar.monthrange(year, month)[1]
+    dfrom = f"{year}-{month:02d}-01"
+    dto = f"{year}-{month:02d}-{last_day:02d}"
+    date_f = _make_date_filters(dfrom, dto)
+    mkey = f"{year}-{month:02d}"
+
+    total_excl = _fetch_custom_report_daily(
+        api_key, property_id, f"HiD-total-{mkey}",
+        date_f + _make_source_exclude_filters(),
+    )
+    room_excl = _fetch_custom_report_daily(
+        api_key, property_id, f"HiD-room-{mkey}",
+        date_f + [_make_room_type_filter(False)] + _make_source_exclude_filters(),
+    )
+    dorm_excl = _fetch_custom_report_daily(
+        api_key, property_id, f"HiD-dorm-{mkey}",
+        date_f + [_make_room_type_filter(True)] + _make_source_exclude_filters(),
+    )
+
+    out: dict = {}
+    for d in set(total_excl) | set(room_excl) | set(dorm_excl):
+        t = total_excl.get(d, {"rev": 0, "sold": 0})
+        r = room_excl.get(d, {"rev": 0, "sold": 0})
+        dm = dorm_excl.get(d, {"rev": 0, "sold": 0})
+        out[d] = {
+            "total_rev": t["rev"],
+            "total_sold": t["sold"],
+            "room_rev": r["rev"],
+            "room_sold": r["sold"],
+            "dorm_rev": dm["rev"],
+            "dorm_sold": dm["sold"],
+        }
+    return out
 
 
 def fetch_occupancy_filtered(
