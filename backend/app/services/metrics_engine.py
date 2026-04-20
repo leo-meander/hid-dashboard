@@ -58,6 +58,21 @@ def _is_excluded_status(reservation) -> bool:
     return status in EXCLUDED_STATUSES or status_norm in EXCLUDED_STATUSES
 
 
+# Categories that should be aggregated into a single row instead of broken out per raw source.
+_AGGREGATED_CATEGORIES = {"Direct", "Local travel agency"}
+
+
+def _channel_key(source_category: Optional[str], source: Optional[str]) -> str:
+    """Channel label for mix/trend pivots.
+    Direct + Local travel agency are rolled up under their category name; everything else
+    (OTAs) keeps its raw source so each OTA shows as its own row.
+    """
+    cat = source_category or "OTA"
+    if cat in _AGGREGATED_CATEGORIES:
+        return cat
+    return source or "Unknown"
+
+
 def _is_excluded_occ(reservation) -> bool:
     """v2.0 OCC exclusion: cancelled/no-show + maintenance only."""
     if _is_excluded_status(reservation):
@@ -480,6 +495,178 @@ def recompute_branch_range(
     return count
 
 
+def recompute_occ_and_bookings(
+    db: Session,
+    branch: Branch,
+    date_from: date,
+    date_to: date,
+) -> int:
+    """
+    Recompute only OCC/rooms_sold/new_bookings/cancellations — never revenue/ADR/RevPAR.
+    Revenue is authoritative from sync_cloudbeds_filtered (Insights API) and must not
+    be overwritten by local reservation_daily proration.
+    """
+    from collections import defaultdict
+
+    total_rooms: int = branch.total_rooms or 0
+    total_room_count: int = branch.total_room_count or 0
+    total_dorm_count: int = branch.total_dorm_count or 0
+
+    class _ResProxy:
+        __slots__ = ("id", "status", "source", "room_number", "room_type_category",
+                     "check_in_date", "check_out_date", "nights")
+
+        def __init__(self, r: Reservation):
+            self.id                 = r.id
+            self.status             = r.status
+            self.source             = r.source
+            self.room_number        = r.room_number
+            self.room_type_category = r.room_type_category
+            self.check_in_date      = r.check_in_date
+            self.check_out_date     = r.check_out_date
+            self.nights             = r.nights
+
+    class _DailyProxy:
+        __slots__ = ("reservation_id", "date", "room_id", "status", "source",
+                     "source_category", "room_type_category")
+
+        def __init__(self, rd: ReservationDaily):
+            self.reservation_id   = rd.reservation_id
+            self.date             = rd.date
+            self.room_id          = rd.room_id
+            self.status           = rd.status
+            self.source           = rd.source
+            self.source_category  = rd.source_category
+            self.room_type_category = rd.room_type_category
+
+    daily_raw = db.query(ReservationDaily).filter(
+        ReservationDaily.branch_id == branch.id,
+        ReservationDaily.date >= date_from,
+        ReservationDaily.date <= date_to,
+    ).all()
+    all_daily = [_DailyProxy(rd) for rd in daily_raw]
+
+    spanning_raw = db.query(Reservation).filter(
+        Reservation.branch_id == branch.id,
+        Reservation.check_in_date <= date_to,
+        Reservation.check_out_date > date_from,
+    ).all()
+    spanning_res = [_ResProxy(r) for r in spanning_raw]
+
+    booking_res = db.query(Reservation).filter(
+        Reservation.branch_id == branch.id,
+        Reservation.reservation_date >= date_from,
+        Reservation.reservation_date <= date_to,
+    ).with_entities(Reservation.reservation_date).all()
+
+    cancel_by_checkin = db.query(
+        Reservation.check_in_date,
+        func.count(Reservation.id),
+    ).filter(
+        Reservation.branch_id == branch.id,
+        Reservation.check_in_date >= date_from,
+        Reservation.check_in_date <= date_to,
+        func.lower(Reservation.status).in_(["cancelled", "canceled", "no_show", "noshow", "no show", "no-show"]),
+    ).group_by(Reservation.check_in_date).all()
+
+    total_by_checkin = db.query(
+        Reservation.check_in_date,
+        func.count(Reservation.id),
+    ).filter(
+        Reservation.branch_id == branch.id,
+        Reservation.check_in_date >= date_from,
+        Reservation.check_in_date <= date_to,
+    ).group_by(Reservation.check_in_date).all()
+
+    new_bookings_map: dict[date, int] = defaultdict(int)
+    for (rd,) in booking_res:
+        if rd:
+            new_bookings_map[rd] += 1
+
+    cancellations_map: dict[date, int] = defaultdict(int)
+    for ci_date, cnt in cancel_by_checkin:
+        if ci_date:
+            cancellations_map[ci_date] = cnt
+
+    total_checkin_map: dict[date, int] = defaultdict(int)
+    for ci_date, cnt in total_by_checkin:
+        if ci_date:
+            total_checkin_map[ci_date] = cnt
+
+    spanning_valid_occ = [r for r in spanning_res if not _is_excluded_occ(r)]
+    valid_daily_occ    = [rd for rd in all_daily if not _is_excluded_occ(rd)]
+
+    daily_occ_by_date: dict = defaultdict(list)
+    for rd in valid_daily_occ:
+        daily_occ_by_date[rd.date].append(rd)
+
+    existing_map: dict[date, DailyMetrics] = {
+        dm.date: dm
+        for dm in db.query(DailyMetrics).filter(
+            DailyMetrics.branch_id == branch.id,
+            DailyMetrics.date >= date_from,
+            DailyMetrics.date <= date_to,
+        ).all()
+    }
+
+    current = date_from
+    count = 0
+
+    while current <= date_to:
+        day_occ_rows = daily_occ_by_date.get(current, [])
+
+        room_occ  = [rd for rd in day_occ_rows if (rd.room_type_category or "").lower() == "room"]
+        dorm_occ  = [rd for rd in day_occ_rows if (rd.room_type_category or "").lower() == "dorm"]
+        rooms_sold = len(_room_expand_daily(room_occ))
+        dorms_sold = len(_room_expand_daily(dorm_occ))
+        total_sold = rooms_sold + dorms_sold
+
+        inhouse_res = [
+            r for r in spanning_valid_occ
+            if r.check_in_date <= current
+            and (r.check_out_date or current + timedelta(days=1)) > current
+        ]
+        room_ih = [r for r in inhouse_res if (r.room_type_category or "").lower() == "room"]
+        dorm_ih = [r for r in inhouse_res if (r.room_type_category or "").lower() == "dorm"]
+        rooms_inhouse = len(_room_night_expand(room_ih))
+        dorms_inhouse = len(_room_night_expand(dorm_ih))
+        total_inhouse = rooms_inhouse + dorms_inhouse
+
+        occ_pct      = round(total_inhouse / total_rooms, 4) if total_rooms > 0 else 0.0
+        room_occ_pct = round(rooms_inhouse / total_room_count, 4) if total_room_count > 0 else None
+        dorm_occ_pct = round(dorms_inhouse / total_dorm_count, 4) if total_dorm_count > 0 else None
+
+        new_bookings     = new_bookings_map.get(current, 0)
+        cancellations    = cancellations_map.get(current, 0)
+        total_checkin    = total_checkin_map.get(current, 0)
+        cancellation_pct = round(cancellations / total_checkin, 4) if total_checkin > 0 else 0.0
+
+        dm = existing_map.get(current)
+        if not dm:
+            dm = DailyMetrics(branch_id=branch.id, date=current)
+            db.add(dm)
+
+        dm.rooms_sold       = rooms_sold
+        dm.dorms_sold       = dorms_sold
+        dm.total_sold       = total_sold
+        dm.occ_pct          = occ_pct
+        dm.room_occ_pct     = room_occ_pct
+        dm.dorm_occ_pct     = dorm_occ_pct
+        dm.new_bookings     = new_bookings
+        dm.cancellations    = cancellations
+        dm.cancellation_pct = cancellation_pct
+        dm.computed_at      = datetime.now(timezone.utc)
+
+        current += timedelta(days=1)
+        count += 1
+
+        if count % 90 == 0:
+            db.commit()
+
+    db.commit()
+    return count
+
+
 async def nightly_metrics_job(db_factory) -> None:
     """
     v2.4: Nightly job — populate reservation_daily, recompute daily_metrics,
@@ -493,7 +680,10 @@ async def nightly_metrics_job(db_factory) -> None:
     """
     import calendar
     from app.config import settings
-    from app.services.cloudbeds import populate_reservation_daily, sync_cloudbeds_occupancy, sync_cloudbeds_filtered
+    from app.services.cloudbeds import (
+        populate_reservation_daily, sync_cloudbeds_occupancy,
+        sync_cloudbeds_filtered, sync_branch_revenue,
+    )
 
     db: Session = db_factory()
     try:
@@ -513,7 +703,22 @@ async def nightly_metrics_job(db_factory) -> None:
                 pid = branch.cloudbeds_property_id
                 api_key = settings.get_api_key_for_property(str(pid)) if pid else None
 
-                # Step 1: populate reservation_daily for last 14 days + today
+                # Step 1: update grand_total_native to accommodation-only amounts
+                # so that populate_reservation_daily proration (grand_total/nights)
+                # uses the correct base — not a total that includes extras/taxes.
+                if pid and api_key:
+                    try:
+                        sync_branch_revenue(
+                            str(branch.id), str(pid), branch.currency, api_key,
+                            date_from=lookback_start, date_to=today,
+                        )
+                    except Exception as rev_err:
+                        logger.warning(
+                            "sync_branch_revenue failed branch=%s: %s (proration fallback used)",
+                            branch.name, rev_err,
+                        )
+
+                # Step 2: populate reservation_daily for last 14 days + today
                 populate_reservation_daily(
                     db, str(branch.id),
                     date_from=lookback_start, date_to=today,
@@ -521,8 +726,8 @@ async def nightly_metrics_job(db_factory) -> None:
                     currency=branch.currency,
                     api_key=api_key,
                 )
-                # Step 2: recompute daily_metrics for last 14 days + today
-                recompute_branch_range(db, branch, lookback_start, today)
+                # Step 3: recompute OCC/rooms_sold/bookings only — revenue stays from Insights
+                recompute_occ_and_bookings(db, branch, lookback_start, today)
 
                 # Step 3: overlay Cloudbeds Data Insights for extended range
                 # From 14 days ago through end of next month — covers Daily Brief,
@@ -647,7 +852,7 @@ def get_ota_mix(
     channels: dict = {}
     for row in rows:
         cat = row.source_category or "OTA"
-        key = "Direct" if cat == "Direct" else (row.source or "Unknown")
+        key = _channel_key(cat, row.source)
         if key not in channels:
             channels[key] = {"count": 0, "revenue_native": 0.0, "revenue_vnd": 0.0, "category": cat}
         channels[key]["count"] += row.count
@@ -687,7 +892,7 @@ def get_channel_rates(
     channels: dict = {}
     for row in rows:
         cat = row.source_category or "OTA"
-        key = "Direct" if cat == "Direct" else (row.source or "Unknown")
+        key = _channel_key(cat, row.source)
         if key not in channels:
             channels[key] = {"total": 0, "cancelled": 0, "no_show": 0, "checked_in": 0, "category": cat}
         channels[key]["total"]      += row.total
@@ -770,7 +975,7 @@ def get_ota_trend(
     all_channels: set = set()
     for row in rows:
         cat = row.source_category or "OTA"
-        channel = "Direct" if cat == "Direct" else (row.source or "Unknown")
+        channel = _channel_key(cat, row.source)
         p = row.period
         if hasattr(p, "date"):
             p = p.date()
@@ -802,7 +1007,9 @@ def get_ota_trend(
         for ch, cnt in pc.items():
             channel_totals[ch] += cnt
 
-    sorted_channels = sorted(all_channels - {"Direct"}, key=lambda c: -channel_totals[c])
+    sorted_channels = sorted(all_channels - _AGGREGATED_CATEGORIES, key=lambda c: -channel_totals[c])
+    if "Local travel agency" in all_channels:
+        sorted_channels.append("Local travel agency")
     if "Direct" in all_channels:
         sorted_channels.append("Direct")
 
@@ -887,7 +1094,7 @@ def get_rates_trend(
 
     for row in rows:
         cat = row.source_category or "OTA"
-        channel = "Direct" if cat == "Direct" else (row.source or "Unknown")
+        channel = _channel_key(cat, row.source)
         p = row.period
         if hasattr(p, "date"):
             p = p.date()
@@ -923,7 +1130,9 @@ def get_rates_trend(
         for ch, v in pc.items():
             channel_totals[ch] += v["total"]
 
-    sorted_channels = sorted(all_channels - {"Direct"}, key=lambda c: -channel_totals[c])
+    sorted_channels = sorted(all_channels - _AGGREGATED_CATEGORIES, key=lambda c: -channel_totals[c])
+    if "Local travel agency" in all_channels:
+        sorted_channels.append("Local travel agency")
     if "Direct" in all_channels:
         sorted_channels.append("Direct")
 

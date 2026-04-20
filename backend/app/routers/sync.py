@@ -16,7 +16,7 @@ from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_r
 from app.services.ingest_csv import import_all_csvs, import_csv_file, CSV_CONFIGS
 from app.services import meta_ads as meta_service
 from app.services import angle_classifier
-from app.services.metrics_engine import recompute_branch_range
+from app.services.metrics_engine import recompute_branch_range, recompute_occ_and_bookings
 from app.models.ads import AdsPerformance
 from app.models.angle import AdAngle
 from app.config import settings
@@ -268,7 +268,7 @@ def trigger_recompute(
     results = []
     for branch in branches:
         try:
-            days = recompute_branch_range(db, branch, df, dt)
+            days = recompute_occ_and_bookings(db, branch, df, dt)
             results.append({"branch": branch.name, "days_recomputed": days})
         except Exception as exc:
             results.append({"branch": branch.name, "error": str(exc)})
