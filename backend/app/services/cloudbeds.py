@@ -1273,6 +1273,59 @@ def sync_cloudbeds_occupancy(
     }
 
 
+def _compute_daily_from_reservation_daily(
+    db: Session,
+    branch_id: str,
+    year: int,
+    month: int,
+) -> dict:
+    """Fallback: compute per-day filtered revenue from reservation_daily when Insights API is unavailable.
+    Returns same format as fetch_filtered_daily: {date: {total_rev, room_rev, dorm_rev, total_sold, room_sold, dorm_sold}}
+    """
+    from app.models.reservation_daily import ReservationDaily
+    from app.services.metrics_engine import EXCLUDED_SOURCES_REVENUE, EXCLUDED_STATUSES
+    import calendar
+
+    first_day = date(year, month, 1)
+    last_day = date(year, month, calendar.monthrange(year, month)[1])
+
+    rows = db.query(ReservationDaily).filter(
+        ReservationDaily.branch_id == branch_id,
+        ReservationDaily.date >= first_day,
+        ReservationDaily.date <= last_day,
+    ).all()
+
+    out: dict = {}
+    for rd in rows:
+        status = (rd.status or "").lower().strip()
+        status_norm = status.replace("-", "_").replace(" ", "_")
+        if status in EXCLUDED_STATUSES or status_norm in EXCLUDED_STATUSES:
+            continue
+        src = (rd.source or "").lower().strip()
+        if src in EXCLUDED_SOURCES_REVENUE:
+            continue
+        d = rd.date
+        if d not in out:
+            out[d] = {"total_rev": 0.0, "room_rev": 0.0, "dorm_rev": 0.0,
+                      "total_sold": 0.0, "room_sold": 0.0, "dorm_sold": 0.0}
+        night = float(rd.nightly_rate or 0)
+        out[d]["total_rev"] += night
+        out[d]["total_sold"] += 1
+        rtc = (rd.room_type_category or "").lower()
+        if rtc == "room":
+            out[d]["room_rev"] += night
+            out[d]["room_sold"] += 1
+        elif rtc == "dorm":
+            out[d]["dorm_rev"] += night
+            out[d]["dorm_sold"] += 1
+
+    logger.info(
+        "reservation_daily fallback for branch=%s %d/%d: %d days, total_rev=%.0f",
+        branch_id, year, month, len(out), sum(v["total_rev"] for v in out.values()),
+    )
+    return out
+
+
 def sync_cloudbeds_filtered(
     db: Session,
     branch_id: str,
@@ -1336,8 +1389,14 @@ def sync_cloudbeds_filtered(
             continue
 
         if not daily:
-            # 403 or empty month — skip without clobbering existing data
-            continue
+            # Insights 403 (no CREATE permission) — fall back to reservation_daily proration
+            logger.warning(
+                "Insights returned empty for branch=%s %d/%d — falling back to reservation_daily",
+                branch_id, year, month,
+            )
+            daily = _compute_daily_from_reservation_daily(db, branch_id, year, month)
+            if not daily:
+                continue
 
         first_day = date(year, month, 1)
         last_day = date(year, month, calendar.monthrange(year, month)[1])
