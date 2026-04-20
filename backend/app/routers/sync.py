@@ -843,25 +843,15 @@ def trigger_cloudbeds_sync(
 @router.post("/daily")
 def trigger_daily_sync(db: Session = Depends(get_db)):
     """
-    Daily sync: reservations + revenue for current month + next month only.
-    Skips past check-in dates to keep sync fast and focused.
+    Daily sync: incremental reservation sync only (modified in last 2 days).
+    Revenue and recompute are handled separately by /daily-revenue and /recompute.
     Run daily at 08:00 via scheduler.
     """
-    import calendar
-    from datetime import date, timedelta
+    from datetime import date
 
     today = date.today()
-    # Window: first day of current month → last day of next month
-    date_from = date(today.year, today.month, 1)
-    next_month = today.month % 12 + 1
-    next_year = today.year if today.month < 12 else today.year + 1
-    last_day_next = calendar.monthrange(next_year, next_month)[1]
-    date_to = date(next_year, next_month, last_day_next)
-
     branches = db.query(Branch).filter_by(is_active=True).all()
     reservation_results = []
-    revenue_results = []
-    recompute_results = []
 
     for branch in branches:
         pid = branch.cloudbeds_property_id
@@ -873,7 +863,7 @@ def trigger_daily_sync(db: Session = Depends(get_db)):
             reservation_results.append({"branch": branch.name, "error": "no api_key"})
             continue
 
-        # Step 1: incremental reservation sync (only modified in last 2 days — fast)
+        # Incremental reservation sync (only modified in last 2 days — fast)
         # Catches new bookings, cancellations, status changes without pulling all history
         try:
             res = sync_branch(str(branch.id), pid, branch.currency, api_key=api_key,
@@ -882,29 +872,10 @@ def trigger_daily_sync(db: Session = Depends(get_db)):
             reservation_results.append(res)
         except Exception as exc:
             reservation_results.append({"branch": branch.name, "error": str(exc)})
-            continue
-
-        # Step 2: sync revenue for same window
-        try:
-            rev = sync_branch_revenue(str(branch.id), str(pid), branch.currency or "VND",
-                                      api_key=api_key, date_from=date_from, date_to=date_to)
-            rev["branch"] = branch.name
-            revenue_results.append(rev)
-        except Exception as exc:
-            revenue_results.append({"branch": branch.name, "error": str(exc)})
-
-        # Step 3: recompute daily_metrics for the same window
-        try:
-            days = recompute_branch_range(db, branch, date_from, date_to)
-            recompute_results.append({"branch": branch.name, "days_recomputed": days})
-        except Exception as exc:
-            recompute_results.append({"branch": branch.name, "error": str(exc)})
 
     return _envelope({
-        "window": {"from": date_from.isoformat(), "to": date_to.isoformat()},
+        "synced_date": today.isoformat(),
         "reservations": reservation_results,
-        "revenue": revenue_results,
-        "recompute": recompute_results,
     })
 
 
