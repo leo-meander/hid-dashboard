@@ -396,14 +396,34 @@ def recompute_branch_range(
         room_rev = [rd for rd in day_revenue_rows if (rd.room_type_category or "").lower() == "room"]
         dorm_rev = [rd for rd in day_revenue_rows if (rd.room_type_category or "").lower() == "dorm"]
 
-        revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in day_revenue_rows), 2)
-        revenue_vnd    = round(sum(float(rd.nightly_rate_vnd or 0) for rd in day_revenue_rows), 2)
-        room_revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in room_rev), 2)
-        dorm_revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in dorm_rev), 2)
-        adr_native     = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
+        # nightly_rate = grand_total_native / nights, which includes non-accommodation charges.
+        # Use it only for room/dorm split proportions — not as the source-of-truth for revenue.
+        nightly_room_rev = round(sum(float(rd.nightly_rate or 0) for rd in room_rev), 2)
+        nightly_dorm_rev = round(sum(float(rd.nightly_rate or 0) for rd in dorm_rev), 2)
+        nightly_total_rev = nightly_room_rev + nightly_dorm_rev
+
+        # Prefer accommodation-only revenue from sync_daily_revenue (Cloudbeds Room Revenue
+        # transactions). Fall back to nightly_rate proration only when no transaction data exists.
+        _dm_pre = existing_map.get(current)
+        txn_revenue = float(_dm_pre.revenue_native or 0) if _dm_pre else 0.0
+        txn_revenue_vnd = float(_dm_pre.revenue_vnd or 0) if _dm_pre else 0.0
+
+        if txn_revenue > 0:
+            revenue_native = txn_revenue
+            revenue_vnd = txn_revenue_vnd
+            room_ratio = nightly_room_rev / nightly_total_rev if nightly_total_rev > 0 else 1.0
+            room_revenue_native = round(revenue_native * room_ratio, 2)
+            dorm_revenue_native = round(revenue_native - room_revenue_native, 2)
+        else:
+            revenue_native = round(sum(float(rd.nightly_rate or 0) for rd in day_revenue_rows), 2)
+            revenue_vnd    = round(sum(float(rd.nightly_rate_vnd or 0) for rd in day_revenue_rows), 2)
+            room_revenue_native = nightly_room_rev
+            dorm_revenue_native = nightly_dorm_rev
+
+        adr_native      = round(revenue_native / total_sold, 2) if total_sold > 0 else 0.0
         room_adr_native = round(room_revenue_native / rooms_sold, 2) if rooms_sold > 0 else 0.0
         dorm_adr_native = round(dorm_revenue_native / dorms_sold, 2) if dorms_sold > 0 else 0.0
-        revpar_native  = round(revenue_native / total_rooms, 2) if total_rooms > 0 else 0.0
+        revpar_native   = round(revenue_native / total_rooms, 2) if total_rooms > 0 else 0.0
 
         # ── OCC: traditional in-house with OCC exclusion filter ──────────────
         inhouse_res = [
