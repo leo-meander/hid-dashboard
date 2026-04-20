@@ -90,14 +90,40 @@ def map_room_type_category(room_type: Optional[str]) -> str:
     return "Room"
 
 
-DIRECT_KEYWORDS = ["website", "booking engine", "blogger", "direct"]
+DIRECT_KEYWORDS = [
+    "website", "booking engine", "direct", "blogger",
+    "walk-in", "walk in", "walkin",
+    "extension", "phone", "email",
+    "facebook", "public relations",
+]
+
+# "Local travel agency" covers Cloudbeds source groups "Corporate Client" + "Travel Agent".
+# Cloudbeds API doesn't return the source group, only the raw source name — so we match by
+# common company / agency name tokens across Vietnamese, English, Chinese, and Japanese.
+LOCAL_TA_KEYWORDS = [
+    # Vietnamese corporate
+    "công ty", "cong ty", "tnhh",
+    # English corporate
+    "co., ltd", "co.,ltd", "co ltd", "co.ltd", "co.,ltd.",
+    "company", "corp", "corporate",
+    # Travel agent / agency
+    "travel agent", "travel agency", "agency",
+    # Wholesale / tour operator
+    "wholesaler", "tour operator",
+    # CJK corporate suffixes
+    "株式会社", "有限会社",           # Japanese: kabushiki-gaisha, yugen-gaisha
+    "有限公司", "股份有限公司",         # Chinese: Co. Ltd
+]
 
 
 def map_source_category(source: Optional[str]) -> str:
     if not source:
         return "OTA"
-    if any(kw in source.lower() for kw in DIRECT_KEYWORDS):
+    s = source.lower()
+    if any(kw in s for kw in DIRECT_KEYWORDS):
         return "Direct"
+    if any(kw in s for kw in LOCAL_TA_KEYWORDS):
+        return "Local travel agency"
     return "OTA"
 
 
@@ -252,7 +278,9 @@ def sync_daily_revenue(
             break
         page += 1
 
-    # Write to daily_metrics — one raw SQL UPDATE per date
+    # Write to daily_metrics — only fill gaps (revenue_native IS NULL or 0).
+    # Insights data written by sync_cloudbeds_filtered takes priority and must
+    # not be overwritten by partial transaction coverage.
     updated = 0
     for d, rev in daily_rev.items():
         rev_vnd = round(rev * rate, 2) if rate is not None else None
@@ -261,7 +289,8 @@ def sync_daily_revenue(
             _s.execute(_text(
                 "UPDATE daily_metrics "
                 "SET revenue_native=:n, revenue_vnd=:v, computed_at=NOW() "
-                "WHERE branch_id=CAST(:bid AS UUID) AND date=:d"
+                "WHERE branch_id=CAST(:bid AS UUID) AND date=:d "
+                "AND (revenue_native IS NULL OR revenue_native = 0)"
             ), {"n": round(rev, 2), "v": rev_vnd, "bid": branch_id, "d": d})
             _s.commit()
             updated += 1
