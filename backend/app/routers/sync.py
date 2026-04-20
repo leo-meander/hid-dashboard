@@ -568,6 +568,95 @@ def debug_compute_day(
         return {"success": False, "error": str(exc), "traceback": traceback.format_exc()}
 
 
+@router.get("/debug/insights-revenue")
+def debug_insights_revenue(
+    property_id: str = Query(..., description="Cloudbeds property ID"),
+    year: int = Query(...),
+    month: int = Query(...),
+):
+    """Fetch room_revenue from Insights API with and without source-exclude filters.
+    Helps diagnose why our filtered total differs from the Cloudbeds UI total."""
+    import calendar, httpx
+    from app.services.cloudbeds import (
+        _make_date_filters, _make_source_exclude_filters,
+        INSIGHTS_BASE_URL,
+    )
+
+    api_key = settings.get_api_key_for_property(property_id)
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No API key for this property_id")
+
+    last_day_num = calendar.monthrange(year, month)[1]
+    dfrom = f"{year}-{month:02d}-01"
+    dto = f"{year}-{month:02d}-{last_day_num:02d}"
+    date_f = _make_date_filters(dfrom, dto)
+    source_f = _make_source_exclude_filters()
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "X-PROPERTY-ID": str(property_id),
+        "Content-Type": "application/json",
+    }
+
+    def fetch_total(filters: list) -> dict:
+        payload = {
+            "title": f"HiD-debug-{year}{month:02d}",
+            "dataset_id": 7,
+            "property_id": str(property_id),
+            "property_ids": [str(property_id)],
+            "columns": [
+                {"cdf": {"type": "default", "column": "rooms_sold"}, "metrics": ["sum"]},
+                {"cdf": {"type": "default", "column": "room_revenue"}, "metrics": ["sum"]},
+            ],
+            "group_rows": [{"cdf": {"type": "default", "column": "reservation_source"}}],
+            "filters": {"and": filters},
+        }
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(f"{INSIGHTS_BASE_URL}/reports", headers=headers, json=payload)
+            if resp.status_code not in (200, 201):
+                return {"error": f"{resp.status_code}: {resp.text[:300]}"}
+            report_id = resp.json().get("id")
+            try:
+                resp2 = client.get(
+                    f"{INSIGHTS_BASE_URL}/reports/{report_id}/data",
+                    headers=headers,
+                    params={"property_ids": str(property_id)},
+                )
+            finally:
+                client.delete(f"{INSIGHTS_BASE_URL}/reports/{report_id}", headers=headers)
+            records = resp2.json().get("records", {})
+            total_rev = 0.0
+            total_sold = 0.0
+            by_source = {}
+            for src, v in records.items():
+                rev = float(v.get("room_revenue", {}).get("sum", 0) or 0)
+                sold = float(v.get("rooms_sold", {}).get("sum", 0) or 0)
+                total_rev += rev
+                total_sold += sold
+                by_source[src] = {"revenue": round(rev, 2), "rooms_sold": round(sold, 0)}
+            return {
+                "total_revenue": round(total_rev, 2),
+                "total_rooms_sold": round(total_sold, 0),
+                "by_source": by_source,
+            }
+
+    unfiltered = fetch_total(date_f)
+    filtered = fetch_total(date_f + source_f)
+
+    return _envelope({
+        "property_id": property_id,
+        "year": year,
+        "month": month,
+        "unfiltered": unfiltered,
+        "filtered_with_source_exclusion": filtered,
+        "filters_applied": source_f,
+        "difference": round(
+            (unfiltered.get("total_revenue", 0) or 0) - (filtered.get("total_revenue", 0) or 0),
+            2,
+        ),
+    })
+
+
 @router.get("/debug/spanning-reservations")
 def debug_spanning_reservations(
     branch_id: UUID = Query(...),
