@@ -1405,10 +1405,11 @@ def _make_date_filters(date_from: str, date_to: str) -> list[dict]:
 
 
 def _make_source_exclude_filters() -> list[dict]:
-    """Filters to exclude Blogger, House Use, KOL, Special case from revenue."""
+    """Filters to exclude Blogger, House Use, KOL, Special case from revenue.
+    Uses not_equals (exact match) to avoid partial-match over-exclusion."""
     return [
-        {"cdf": {"type": "default", "column": "reservation_source", "multi_level_id": 1},
-         "operator": "not_contains", "value": src}
+        {"cdf": {"type": "default", "column": "reservation_source"},
+         "operator": "not_equals", "value": src}
         for src in _REVENUE_EXCLUDED_SOURCES
     ]
 
