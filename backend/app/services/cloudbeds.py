@@ -1407,7 +1407,7 @@ def _make_date_filters(date_from: str, date_to: str) -> list[dict]:
 def _make_source_exclude_filters() -> list[dict]:
     """Filters to exclude Blogger, House Use, KOL, Special case from revenue."""
     return [
-        {"cdf": {"type": "default", "column": "reservation_source", "multi_level_id": 4},
+        {"cdf": {"type": "default", "column": "reservation_source", "multi_level_id": 1},
          "operator": "not_contains", "value": src}
         for src in _REVENUE_EXCLUDED_SOURCES
     ]
