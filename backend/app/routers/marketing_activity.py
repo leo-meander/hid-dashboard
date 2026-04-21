@@ -282,6 +282,7 @@ def get_marketing_activity_summary(
     overview_prev = _build_overview(db, branch_id, p_from, p_to, ads_prev, use_native)
     monthly = _build_monthly_by_country(db, branch_id, d_from, d_to, ads_cur, use_native)
     suggestions = _build_kol_suggestions(db, branch_id, d_from, d_to)
+    crm_rate_plans = _build_crm_by_rate_plan(db, branch_id, d_from, d_to, use_native)
 
     currency = "VND"
     if use_native and ads_cur:
@@ -292,6 +293,7 @@ def get_marketing_activity_summary(
         "prev_overview": overview_prev,
         "monthly_by_country": monthly,
         "kol_suggestions": suggestions,
+        "crm_by_rate_plan": crm_rate_plans,
         "currency": currency,
         "month": current_month,
         "prev_month": prev_month,
@@ -453,6 +455,46 @@ def _build_monthly_by_country(db, branch_id, d_from, d_to, ads_rows, use_native)
         })
 
     result.sort(key=lambda x: -x["total_revenue"])
+    return result
+
+
+# ── CRM Reservations by Rate Plan ────────────────────────────────────────────
+
+def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date, d_to: date, use_native: bool):
+    """CRM reservations grouped by rate_plan_name (revenue excludes non-paying sources)."""
+    rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
+
+    q = db.query(
+        func.coalesce(Reservation.rate_plan_name, "(no rate plan)").label("rate_plan"),
+        func.count(Reservation.id).label("bookings"),
+        func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
+        func.coalesce(func.sum(rev_col), 0).label("revenue"),
+    ).filter(
+        _crm_filter(),
+        Reservation.check_in_date >= d_from,
+        Reservation.check_in_date <= d_to,
+        _status_filter(),
+        _revenue_source_filter(),
+    ).group_by("rate_plan")
+
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+
+    rows = q.all()
+    result = []
+    for rate_plan, bookings, nights, revenue in rows:
+        b = int(bookings or 0)
+        n = int(nights or 0)
+        r = float(revenue or 0)
+        result.append({
+            "rate_plan_name": rate_plan,
+            "bookings": b,
+            "nights": n,
+            "revenue": r,
+            "adr": round(r / n, 2) if n > 0 else 0,
+        })
+
+    result.sort(key=lambda x: -x["revenue"])
     return result
 
 

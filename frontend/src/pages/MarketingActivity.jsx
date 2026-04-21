@@ -104,6 +104,7 @@ export default function MarketingActivity() {
   const prevMonth = data?.prev_month;
   const monthly = data?.monthly_by_country || [];
   const suggestions = data?.kol_suggestions || [];
+  const crmRatePlans = data?.crm_by_rate_plan || [];
 
   const countries = useMemo(() => {
     const set = new Set(monthly.map((r) => r.country));
@@ -129,6 +130,7 @@ export default function MarketingActivity() {
   const TABS = [
     { key: "overview", label: "Overview" },
     { key: "monthly", label: "By Country" },
+    { key: "crm-rate-plans", label: "CRM Reservations" },
     { key: "kol-suggest", label: "KOL Suggestions" },
   ];
 
@@ -165,6 +167,7 @@ export default function MarketingActivity() {
             <MonthlyTab rows={filteredMonthly} countries={countries}
               filterCountry={filterCountry} setFilterCountry={setFilterCountry} cur={cur} />
           )}
+          {tab === "crm-rate-plans" && <CRMRatePlansTab rows={crmRatePlans} cur={cur} />}
           {tab === "kol-suggest" && <KOLSuggestTab groups={suggestionsByCountry} />}
         </>
       )}
@@ -286,6 +289,67 @@ function MonthlyTab({ rows, countries, filterCountry, setFilterCountry, cur }) {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ── CRM Reservations Tab — grouped by Rate Plan Name ────────────────────── */
+function CRMRatePlansTab({ rows, cur }) {
+  if (!rows || rows.length === 0) {
+    return (
+      <p className="text-gray-400 text-sm text-center py-8">
+        No CRM reservations found for this month.
+      </p>
+    );
+  }
+
+  const totals = rows.reduce(
+    (acc, r) => ({
+      bookings: acc.bookings + (r.bookings || 0),
+      nights: acc.nights + (r.nights || 0),
+      revenue: acc.revenue + (r.revenue || 0),
+    }),
+    { bookings: 0, nights: 0, revenue: 0 }
+  );
+  const totalAdr = totals.nights > 0 ? totals.revenue / totals.nights : 0;
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-500">
+        CRM reservations (CRM / MEANDER&apos;S FRIEND / Travel Guide / Grand Open) broken down by Rate Plan Name.
+        Excludes cancelled bookings and non-paying sources (Blogger / House Use / Special Case).
+      </p>
+      <div className="bg-white rounded-lg border overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="text-left px-4 py-3 font-semibold text-gray-600">Rate Plan Name</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Bookings</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Nights</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue ({cur})</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">ADR ({cur})</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {rows.map((r, i) => (
+              <tr key={i} className="hover:bg-gray-50">
+                <td className="px-4 py-3 font-medium text-gray-900">{r.rate_plan_name}</td>
+                <td className="px-4 py-3 text-right">{fmtNum(r.bookings)}</td>
+                <td className="px-4 py-3 text-right">{fmtNum(r.nights)}</td>
+                <td className="px-4 py-3 text-right">{fmtNum(r.revenue)}</td>
+                <td className="px-4 py-3 text-right">{fmtNum(r.adr)}</td>
+              </tr>
+            ))}
+            <tr className="bg-gray-50 font-semibold">
+              <td className="px-4 py-3">Total</td>
+              <td className="px-4 py-3 text-right">{fmtNum(totals.bookings)}</td>
+              <td className="px-4 py-3 text-right">{fmtNum(totals.nights)}</td>
+              <td className="px-4 py-3 text-right">{fmtNum(totals.revenue)}</td>
+              <td className="px-4 py-3 text-right">{fmtNum(totalAdr)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
