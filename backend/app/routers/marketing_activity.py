@@ -461,11 +461,19 @@ def _build_monthly_by_country(db, branch_id, d_from, d_to, ads_rows, use_native)
 # ── CRM Reservations by Rate Plan ────────────────────────────────────────────
 
 def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date, d_to: date, use_native: bool):
-    """CRM reservations grouped by rate_plan_name (revenue excludes non-paying sources)."""
+    """CRM reservations grouped by rate_plan_name (falls back to room_type when blank)."""
     rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
 
+    # CRM reservations often have rate_plan_name empty; the CRM identifier lives in room_type.
+    # Fall back in order: rate_plan_name → room_type → '(unknown)'.
+    rate_plan_expr = func.coalesce(
+        func.nullif(func.trim(Reservation.rate_plan_name), ""),
+        func.nullif(func.trim(Reservation.room_type), ""),
+        "(unknown)",
+    ).label("rate_plan")
+
     q = db.query(
-        func.coalesce(Reservation.rate_plan_name, "(no rate plan)").label("rate_plan"),
+        rate_plan_expr,
         func.count(Reservation.id).label("bookings"),
         func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
         func.coalesce(func.sum(rev_col), 0).label("revenue"),
