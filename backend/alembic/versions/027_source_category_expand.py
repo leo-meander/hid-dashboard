@@ -47,7 +47,7 @@ def upgrade():
         existing_nullable=True,
     )
     op.alter_column(
-        "reservations_daily",
+        "reservation_daily",
         "source_category",
         type_=sa.String(32),
         existing_type=sa.String(20),
@@ -56,7 +56,7 @@ def upgrade():
 
     # 2. Backfill. Direct takes precedence over Local travel agency; OTA is the fallback.
     conn = op.get_bind()
-    for table in ("reservations", "reservations_daily"):
+    for table in ("reservations", "reservation_daily"):
         conn.execute(sa.text(f"""
             UPDATE {table}
                SET source_category = 'Direct'
@@ -83,7 +83,7 @@ def upgrade():
 def downgrade():
     # Collapse Local travel agency back into OTA, then narrow the column.
     conn = op.get_bind()
-    for table in ("reservations", "reservations_daily"):
+    for table in ("reservations", "reservation_daily"):
         conn.execute(sa.text(f"""
             UPDATE {table}
                SET source_category = 'OTA'
@@ -91,7 +91,7 @@ def downgrade():
         """))
 
     op.alter_column(
-        "reservations_daily",
+        "reservation_daily",
         "source_category",
         type_=sa.String(20),
         existing_type=sa.String(32),
