@@ -11,25 +11,15 @@ class Settings(BaseSettings):
     CLOUDBEDS_PROPERTY_IDS: str = "[]"
     EXCHANGE_RATE_API_KEY: str = "placeholder_key"
     ANTHROPIC_API_KEY: str = ""
-    META_ACCESS_TOKEN_SAIGON: str = ""
-    META_AD_ACCOUNT_SAIGON: str = ""
-    META_ACCESS_TOKEN_1948: str = ""
-    META_AD_ACCOUNT_1948: str = ""
-    META_ACCESS_TOKEN_TAIPEI: str = ""
-    META_AD_ACCOUNT_TAIPEI: str = ""
-    META_ACCESS_TOKEN_OSAKA: str = ""
-    META_AD_ACCOUNT_OSAKA: str = ""
-    META_ACCESS_TOKEN_OANI: str = ""
-    META_AD_ACCOUNT_OANI: str = ""
-    # Google Ads (via Google Sheets)
+
+    # Unified ads source — replaces Meta Graph API + Google Sheets exports (migration 028).
+    ADS_PLATFORM_BASE_URL: str = "https://ads-performance-fuls.zeabur.app"
+    ADS_PLATFORM_API_KEY: str = ""
+
+    # Google OAuth — retained for KOL sheet sync + GHL email sync (NOT ads).
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REFRESH_TOKEN: str = ""
-    GOOGLE_SHEET_TAIPEI: str = "1iKW_2Iu25MMUE80LWK_bzK0V94qRyWvKgtXvyuMjtzg"
-    GOOGLE_SHEET_SAIGON: str = "1oQ18enkO5mfMYbMqVgdUk4bPB9kwEgnHjnEQF1gPoCc"
-    GOOGLE_SHEET_1948: str = "1iWi9cPqEwFFQ6pW7Kc6Ik6wwZnbEt9dz1nUqnWWeDBw"
-    GOOGLE_SHEET_OANI: str = "1sRw0OQngWAhJBYJkCESXFxuvHOQCcu-UqR_3LqvquYM"
-    GOOGLE_SHEET_OSAKA: str = "1yNRL8b0qW52W2-SeJi_h1ehgXXYzKNK-0M0DINqorK4"
 
     SENDGRID_API_KEY: str = ""
     EMAIL_FROM: str = ""

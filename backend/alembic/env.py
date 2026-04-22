@@ -7,7 +7,8 @@ from alembic import context
 # Load all models so Alembic can detect them
 from app.models import (  # noqa: F401
     Branch, KPITarget, Reservation, DailyMetrics, Event, WebsiteMetrics,
-    AdAngle, AdsPerformance, KOLRecord, KOLBooking, MarketingActivity, User,
+    AdAngle, AdsPerformance, AdsBudget, AdsBookingMatch,
+    KOLRecord, KOLBooking, MarketingActivity, User,
     BranchKeypoint, AdCopy, AdMaterial, AdApproval, AdName,
     AlertRule, AlertHistory, AlertNotificationLog,
 )

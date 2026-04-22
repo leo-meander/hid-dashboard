@@ -116,13 +116,18 @@ export default function Ads() {
 
   const del = async (id) => { if (!confirm("Delete?")) return; await axios.delete("/api/ads/" + id); load(); };
 
-  const syncMeta = async () => {
-    if (!currentBranch?.id) return alert("Select a specific branch to sync Meta.");
+  const syncAdsPlatform = async () => {
     setSyncing(true);
     try {
-      const r = await axios.post(`/api/sync/meta?branch_id=${currentBranch.id}&date_preset=last_30d&classify_angles=false`);
+      const r = await axios.post(`/api/sync/ads-platform`);
       const d = r.data.data;
-      alert(`Meta sync done: ${d.ads_fetched} ads fetched, ${d.created} new, ${d.updated} updated.`);
+      alert(
+        `Ads Platform sync done in ${d.duration_s}s:\n` +
+        `• ${d.synced_daily_rows} daily rows\n` +
+        `• ${d.synced_ads} ad rows\n` +
+        `• ${d.synced_budgets} budget plans\n` +
+        `• ${d.synced_booking_matches} booking matches`
+      );
       load();
     } catch (e) { alert("Sync failed: " + (e.response?.data?.detail || e.message)); }
     finally { setSyncing(false); }
@@ -176,12 +181,10 @@ export default function Ads() {
             className="px-3 py-2 bg-gray-600 text-white text-sm rounded-lg hover:bg-gray-700 disabled:opacity-50">
             {recomputing ? "Working…" : "⟳ Recompute Metrics"}
           </button>
-          {!isAll && (
-            <button onClick={syncMeta} disabled={syncing}
-              className="px-3 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50">
-              {syncing ? "Syncing…" : "↻ Sync Meta"}
-            </button>
-          )}
+          <button onClick={syncAdsPlatform} disabled={syncing}
+            className="px-3 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50">
+            {syncing ? "Syncing…" : "↻ Sync Ads Platform"}
+          </button>
           <button onClick={openNew} className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700">+ Add Campaign</button>
         </div>
       </div>

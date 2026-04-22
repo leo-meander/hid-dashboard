@@ -1,8 +1,10 @@
 """
 Marketing Activity router — consolidated view of Paid Ads, KOL, and CRM performance.
 
-Data sources:
-  - Paid Ads: Google Sheet (combined all branches, VND) — also has native currency cols
+Data sources (post migration 028):
+  - Paid Ads: local ``ads_performance`` table, populated by the Ads Platform
+              sync service (grain='daily' for totals, grain='ad' for country
+              breakdown).
   - KOL:      Cloudbeds reservations (room_type ILIKE '%KOL_%')
   - CRM:      Cloudbeds reservations (CRM/MEANDER'S FRIEND/Travel guide/Grand Open)
 
@@ -11,22 +13,20 @@ Revenue exclusion: Blogger, House Use, Special Case (non-paying guests)
 import calendar
 import logging
 import re
-import time
 from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import UUID
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, or_, extract, literal_column
+from sqlalchemy import func, or_, literal_column
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.database import get_db
+from app.models.ads import AdsPerformance
+from app.models.branch import Branch
 from app.models.reservation import Reservation
-from app.models.kol import KOLRecord
-from app.config import settings
-from app.services.google_sheets_ads import _get_access_token, _read_sheet
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -36,22 +36,6 @@ _CANCELLED = {"canceled", "cancelled", "no_show", "no-show", "cancelled_by_guest
 
 # Revenue exclusion: non-paying guests
 _EXCLUDED_SOURCES = {"blogger", "house use", "houseuse", "special case"}
-
-# Combined Google Sheet for Paid Ads
-COMBINED_SHEET_ID = "1h2cogiqbUkJ5yxJjoH0U5afSGhEMrJQRlXlSOb8DMms"
-COMBINED_SHEET_TAB = "Combine all branch (VND)"
-
-_BRANCH_NAME_TO_ID = {
-    "taipei":  "11111111-1111-1111-1111-111111111101",
-    "saigon":  "11111111-1111-1111-1111-111111111102",
-    "1948":    "11111111-1111-1111-1111-111111111103",
-    "oani":    "11111111-1111-1111-1111-111111111104",
-    "osaka":   "11111111-1111-1111-1111-111111111105",
-}
-
-# In-memory cache (5-minute TTL)
-_sheet_cache: dict = {"data": None, "ts": 0}
-_CACHE_TTL = 300
 
 
 def _envelope(data):
@@ -83,161 +67,115 @@ def _status_filter():
     return ~Reservation.status.in_(["Cancelled", "Canceled", "No-Show", "No_Show"])
 
 
-# ── Google Sheet Parsing ─────────────────────────────────────────────────────
-
-def _parse_float(val: str) -> Optional[float]:
-    if not val or val.strip() in ("", "-", "N/A"):
-        return None
-    try:
-        return float(val.replace(",", "").replace("%", "").strip())
-    except ValueError:
-        return None
+# ── Ads data readers ─────────────────────────────────────────────────────────
 
 
-def _parse_int(val: str) -> Optional[int]:
-    f = _parse_float(val)
-    return int(f) if f is not None else None
+def _fetch_daily_ads_rows(
+    db: Session,
+    branch_id: Optional[UUID],
+    d_from: date,
+    d_to: date,
+) -> list[dict]:
+    """Daily-grain ads spend rows, one per (branch, channel, date, account).
 
-
-def _parse_date(val: str) -> Optional[date]:
-    val = val.strip()
-    if not val:
-        return None
-    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%d/%m/%Y"):
-        try:
-            return datetime.strptime(val, fmt).date()
-        except ValueError:
-            pass
-    return None
-
-
-def _safe(row: list, idx: int) -> str:
-    try:
-        return row[idx].strip()
-    except (IndexError, AttributeError):
-        return ""
-
-
-def _resolve_branch_id(branch_name: str) -> Optional[str]:
-    lower = branch_name.lower().strip()
-    for key, bid in _BRANCH_NAME_TO_ID.items():
-        if key in lower:
-            return bid
-    return None
-
-
-def _normalize_month(month_str: str) -> str:
-    if not month_str:
-        return ""
-    if len(month_str) <= 7 and "-" in month_str:
-        return month_str
-    for fmt in ("%b %Y", "%B %Y", "%m/%Y", "%b-%y", "%b-%Y"):
-        try:
-            dt = datetime.strptime(month_str.strip(), fmt)
-            return dt.strftime("%Y-%m")
-        except ValueError:
-            continue
-    return month_str
-
-
-def _fetch_sheet_rows() -> list[dict]:
+    The ``grain='daily'`` rows carry authoritative spend / revenue / bookings
+    aggregates — they are what KPI totals SUM on. Country is not present at
+    this grain (see ``_fetch_ad_country_rows``).
     """
-    Read combined Google Sheet. Column mapping:
-      0: MKT Activity    14: Currency     21: Country
-      1: Branch           15: Channel      22: Cost (-VAT) [native]
-      2: Cost -VAT (VND)  16: Funnel       26: Booking
-      3: Revenue (VND)    17: Date         28: Revenue [native]
-      19: Month
-    """
-    now = time.time()
-    if _sheet_cache["data"] is not None and (now - _sheet_cache["ts"]) < _CACHE_TTL:
-        log.info("Using cached sheet data (%d rows)", len(_sheet_cache["data"]))
-        return _sheet_cache["data"]
+    q = (
+        db.query(
+            AdsPerformance.branch_id.label("branch_id"),
+            Branch.name.label("branch_name"),
+            Branch.currency.label("currency"),
+            AdsPerformance.channel,
+            AdsPerformance.funnel_stage.label("funnel"),
+            AdsPerformance.date_from.label("date"),
+            func.coalesce(AdsPerformance.cost_native, 0).label("cost_native"),
+            func.coalesce(AdsPerformance.cost_vnd, 0).label("cost_vnd"),
+            func.coalesce(AdsPerformance.revenue_native, 0).label("revenue_native"),
+            func.coalesce(AdsPerformance.revenue_vnd, 0).label("revenue_vnd"),
+            func.coalesce(AdsPerformance.bookings, 0).label("bookings"),
+        )
+        .join(Branch, Branch.id == AdsPerformance.branch_id)
+        .filter(
+            AdsPerformance.grain == "daily",
+            AdsPerformance.date_from >= d_from,
+            AdsPerformance.date_from <= d_to,
+        )
+    )
+    if branch_id is not None:
+        q = q.filter(AdsPerformance.branch_id == branch_id)
 
-    # Try multiple tab name variations
-    tab_names = [
-        COMBINED_SHEET_TAB,
-        "Combine all branch  (VND)",   # double space variant
-        "Sheet1",                       # fallback
+    return [
+        {
+            "branch_id": str(r.branch_id),
+            "branch_name": r.branch_name,
+            "currency": r.currency or "VND",
+            "channel": r.channel or "",
+            "funnel": r.funnel or "",
+            "date": r.date,
+            "cost_native": float(r.cost_native or 0),
+            "cost_vnd": float(r.cost_vnd or 0),
+            "revenue_native": float(r.revenue_native or 0),
+            "revenue_vnd": float(r.revenue_vnd or 0),
+            "bookings": int(r.bookings or 0),
+            "mkt_activity": "Paid Ads",
+        }
+        for r in q.all()
     ]
 
-    raw = None
-    used_tab = None
-    try:
-        access_token = _get_access_token(
-            settings.GOOGLE_CLIENT_ID,
-            settings.GOOGLE_CLIENT_SECRET,
-            settings.GOOGLE_REFRESH_TOKEN,
+
+def _fetch_ad_country_rows(
+    db: Session,
+    branch_id: Optional[UUID],
+    d_from: date,
+    d_to: date,
+) -> list[dict]:
+    """Per-ad rows with ``target_country``. Used to build the By-Country tab
+    (daily-grain rows don't carry country). Spend/revenue here are per-ad
+    cumulative values across the ad's full lifetime — see
+    ``_build_monthly_by_country`` for how we re-weight against daily totals.
+    """
+    q = (
+        db.query(
+            AdsPerformance.branch_id.label("branch_id"),
+            Branch.name.label("branch_name"),
+            Branch.currency.label("currency"),
+            AdsPerformance.channel,
+            AdsPerformance.target_country.label("country"),
+            func.coalesce(AdsPerformance.cost_native, 0).label("cost_native"),
+            func.coalesce(AdsPerformance.cost_vnd, 0).label("cost_vnd"),
+            func.coalesce(AdsPerformance.revenue_native, 0).label("revenue_native"),
+            func.coalesce(AdsPerformance.revenue_vnd, 0).label("revenue_vnd"),
+            func.coalesce(AdsPerformance.bookings, 0).label("bookings"),
         )
-        for tab in tab_names:
-            try:
-                raw = _read_sheet(access_token, COMBINED_SHEET_ID, tab)
-                if raw and len(raw) >= 2:
-                    used_tab = tab
-                    break
-            except Exception as tab_err:
-                log.warning("Tab '%s' failed: %s", tab, tab_err)
-                continue
-    except Exception as e:
-        log.error("Failed to get Google access token: %s", e)
-        return _sheet_cache["data"] or []
+        .join(Branch, Branch.id == AdsPerformance.branch_id)
+        .filter(
+            AdsPerformance.grain == "ad",
+            # Fall back to all-time ad rows when date_from is null (metadata-only).
+            or_(
+                AdsPerformance.date_from.is_(None),
+                AdsPerformance.date_from <= d_to,
+            ),
+        )
+    )
+    if branch_id is not None:
+        q = q.filter(AdsPerformance.branch_id == branch_id)
 
-    if not raw or len(raw) < 2:
-        log.error("No data from Google Sheet (tried tabs: %s)", tab_names)
-        return _sheet_cache["data"] or []
-
-    log.info("Read %d raw rows from Google Sheet tab '%s'", len(raw) - 1, used_tab)
-
-    # Log first row (headers) for debugging
-    if raw:
-        log.info("Sheet headers: %s", raw[0][:5])
-
-    data_rows = raw[1:]
-    parsed = []
-
-    for row in data_rows:
-        mkt_activity = _safe(row, 0)
-        if not mkt_activity or mkt_activity.lower() == "mkt activity":
-            continue
-
-        row_date = _parse_date(_safe(row, 17))
-        branch_name = _safe(row, 1)
-        branch_id = _resolve_branch_id(branch_name)
-
-        parsed.append({
-            "mkt_activity": mkt_activity,
-            "branch_id": branch_id,
-            "branch_name": branch_name,
-            "cost_vnd": _parse_float(_safe(row, 2)) or 0,
-            "revenue_vnd": _parse_float(_safe(row, 3)) or 0,
-            "cost_native": _parse_float(_safe(row, 22)) or 0,
-            "revenue_native": _parse_float(_safe(row, 28)) or 0,
-            "currency": _safe(row, 14) or "VND",
-            "channel": _safe(row, 15),
-            "funnel": _safe(row, 16),
-            "date": row_date,
-            "month": _normalize_month(_safe(row, 19)),
-            "country": _safe(row, 21),
-            "bookings": _parse_int(_safe(row, 26)) or 0,
-        })
-
-    _sheet_cache["data"] = parsed
-    _sheet_cache["ts"] = now
-    log.info("Parsed %d Paid Ads rows from Google Sheet", len(parsed))
-    return parsed
-
-
-def _filter_sheet_rows(rows, branch_id, d_from, d_to):
-    bid_str = str(branch_id) if branch_id else None
-    result = []
-    for r in rows:
-        if bid_str and r["branch_id"] != bid_str:
-            continue
-        if r["date"]:
-            if r["date"] < d_from or r["date"] > d_to:
-                continue
-        result.append(r)
-    return result
+    return [
+        {
+            "branch_id": str(r.branch_id),
+            "currency": r.currency or "VND",
+            "channel": r.channel or "",
+            "country": r.country or "",
+            "cost_native": float(r.cost_native or 0),
+            "cost_vnd": float(r.cost_vnd or 0),
+            "revenue_native": float(r.revenue_native or 0),
+            "revenue_vnd": float(r.revenue_vnd or 0),
+            "bookings": int(r.bookings or 0),
+        }
+        for r in q.all()
+    ]
 
 
 def _month_range(month_str: str):
@@ -271,16 +209,16 @@ def get_marketing_activity_summary(
     d_from, d_to = _month_range(current_month)
     p_from, p_to = _month_range(prev_month)
 
-    # Fetch Paid Ads from Google Sheet
-    all_sheet_rows = _fetch_sheet_rows()
-    ads_cur = _filter_sheet_rows(all_sheet_rows, branch_id, d_from, d_to)
-    ads_prev = _filter_sheet_rows(all_sheet_rows, branch_id, p_from, p_to)
+    # Ads data now lives in local ads_performance (populated by Ads Platform sync).
+    ads_cur = _fetch_daily_ads_rows(db, branch_id, d_from, d_to)
+    ads_prev = _fetch_daily_ads_rows(db, branch_id, p_from, p_to)
+    ads_country = _fetch_ad_country_rows(db, branch_id, d_from, d_to)
 
     use_native = branch_id is not None
 
     overview_cur = _build_overview(db, branch_id, d_from, d_to, ads_cur, use_native)
     overview_prev = _build_overview(db, branch_id, p_from, p_to, ads_prev, use_native)
-    monthly = _build_monthly_by_country(db, branch_id, d_from, d_to, ads_cur, use_native)
+    monthly = _build_monthly_by_country(db, branch_id, d_from, d_to, ads_country, use_native)
     suggestions = _build_kol_suggestions(db, branch_id, d_from, d_to)
     crm_rate_plans = _build_crm_by_rate_plan(db, branch_id, d_from, d_to, use_native)
 

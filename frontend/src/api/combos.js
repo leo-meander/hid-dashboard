@@ -7,7 +7,6 @@ export const updateCombo = (id, data) => axios.patch(`${BASE}/${id}`, data).then
 export const deleteCombo = (id) => axios.delete(`${BASE}/${id}`).then(r => r.data.data);
 export const comboInsights = (params = {}) => axios.get(`${BASE}/insights`, { params }).then(r => r.data.data);
 export const triggerSync = () => axios.post(`${BASE}/sync`).then(r => r.data.data);
-export const importFromMeta = (data = {}) => axios.post(`${BASE}/import-meta`, data).then(r => r.data.data);
 export const submitForApproval = (id, data) => axios.post(`${BASE}/${id}/submit-approval`, data).then(r => r.data.data);
 export const reviewCombo = (id, data) => axios.patch(`${BASE}/${id}/review`, data).then(r => r.data.data);
 export const listPending = (params = {}) => axios.get(`${BASE}/pending`, { params }).then(r => r.data.data);

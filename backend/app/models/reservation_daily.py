@@ -45,7 +45,7 @@ class ReservationDaily(Base):
     nightly_rate_vnd = Column(Numeric(15, 2), nullable=True)
     status = Column(String(50), nullable=True)
     source = Column(String(100), nullable=True)
-    source_category = Column(String(20), nullable=True)
+    source_category = Column(String(32), nullable=True)
     room_type_category = Column(String(10), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(

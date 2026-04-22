@@ -25,7 +25,7 @@ class Reservation(Base):
     rate_plan_name = Column(String(200), nullable=True)
     room_number = Column(String(50), nullable=True)
     source = Column(String(100), nullable=True)
-    source_category = Column(String(20), nullable=True)      # "OTA" or "Direct"
+    source_category = Column(String(32), nullable=True)      # "OTA", "Direct", or "Local travel agency"
     check_in_date = Column(Date, nullable=False)
     check_out_date = Column(Date, nullable=False)
     nights = Column(Integer, nullable=False)

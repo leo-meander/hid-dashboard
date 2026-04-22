@@ -6,6 +6,8 @@ from app.models.event import Event
 from app.models.website_metrics import WebsiteMetrics
 from app.models.angle import AdAngle
 from app.models.ads import AdsPerformance
+from app.models.ads_budget import AdsBudget
+from app.models.ads_booking_match import AdsBookingMatch
 from app.models.kol import KOLRecord, KOLBooking
 from app.models.activity import MarketingActivity
 from app.models.user import User
@@ -27,7 +29,8 @@ from app.models.alert import AlertRule, AlertHistory, AlertNotificationLog
 
 __all__ = [
     "Branch", "KPITarget", "Reservation", "DailyMetrics", "Event",
-    "WebsiteMetrics", "AdAngle", "AdsPerformance", "KOLRecord", "KOLBooking",
+    "WebsiteMetrics", "AdAngle", "AdsPerformance", "AdsBudget",
+    "AdsBookingMatch", "KOLRecord", "KOLBooking",
     "MarketingActivity", "User", "BranchKeypoint", "AdCopy", "AdMaterial",
     "AdApproval", "AdName",
     "CreativeAngle", "CreativeCopy", "CreativeMaterial", "AdCombo",

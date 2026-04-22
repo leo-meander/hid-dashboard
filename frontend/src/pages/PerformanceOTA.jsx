@@ -113,6 +113,7 @@ export default function PerformanceOTA() {
 
 // ── Pivot table with two sections ─────────────────────────────────────────────
 function RatesPivotTable({ periods, channels }) {
+  const grandBookings = channels.reduce((s, ch) => s + (ch.total || 0), 0);
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
       <table className="w-full text-sm border-collapse">
@@ -126,7 +127,7 @@ function RatesPivotTable({ periods, channels }) {
                 {p}
               </th>
             ))}
-            <th className="px-3 py-2.5 text-center font-medium">Total</th>
+            <th className="px-3 py-2.5 text-center font-medium">Bookings (share)</th>
           </tr>
         </thead>
 
@@ -138,13 +139,14 @@ function RatesPivotTable({ periods, channels }) {
               channel={ch.channel}
               isDirect={ch.is_direct}
               total={ch.total}
+              grandTotal={grandBookings}
               cells={ch.cancel_cells}
               bgFn={cancelBg}
               valueKey="rate"
               altRow={i % 2 === 1}
             />
           ))}
-          <TotalRow label="Avg cancel rate" periods={periods} channels={channels} metric="cancel" />
+          <TotalRow label="Avg cancel rate" periods={periods} channels={channels} grandTotal={grandBookings} />
 
           {/* ── Check-in Rate section ── */}
           <SectionHeader label="Check-in Rate %" colSpan={periods.length + 2} color="bg-green-700" />
@@ -153,13 +155,14 @@ function RatesPivotTable({ periods, channels }) {
               channel={ch.channel}
               isDirect={ch.is_direct}
               total={ch.total}
+              grandTotal={grandBookings}
               cells={ch.checkin_cells}
               bgFn={checkinBg}
               valueKey="rate"
               altRow={i % 2 === 1}
             />
           ))}
-          <CheckinTotalRow periods={periods} channels={channels} />
+          <CheckinTotalRow periods={periods} channels={channels} grandTotal={grandBookings} />
         </tbody>
       </table>
 
@@ -197,17 +200,25 @@ function SectionHeader({ label, colSpan, color }) {
   );
 }
 
-function DataRow({ channel, isDirect, total, cells, bgFn, valueKey, altRow }) {
+function DataRow({ channel, isDirect, total, grandTotal, cells, bgFn, valueKey, altRow }) {
+  const isLocalTA = channel === "Local travel agency";
   const rowBase = isDirect
     ? "bg-green-50 text-green-900"
-    : altRow ? "bg-red-50/40 text-gray-800" : "bg-white text-gray-800";
+    : isLocalTA
+      ? "bg-sky-50 text-sky-900"
+      : altRow ? "bg-red-50/40 text-gray-800" : "bg-white text-gray-800";
+  const labelBg = isDirect ? "bg-green-50" : isLocalTA ? "bg-sky-50" : altRow ? "bg-red-50/40" : "bg-white";
+  const totalBg = isDirect
+    ? "bg-green-50 text-green-700"
+    : isLocalTA
+      ? "bg-sky-50 text-sky-700"
+      : "bg-gray-50 text-gray-600";
+  const share = grandTotal > 0 ? (total / grandTotal) * 100 : 0;
 
   return (
     <tr className={`border-b border-gray-100 hover:brightness-95 transition-all ${rowBase}`}>
-      <td className={`px-4 py-2 text-xs font-medium sticky left-0 z-10 whitespace-nowrap ${
-        isDirect ? "bg-green-50" : altRow ? "bg-red-50/40" : "bg-white"
-      }`}>
-        {isDirect ? "Direct (Web/Walk-in/Email/Extension/FB/Phone)" : channel}
+      <td className={`px-4 py-2 text-xs font-medium sticky left-0 z-10 whitespace-nowrap ${labelBg}`}>
+        {isDirect ? "Direct (Web/Walk-in/Email/Extension/FB/Phone/PR)" : channel}
       </td>
 
       {cells.map((cell, ci) => {
@@ -222,17 +233,16 @@ function DataRow({ channel, isDirect, total, cells, bgFn, valueKey, altRow }) {
         );
       })}
 
-      {/* Total column: total bookings */}
-      <td className={`px-3 py-2 text-center text-xs font-semibold tabular-nums ${
-        isDirect ? "bg-green-50 text-green-700" : "bg-gray-50 text-gray-600"
-      }`}>
-        {total.toLocaleString()}
+      {/* Total column: total bookings + share of grand total */}
+      <td className={`px-3 py-2 text-center text-xs font-semibold tabular-nums ${totalBg}`}>
+        {total.toLocaleString()}{" "}
+        <span className="font-normal opacity-70">({share.toFixed(2)}%)</span>
       </td>
     </tr>
   );
 }
 
-function TotalRow({ label, periods, channels, metric }) {
+function TotalRow({ label, periods, channels, grandTotal }) {
   // Weighted average cancel rate per period
   const periodAvg = periods.map((_, pi) => {
     let totalN = 0, totalD = 0;
@@ -258,14 +268,19 @@ function TotalRow({ label, periods, channels, metric }) {
         </td>
       ))}
       <td className="px-3 py-2 text-center tabular-nums">
-        {grandD > 0 ? pct(grandN / grandD) : "—"}
+        {grandTotal > 0 ? (
+          <>
+            {grandTotal.toLocaleString()}{" "}
+            <span className="font-normal opacity-70">({grandD > 0 ? pct(grandN / grandD) : "—"})</span>
+          </>
+        ) : "—"}
       </td>
     </tr>
   );
 }
 
 // Check-in section total row: sum of all shares = 100% per period
-function CheckinTotalRow({ periods, channels }) {
+function CheckinTotalRow({ periods, channels, grandTotal }) {
   const periodSum = periods.map((_, pi) => {
     const sum = channels.reduce((s, ch) => {
       const cell = ch.checkin_cells[pi];
@@ -273,10 +288,6 @@ function CheckinTotalRow({ periods, channels }) {
     }, 0);
     return sum > 0 ? sum : null;
   });
-
-  const grandCheckin = channels.reduce((s, ch) =>
-    s + ch.checkin_cells.reduce((ss, c) => ss + c.checked_in, 0), 0);
-  const grandTotal = channels[0]?.checkin_cells.reduce((ss, c) => ss + c.total, 0) ?? 0;
 
   return (
     <tr className="bg-gray-100 font-semibold text-gray-700 text-xs border-t border-gray-300">
@@ -287,7 +298,12 @@ function CheckinTotalRow({ periods, channels }) {
         </td>
       ))}
       <td className="px-3 py-2 text-center tabular-nums">
-        {grandTotal > 0 ? pct(grandCheckin / grandTotal) : "—"}
+        {grandTotal > 0 ? (
+          <>
+            {grandTotal.toLocaleString()}{" "}
+            <span className="font-normal opacity-70">(100.00%)</span>
+          </>
+        ) : "—"}
       </td>
     </tr>
   );

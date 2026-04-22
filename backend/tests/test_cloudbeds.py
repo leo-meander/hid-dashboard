@@ -45,11 +45,37 @@ class TestMapSourceCategory:
         assert map_source_category("Booking Engine") == "Direct"
         assert map_source_category("Direct") == "Direct"
         assert map_source_category("Travel Blogger") == "Direct"
+        assert map_source_category("Walk-In") == "Direct"
+        assert map_source_category("Walk In") == "Direct"
+        assert map_source_category("Extension") == "Direct"
+        assert map_source_category("Phone") == "Direct"
+        assert map_source_category("Email") == "Direct"
+        assert map_source_category("Facebook") == "Direct"
+        assert map_source_category("Public Relations") == "Direct"
 
     def test_ota(self):
         assert map_source_category("Booking.com") == "OTA"
         assert map_source_category("Hostelworld") == "OTA"
         assert map_source_category("Agoda") == "OTA"
+        assert map_source_category("Ctrip") == "OTA"
+        assert map_source_category("Traveloka") == "OTA"
+
+    def test_local_travel_agency(self):
+        # Vietnamese corporate clients
+        assert map_source_category("CÔNG TY TNHH Daichi Jitsuqyo Việt Nam") == "Local travel agency"
+        assert map_source_category("Cong Ty TNHH ABC") == "Local travel agency"
+        # English corporate / agency
+        assert map_source_category("Acme Co., Ltd") == "Local travel agency"
+        assert map_source_category("Global Travel Agency") == "Local travel agency"
+        assert map_source_category("Saigon Travel Agent") == "Local travel agency"
+        assert map_source_category("Some Corporate Account") == "Local travel agency"
+        # CJK corporate suffixes
+        assert map_source_category("テスト株式会社") == "Local travel agency"
+        assert map_source_category("測試有限公司") == "Local travel agency"
+
+    def test_direct_beats_local_ta(self):
+        # "Blogger" is Direct even if "agency" also appears
+        assert map_source_category("Travel Blogger Agency") == "Direct"
 
     def test_none_or_empty(self):
         assert map_source_category(None) == "OTA"

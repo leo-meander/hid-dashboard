@@ -11,8 +11,15 @@ class AdsPerformance(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
-    meta_ad_id = Column(String(50), nullable=True)           # Meta ad ID for upsert
+    # Legacy upstream identifiers (preserved for backward-compat joins by name/ID).
+    meta_ad_id = Column(String(50), nullable=True)
     meta_campaign_id = Column(String(50), nullable=True)
+    # Ads Platform upstream identifiers — preferred from 028 onwards.
+    external_ad_id = Column(String(64), nullable=True)
+    external_campaign_id = Column(String(64), nullable=True)
+    account_id = Column(String(64), nullable=True)           # Ads Platform account UUID
+    data_source = Column(String(32), nullable=True)          # "AdsPlatform"
+    grain = Column(String(16), nullable=True)                # "daily" | "ad"
     campaign_name = Column(String(200), nullable=True)
     adset_name = Column(String(200), nullable=True)
     ad_name = Column(String(200), nullable=True)

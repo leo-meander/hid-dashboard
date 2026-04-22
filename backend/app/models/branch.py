@@ -19,6 +19,7 @@ class Branch(Base):
     total_dorm_count = Column(Integer, nullable=True)
     timezone = Column(String(50), nullable=False)
     cloudbeds_property_id = Column(String(100), nullable=True)
+    ads_platform_slug = Column(String(32), nullable=True)   # maps to Ads Platform branch key
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),

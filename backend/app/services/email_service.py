@@ -8,8 +8,6 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-FRONTEND_URL = "https://hid-dashboard.up.railway.app"
-
 
 def send_approval_email(
     reviewer_email: str,
@@ -32,7 +30,7 @@ def send_approval_email(
         logger.warning("Gmail credentials not configured — skipping approval email")
         return False
 
-    review_url = f"{FRONTEND_URL}/combos?review={combo_id}"
+    review_url = f"{settings.FRONTEND_URL}/combos?review={combo_id}"
 
     html = f"""
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">

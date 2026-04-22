@@ -14,11 +14,9 @@ from pathlib import Path
 
 from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_room_type_and_rate_plan, map_country_code
 from app.services.ingest_csv import import_all_csvs, import_csv_file, CSV_CONFIGS
-from app.services import meta_ads as meta_service
-from app.services import angle_classifier
+from app.services.ads_platform_sync import run_ads_platform_sync
 from app.services.metrics_engine import recompute_branch_range, recompute_occ_and_bookings
 from app.models.ads import AdsPerformance
-from app.models.angle import AdAngle
 from app.config import settings
 
 CSV_DIR = Path(r"C:\Users\duyth\Downloads")
@@ -696,172 +694,31 @@ def debug_spanning_reservations(
     })
 
 
-# ── Meta Ads sync ──────────────────────────────────────────────────────────
+# ── Ads Platform sync (replaces Meta Graph + Google Sheets, migration 028) ──
 
-META_CONFIG = {
-    "saigon": ("META_ACCESS_TOKEN_SAIGON", "META_AD_ACCOUNT_SAIGON"),
-    "1948":   ("META_ACCESS_TOKEN_1948",   "META_AD_ACCOUNT_1948"),
-    "taipei": ("META_ACCESS_TOKEN_TAIPEI", "META_AD_ACCOUNT_TAIPEI"),
-    "osaka":  ("META_ACCESS_TOKEN_OSAKA",  "META_AD_ACCOUNT_OSAKA"),
-    "oani":   ("META_ACCESS_TOKEN_OANI",   "META_AD_ACCOUNT_OANI"),
-}
-
-
-def _get_meta_creds(branch: Branch) -> tuple[str, str]:
-    """Return (token, account_id) from settings based on branch name."""
-    key = branch.name.lower().replace("meander ", "").strip()
-    for suffix, (tok_field, acc_field) in META_CONFIG.items():
-        if suffix in key:
-            token = getattr(settings, tok_field, "")
-            account = getattr(settings, acc_field, "")
-            return token, account
-    return "", ""
-
-
-@router.post("/meta")
-def trigger_meta_sync(
-    branch_id: UUID = Query(...),
-    date_preset: str = Query("last_30d", description="Meta date preset (ignored if date_from/date_to set)"),
-    date_from: Optional[str] = Query(None, description="YYYY-MM-DD custom range start"),
-    date_to: Optional[str] = Query(None, description="YYYY-MM-DD custom range end (default: today)"),
-    classify_angles: bool = Query(True),
+@router.post("/ads-platform")
+def trigger_ads_platform_sync(
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD; default = today-14"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD; default = today"),
+    month: Optional[str] = Query(None, description="YYYY-MM for budget pull; default = current month"),
     db: Session = Depends(get_db),
 ):
-    """Pull Meta Ads data for one branch. Upserts ads_performance rows.
+    """Full snapshot pull from the Ads Platform aggregator.
 
-    Use date_from/date_to for a custom range (e.g. from March 1 onwards).
-    If omitted, falls back to date_preset (default: last_30d).
-    If classify_angles=True and ANTHROPIC_API_KEY is set, Claude Haiku will
-    classify hook_type + keypoints for each ad with a creative body.
+    One call replaces the old Meta Graph API + Google Sheets sync pair.
+    Upserts ``ads_performance`` (daily + ad grains), ``ads_budgets``,
+    ``ads_booking_matches`` and mirrors ``ad_angles`` by ``external_angle_id``.
     """
-    branch = db.query(Branch).filter_by(id=branch_id, is_active=True).first()
-    if not branch:
-        raise HTTPException(status_code=404, detail="Branch not found")
-
-    token, account_id = _get_meta_creds(branch)
-    if not token or not account_id:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No Meta credentials configured for branch '{branch.name}'. "
-                   "Set META_ACCESS_TOKEN_* and META_AD_ACCOUNT_* in .env",
-        )
-
-    # Pull from Meta API
+    from datetime import date as _date
+    df = _date.fromisoformat(date_from) if date_from else None
+    dt = _date.fromisoformat(date_to) if date_to else None
     try:
-        ads = meta_service.sync_ads(token, account_id, date_preset,
-                                    date_from=date_from, date_to=date_to)
+        result = run_ads_platform_sync(db, date_from=df, date_to=dt, month=month)
+        db.commit()
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Meta API error: {exc}")
-
-    created = updated = 0
-    classified = 0
-
-    for ad in ads:
-        # ── Upsert ads_performance ─────────────────────────────────────
-        existing = (
-            db.query(AdsPerformance)
-            .filter_by(meta_ad_id=ad["meta_ad_id"])
-            .first()
-        )
-        if existing:
-            existing.campaign_name = ad["campaign_name"]
-            existing.adset_name = ad["adset_name"]
-            existing.ad_name = ad["ad_name"]
-            existing.target_country = ad["target_country"]
-            existing.target_audience = ad["target_audience"]
-            existing.funnel_stage = ad["funnel_stage"]
-            existing.pic = ad["pic"]
-            existing.ad_body = ad["ad_body"]
-            existing.channel = "Meta"
-            existing.cost_native = ad["spend_vnd"]
-            existing.cost_vnd = ad["spend_vnd"]
-            existing.impressions = ad["impressions"]
-            existing.clicks = ad["clicks"]
-            existing.leads = ad["leads"]
-            existing.bookings = ad.get("bookings", 0) or 0
-            existing.lp_views = ad.get("lp_views", 0) or 0
-            existing.add_to_cart = ad.get("add_to_cart", 0) or 0
-            existing.initiate_checkout = ad.get("initiate_checkout", 0) or 0
-            existing.revenue_native = ad.get("revenue", 0.0) or 0.0
-            if ad["date_start"]:
-                from datetime import date
-                existing.date_from = date.fromisoformat(ad["date_start"])
-            if ad["date_stop"]:
-                from datetime import date
-                existing.date_to = date.fromisoformat(ad["date_stop"])
-            row = existing
-            updated += 1
-        else:
-            from datetime import date as _date
-            row = AdsPerformance(
-                branch_id=branch.id,
-                meta_ad_id=ad["meta_ad_id"],
-                meta_campaign_id=ad["meta_campaign_id"],
-                campaign_name=ad["campaign_name"],
-                adset_name=ad["adset_name"],
-                ad_name=ad["ad_name"],
-                channel="Meta",
-                target_country=ad["target_country"],
-                target_audience=ad["target_audience"],
-                funnel_stage=ad["funnel_stage"],
-                pic=ad["pic"],
-                ad_body=ad["ad_body"],
-                cost_native=ad["spend_vnd"],
-                cost_vnd=ad["spend_vnd"],
-                impressions=ad["impressions"],
-                clicks=ad["clicks"],
-                leads=ad["leads"],
-                bookings=ad.get("bookings", 0) or 0,
-                lp_views=ad.get("lp_views", 0) or 0,
-                add_to_cart=ad.get("add_to_cart", 0) or 0,
-                initiate_checkout=ad.get("initiate_checkout", 0) or 0,
-                revenue_native=ad.get("revenue", 0.0) or 0.0,
-                date_from=_date.fromisoformat(ad["date_start"]) if ad["date_start"] else None,
-                date_to=_date.fromisoformat(ad["date_stop"]) if ad["date_stop"] else None,
-            )
-            db.add(row)
-            db.flush()
-            created += 1
-
-        # ── Classify angle if body text exists and no angle assigned yet ──
-        if classify_angles and ad["ad_body"] and not row.ad_angle_id:
-            api_key = settings.ANTHROPIC_API_KEY
-            if api_key:
-                result = angle_classifier.classify(ad["ad_body"], api_key)
-                if result["hook_type"]:
-                    # Find or create matching AdAngle for this branch+hook
-                    angle_name = f"{result['hook_type']} — {branch.name}"
-                    angle = (
-                        db.query(AdAngle)
-                        .filter_by(branch_id=branch.id, hook_type=result["hook_type"])
-                        .first()
-                    )
-                    if not angle:
-                        kps = result["keypoints"]
-                        angle = AdAngle(
-                            branch_id=branch.id,
-                            name=angle_name,
-                            hook_type=result["hook_type"],
-                            keypoint_1=kps[0] if len(kps) > 0 else None,
-                            keypoint_2=kps[1] if len(kps) > 1 else None,
-                            keypoint_3=kps[2] if len(kps) > 2 else None,
-                            keypoint_4=kps[3] if len(kps) > 3 else None,
-                            keypoint_5=kps[4] if len(kps) > 4 else None,
-                        )
-                        db.add(angle)
-                        db.flush()
-                    row.ad_angle_id = angle.id
-                    classified += 1
-
-    db.commit()
-
-    return _envelope({
-        "branch": branch.name,
-        "ads_fetched": len(ads),
-        "created": created,
-        "updated": updated,
-        "classified": classified,
-    })
+        db.rollback()
+        raise HTTPException(status_code=502, detail=f"Ads Platform sync failed: {exc}")
+    return _envelope(result)
 
 
 @router.post("/cloudbeds")
@@ -998,134 +855,6 @@ def sync_room_counts(db: Session = Depends(get_db)):
 
     db.commit()
     return _envelope({"results": results})
-
-
-# ── Google Ads (via Google Sheets) sync ────────────────────────────────────
-
-GOOGLE_SHEET_MAP = {
-    "11111111-1111-1111-1111-111111111101": "GOOGLE_SHEET_TAIPEI",
-    "11111111-1111-1111-1111-111111111102": "GOOGLE_SHEET_SAIGON",
-    "11111111-1111-1111-1111-111111111103": "GOOGLE_SHEET_1948",
-    "11111111-1111-1111-1111-111111111104": "GOOGLE_SHEET_OANI",
-    "11111111-1111-1111-1111-111111111105": "GOOGLE_SHEET_OSAKA",
-}
-
-
-@router.post("/google-ads")
-def trigger_google_ads_sync(
-    branch_id: Optional[UUID] = Query(None, description="Sync one branch; omit for all"),
-    date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
-    date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
-    db: Session = Depends(get_db),
-):
-    """
-    Pull Google Ads data from each branch's Google Sheet and upsert into ads_performance.
-    Upsert key: branch_id + channel='Google' + campaign_name + date_from.
-    """
-    from datetime import date as _date
-    from app.services.google_sheets_ads import sync_google_ads_sheet
-    from app.models.ads import AdsPerformance
-
-    client_id     = settings.GOOGLE_CLIENT_ID
-    client_secret = settings.GOOGLE_CLIENT_SECRET
-    refresh_token = settings.GOOGLE_REFRESH_TOKEN
-
-    if not client_id or not refresh_token:
-        raise HTTPException(status_code=400, detail="GOOGLE_CLIENT_ID / GOOGLE_REFRESH_TOKEN not configured")
-
-    df = _date.fromisoformat(date_from) if date_from else None
-    dt = _date.fromisoformat(date_to) if date_to else None
-
-    branches_q = db.query(Branch).filter_by(is_active=True)
-    if branch_id:
-        branches_q = branches_q.filter(Branch.id == branch_id)
-    branches = branches_q.all()
-
-    results = []
-    for branch in branches:
-        sheet_attr = GOOGLE_SHEET_MAP.get(str(branch.id))
-        if not sheet_attr:
-            results.append({"branch": branch.name, "skipped": "no sheet configured"})
-            continue
-        spreadsheet_id = getattr(settings, sheet_attr, "")
-        if not spreadsheet_id:
-            results.append({"branch": branch.name, "skipped": "sheet ID empty"})
-            continue
-
-        try:
-            data = sync_google_ads_sheet(
-                branch_id=str(branch.id),
-                branch_name=branch.name,
-                spreadsheet_id=spreadsheet_id,
-                currency=branch.currency or "VND",
-                client_id=client_id,
-                client_secret=client_secret,
-                refresh_token=refresh_token,
-                date_from=df,
-                date_to=dt,
-            )
-
-            created = updated = 0
-            for row in data["rows"]:
-                # Upsert key: branch + channel + campaign_name + date
-                existing = (
-                    db.query(AdsPerformance)
-                    .filter_by(
-                        branch_id=branch.id,
-                        channel="Google",
-                        campaign_name=row["campaign_name"],
-                        date_from=row["date_from"],
-                    )
-                    .first()
-                )
-                if existing:
-                    existing.funnel_stage      = row["funnel_stage"]
-                    existing.campaign_category = row["campaign_category"]
-                    existing.target_country    = row["target_country"]
-                    existing.cost_native       = row["cost_native"]
-                    existing.impressions       = row["impressions"]
-                    existing.clicks            = row["clicks"]
-                    existing.leads             = row["leads"]
-                    existing.bookings          = row["bookings"]
-                    existing.revenue_native    = row["revenue_native"]
-                    existing.date_to           = row["date_to"]
-                    updated += 1
-                else:
-                    from datetime import date as _d
-                    ap = AdsPerformance(
-                        branch_id=branch.id,
-                        channel="Google",
-                        campaign_name=row["campaign_name"],
-                        campaign_category=row["campaign_category"],
-                        funnel_stage=row["funnel_stage"],
-                        target_country=row["target_country"],
-                        cost_native=row["cost_native"],
-                        cost_vnd=row["cost_vnd"],
-                        impressions=row["impressions"],
-                        clicks=row["clicks"],
-                        leads=row["leads"],
-                        bookings=row["bookings"],
-                        revenue_native=row["revenue_native"],
-                        date_from=row["date_from"],
-                        date_to=row["date_to"],
-                    )
-                    db.add(ap)
-                    created += 1
-
-            db.commit()
-            results.append({
-                "branch":   branch.name,
-                "fetched":  data["fetched"],
-                "filtered": data["filtered"],
-                "created":  created,
-                "updated":  updated,
-            })
-        except Exception as exc:
-            db.rollback()
-            results.append({"branch": branch.name, "error": str(exc)})
-
-    return _envelope({"synced": results})
-
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ from app.services.metrics_engine import (
     get_ota_trend,
     get_rates_trend,
     get_country_yoy,
+    get_country_yoy_insights_local,
 )
 
 logger = logging.getLogger(__name__)
@@ -388,29 +389,85 @@ def get_country_yoy_insights(
     db: Session = Depends(get_db),
 ):
     """
-    Country YoY comparison using Cloudbeds Data Insights API (lightweight).
-
-    Fetches aggregated country data for the requested month and the same month
-    last year, then merges + calculates YoY changes.
+    Country YoY comparison — local DB first, Cloudbeds Data Insights fallback.
     """
-    from app.models.branch import Branch
-    from app.services.cloudbeds import fetch_country_insights
-    from app.config import settings
-
     today = date.today()
     if year is None:
         year = today.year
     if month is None:
         month = today.month
 
-    # Determine which branches to query
+    try:
+        # ── Primary: local DB ─────────────────────────────────────────────
+        local = get_country_yoy_insights_local(db, branch_id, year, month)
+        current_totals = local["current"]
+        prev_totals = local["previous"]
+
+        # ── Fallback: Cloudbeds Data Insights API (if local is empty) ─────
+        if not current_totals and not prev_totals:
+            logger.info("Local DB empty for country YoY %d-%02d, trying Cloudbeds", year, month)
+            current_totals, prev_totals = _fetch_country_yoy_cloudbeds(
+                db, branch_id, year, month,
+            )
+
+        # ── Build response rows ───────────────────────────────────────────
+        all_countries = set(current_totals.keys()) | set(prev_totals.keys())
+        rows = []
+        for country in all_countries:
+            curr_d = current_totals.get(country, {"nights": 0, "revenue": 0, "guests": 0})
+            prev_d = prev_totals.get(country, {"nights": 0, "revenue": 0, "guests": 0})
+
+            def pct_change(curr_val, prev_val):
+                if prev_val == 0:
+                    return None if curr_val == 0 else 100.0
+                return round(((curr_val - prev_val) / prev_val) * 100, 2)
+
+            rows.append({
+                "country": country,
+                "current_nights": curr_d["nights"],
+                "current_revenue": curr_d["revenue"],
+                "current_guests": curr_d["guests"],
+                "prev_nights": prev_d["nights"],
+                "prev_revenue": prev_d["revenue"],
+                "prev_guests": prev_d["guests"],
+                "nights_change_pct": pct_change(curr_d["nights"], prev_d["nights"]),
+                "revenue_change_pct": pct_change(curr_d["revenue"], prev_d["revenue"]),
+                "guests_change_pct": pct_change(curr_d["guests"], prev_d["guests"]),
+            })
+
+        rows.sort(key=lambda r: r["current_nights"], reverse=True)
+
+        return _envelope({
+            "year": year,
+            "month": month,
+            "countries": rows,
+        })
+    except Exception as exc:
+        logger.exception("country-yoy-insights failed: %s", exc)
+        return _envelope({
+            "year": year,
+            "month": month,
+            "countries": [],
+        })
+
+
+def _fetch_country_yoy_cloudbeds(
+    db: Session,
+    branch_id: Optional[UUID],
+    year: int,
+    month: int,
+) -> tuple[dict, dict]:
+    """Cloudbeds Data Insights fallback for country YoY."""
+    from app.models.branch import Branch
+    from app.services.cloudbeds import fetch_country_insights
+    from app.config import settings
+
     q = db.query(Branch).filter(Branch.is_active.is_(True))
     if branch_id:
         q = q.filter(Branch.id == branch_id)
     branches = q.all()
 
-    # Aggregate across branches
-    current_totals: dict[str, dict] = {}   # country -> {nights, revenue, guests}
+    current_totals: dict[str, dict] = {}
     prev_totals: dict[str, dict] = {}
 
     for branch in branches:
@@ -421,21 +478,18 @@ def get_country_yoy_insights(
         if not api_key:
             continue
 
-        # Fetch current year month
         try:
             curr = fetch_country_insights(str(pid), api_key, year, month)
         except Exception as exc:
             logger.warning("Country insights current failed %s: %s", branch.name, exc)
             curr = {}
 
-        # Fetch same month last year
         try:
             prev = fetch_country_insights(str(pid), api_key, year - 1, month)
         except Exception as exc:
             logger.warning("Country insights prev failed %s: %s", branch.name, exc)
             prev = {}
 
-        # Merge into totals
         for country, data in curr.items():
             if country not in current_totals:
                 current_totals[country] = {"nights": 0, "revenue": 0, "guests": 0}
@@ -450,39 +504,7 @@ def get_country_yoy_insights(
             prev_totals[country]["revenue"] += data["revenue"]
             prev_totals[country]["guests"] += data["guests"]
 
-    # Merge current + previous and calculate YoY changes
-    all_countries = set(current_totals.keys()) | set(prev_totals.keys())
-    rows = []
-    for country in all_countries:
-        curr_d = current_totals.get(country, {"nights": 0, "revenue": 0, "guests": 0})
-        prev_d = prev_totals.get(country, {"nights": 0, "revenue": 0, "guests": 0})
-
-        def pct_change(curr_val, prev_val):
-            if prev_val == 0:
-                return None if curr_val == 0 else 100.0
-            return round(((curr_val - prev_val) / prev_val) * 100, 2)
-
-        rows.append({
-            "country": country,
-            "current_nights": curr_d["nights"],
-            "current_revenue": curr_d["revenue"],
-            "current_guests": curr_d["guests"],
-            "prev_nights": prev_d["nights"],
-            "prev_revenue": prev_d["revenue"],
-            "prev_guests": prev_d["guests"],
-            "nights_change_pct": pct_change(curr_d["nights"], prev_d["nights"]),
-            "revenue_change_pct": pct_change(curr_d["revenue"], prev_d["revenue"]),
-            "guests_change_pct": pct_change(curr_d["guests"], prev_d["guests"]),
-        })
-
-    # Sort by current nights descending
-    rows.sort(key=lambda r: r["current_nights"], reverse=True)
-
-    return _envelope({
-        "year": year,
-        "month": month,
-        "countries": rows,
-    })
+    return current_totals, prev_totals
 
 
 

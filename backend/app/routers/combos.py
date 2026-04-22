@@ -15,7 +15,6 @@ from app.models.creative_copy import CreativeCopy
 from app.models.creative_material import CreativeMaterial
 from app.services.id_generator import generate_code
 from app.services.verdict_sync import sync_combo_performance, compute_derived_verdicts
-from app.services.creative_sync import import_meta_creatives, import_all_branches
 from app.services.email_service import send_approval_email
 from app.services import angle_classifier
 from app.models.user import User
@@ -434,56 +433,6 @@ def manual_sync(db: Session = Depends(get_db)):
         "components_updated": derived,
         "synced_at": datetime.now(timezone.utc).isoformat(),
     })
-
-
-class ImportMetaRequest(BaseModel):
-    branch_id: Optional[UUID] = None
-    status_filter: Optional[str] = "ACTIVE"  # ACTIVE, PAUSED, or ALL
-
-
-@router.post("/import-meta")
-def import_from_meta(
-    body: ImportMetaRequest = ImportMetaRequest(),
-    db: Session = Depends(get_db),
-):
-    """Import ad creatives from Meta API into Creative Library.
-
-    If branch_id provided: import for that branch only.
-    If omitted: import for all branches with Meta credentials.
-    """
-    try:
-        if body.branch_id:
-            from app.models.branch import Branch
-            branch = db.query(Branch).filter(Branch.id == body.branch_id, Branch.is_active == True).first()
-            if not branch:
-                raise HTTPException(404, "Branch not found")
-
-            status = body.status_filter or "ACTIVE"
-            # For "ALL" status, fetch both ACTIVE and PAUSED
-            if status.upper() == "ALL":
-                stats_active = import_meta_creatives(db, branch.id, branch.name, "ACTIVE")
-                stats_paused = import_meta_creatives(db, branch.id, branch.name, "PAUSED")
-                # Merge stats
-                stats = {k: stats_active.get(k, 0) + stats_paused.get(k, 0) for k in stats_active}
-            else:
-                stats = import_meta_creatives(db, branch.id, branch.name, status)
-
-            return _envelope({
-                "branch": branch.name,
-                "stats": stats,
-                "imported_at": datetime.now(timezone.utc).isoformat(),
-            })
-        else:
-            status = body.status_filter or "ACTIVE"
-            all_stats = import_all_branches(db, status_filter=status)
-            return _envelope({
-                "branches": all_stats,
-                "imported_at": datetime.now(timezone.utc).isoformat(),
-            })
-    except ValueError as e:
-        raise HTTPException(422, str(e))
-    except Exception as e:
-        raise HTTPException(500, f"Meta import failed: {str(e)}")
 
 
 class AutoClassifyRequest(BaseModel):

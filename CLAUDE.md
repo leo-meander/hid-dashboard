@@ -10,7 +10,7 @@ Replaces manual Excel workflows for 6 marketing team users.
 - Frontend:   React + Vite + Recharts + TailwindCSS
 - Database:   PostgreSQL via Supabase
 - Email:      SendGrid
-- Deployment: Railway (backend + frontend)
+- Deployment: Zeabur (backend + frontend)
 
 ## Architecture Overview
 - API spec:         docs/specs/api-spec.md

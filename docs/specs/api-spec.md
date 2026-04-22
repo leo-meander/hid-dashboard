@@ -2,7 +2,7 @@
 
 ## Base URL
 - Dev: `http://localhost:8000`
-- Prod: `https://hid-backend.railway.app` (update when deployed)
+- Prod: `https://<zeabur-domain>` (update after Zeabur deploy)
 
 ## Standard Response Format
 ```json
