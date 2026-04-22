@@ -18,7 +18,7 @@ from uuid import UUID
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, or_, extract
+from sqlalchemy import func, or_, extract, literal_column
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -461,13 +461,22 @@ def _build_monthly_by_country(db, branch_id, d_from, d_to, ads_rows, use_native)
 # ── CRM Reservations by Rate Plan ────────────────────────────────────────────
 
 def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date, d_to: date, use_native: bool):
-    """CRM reservations grouped by rate_plan_name (falls back to room_type when blank)."""
+    """CRM reservations grouped by rate plan tag (extracted from room_type when rate_plan_name blank)."""
     rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
 
-    # CRM reservations often have rate_plan_name empty; the CRM identifier lives in room_type.
-    # Fall back in order: rate_plan_name → room_type → '(unknown)'.
+    # Cloudbeds packs the rate plan name inside the roomTypeName parentheses,
+    # e.g. 'Female Dorm* (CRM_May 2026 Event)'. When rate_plan_name is null we
+    # extract just the parenthesised tag so each CRM event gets its own row
+    # instead of collapsing into one row per base room type.
+    # Fallback order: rate_plan_name → substring inside first (…) in room_type
+    #                 → full room_type → '(unknown)'.
+    # PostgreSQL-specific: SUBSTRING(col FROM 'pattern') returns the first
+    # capture group or NULL. Wrap in literal_column because SQLAlchemy's
+    # func.substring emits the positional (int) form instead of the FROM form.
+    crm_tag = literal_column(r"substring(reservations.room_type from E'\\(([^)]+)\\)')")
     rate_plan_expr = func.coalesce(
         func.nullif(func.trim(Reservation.rate_plan_name), ""),
+        func.nullif(func.trim(crm_tag), ""),
         func.nullif(func.trim(Reservation.room_type), ""),
         "(unknown)",
     ).label("rate_plan")
