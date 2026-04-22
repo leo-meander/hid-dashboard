@@ -193,6 +193,7 @@ def list_results(
     detected_angle: Optional[str] = Query(None),
     detected_ta: Optional[str] = Query(None),
     verdict: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
     """Get analysis results with search + filters."""
@@ -226,7 +227,7 @@ def list_results(
             (CreativeCopy.headline.ilike(pattern)) |
             (AdAnalysisResult.ai_recommendation.ilike(pattern))
         )
-    results = q.order_by(AdAnalysisResult.analyzed_at.desc()).all()
+    results = q.order_by(AdAnalysisResult.analyzed_at.desc()).limit(limit).all()
     return _envelope([_result_dict(r) for r in results])
 
 

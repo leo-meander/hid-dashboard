@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 from sqlalchemy import func
 
 from app.database import get_db
@@ -450,7 +450,7 @@ def debug_raw_sample(
     db: Session = Depends(get_db),
 ):
     """Return raw_data keys + revenue fields for a sample reservation (debugging only)."""
-    q = db.query(Reservation).filter(Reservation.branch_id == branch_id)
+    q = db.query(Reservation).options(undefer(Reservation.raw_data)).filter(Reservation.branch_id == branch_id)
     if has_zero_revenue:
         q = q.filter(
             (Reservation.grand_total_native == None) | (Reservation.grand_total_native == 0)

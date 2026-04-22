@@ -4,9 +4,10 @@
  */
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import { useAuth } from "../context/AuthContext";
-import { listCombos, getCombo, createCombo, updateCombo, deleteCombo, triggerSync, comboInsights, importFromMeta, submitForApproval, reviewCombo, listPending, listUsers, autoClassifyAngles } from "../api/combos";
+import { listCombos, getCombo, createCombo, updateCombo, deleteCombo, triggerSync, comboInsights, submitForApproval, reviewCombo, listPending, listUsers, autoClassifyAngles } from "../api/combos";
 import { listCopies } from "../api/copies";
 import { listMaterials } from "../api/materials";
 import { listAngles } from "../api/angles";
@@ -24,18 +25,13 @@ export default function AdCombos() {
   const { selected, isAll } = useBranch();
   const { user, isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
+  const queryClient = useQueryClient();
 
-  const [combos, setCombos] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [insights, setInsights] = useState(null);
   const [detail, setDetail] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const [tab, setTab] = useState("all"); // "all" | "pending"
-  const [pendingCombos, setPendingCombos] = useState([]);
-  const [pendingLoading, setPendingLoading] = useState(false);
-  const [angles, setAngles] = useState([]);
 
   // Filters from URL params
   const f = {
@@ -54,30 +50,42 @@ export default function AdCombos() {
     setSearchParams(p);
   };
 
-  const load = () => {
-    setLoading(true);
+  const branchParam = !isAll && selected ? selected : undefined;
+  const combosParams = (() => {
     const p = { ...f };
-    if (!isAll && selected) p.branch_id = selected;
+    if (branchParam) p.branch_id = branchParam;
     Object.keys(p).forEach(k => { if (!p[k]) delete p[k]; });
-    Promise.all([
-      listCombos(p),
-      comboInsights({ branch_id: !isAll ? selected : undefined }),
-      listAngles({ branch_id: !isAll ? selected : undefined }),
-    ]).then(([c, ins, ang]) => {
-      setCombos(c);
-      setInsights(ins);
-      setAngles(ang || []);
-    }).finally(() => setLoading(false));
-  };
-  const loadPending = () => {
-    setPendingLoading(true);
-    listPending({ reviewer_id: user?.id })
-      .then(setPendingCombos)
-      .catch(() => setPendingCombos([]))
-      .finally(() => setPendingLoading(false));
-  };
+    return p;
+  })();
 
-  useEffect(() => { load(); loadPending(); }, [selected, searchParams.toString()]);
+  const combosQuery = useQuery({
+    queryKey: ["combos", combosParams],
+    queryFn: () => listCombos(combosParams),
+  });
+  const insightsQuery = useQuery({
+    queryKey: ["combos", "insights", branchParam],
+    queryFn: () => comboInsights({ branch_id: branchParam }),
+  });
+  const anglesQuery = useQuery({
+    queryKey: ["angles", branchParam],
+    queryFn: () => listAngles({ branch_id: branchParam }),
+  });
+  const pendingQuery = useQuery({
+    queryKey: ["combos", "pending", user?.id],
+    queryFn: () => listPending({ reviewer_id: user?.id }),
+    enabled: !!user,
+  });
+
+  const combos = combosQuery.data || [];
+  const insights = insightsQuery.data || null;
+  const angles = anglesQuery.data || [];
+  const pendingCombos = pendingQuery.data || [];
+  const loading = combosQuery.isLoading || insightsQuery.isLoading || anglesQuery.isLoading;
+  const pendingLoading = pendingQuery.isLoading;
+
+  const invalidateCombos = () => {
+    queryClient.invalidateQueries({ queryKey: ["combos"] });
+  };
 
   const openDetail = (id) => {
     getCombo(id).then(setDetail);
@@ -85,11 +93,11 @@ export default function AdCombos() {
 
   const handleDelete = (id, code) => {
     if (!confirm(`Delete combo ${code}? This cannot be undone.`)) return;
-    deleteCombo(id).then(() => { load(); loadPending(); });
+    deleteCombo(id).then(invalidateCombos);
   };
 
   const saveVerdict = (id, verdict, notes) => {
-    updateCombo(id, { verdict, verdict_notes: notes }).then(d => { setDetail(d); load(); });
+    updateCombo(id, { verdict, verdict_notes: notes }).then(d => { setDetail(d); invalidateCombos(); });
   };
 
   return (
@@ -100,27 +108,8 @@ export default function AdCombos() {
         <div className="flex gap-2">
           {isAdmin && (
             <>
-              <button onClick={() => triggerSync().then(load)}
+              <button onClick={() => triggerSync().then(invalidateCombos)}
                 className="px-3 py-1.5 text-xs border rounded text-gray-600 hover:bg-gray-50">Sync ROAS</button>
-              <button
-                onClick={() => {
-                  setImporting(true);
-                  setImportResult(null);
-                  importFromMeta({
-                    branch_id: !isAll ? selected : undefined,
-                    status_filter: "ACTIVE",
-                  }).then(r => {
-                    setImportResult(r);
-                    load();
-                  }).catch(err => {
-                    setImportResult({ error: err.response?.data?.detail || "Import failed" });
-                  }).finally(() => setImporting(false));
-                }}
-                disabled={importing}
-                className="px-3 py-1.5 text-xs border border-blue-300 rounded text-blue-600 hover:bg-blue-50 disabled:opacity-50"
-              >
-                {importing ? "Importing..." : "Import from Meta"}
-              </button>
               <button
                 onClick={() => {
                   setImporting(true);
@@ -128,7 +117,7 @@ export default function AdCombos() {
                     branch_id: !isAll ? selected : undefined,
                   }).then(r => {
                     setImportResult(r);
-                    load();
+                    invalidateCombos();
                   }).catch(err => {
                     setImportResult({ error: err.response?.data?.detail || "Classification failed" });
                   }).finally(() => setImporting(false));
@@ -152,20 +141,12 @@ export default function AdCombos() {
         }`}>
           {importResult.error ? (
             <span>{importResult.error}</span>
-          ) : importResult.classified != null ? (
+          ) : (
             <span>
-              AI Angles: {importResult.classified} classified, {importResult.skipped} skipped out of {importResult.total}
+              AI Angles: {importResult.classified || 0} classified, {importResult.skipped || 0} skipped out of {importResult.total || 0}
               {importResult.errors?.length > 0 && (
                 <span className="text-xs text-gray-500 ml-2">({importResult.errors[0]})</span>
               )}
-            </span>
-          ) : (
-            <span>
-              Meta Import: {importResult.stats?.ads_fetched || 0} ads fetched
-              {" → "}{importResult.stats?.copies_created || 0} copies,
-              {" "}{importResult.stats?.materials_created || 0} materials,
-              {" "}{importResult.stats?.combos_created || 0} combos created
-              {importResult.stats?.skipped ? ` (${importResult.stats.skipped} skipped)` : ""}
             </span>
           )}
           <button onClick={() => setImportResult(null)} className="ml-2 text-gray-400 hover:text-gray-600">&times;</button>
@@ -178,7 +159,7 @@ export default function AdCombos() {
           className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${tab === "all" ? "border-indigo-600 text-indigo-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
           All Combos
         </button>
-        <button onClick={() => { setTab("pending"); loadPending(); }}
+        <button onClick={() => { setTab("pending"); queryClient.invalidateQueries({ queryKey: ["combos", "pending"] }); }}
           className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px flex items-center gap-1.5 ${tab === "pending" ? "border-amber-500 text-amber-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
           Pending Review
           {pendingCombos.length > 0 && (
@@ -446,21 +427,21 @@ export default function AdCombos() {
                         <button onClick={() => {
                           const fb = document.getElementById("review-feedback")?.value;
                           reviewCombo(detail.id, { approval_status: "Approved", feedback: fb || null })
-                            .then(d => { setDetail(d); load(); });
+                            .then(d => { setDetail(d); invalidateCombos(); });
                         }} className="flex-1 px-3 py-1.5 bg-green-600 text-white text-xs rounded hover:bg-green-700">
                           Approve
                         </button>
                         <button onClick={() => {
                           const fb = document.getElementById("review-feedback")?.value;
                           reviewCombo(detail.id, { approval_status: "Needs Revision", feedback: fb || null })
-                            .then(d => { setDetail(d); load(); });
+                            .then(d => { setDetail(d); invalidateCombos(); });
                         }} className="flex-1 px-3 py-1.5 bg-amber-500 text-white text-xs rounded hover:bg-amber-600">
                           Needs Revision
                         </button>
                         <button onClick={() => {
                           const fb = document.getElementById("review-feedback")?.value;
                           reviewCombo(detail.id, { approval_status: "Rejected", feedback: fb || null })
-                            .then(d => { setDetail(d); load(); });
+                            .then(d => { setDetail(d); invalidateCombos(); });
                         }} className="flex-1 px-3 py-1.5 bg-red-600 text-white text-xs rounded hover:bg-red-700">
                           Reject
                         </button>
@@ -493,7 +474,7 @@ export default function AdCombos() {
                 <div>
                   <label className="text-xs text-gray-500">Run Status</label>
                   <select defaultValue={detail.run_status || ""} onChange={e => {
-                    updateCombo(detail.id, { run_status: e.target.value || null }).then(d => { setDetail(d); load(); });
+                    updateCombo(detail.id, { run_status: e.target.value || null }).then(d => { setDetail(d); invalidateCombos(); });
                   }} className="w-full border rounded px-2 py-1 text-xs mt-1">
                     <option value="">Not set</option>
                     {RUN_STATUSES.map(s => <option key={s}>{s}</option>)}
@@ -506,7 +487,7 @@ export default function AdCombos() {
       )}
 
       {/* Add Combo Modal */}
-      {showAdd && <AddComboModal branchId={!isAll ? selected : null} userName={user?.name} onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); load(); }} />}
+      {showAdd && <AddComboModal branchId={!isAll ? selected : null} userName={user?.name} onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); invalidateCombos(); }} />}
     </div>
   );
 }

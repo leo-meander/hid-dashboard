@@ -138,6 +138,7 @@ def list_combos(
     run_status: Optional[str] = Query(None),
     copy_id: Optional[UUID] = Query(None),
     material_id: Optional[UUID] = Query(None),
+    limit: int = Query(500, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
     q = db.query(AdCombo).filter(AdCombo.is_active == True)
@@ -161,7 +162,7 @@ def list_combos(
         q = q.filter(AdCombo.copy_id == copy_id)
     if material_id:
         q = q.filter(AdCombo.material_id == material_id)
-    combos = q.order_by(AdCombo.created_at.desc()).all()
+    combos = q.order_by(AdCombo.created_at.desc()).limit(limit).all()
     return _envelope([_combo_dict(cb) for cb in combos])
 
 
@@ -288,6 +289,7 @@ def combo_insights(
 @router.get("/pending")
 def list_pending(
     reviewer_id: Optional[UUID] = Query(None),
+    limit: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
     """List combos pending approval, optionally filtered by reviewer."""
@@ -297,7 +299,7 @@ def list_pending(
     )
     if reviewer_id:
         q = q.filter(AdCombo.reviewer_id == reviewer_id)
-    combos = q.order_by(AdCombo.created_at.desc()).all()
+    combos = q.order_by(AdCombo.created_at.desc()).limit(limit).all()
     return _envelope([_combo_dict(cb) for cb in combos])
 
 

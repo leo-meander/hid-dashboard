@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Date, Numeric, DateTime, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, deferred
 from app.database import Base
 
 
@@ -35,7 +35,9 @@ class Reservation(Base):
     status = Column(String(50), nullable=True)
     cancellation_date = Column(Date, nullable=True)
     reservation_date = Column(Date, nullable=True)
-    raw_data = Column(JSONB, nullable=True)
+    # Deferred: JSONB payload is ~5-10KB/row; only loaded when explicitly
+    # requested via undefer() to keep default SELECTs small (egress savings).
+    raw_data = deferred(Column(JSONB, nullable=True))
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))

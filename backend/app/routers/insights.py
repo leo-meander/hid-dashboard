@@ -82,6 +82,7 @@ def _envelope(data):
 @router.get("")
 def list_insights(
     branch_id: Optional[UUID] = Query(None),
+    limit: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
     """
@@ -93,7 +94,7 @@ def list_insights(
     q = db.query(KOLRecord).filter(KOLRecord.paid_ads_eligible == True)
     if branch_id:
         q = q.filter(KOLRecord.branch_id == branch_id)
-    rows = q.order_by(KOLRecord.published_date.desc().nullslast()).all()
+    rows = q.order_by(KOLRecord.published_date.desc().nullslast()).limit(limit).all()
 
     result = []
     for r in rows:

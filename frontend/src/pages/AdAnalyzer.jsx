@@ -3,8 +3,9 @@
  * Search + Filters, Funnel chart, Angle performance, TA×Angle heatmap,
  * Detailed AI evaluation with optimization actions.
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import { listResults, getInsights, analyzeBatch } from "../api/analyzer";
 import { getTAClasses, AUDIENCES } from "../constants/audiences";
@@ -41,9 +42,7 @@ const fmt = (v) => v != null ? new Intl.NumberFormat("en").format(Math.round(v))
 export default function AdAnalyzer() {
   const { selected, isAll } = useBranch();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [insights, setInsights] = useState(null);
-  const [results, setResults] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [analyzing, setAnalyzing] = useState(false);
   const [expanded, setExpanded] = useState(null); // expanded card id
 
@@ -58,26 +57,38 @@ export default function AdAnalyzer() {
     setSearchParams(p);
   };
 
-  const load = () => {
-    setLoading(true);
-    const params = {};
-    if (!isAll && selected) params.branch_id = selected;
-    if (search) params.search = search;
-    if (fRecType) params.recommendation_type = fRecType;
-    if (fVerdict) params.verdict = fVerdict;
+  const branchParam = !isAll && selected ? selected : undefined;
+  const resultsParams = (() => {
+    const p = {};
+    if (branchParam) p.branch_id = branchParam;
+    if (search) p.search = search;
+    if (fRecType) p.recommendation_type = fRecType;
+    if (fVerdict) p.verdict = fVerdict;
+    return p;
+  })();
 
-    const insightParams = !isAll && selected ? { branch_id: selected } : {};
-    Promise.all([getInsights(insightParams), listResults(params)])
-      .then(([ins, res]) => { setInsights(ins); setResults(res); })
-      .finally(() => setLoading(false));
+  const insightsQuery = useQuery({
+    queryKey: ["analyzer", "insights", branchParam],
+    queryFn: () => getInsights(branchParam ? { branch_id: branchParam } : {}),
+  });
+  const resultsQuery = useQuery({
+    queryKey: ["analyzer", "results", resultsParams],
+    queryFn: () => listResults(resultsParams),
+  });
+
+  const insights = insightsQuery.data || null;
+  const results = resultsQuery.data || [];
+  const loading = insightsQuery.isLoading || resultsQuery.isLoading;
+
+  const invalidateAnalyzer = () => {
+    queryClient.invalidateQueries({ queryKey: ["analyzer"] });
   };
-  useEffect(load, [selected, searchParams.toString()]);
 
   const handleBatchAnalyze = () => {
     if (!selected || isAll) return;
     setAnalyzing(true);
     analyzeBatch(selected, true)
-      .then(() => setTimeout(load, 5000))
+      .then(() => setTimeout(invalidateAnalyzer, 5000))
       .finally(() => setAnalyzing(false));
   };
 

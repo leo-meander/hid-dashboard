@@ -1,8 +1,8 @@
 /**
  * KOL Insights — Paid Ads Opportunities — Phase 3
  */
-import { useEffect, useState } from "react";
 import axios from "axios";
+import { useQuery } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 
 function OpportunityBadge({ types }) {
@@ -18,20 +18,16 @@ function OpportunityBadge({ types }) {
 
 export default function Insights() {
   const { selected, isAll } = useBranch();
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const branchParam = !isAll && selected ? selected : null;
 
-  const load = () => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    if (!isAll && selected) params.set("branch_id", selected);
-    axios.get("/api/insights?" + params)
-      .then(r => setRows(r.data.data || []))
-      .catch(() => setRows([]))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, [selected, isAll]);
+  const { data: rows = [], isLoading: loading } = useQuery({
+    queryKey: ["insights", branchParam],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (branchParam) params.set("branch_id", branchParam);
+      return axios.get("/api/insights?" + params).then(r => r.data.data || []);
+    },
+  });
 
   const actionable = rows.filter(r => r.is_actionable);
   const rest = rows.filter(r => !r.is_actionable);

@@ -10,7 +10,7 @@ from uuid import UUID
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Header
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 
 from app.database import get_db
 from app.models.api_key import ApiKey
@@ -127,7 +127,9 @@ def get_reservations(
     """
     try:
         limit = min(limit, 1000)
-        q = db.query(Reservation)
+        # raw_data is deferred on the model; this endpoint exposes JSONB fields,
+        # so undefer explicitly for these rows only.
+        q = db.query(Reservation).options(undefer(Reservation.raw_data))
 
         if date_from:
             q = q.filter(Reservation.check_in_date >= date_from)
