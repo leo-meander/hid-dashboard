@@ -428,22 +428,13 @@ def compute_next_month_forecast(
     predicted_dorm_occ_next = float(target_row.predicted_dorm_occ_pct) if (target_row and target_row.predicted_dorm_occ_pct) else None
     next_month_target = float(target_row.target_revenue_native) if (target_row and target_row.target_revenue_native) else None
 
-    # ── Forecast ──────────────────────────────────────────────────────────
-    # Forecast = avg_adr × total_pred_sold (using split OCC for pred_sold)
+    # ── Forecast (Cloudbeds-confirmed bookings) ───────────────────────────
+    # Next-month forecast = confirmed revenue already in daily_metrics,
+    # sourced from fetch_filtered_daily (dataset 7, room_type-filtered,
+    # source-excluded). As new bookings land, the nightly sync will increase
+    # this number — no static OCC target needed.
     room_forecast = dorm_forecast = None
-    forecast = None
-
-    if (has_split
-            and predicted_room_occ_next is not None
-            and predicted_dorm_occ_next is not None
-            and total_adr):
-        pred_room_sold = round(total_days * total_room_count * predicted_room_occ_next)
-        pred_dorm_sold = round(total_days * total_dorm_count * predicted_dorm_occ_next)
-        pred_sold = pred_room_sold + pred_dorm_sold
-        forecast = round(total_adr * pred_sold, 2)
-    elif total_adr and predicted_occ_next and total_rooms > 0:
-        pred_sold = round(total_days * total_rooms * predicted_occ_next)
-        forecast = round(total_adr * pred_sold, 2)
+    forecast = round(float(total_revenue), 2) if total_revenue else None
 
     return {
         "next_year": next_year,
@@ -480,7 +471,10 @@ def compute_kpi_summary(
     - Revenue excludes Blogger, House Use, Special case
     - Rooms sold counts ALL sources
     - Room/Dorm split via room type filter (Dorm = name contains 'Dorm')
-    Forecast = ADR x Round(total_days x num_rooms x predicted_occ, 0).
+    Forecast = actual filtered revenue to date
+               + Cloudbeds stock-report-110 confirmed remaining days
+               (adr_native × total_sold for future dates in daily_metrics).
+    Next-month forecast = confirmed bookings from Cloudbeds (no OCC formula).
     """
     today = _today()
     total_days = _days_in_month(year, month)
@@ -539,25 +533,35 @@ def compute_kpi_summary(
         actual_room_occ = round(room_sold_total / (total_room_count * days_elapsed), 4) if total_room_count > 0 else None
         actual_dorm_occ = round(dorm_sold_total / (total_dorm_count * days_elapsed), 4) if total_dorm_count > 0 else None
 
-    # ── Forecasts ─────────────────────────────────────────────────────────
-    # Forecast = avg_adr × total_pred_sold
-    # Use room/dorm split OCC for pred_sold, but apply single avg_adr.
-    # Split room/dorm ADR from daily_metrics is unreliable due to
-    # proportional revenue attribution — avg_adr is accurate from Insights API.
+    # ── Forecasts (Cloudbeds-confirmed) ───────────────────────────────────
+    # For current month: actual filtered revenue to date
+    #   + confirmed remaining days from Cloudbeds stock report 110
+    #   (daily_metrics.adr_native × total_sold for dates > today,
+    #    populated by sync_cloudbeds_occupancy from stock report 110).
+    # For completed/future months: full-month revenue from daily_metrics.
+    # This replaces the old avg_adr × target_occ formula — Cloudbeds numbers
+    # are authoritative; room_type filter (contains "Dorm") is applied by
+    # fetch_filtered_daily upstream, so room/dorm split is already correct.
     room_forecast = dorm_forecast = None
     occ_forecast = None
 
-    if (has_split
-            and predicted_room_occ is not None
-            and predicted_dorm_occ is not None
-            and avg_adr):
-        pred_room_sold = round(total_days * total_room_count * predicted_room_occ)
-        pred_dorm_sold = round(total_days * total_dorm_count * predicted_dorm_occ)
-        pred_sold = pred_room_sold + pred_dorm_sold
-        occ_forecast = round(avg_adr * pred_sold, 2)
-    elif avg_adr and predicted_occ_pct and total_rooms > 0:
-        pred_sold = round(total_days * total_rooms * predicted_occ_pct)
-        occ_forecast = round(avg_adr * pred_sold, 2)
+    last_day_date = date(year, month, total_days)
+    if today.year == year and today.month == month and days_elapsed < total_days:
+        # Current in-progress month: actual + Cloudbeds-confirmed remaining days
+        future_confirmed = db.query(
+            func.coalesce(
+                func.sum(DailyMetrics.adr_native * DailyMetrics.total_sold), 0
+            )
+        ).filter(
+            DailyMetrics.branch_id == branch_id,
+            DailyMetrics.date > today,
+            DailyMetrics.date <= last_day_date,
+            DailyMetrics.total_sold > 0,
+        ).scalar()
+        occ_forecast = round(float(actual_native or 0) + float(future_confirmed or 0), 2) or None
+    else:
+        # Completed month or pure-future month: actual_native covers full range
+        occ_forecast = round(float(actual_native), 2) if actual_native else None
 
     # Achievement
     achievement_pct = calculate_achievement_pct(actual_native, target_revenue_native)
