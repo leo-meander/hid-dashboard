@@ -434,6 +434,10 @@ def compute_next_month_forecast(
     next_month_target       = float(target_row.target_revenue_native)   if (target_row and target_row.target_revenue_native)   else None
 
     # ── Pickup-adjusted forecast ──────────────────────────────────────────
+    # OTB base = Cloudbeds Insights total (daily_metrics) — accurate revenue.
+    # Room/Dorm split from reservations.nights ratio × Cloudbeds ADR.
+    # Pickup ratios = nights-based historical (nights always populated,
+    # unlike grand_total_native which is often NULL for new bookings).
     today = _today()
     next_month_start  = date(next_year, next_month, 1)
     booking_window    = max(0, (next_month_start - today).days)
@@ -443,6 +447,9 @@ def compute_next_month_forecast(
         next_year, next_month,
         has_dorm=has_dorm,
         booking_window_days=booking_window,
+        cloudbeds_otb_revenue=total_revenue,    # from daily_metrics (Cloudbeds Insights)
+        cloudbeds_room_adr=room_adr,
+        cloudbeds_dorm_adr=dorm_adr,
     )
 
     forecast      = pickup_result["forecast"]
