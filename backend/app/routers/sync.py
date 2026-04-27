@@ -606,9 +606,7 @@ def debug_insights_revenue(
                 {"cdf": {"type": "default", "column": "rooms_sold"}, "metrics": ["sum"]},
                 {"cdf": {"type": "default", "column": "room_revenue"}, "metrics": ["sum"]},
             ],
-            # group by stay_date (not reservation_source — that field is not available
-            # as group_rows in OccupancyV1 dataset_id=7, only as a filter column)
-            "group_rows": [{"cdf": {"type": "default", "column": "stay_date"}}],
+            "group_rows": [{"cdf": {"type": "default", "column": "reservation_source"}}],
             "filters": {"and": filters},
         }
         with httpx.Client(timeout=60) as client:
@@ -627,17 +625,17 @@ def debug_insights_revenue(
             records = resp2.json().get("records", {})
             total_rev = 0.0
             total_sold = 0.0
-            by_date = {}
-            for d_str, v in records.items():
+            by_source = {}
+            for src, v in records.items():
                 rev = float(v.get("room_revenue", {}).get("sum", 0) or 0)
                 sold = float(v.get("rooms_sold", {}).get("sum", 0) or 0)
                 total_rev += rev
                 total_sold += sold
-                by_date[d_str] = {"revenue": round(rev, 2), "rooms_sold": round(sold, 0)}
+                by_source[src] = {"revenue": round(rev, 2), "rooms_sold": round(sold, 0)}
             return {
                 "total_revenue": round(total_rev, 2),
                 "total_rooms_sold": round(total_sold, 0),
-                "by_date": by_date,
+                "by_source": by_source,
             }
 
     unfiltered = fetch_total(date_f)

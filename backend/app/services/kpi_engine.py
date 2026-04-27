@@ -388,98 +388,80 @@ def compute_next_month_forecast(
     total_dorm_count: int = 0,
 ) -> dict:
     """
-    Forecast revenue for NEXT month using pickup-adjusted model.
-
+    Forecast revenue for NEXT month using NEXT month's own ADR from Cloudbeds API.
     Formula:
-      Forecast = OTB_room × (1 + pickup_ratio_room)
-               + OTB_dorm × (1 + pickup_ratio_dorm)
-
-    Where:
-      OTB      = confirmed reservations from reservations table (arrival-based)
-      pickup_ratio = historical avg of (final - OTB_at_window) / OTB_at_window
-      booking_window = days before 1st of next month (= next_month_start - today)
-
-    Room/Dorm split uses room_type_category from reservations.
-    Source exclusions (Blogger, House Use, KOL, Special case) applied.
-    Falls back to pure OTB if < 2 months of historical data exist.
+      Predict Room Sold = Round(total_days x num_rooms x Predict_OCC, 0)
+      Forecast Revenue = Next Month ADR x Predict Room Sold
+    Revenue excludes Blogger/HouseUse/Special case.
+    Rooms sold counts ALL sources.
+    Room/Dorm split comes directly from Cloudbeds API filtered by room type.
     """
-    from app.services.pickup_engine import forecast_with_pickup
-
     next_month = cur_month + 1 if cur_month < 12 else 1
-    next_year  = cur_year if cur_month < 12 else cur_year + 1
+    next_year = cur_year if cur_month < 12 else cur_year + 1
+    total_days = _days_in_month(next_year, next_month)
 
-    has_dorm = total_dorm_count > 0
+    has_split = total_room_count > 0 and total_dorm_count > 0
 
-    # ── Next-month metadata from daily_metrics (ADR, OCC reference) ──────
+    # ── Next-month data from daily_metrics cache ─────────────────────────
     insights = _get_insights_filtered(db, branch_id, next_year, next_month)
 
-    total_revenue = insights["total_rev"]   # confirmed OTB in daily_metrics
-    total_sold    = insights["total_sold"]
-    total_adr     = insights["total_adr"]
-    room_adr      = insights.get("room_adr") or None
-    dorm_adr      = insights.get("dorm_adr") or None
+    total_revenue = insights["total_rev"]
+    total_sold = insights["total_sold"]
+    total_adr = insights["total_adr"]
 
+    # Room/Dorm ADR from cached daily_metrics
+    room_adr = insights.get("room_adr") or None
+    dorm_adr = insights.get("dorm_adr") or None
+
+    # For rooms-only branches, room_adr = total_adr
     if total_room_count > 0 and total_dorm_count == 0:
         room_adr = total_adr
 
-    # ── KPI target for next month ──────────────────────────────────────────
+    # ── Predicted OCC for next month ──────────────────────────────────────
     target_row = (
         db.query(KPITarget)
         .filter_by(branch_id=branch_id, year=next_year, month=next_month)
         .first()
     )
-    predicted_occ_next      = float(target_row.predicted_occ_pct)      if (target_row and target_row.predicted_occ_pct)      else None
+    predicted_occ_next = float(target_row.predicted_occ_pct) if (target_row and target_row.predicted_occ_pct) else None
     predicted_room_occ_next = float(target_row.predicted_room_occ_pct) if (target_row and target_row.predicted_room_occ_pct) else None
     predicted_dorm_occ_next = float(target_row.predicted_dorm_occ_pct) if (target_row and target_row.predicted_dorm_occ_pct) else None
-    next_month_target       = float(target_row.target_revenue_native)   if (target_row and target_row.target_revenue_native)   else None
+    next_month_target = float(target_row.target_revenue_native) if (target_row and target_row.target_revenue_native) else None
 
-    # ── Pickup-adjusted forecast ──────────────────────────────────────────
-    # OTB base = Cloudbeds Insights total (daily_metrics) — accurate revenue.
-    # Room/Dorm split from reservations.nights ratio × Cloudbeds ADR.
-    # Pickup ratios = nights-based historical (nights always populated,
-    # unlike grand_total_native which is often NULL for new bookings).
-    today = _today()
-    next_month_start  = date(next_year, next_month, 1)
-    booking_window    = max(0, (next_month_start - today).days)
+    # ── Forecast ──────────────────────────────────────────────────────────
+    # Forecast = avg_adr × total_pred_sold (using split OCC for pred_sold)
+    room_forecast = dorm_forecast = None
+    forecast = None
 
-    pickup_result = forecast_with_pickup(
-        db, branch_id,
-        next_year, next_month,
-        has_dorm=has_dorm,
-        booking_window_days=booking_window,
-        cloudbeds_otb_revenue=total_revenue,    # from daily_metrics (Cloudbeds Insights)
-        cloudbeds_room_adr=room_adr,
-        cloudbeds_dorm_adr=dorm_adr,
-    )
-
-    forecast      = pickup_result["forecast"]
-    room_forecast = pickup_result["forecast_room"]
-    dorm_forecast = pickup_result["forecast_dorm"]
+    if (has_split
+            and predicted_room_occ_next is not None
+            and predicted_dorm_occ_next is not None
+            and total_adr):
+        pred_room_sold = round(total_days * total_room_count * predicted_room_occ_next)
+        pred_dorm_sold = round(total_days * total_dorm_count * predicted_dorm_occ_next)
+        pred_sold = pred_room_sold + pred_dorm_sold
+        forecast = round(total_adr * pred_sold, 2)
+    elif total_adr and predicted_occ_next and total_rooms > 0:
+        pred_sold = round(total_days * total_rooms * predicted_occ_next)
+        forecast = round(total_adr * pred_sold, 2)
 
     return {
-        "next_year":                  next_year,
-        "next_month":                 next_month,
-        "next_month_target_native":   next_month_target,
-        "next_month_adr":             round(total_adr, 2) if total_adr else None,
-        "next_month_room_adr":        room_adr,
-        "next_month_dorm_adr":        dorm_adr,
-        "next_month_booked_revenue":  round(total_revenue, 2),
-        "next_month_booked_nights":   total_sold,
-        "predicted_occ_next":         predicted_occ_next,
-        "predicted_room_occ_next":    predicted_room_occ_next,
-        "predicted_dorm_occ_next":    predicted_dorm_occ_next,
+        "next_year": next_year,
+        "next_month": next_month,
+        "next_month_target_native": next_month_target,
+        "next_month_adr": round(total_adr, 2) if total_adr else None,
+        "next_month_room_adr": room_adr,
+        "next_month_dorm_adr": dorm_adr,
+        "next_month_booked_revenue": round(total_revenue, 2),
+        "next_month_booked_nights": total_sold,
+        "predicted_occ_next": predicted_occ_next,
+        "predicted_room_occ_next": predicted_room_occ_next,
+        "predicted_dorm_occ_next": predicted_dorm_occ_next,
         "next_month_forecast_native": forecast,
-        "next_month_room_forecast":   room_forecast,
-        "next_month_dorm_forecast":   dorm_forecast,
+        "next_month_room_forecast": room_forecast,
+        "next_month_dorm_forecast": dorm_forecast,
         "next_month_forecast_room_adr": room_adr,
         "next_month_forecast_dorm_adr": dorm_adr,
-        # Pickup model metadata (for debugging / transparency)
-        "next_month_otb_room":        pickup_result["otb_room"],
-        "next_month_otb_dorm":        pickup_result["otb_dorm"],
-        "next_month_pickup_ratio":    pickup_result["pickup_ratio"],
-        "next_month_pickup_room":     pickup_result["pickup_room"],
-        "next_month_pickup_dorm":     pickup_result["pickup_dorm"],
-        "next_month_pickup_fallback": pickup_result["fallback"],
     }
 
 
@@ -498,10 +480,7 @@ def compute_kpi_summary(
     - Revenue excludes Blogger, House Use, Special case
     - Rooms sold counts ALL sources
     - Room/Dorm split via room type filter (Dorm = name contains 'Dorm')
-    Forecast = actual filtered revenue to date
-               + Cloudbeds stock-report-110 confirmed remaining days
-               (adr_native × total_sold for future dates in daily_metrics).
-    Next-month forecast = confirmed bookings from Cloudbeds (no OCC formula).
+    Forecast = ADR x Round(total_days x num_rooms x predicted_occ, 0).
     """
     today = _today()
     total_days = _days_in_month(year, month)
@@ -560,35 +539,25 @@ def compute_kpi_summary(
         actual_room_occ = round(room_sold_total / (total_room_count * days_elapsed), 4) if total_room_count > 0 else None
         actual_dorm_occ = round(dorm_sold_total / (total_dorm_count * days_elapsed), 4) if total_dorm_count > 0 else None
 
-    # ── Forecasts (Cloudbeds-confirmed) ───────────────────────────────────
-    # For current month: actual filtered revenue to date
-    #   + confirmed remaining days from Cloudbeds stock report 110
-    #   (daily_metrics.adr_native × total_sold for dates > today,
-    #    populated by sync_cloudbeds_occupancy from stock report 110).
-    # For completed/future months: full-month revenue from daily_metrics.
-    # This replaces the old avg_adr × target_occ formula — Cloudbeds numbers
-    # are authoritative; room_type filter (contains "Dorm") is applied by
-    # fetch_filtered_daily upstream, so room/dorm split is already correct.
+    # ── Forecasts ─────────────────────────────────────────────────────────
+    # Forecast = avg_adr × total_pred_sold
+    # Use room/dorm split OCC for pred_sold, but apply single avg_adr.
+    # Split room/dorm ADR from daily_metrics is unreliable due to
+    # proportional revenue attribution — avg_adr is accurate from Insights API.
     room_forecast = dorm_forecast = None
     occ_forecast = None
 
-    last_day_date = date(year, month, total_days)
-    if today.year == year and today.month == month and days_elapsed < total_days:
-        # Current in-progress month: actual + Cloudbeds-confirmed remaining days
-        future_confirmed = db.query(
-            func.coalesce(
-                func.sum(DailyMetrics.adr_native * DailyMetrics.total_sold), 0
-            )
-        ).filter(
-            DailyMetrics.branch_id == branch_id,
-            DailyMetrics.date > today,
-            DailyMetrics.date <= last_day_date,
-            DailyMetrics.total_sold > 0,
-        ).scalar()
-        occ_forecast = round(float(actual_native or 0) + float(future_confirmed or 0), 2) or None
-    else:
-        # Completed month or pure-future month: actual_native covers full range
-        occ_forecast = round(float(actual_native), 2) if actual_native else None
+    if (has_split
+            and predicted_room_occ is not None
+            and predicted_dorm_occ is not None
+            and avg_adr):
+        pred_room_sold = round(total_days * total_room_count * predicted_room_occ)
+        pred_dorm_sold = round(total_days * total_dorm_count * predicted_dorm_occ)
+        pred_sold = pred_room_sold + pred_dorm_sold
+        occ_forecast = round(avg_adr * pred_sold, 2)
+    elif avg_adr and predicted_occ_pct and total_rooms > 0:
+        pred_sold = round(total_days * total_rooms * predicted_occ_pct)
+        occ_forecast = round(avg_adr * pred_sold, 2)
 
     # Achievement
     achievement_pct = calculate_achievement_pct(actual_native, target_revenue_native)
