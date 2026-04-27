@@ -31,7 +31,7 @@ from datetime import date, timedelta
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import func, not_
+from sqlalchemy import func, not_, or_
 from sqlalchemy.orm import Session
 
 from app.models.reservation import Reservation
@@ -75,12 +75,24 @@ def _monthly_revenue(
     q = (
         db.query(func.coalesce(func.sum(Reservation.grand_total_native), 0))
         .filter(
-            Reservation.branch_id       == branch_id,
-            Reservation.check_in_date  >= first_day,
-            Reservation.check_in_date  <= last_day,
-            Reservation.reservation_date <= booked_by,
-            not_(Reservation.status.in_(_EXCLUDED_STATUSES)),
-            not_(Reservation.source.in_(_EXCLUDED_SOURCES)),
+            Reservation.branch_id      == branch_id,
+            Reservation.check_in_date >= first_day,
+            Reservation.check_in_date <= last_day,
+            # NULL reservation_date = booking date unknown → treat as booked early (include)
+            or_(
+                Reservation.reservation_date == None,  # noqa: E711
+                Reservation.reservation_date <= booked_by,
+            ),
+            # NULL status = not cancelled (include); only exclude explicit cancel strings
+            or_(
+                Reservation.status == None,             # noqa: E711
+                not_(Reservation.status.in_(_EXCLUDED_STATUSES)),
+            ),
+            # NULL source = unknown (include); only exclude known excluded names
+            or_(
+                Reservation.source == None,             # noqa: E711
+                not_(Reservation.source.in_(_EXCLUDED_SOURCES)),
+            ),
             Reservation.grand_total_native > 0,
         )
     )
