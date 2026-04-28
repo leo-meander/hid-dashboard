@@ -96,6 +96,10 @@ class UpdateUserIn(BaseModel):
     password: Optional[str] = None
     is_active: Optional[bool] = None
 
+class ChangePasswordIn(BaseModel):
+    old_password: str
+    new_password: str
+
 def _user_out(u: User) -> dict:
     return {
         "id":         str(u.id),
@@ -126,6 +130,23 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 @router.get("/me")
 def me(current: User = Depends(get_current_user)):
     return {"success": True, "data": _user_out(current)}
+
+
+@router.post("/change-password")
+def change_password(
+    body: ChangePasswordIn,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not current.password_hash or not _verify(body.old_password, current.password_hash):
+        raise HTTPException(status_code=400, detail="Old password is incorrect")
+    if not body.new_password or len(body.new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+    if _verify(body.new_password, current.password_hash):
+        raise HTTPException(status_code=400, detail="New password must differ from old password")
+    current.password_hash = _hash(body.new_password)
+    db.commit()
+    return {"success": True, "data": {"changed": True}}
 
 
 @router.get("/users")

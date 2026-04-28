@@ -344,6 +344,98 @@ Query params:
   );
 }
 
+// ── Change Password Section ─────────────────────────────────────────────────
+
+function ChangePassword({ showToast }) {
+  const [oldPassword, setOldPassword]     = useState("");
+  const [newPassword, setNewPassword]     = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!oldPassword || !newPassword) {
+      showToast("Please fill in both old and new passwords", "error");
+      return;
+    }
+    if (newPassword.length < 6) {
+      showToast("New password must be at least 6 characters", "error");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      showToast("New password and confirmation do not match", "error");
+      return;
+    }
+    if (newPassword === oldPassword) {
+      showToast("New password must differ from old password", "error");
+      return;
+    }
+    setSaving(true);
+    try {
+      await axios.post("/api/auth/change-password", {
+        old_password: oldPassword,
+        new_password: newPassword,
+      });
+      setOldPassword(""); setNewPassword(""); setConfirmPassword("");
+      showToast("Password changed successfully");
+    } catch (err) {
+      showToast(err.response?.data?.detail || "Failed to change password", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="px-5 py-3 border-b border-gray-100">
+        <h2 className="font-semibold text-gray-700 text-sm">Change Password</h2>
+        <p className="text-xs text-gray-400 mt-0.5">
+          Enter your current password, then set a new one (minimum 6 characters).
+        </p>
+      </div>
+      <form onSubmit={submit} className="px-5 py-5 space-y-4 max-w-md">
+        <label className="block">
+          <span className="text-xs text-gray-500 font-medium">Current Password</span>
+          <input
+            type="password"
+            value={oldPassword}
+            onChange={e => setOldPassword(e.target.value)}
+            className="mt-1 w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            autoComplete="current-password"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs text-gray-500 font-medium">New Password</span>
+          <input
+            type="password"
+            value={newPassword}
+            onChange={e => setNewPassword(e.target.value)}
+            className="mt-1 w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            autoComplete="new-password"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs text-gray-500 font-medium">Confirm New Password</span>
+          <input
+            type="password"
+            value={confirmPassword}
+            onChange={e => setConfirmPassword(e.target.value)}
+            className="mt-1 w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            autoComplete="new-password"
+          />
+        </label>
+        <button
+          type="submit"
+          disabled={saving}
+          className="px-4 py-1.5 bg-indigo-600 text-white text-xs font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+        >
+          {saving ? "Saving..." : "Update Password"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 // ── Main Settings Page ──────────────────────────────────────────────────────
 
 export default function Settings() {
@@ -362,7 +454,7 @@ export default function Settings() {
     <div className="space-y-5 max-w-3xl">
       <div>
         <h1 className="text-xl font-bold text-gray-800">Settings</h1>
-        <p className="text-xs text-gray-400 mt-0.5">Manage branch capacity and API access</p>
+        <p className="text-xs text-gray-400 mt-0.5">Manage branch capacity, API access, and account security</p>
       </div>
 
       {toast && (
@@ -399,10 +491,21 @@ export default function Settings() {
             API Keys
           </button>
         )}
+        <button
+          onClick={() => setTab("password")}
+          className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            tab === "password"
+              ? "bg-white text-gray-800 shadow-sm"
+              : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Password
+        </button>
       </div>
 
       {tab === "capacity" && <BranchCapacity showToast={showToast} />}
       {tab === "api-keys" && isAdmin && <ApiKeys showToast={showToast} />}
+      {tab === "password" && <ChangePassword showToast={showToast} />}
     </div>
   );
 }
