@@ -32,6 +32,9 @@ import Users     from "./pages/Users";
 // Marketing Activity (consolidated)
 import MarketingActivity from "./pages/MarketingActivity";
 
+// Email Marketing (GHL)
+import EmailMarketing from "./pages/EmailMarketing";
+
 // Government Visitor Data
 import GovVisitorData from "./pages/GovVisitorData";
 
@@ -100,6 +103,9 @@ function AppRoutes() {
 
             {/* Marketing Activity (consolidated) */}
             <Route path="/marketing-activity" element={<MarketingActivity />} />
+
+            {/* Email Marketing (GHL) */}
+            <Route path="/email-marketing" element={<EmailMarketing />} />
 
             {/* Phase 5 — Holiday Intelligence */}
             <Route path="/holiday-intel" element={<HolidayIntel />} />

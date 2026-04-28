@@ -3,21 +3,32 @@ Daily GHL Email Stats Sync — multi-location support.
 Pulls stats from GHL API for each configured location (branch):
   1. Workflow campaigns — full stats (delivered, opened, clicked, etc.)
   2. Bulk email campaigns — send counts from schedule API
+  3. CRM revenue attribution — joins reservations matching rate plan
+     pattern "CRM_{workflow_name} Events" filtered by reservation_date >=
+     workflow.dateAdded.
 """
 import logging
 from datetime import date, datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import httpx
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.config import settings
+from app.models.branch import Branch
 from app.models.email_campaign_stats import EmailCampaignStats
+from app.models.reservation import Reservation
+from app.services.currency import get_cached_rate
 
 logger = logging.getLogger(__name__)
 
 GHL_BASE = "https://services.leadconnectorhq.com"
+
+# Hardcoded fallback FX rates so attribution still works when neither the
+# in-memory cache nor the EXCHANGE_RATE_API are available. Updated periodically.
+_FX_FALLBACK_VND = {"VND": 1.0, "TWD": 830.0, "JPY": 165.0, "USD": 26000.0}
 
 
 def _headers(api_key: str) -> dict:
@@ -53,6 +64,17 @@ def _fetch_workflow_stats(client: httpx.Client, location_id: str, api_key: str, 
         return None
 
 
+def _parse_workflow_created(workflow: dict) -> Optional[date]:
+    """Extract creation date from a GHL workflow record."""
+    raw = workflow.get("dateAdded") or workflow.get("createdAt") or workflow.get("created_at")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
+    except Exception:
+        return None
+
+
 def _sync_workflows(client: httpx.Client, db: Session, location: dict, today: date, now: datetime) -> int:
     loc_id = location["location_id"]
     api_key = location["api_key"]
@@ -61,6 +83,10 @@ def _sync_workflows(client: httpx.Client, db: Session, location: dict, today: da
     workflows = _fetch_workflows(client, loc_id, api_key)
     logger.info("GHL [%s]: found %d workflows", branch, len(workflows))
     count = 0
+
+    branch_row = db.query(Branch).filter(Branch.name == branch).first()
+    branch_id = str(branch_row.id) if branch_row else None
+    branch_currency = branch_row.currency if branch_row else None
 
     for wf in workflows:
         stats = _fetch_workflow_stats(client, loc_id, api_key, wf["id"])
@@ -72,6 +98,14 @@ def _sync_workflows(client: httpx.Client, db: Session, location: dict, today: da
             continue
 
         total_sent = delivered + stats.get("permanentFail", 0) + stats.get("temporaryFail", 0)
+
+        attribution = _compute_attribution(
+            db,
+            workflow_name=wf["name"],
+            workflow_created=_parse_workflow_created(wf),
+            branch_id=branch_id,
+            branch_currency=branch_currency,
+        )
 
         _upsert_stats(db, {
             "workflow_id": wf["id"],
@@ -89,10 +123,109 @@ def _sync_workflows(client: httpx.Client, db: Session, location: dict, today: da
             "total_unsubscribed": stats.get("unsubscribed", 0),
             "total_complained": stats.get("complained", 0),
             "computed_at": now,
+            **attribution,
         })
         count += 1
 
     return count
+
+
+# ── CRM Revenue Attribution ───────────────────────────────────────────────────
+
+def _resolve_vnd_rate(currency: Optional[str]) -> Optional[float]:
+    """Best-effort FX lookup: in-memory cache → live API → hardcoded fallback."""
+    if not currency:
+        return None
+    currency = currency.upper()
+    if currency == "VND":
+        return 1.0
+
+    cached = get_cached_rate(currency, "VND")
+    if cached:
+        return cached
+
+    api_key = settings.EXCHANGE_RATE_API_KEY
+    if api_key and api_key != "placeholder_key":
+        try:
+            url = f"https://v6.exchangerate-api.com/v6/{api_key}/latest/{currency}"
+            resp = httpx.get(url, timeout=10)
+            resp.raise_for_status()
+            rate = resp.json().get("conversion_rates", {}).get("VND")
+            if rate:
+                return float(rate)
+        except Exception:
+            logger.warning("FX live lookup failed for %s → VND, using fallback", currency)
+
+    return _FX_FALLBACK_VND.get(currency)
+
+
+def _compute_attribution(
+    db: Session,
+    workflow_name: str,
+    workflow_created: Optional[date],
+    branch_id: Optional[str],
+    branch_currency: Optional[str],
+) -> dict:
+    """Aggregate reservations attributed to this workflow.
+
+    Match rule: rate_plan_name OR room_type contains "CRM_{workflow_name} Events".
+    Date filter: reservation_date >= workflow_created (skipped if missing).
+    Cancelled reservations are counted separately and excluded from revenue/nights.
+    """
+    pattern = f"CRM_{workflow_name} Events"
+    empty = {
+        "attributed_bookings": 0,
+        "attributed_canceled": 0,
+        "attributed_nights": 0,
+        "attributed_revenue_native": 0.0,
+        "attributed_revenue_vnd": 0.0,
+        "attributed_currency": branch_currency,
+        "attributed_rate_plan": pattern,
+    }
+
+    if not branch_id:
+        return empty
+
+    like = f"%{pattern}%"
+    q = db.query(Reservation).filter(
+        Reservation.branch_id == branch_id,
+        or_(
+            Reservation.rate_plan_name.ilike(like),
+            Reservation.room_type.ilike(like),
+        ),
+    )
+    if workflow_created:
+        q = q.filter(Reservation.reservation_date >= workflow_created)
+
+    bookings = canceled = nights = 0
+    revenue_native = 0.0
+    revenue_vnd_stored = 0.0
+
+    for r in q.all():
+        if (r.status or "").lower() == "canceled":
+            canceled += 1
+            continue
+        bookings += 1
+        nights += int(r.nights or 0)
+        revenue_native += float(r.grand_total_native or 0)
+        revenue_vnd_stored += float(r.grand_total_vnd or 0)
+
+    # Prefer pre-converted grand_total_vnd if present; otherwise convert on-the-fly.
+    if revenue_vnd_stored > 0:
+        revenue_vnd = revenue_vnd_stored
+    else:
+        rate = _resolve_vnd_rate(branch_currency)
+        revenue_vnd = round(revenue_native * rate, 2) if rate else 0.0
+
+    return {
+        "attributed_bookings": bookings,
+        "attributed_canceled": canceled,
+        "attributed_nights": nights,
+        "attributed_revenue_native": round(revenue_native, 2),
+        "attributed_revenue_vnd": round(revenue_vnd, 2),
+        "attributed_currency": branch_currency,
+        "attributed_rate_plan": pattern,
+    }
 
 
 # ── Bulk email campaigns ──────────────────────────────────────────────────────

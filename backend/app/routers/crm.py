@@ -9,7 +9,7 @@ from collections import defaultdict
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, case, extract, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 
 from app.database import get_db
 from app.models.reservation import Reservation
@@ -465,5 +465,74 @@ def crm_room_types(
     except Exception as e:
         import logging
         logging.getLogger(__name__).exception("crm_room_types failed")
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+# ── Reservation Contacts (email + cb_id from raw_data) ────────────────────────
+
+@router.get("/reservation-contacts")
+def crm_reservation_contacts(
+    rate_plan_contains: Optional[str] = Query(None, description="Filter rate_plan_name OR room_type contains this string"),
+    branch_id: Optional[UUID] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Return CRM reservation contacts (id, cb_id, email, name) per branch.
+
+    Filters: optional rate_plan_contains (default = all CRM-related), branch_id,
+    and check_in_date range. raw_data is undeferred to extract guestEmail/guestName.
+    """
+    try:
+        today = datetime.now(timezone.utc).date()
+        if date_to is None:
+            date_to = today
+        if date_from is None:
+            date_from = date_to - timedelta(days=365)
+
+        if rate_plan_contains:
+            like = f"%{rate_plan_contains}%"
+            base_filter = or_(
+                Reservation.rate_plan_name.ilike(like),
+                Reservation.room_type.ilike(like),
+            )
+        else:
+            base_filter = _crm_filter()
+
+        q = db.query(Reservation).options(undefer(Reservation.raw_data)).filter(
+            base_filter,
+            Reservation.check_in_date >= date_from,
+            Reservation.check_in_date <= date_to,
+        )
+        if branch_id:
+            q = q.filter(Reservation.branch_id == branch_id)
+
+        rows = q.order_by(Reservation.branch_id, Reservation.check_in_date).all()
+
+        result = []
+        for r in rows:
+            raw = r.raw_data or {}
+            result.append({
+                "reservation_uid": str(r.id),
+                "cloudbeds_reservation_id": r.cloudbeds_reservation_id,
+                "branch_id": str(r.branch_id),
+                "guest_name": raw.get("guestName"),
+                "guest_email": raw.get("guestEmail"),
+                "guest_phone": raw.get("guestPhone") or raw.get("guestCellPhone"),
+                "rate_plan_name": r.rate_plan_name,
+                "room_type": r.room_type,
+                "status": r.status,
+                "check_in_date": r.check_in_date.isoformat() if r.check_in_date else None,
+                "check_out_date": r.check_out_date.isoformat() if r.check_out_date else None,
+                "nights": r.nights,
+                "grand_total_native": float(r.grand_total_native or 0),
+                "grand_total_vnd": float(r.grand_total_vnd or 0),
+                "reservation_date": r.reservation_date.isoformat() if r.reservation_date else None,
+            })
+        return _envelope({"items": result, "total": len(result)})
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("crm_reservation_contacts failed")
         return {"success": False, "data": None, "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()}

@@ -17,6 +17,11 @@ function pct(val) {
   return `${(val * 100).toFixed(2)}%`;
 }
 
+function vnd(val) {
+  if (val == null || val === 0) return "—";
+  return `${Math.round(val).toLocaleString()} ₫`;
+}
+
 function rateBand(rate, thresholds = [0.3, 0.2, 0.1]) {
   if (rate >= thresholds[0]) return "text-green-700 bg-green-50";
   if (rate >= thresholds[1]) return "text-yellow-700 bg-yellow-50";
@@ -179,6 +184,8 @@ function OverviewTab({ summary, daily, campaigns }) {
     { label: "Delivered", value: summary.total_delivered.toLocaleString(), color: "text-blue-700 bg-blue-50" },
     { label: "Open Rate", value: pct(summary.open_rate), color: rateBand(summary.open_rate, [0.25, 0.15, 0.08]) },
     { label: "Click Rate", value: pct(summary.click_rate), color: rateBand(summary.click_rate, [0.05, 0.02, 0.01]) },
+    { label: "CRM Bookings", value: (summary.attributed_bookings || 0).toLocaleString(), color: "text-emerald-700 bg-emerald-50" },
+    { label: "CRM Revenue (VND)", value: vnd(summary.attributed_revenue_vnd), color: "text-emerald-700 bg-emerald-50" },
     { label: "Bounce Rate", value: pct(summary.bounce_rate), color: badRate(summary.bounce_rate) },
     { label: "Unsub Rate", value: pct(summary.unsubscribe_rate), color: badRate(summary.unsubscribe_rate) },
   ];
@@ -191,7 +198,7 @@ function OverviewTab({ summary, daily, campaigns }) {
   return (
     <div className="space-y-6">
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
         {kpis.map(k => (
           <div key={k.label} className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
             <p className="text-xs text-gray-500 mb-1">{k.label}</p>
@@ -274,6 +281,9 @@ function CampaignTable({ campaigns, title }) {
             <th className="px-4 py-2 text-right">Clicks</th>
             <th className="px-4 py-2 text-right">Click%</th>
             <th className="px-4 py-2 text-right">Bounce%</th>
+            <th className="px-4 py-2 text-right border-l border-gray-200">Bookings</th>
+            <th className="px-4 py-2 text-right">Nights</th>
+            <th className="px-4 py-2 text-right">Revenue (VND)</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-50">
@@ -318,6 +328,18 @@ function CampaignTable({ campaigns, title }) {
                 <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${badRate(w.bounce_rate)}`}>
                   {pct(w.bounce_rate)}
                 </span>
+              </td>
+              <td className="px-4 py-2 text-right tabular-nums text-emerald-700 font-medium border-l border-gray-100">
+                {(w.attributed_bookings || 0) > 0 ? w.attributed_bookings.toLocaleString() : <span className="text-gray-300">—</span>}
+                {(w.attributed_canceled || 0) > 0 && (
+                  <span className="text-xs text-red-500 ml-1">(−{w.attributed_canceled})</span>
+                )}
+              </td>
+              <td className="px-4 py-2 text-right tabular-nums text-gray-600">
+                {(w.attributed_nights || 0) > 0 ? w.attributed_nights.toLocaleString() : <span className="text-gray-300">—</span>}
+              </td>
+              <td className="px-4 py-2 text-right tabular-nums text-emerald-700 font-semibold">
+                {vnd(w.attributed_revenue_vnd)}
               </td>
             </tr>
           ))}
