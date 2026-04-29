@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LOOKBACK_DAYS = 14
 
+# Hardcoded fallbacks used when the live FX API can't be reached.
+# Same values as ghl_email_sync — keep in sync if either changes.
+FX_FALLBACK_TO_VND = {"VND": 1.0, "TWD": 830.0, "JPY": 165.0}
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -63,7 +67,12 @@ def _parse_date(val: Any) -> Optional[date]:
 
 
 def _build_rate_map(branches: list[Branch]) -> dict[str, float]:
-    """Pre-fetch native→VND rates for every currency used by active branches."""
+    """Pre-fetch native→VND rates for every currency used by active branches.
+
+    Falls back to ``FX_FALLBACK_TO_VND`` when the live API can't be reached —
+    a 0.0 fallback (the previous behaviour) zeroed every cost_vnd for TWD/JPY
+    branches and broke Budget Planner / Marketing Activity totals.
+    """
     rates: dict[str, float] = {"VND": 1.0}
     for b in branches:
         cur = (b.currency or "VND").upper()
@@ -71,8 +80,19 @@ def _build_rate_map(branches: list[Branch]) -> dict[str, float]:
             continue
         rate = asyncio.run(fetch_rate(cur, "VND"))
         if rate is None:
-            logger.warning("No exchange rate for %s → VND; leaving *_vnd NULL", cur)
-            rates[cur] = 0.0
+            fallback = FX_FALLBACK_TO_VND.get(cur)
+            if fallback is None:
+                logger.warning(
+                    "No exchange rate for %s → VND and no hardcoded fallback; "
+                    "leaving *_vnd NULL", cur,
+                )
+                rates[cur] = 0.0
+            else:
+                logger.warning(
+                    "FX API unavailable for %s → VND; using fallback rate %s",
+                    cur, fallback,
+                )
+                rates[cur] = fallback
         else:
             rates[cur] = rate
     return rates

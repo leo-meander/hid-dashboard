@@ -43,6 +43,10 @@ log = logging.getLogger(__name__)
 CHANNELS = ("paid_ads", "kol", "crm")
 CHANNEL_LABELS = {"paid_ads": "Paid Ads", "kol": "KOL", "crm": "CRM"}
 
+# Hardcoded FX fallbacks — keep in sync with ghl_email_sync and
+# ads_platform_sync.FX_FALLBACK_TO_VND.
+FX_FALLBACK_TO_VND = {"VND": 1.0, "TWD": 830.0, "JPY": 165.0}
+
 
 def _envelope(data):
     return {
@@ -67,19 +71,25 @@ def _vnd_to_native(amount_vnd: float, currency: str, rate_vnd_per_unit: float) -
 
 def _get_rate_to_vnd(currency: str) -> float:
     """Sync wrapper around ``fetch_rate`` — returns VND per 1 unit of currency.
-    Falls back to 1.0 when rate unavailable so the UI doesn't crash."""
-    if currency.upper() == "VND":
+
+    Falls back to ``FX_FALLBACK_TO_VND`` when the live API is unavailable, so
+    TWD/JPY branches show real native amounts instead of 1:1 with VND.
+    """
+    cur = currency.upper()
+    if cur == "VND":
         return 1.0
     try:
-        rate = asyncio.run(fetch_rate(currency, "VND"))
+        rate = asyncio.run(fetch_rate(cur, "VND"))
     except RuntimeError:
         # Already inside an event loop (uvicorn worker) — use blocking call.
         loop = asyncio.new_event_loop()
         try:
-            rate = loop.run_until_complete(fetch_rate(currency, "VND"))
+            rate = loop.run_until_complete(fetch_rate(cur, "VND"))
         finally:
             loop.close()
-    return float(rate) if rate else 1.0
+    if rate:
+        return float(rate)
+    return FX_FALLBACK_TO_VND.get(cur, 1.0)
 
 
 def _resolve_branches(db: Session, branch_id: Optional[UUID]) -> list[Branch]:
