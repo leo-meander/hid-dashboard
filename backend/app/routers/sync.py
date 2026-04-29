@@ -696,6 +696,46 @@ def debug_spanning_reservations(
 
 # ── Ads Platform sync (replaces Meta Graph + Google Sheets, migration 028) ──
 
+@router.get("/debug/ads-platform-spend")
+def debug_ads_platform_spend(
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    platform: str = Query("meta"),
+    branch: Optional[str] = Query(None),
+):
+    """One-shot probe of upstream /api/export/spend/daily — returns the first 3
+    rows + total row count for the given filter. Used to diagnose why our
+    per-branch slug filter isn't isolating data."""
+    from app.services.ads_platform import get_client
+    client = get_client()
+    rows = client.get_spend_daily(date_from, date_to, platform=platform, branch=branch)
+    sums = {"spend": 0, "revenue": 0}
+    keys: set = set()
+    for r in rows or []:
+        sums["spend"] += float(r.get("spend") or 0)
+        sums["revenue"] += float(r.get("revenue") or 0)
+        keys.update(r.keys())
+    return _envelope({
+        "filter": {"date_from": date_from, "date_to": date_to,
+                   "platform": platform, "branch": branch},
+        "row_count": len(rows or []),
+        "all_keys_seen": sorted(keys),
+        "sum_spend": sums["spend"],
+        "sum_revenue": sums["revenue"],
+        "first_3_rows": (rows or [])[:3],
+    })
+
+
+@router.get("/debug/ads-platform-accounts")
+def debug_ads_platform_accounts():
+    """Dump upstream /api/export/accounts so we can see what branch slug
+    each account uses."""
+    from app.services.ads_platform import get_client
+    client = get_client()
+    accounts = client.get_accounts()
+    return _envelope({"count": len(accounts), "accounts": accounts})
+
+
 @router.post("/ads-platform")
 def trigger_ads_platform_sync(
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD; default = today-14"),
