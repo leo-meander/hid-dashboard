@@ -1213,13 +1213,10 @@ def sync_cloudbeds_occupancy(
     date_to: Optional[date] = None,
 ) -> dict:
     """
-    Sync OCC, ADR, RevPAR from Cloudbeds Data Insights API directly into
-    daily_metrics (USALI-standard authoritative numbers for those metrics).
-
-    Revenue is intentionally NOT synced here — the Cloudbeds report sums all
-    sources, but our business rule excludes Blogger, KOL, House Use, Special
-    Case, Maintenance. revenue_native / revenue_vnd stay as computed by
-    metrics_engine.recompute_branch_range().
+    Sync OCC, ADR, RevPAR, Revenue from Cloudbeds Data Insights API directly
+    into daily_metrics. Numbers come from stock report 110 (the same source
+    the Cloudbeds Occupancy Report UI uses), so daily_metrics matches what
+    users see in Cloudbeds Insights exactly.
 
     Returns: { branch_id, dates_updated, date_from, date_to }
     """
@@ -1238,12 +1235,14 @@ def sync_cloudbeds_occupancy(
 
     updated = 0
     now = datetime.now(timezone.utc)
+    rate = get_cached_rate(currency, "VND")
 
     for d, metrics in sorted(occ_data.items()):
         rooms_sold = int(metrics["rooms_sold"])
         occ_pct = round(metrics["mfd_occupancy"] / 100.0, 4)  # mfd = modified occupancy (excludes blocked/OOS), matches Cloudbeds UI
         adr_native = round(metrics["adr"], 2)
         revpar_native = round(metrics["revpar"], 2)
+        revenue_native = round(float(metrics.get("room_revenue") or 0), 2)
         capacity = int(metrics["capacity_count"])
 
         dm = db.query(DailyMetrics).filter_by(
@@ -1257,6 +1256,8 @@ def sync_cloudbeds_occupancy(
         dm.occ_pct = occ_pct
         dm.adr_native = adr_native
         dm.revpar_native = revpar_native
+        dm.revenue_native = revenue_native
+        dm.revenue_vnd = round(revenue_native * rate, 2) if rate else None
         dm.computed_at = now
         updated += 1
 
@@ -1427,17 +1428,13 @@ def sync_cloudbeds_filtered(
             dsold = int(vals["dorm_sold"] or 0)
             tsold = int(vals["total_sold"] or 0)
 
-            dm.revenue_native = rev
-            dm.revenue_vnd = round(rev * rate, 2) if rate else None
+            # Total revenue / ADR / RevPAR come from stock report 110 (sync_cloudbeds_occupancy)
+            # — that's the authoritative source matching Cloudbeds Insights UI. Here we only
+            # populate the room/dorm split (stock report 110 doesn't break that down).
             dm.room_revenue_native = rrev if rsold > 0 else None
             dm.dorm_revenue_native = drev if dsold > 0 else None
-            dm.adr_native = round(rev / tsold, 2) if tsold > 0 else dm.adr_native
             dm.room_adr_native = round(rrev / rsold, 2) if rsold > 0 else None
             dm.dorm_adr_native = round(drev / dsold, 2) if dsold > 0 else None
-            dm.revpar_native = (
-                round(float(dm.adr_native) * float(dm.occ_pct or 0), 2)
-                if dm.adr_native else dm.revpar_native
-            )
             dm.computed_at = now
 
         months_synced += 1

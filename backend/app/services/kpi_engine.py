@@ -176,8 +176,9 @@ def _get_insights_filtered(
     """
     Get revenue, rooms_sold, ADR with room/dorm split.
 
-    Priority: DB (daily_metrics) first → instant.
-    Fallback: Cloudbeds API only if DB has no data for this month.
+    Reads from daily_metrics, populated by sync_cloudbeds_occupancy (stock
+    report 110 — same source as the Cloudbeds Occupancy Report UI). Revenue,
+    rooms_sold, ADR all match what users see in Cloudbeds Insights directly.
 
     Returns dict with keys: total_rev, total_sold, total_adr,
     room_rev, room_sold, room_adr, dorm_rev, dorm_sold, dorm_adr, has_dorm.
@@ -186,7 +187,6 @@ def _get_insights_filtered(
              "room_rev": 0, "room_sold": 0, "room_adr": 0,
              "dorm_rev": 0, "dorm_sold": 0, "dorm_adr": 0, "has_dorm": False}
 
-    # ── PRIMARY: Read from daily_metrics (pre-synced by nightly job) ─────
     first_day = date(year, month, 1)
     last_day = date(year, month, _days_in_month(year, month))
 
@@ -211,11 +211,7 @@ def _get_insights_filtered(
     dorm_rev = float(row[5])
 
     if total_sold > 0:
-        # ADR = Rev(excl) / Sold(all) from daily_metrics.
-        # Insights API revenue already excludes non-paying sources.
-        # Sold includes all sources — this gives a slightly lower ADR than
-        # pure excl/excl, but is reliable across all months (including
-        # future months with sparse reservation_daily data).
+        # ADR = revenue / rooms_sold from stock report 110 — matches Cloudbeds UI exactly.
         total_adr = round(total_rev / total_sold, 2)
         room_adr = round(room_rev / room_sold, 2) if room_sold > 0 else 0
         dorm_adr = round(dorm_rev / dorm_sold, 2) if dorm_sold > 0 else 0
