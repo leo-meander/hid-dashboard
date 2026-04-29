@@ -26,7 +26,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import Date, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -107,7 +107,7 @@ def _kol_actual_vnd(db: Session, branch_id: UUID, d_from: date, d_to: date) -> f
     eff_date = func.coalesce(
         KOLRecord.invitation_date,
         KOLRecord.published_date,
-        func.cast(KOLRecord.created_at, date),
+        func.cast(KOLRecord.created_at, Date),
     )
     val = db.query(func.coalesce(func.sum(KOLRecord.cost_vnd), 0)).filter(
         KOLRecord.branch_id == branch_id,
