@@ -34,6 +34,7 @@ const NAV = [
     label: "Marketing",
     items: [
       { to: "/marketing-activity", label: "Marketing Activity", icon: "◈" },
+      { to: "/budget-planner", label: "Budget Planner", icon: "₫" },
       { to: "/email-marketing", label: "Email Marketing", icon: "✉" },
     ],
   },

@@ -32,6 +32,9 @@ import Users     from "./pages/Users";
 // Marketing Activity (consolidated)
 import MarketingActivity from "./pages/MarketingActivity";
 
+// Budget Planner — monthly allocation + actual spend per channel
+import BudgetPlanner from "./pages/BudgetPlanner";
+
 // Email Marketing (GHL)
 import EmailMarketing from "./pages/EmailMarketing";
 
@@ -103,6 +106,9 @@ function AppRoutes() {
 
             {/* Marketing Activity (consolidated) */}
             <Route path="/marketing-activity" element={<MarketingActivity />} />
+
+            {/* Budget Planner */}
+            <Route path="/budget-planner" element={<BudgetPlanner />} />
 
             {/* Email Marketing (GHL) */}
             <Route path="/email-marketing" element={<EmailMarketing />} />

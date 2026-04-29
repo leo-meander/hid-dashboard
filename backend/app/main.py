@@ -15,7 +15,7 @@ from app.routers import creative_angles, creative_copies, creative_materials, co
 from app.routers import ad_analyzer
 from app.routers import crm
 from app.routers import email_marketing
-from app.routers import marketing_activity
+from app.routers import marketing_activity, marketing_budget
 from app.routers import gov_visitor
 from app.routers import holiday_intel
 from app.routers import api_keys, public_api
@@ -74,6 +74,9 @@ app.include_router(email_marketing.router, prefix="/api/email-marketing", tags=[
 
 # Marketing Activity (consolidated view)
 app.include_router(marketing_activity.router, prefix="/api/marketing-activity", tags=["Marketing Activity"])
+
+# Marketing Budget Planner — monthly allocation per branch & channel
+app.include_router(marketing_budget.router, prefix="/api/marketing-budget", tags=["Marketing Budget"])
 
 # Government Visitor Data
 app.include_router(gov_visitor.router, prefix="/api/gov-visitor", tags=["Government Visitor Data"])

@@ -26,6 +26,7 @@ from sqlalchemy import text
 from app.database import get_db
 from app.models.ads import AdsPerformance
 from app.models.branch import Branch
+from app.models.kol import KOLRecord
 from app.models.reservation import Reservation
 
 router = APIRouter()
