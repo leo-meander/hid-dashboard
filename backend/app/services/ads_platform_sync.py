@@ -155,6 +155,8 @@ def _sync_ads(
             continue  # unknown account → can't place into any branch
 
         branch = account["branch"]
+        if not branch:
+            continue  # account exists but slug doesn't match any local branch
         channel = platform_to_channel(account.get("platform")) or "Meta"
 
         ext_angle_id = ad.get("angle_id") or campaign_meta.get("angle_id")
