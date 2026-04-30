@@ -253,9 +253,17 @@ def _sync_spend_daily(
     date_from: date,
     date_to: date,
     rate_map: dict[str, float],
+    account_map: Optional[dict[str, dict]] = None,
 ) -> int:
-    """Upsert one ``grain='daily'`` row per (branch, channel, date, account)."""
+    """Upsert one ``grain='daily'`` row per (branch, channel, date, account).
+
+    ``account_map`` (account_id → {branch, platform, currency}) is consulted
+    per spend row to use the account's own currency rather than blindly
+    trusting branch.currency — one branch can host accounts in different
+    currencies, so this is the more accurate source.
+    """
     count = 0
+    account_map = account_map or {}
     df_iso, dt_iso = _iso(date_from), _iso(date_to)
     for branch in branches:
         currency = (branch.currency or "VND").upper()
@@ -290,9 +298,16 @@ def _sync_spend_daily(
                     )
                     .first()
                 )
-                # Upstream returns spend/revenue already in VND (master) — store
-                # that as cost_vnd directly and derive cost_native by dividing
-                # by the branch's FX rate.
+                # Upstream returns spend/revenue in the AD ACCOUNT's currency —
+                # which is not always the branch's currency (e.g. Oani has both
+                # a TWD account and a future VND account). Look up the row's
+                # currency from account_map first, fall back to branch.
+                row_currency = currency
+                if account_id and account_id in account_map:
+                    row_currency = (
+                        account_map[account_id].get("currency") or currency
+                    ).upper()
+
                 values = dict(
                     branch_id=branch.id,
                     grain="daily",
@@ -301,13 +316,13 @@ def _sync_spend_daily(
                     account_id=account_id,
                     date_from=row_date,
                     date_to=row_date,
-                    cost_native=_from_vnd_to_native(cost, currency, rate_map),
-                    cost_vnd=cost,
+                    cost_native=cost,
+                    cost_vnd=_to_vnd(cost, row_currency, rate_map),
                     impressions=r.get("impressions"),
                     clicks=r.get("clicks"),
                     bookings=r.get("conversions"),
-                    revenue_native=_from_vnd_to_native(revenue, currency, rate_map),
-                    revenue_vnd=revenue,
+                    revenue_native=revenue,
+                    revenue_vnd=_to_vnd(revenue, row_currency, rate_map),
                 )
                 if existing:
                     for k, v in values.items():
@@ -488,7 +503,9 @@ def run_ads_platform_sync(
     ads_synced = _sync_ads(db, client, account_map, angle_map, campaign_map, rate_map)
 
     # 5. Daily spend (authoritative aggregate)
-    daily_synced = _sync_spend_daily(db, client, branches, df, dt, rate_map)
+    daily_synced = _sync_spend_daily(
+        db, client, branches, df, dt, rate_map, account_map=account_map,
+    )
 
     # 6. Booking matches
     matches_synced = _sync_booking_matches(
