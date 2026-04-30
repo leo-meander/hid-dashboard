@@ -143,7 +143,7 @@ class ActualsCache:
         if hotel_id is None:
             self._kol[key] = {}
         else:
-            self._kol[key] = fetch_kol_yearly(hotel_id, year, currency="VND")
+            self._kol[key] = fetch_kol_yearly(hotel_id, year)
         return self._kol[key]
 
     def _load_manual(self, branch: Branch, year: int) -> dict[tuple[int, str], float]:

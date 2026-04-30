@@ -57,12 +57,17 @@ def fetch_paid_ads_yearly(branch_slug: str, year: int) -> dict[int, dict]:
 
     Returns an empty dict if the upstream call fails — caller should treat
     each missing month as 0 actual rather than crashing.
+
+    Branch param is case-sensitive upstream — ``taipei`` returns a partial
+    match (~670K TWD), ``Taipei`` returns the real total (293K TWD = 241M
+    VND). We canonicalise to title-case here. ``"1948"`` is unaffected.
     """
     if not settings.ADS_PLATFORM_API_KEY:
         log.warning("ADS_PLATFORM_API_KEY not configured; paid-ads actuals=0")
         return {}
+    branch_param = (branch_slug or "").title() or branch_slug
     base = settings.ADS_PLATFORM_BASE_URL.rstrip("/")
-    url = f"{base}/api/export/budget/yearly-plan?branch={branch_slug}&year={year}"
+    url = f"{base}/api/export/budget/yearly-plan?branch={branch_param}&year={year}"
     body = _fetch_json(url, {
         "X-API-Key": settings.ADS_PLATFORM_API_KEY,
         "Accept": "application/json",
@@ -87,10 +92,19 @@ def fetch_paid_ads_yearly(branch_slug: str, year: int) -> dict[int, dict]:
 
 # ── KOL (KOL Media Engine) ───────────────────────────────────────────────────
 
-def fetch_kol_yearly(hotel_id: str, year: int, currency: str = "VND") -> dict[int, float]:
-    """Return ``{1..12: actual}`` for a hotel & year. ``currency`` controls
-    the unit upstream converts everything to (we ask for VND so the value
-    drops straight into our cost_vnd column)."""
+# Hardcoded fallback FX so we don't multiply by 1.0 when the live FX API
+# can't be reached. Same values used elsewhere in the codebase.
+_FX_FALLBACK_NATIVE_TO_VND = {"VND": 1.0, "TWD": 830.0, "JPY": 165.0}
+
+
+def fetch_kol_yearly(hotel_id: str, year: int) -> dict[int, float]:
+    """Return ``{1..12: actual_vnd}`` for a hotel & year.
+
+    KOL Engine's ``currency`` override doesn't actually convert — observed
+    response always carries ``currency`` = the hotel's budget currency
+    (TWD for Taipei, JPY for Osaka, VND for Saigon). Convert ourselves so
+    the value lines up with our cost_vnd column.
+    """
     if not settings.KOL_SYNC_API_KEY:
         log.warning("KOL_SYNC_API_KEY not configured; kol actuals=0")
         return {}
@@ -98,7 +112,7 @@ def fetch_kol_yearly(hotel_id: str, year: int, currency: str = "VND") -> dict[in
     org_id = settings.KOL_ENGINE_ORG_ID
     url = (
         f"{base}/api/sync/budgets"
-        f"?organization_id={org_id}&year={year}&hotel_id={hotel_id}&currency={currency}"
+        f"?organization_id={org_id}&year={year}&hotel_id={hotel_id}"
     )
     body = _fetch_json(url, {
         "X-Sync-API-Key": settings.KOL_SYNC_API_KEY,
@@ -107,13 +121,20 @@ def fetch_kol_yearly(hotel_id: str, year: int, currency: str = "VND") -> dict[in
     if not body:
         return {}
     data = body.get("data", body) if isinstance(body, dict) else {}
+    response_currency = (data.get("currency") or "VND").upper()
+    fx = _FX_FALLBACK_NATIVE_TO_VND.get(response_currency)
+    if fx is None:
+        log.warning("Unknown KOL response currency %s; treating as VND",
+                    response_currency)
+        fx = 1.0
     months = data.get("monthly_breakdown") or []
     out: dict[int, float] = {}
     for m in months:
         idx = m.get("month")
         if idx is None:
             continue
-        out[int(idx)] = float(m.get("actual") or 0)
+        actual = float(m.get("actual") or 0)
+        out[int(idx)] = round(actual * fx, 2)
     return out
 
 
