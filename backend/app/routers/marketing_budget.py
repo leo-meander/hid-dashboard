@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.branch import Branch
 from app.models.marketing_budget import MarketingBudget
+from app.models.yearly_plan import YearlyPlan
 from app.services.currency import fetch_rate
 from app.services.ads_platform import branch_slug_for
 from app.services.upstream_actuals import (
@@ -223,7 +224,202 @@ class ManualActualBulk(BaseModel):
     items: list[ManualActualItem]
 
 
+class YearlyPlanIn(BaseModel):
+    """Input for ``PUT /yearly-plan`` — yearly total + 12 monthly %.
+
+    Months default to flat 8.33% if any are missing. ``cascade_to_channels``
+    when True (default) recomputes ``marketing_budgets`` rows for each
+    (year, month) by preserving the existing channel ratio (or splitting
+    evenly across channels if no prior rows exist).
+    """
+    branch_id: UUID
+    year: int = Field(ge=2000, le=2100)
+    total_vnd: Decimal = Field(ge=0)
+    monthly_pcts: dict[str, float]   # {"1": 8.33, ..., "12": 8.37}
+    cascade_to_channels: bool = True
+
+
+def _normalised_monthly_pcts(raw: dict) -> dict[int, float]:
+    """Coerce arbitrary input into ``{1..12: float}`` filling gaps with 8.33."""
+    out: dict[int, float] = {}
+    for k, v in (raw or {}).items():
+        try:
+            mi = int(k)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= mi <= 12:
+            out[mi] = float(v or 0)
+    for m in range(1, 13):
+        out.setdefault(m, 8.33)
+    return out
+
+
+def _cascade_yearly_plan(
+    db: Session, branch_id: UUID, year: int,
+    total_vnd: float, monthly_pcts: dict[int, float],
+):
+    """Replace ``marketing_budgets`` allocations to match the new yearly plan.
+
+    Preserves each month's existing channel ratio when present; otherwise
+    splits evenly across ``CHANNELS``.
+    """
+    existing = db.query(MarketingBudget).filter(
+        MarketingBudget.branch_id == branch_id,
+        MarketingBudget.year == year,
+    ).all()
+    by_month: dict[int, list[MarketingBudget]] = {}
+    for r in existing:
+        by_month.setdefault(r.month, []).append(r)
+
+    for m in range(1, 13):
+        monthly_total = round(total_vnd * monthly_pcts.get(m, 0) / 100, 2)
+        rows = by_month.get(m, [])
+        # Build channel -> ratio (preserve), default to even split.
+        if rows:
+            old_total = sum(float(r.allocated_vnd or 0) for r in rows)
+            ratios = (
+                {r.channel: float(r.allocated_vnd or 0) / old_total for r in rows}
+                if old_total > 0
+                else {ch: 1.0 / len(CHANNELS) for ch in CHANNELS}
+            )
+        else:
+            ratios = {ch: 1.0 / len(CHANNELS) for ch in CHANNELS}
+
+        for ch in CHANNELS:
+            ratio = ratios.get(ch, 0.0)
+            new_alloc = round(monthly_total * ratio, 2)
+            row = next((r for r in rows if r.channel == ch), None)
+            if row is None:
+                row = MarketingBudget(
+                    branch_id=branch_id, year=year, month=m, channel=ch,
+                    allocated_vnd=new_alloc,
+                )
+                db.add(row)
+            else:
+                row.allocated_vnd = new_alloc
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
+
+
+@router.get("/yearly-plan")
+def get_yearly_plan(
+    branch_id: UUID = Query(...),
+    year: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Yearly Plan tab data — yearly total, monthly %, and derived monthly
+    budget per branch. Falls back to the sum of marketing_budgets if no
+    yearly_plans row exists yet (so the UI can show something useful before
+    ops sets a plan)."""
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(404, "Branch not found")
+
+    cur = (branch.currency or "VND").upper()
+    rate = _get_rate_to_vnd(cur)
+
+    plan = db.query(YearlyPlan).filter(
+        YearlyPlan.branch_id == branch_id, YearlyPlan.year == year,
+    ).first()
+
+    if plan:
+        total_vnd = float(plan.total_vnd or 0)
+        pcts = _normalised_monthly_pcts(plan.monthly_pcts or {})
+        exists = True
+    else:
+        # Derive from marketing_budgets: monthly total = sum(channels)
+        rows = db.query(MarketingBudget).filter(
+            MarketingBudget.branch_id == branch_id,
+            MarketingBudget.year == year,
+        ).all()
+        monthly_totals: dict[int, float] = {}
+        for r in rows:
+            monthly_totals[r.month] = monthly_totals.get(r.month, 0.0) + float(r.allocated_vnd or 0)
+        total_vnd = sum(monthly_totals.values())
+        if total_vnd > 0:
+            pcts = {m: round(v / total_vnd * 100, 4)
+                    for m, v in monthly_totals.items()}
+        else:
+            pcts = {}
+        pcts = _normalised_monthly_pcts(pcts)
+        exists = False
+
+    months = []
+    for m in range(1, 13):
+        pct = pcts.get(m, 0.0)
+        budget_vnd = round(total_vnd * pct / 100, 2)
+        months.append({
+            "month": m,
+            "pct": pct,
+            "budget_vnd": budget_vnd,
+            "budget_native": _vnd_to_native(budget_vnd, cur, rate),
+        })
+
+    sum_pct = round(sum(pcts.values()), 2)
+    return _envelope({
+        "branch_id": str(branch_id),
+        "branch_name": branch.name,
+        "currency": cur,
+        "rate_to_vnd": rate,
+        "year": year,
+        "exists": exists,
+        "total_vnd": total_vnd,
+        "total_native": _vnd_to_native(total_vnd, cur, rate),
+        "sum_pct": sum_pct,
+        "months": months,
+    })
+
+
+@router.put("/yearly-plan")
+def upsert_yearly_plan(
+    body: YearlyPlanIn,
+    db: Session = Depends(get_db),
+):
+    """Upsert yearly plan for one (branch, year). Cascades to
+    marketing_budgets so per-channel allocations stay in sync."""
+    branch = db.query(Branch).filter(Branch.id == body.branch_id).first()
+    if not branch:
+        raise HTTPException(404, "Branch not found")
+
+    pcts_norm = _normalised_monthly_pcts(body.monthly_pcts)
+
+    plan = db.query(YearlyPlan).filter(
+        YearlyPlan.branch_id == body.branch_id,
+        YearlyPlan.year == body.year,
+    ).first()
+    # JSONB stores string keys — store back as {"1": ..., "12": ...}.
+    pcts_json = {str(m): pcts_norm[m] for m in range(1, 13)}
+
+    if plan is None:
+        plan = YearlyPlan(
+            branch_id=body.branch_id, year=body.year,
+            total_vnd=body.total_vnd, monthly_pcts=pcts_json,
+        )
+        db.add(plan)
+    else:
+        plan.total_vnd = body.total_vnd
+        plan.monthly_pcts = pcts_json
+
+    if body.cascade_to_channels:
+        _cascade_yearly_plan(
+            db, body.branch_id, body.year,
+            float(body.total_vnd), pcts_norm,
+        )
+
+    db.commit()
+    db.refresh(plan)
+    return _envelope({
+        "id": str(plan.id),
+        "branch_id": str(plan.branch_id),
+        "year": plan.year,
+        "total_vnd": float(plan.total_vnd or 0),
+        "monthly_pcts": dict(plan.monthly_pcts or {}),
+        "cascaded": body.cascade_to_channels,
+    })
+
+
+# ── Endpoints (existing) ─────────────────────────────────────────────────────
 
 @router.get("/yearly")
 def get_yearly(

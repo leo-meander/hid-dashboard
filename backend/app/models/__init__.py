@@ -8,6 +8,7 @@ from app.models.angle import AdAngle
 from app.models.ads import AdsPerformance
 from app.models.ads_budget import AdsBudget
 from app.models.marketing_budget import MarketingBudget
+from app.models.yearly_plan import YearlyPlan
 from app.models.ads_booking_match import AdsBookingMatch
 from app.models.kol import KOLRecord, KOLBooking
 from app.models.activity import MarketingActivity
@@ -32,6 +33,7 @@ __all__ = [
     "Branch", "KPITarget", "Reservation", "DailyMetrics", "Event",
     "WebsiteMetrics", "AdAngle", "AdsPerformance", "AdsBudget",
     "MarketingBudget",
+    "YearlyPlan",
     "AdsBookingMatch", "KOLRecord", "KOLBooking",
     "MarketingActivity", "User", "BranchKeypoint", "AdCopy", "AdMaterial",
     "AdApproval", "AdName",

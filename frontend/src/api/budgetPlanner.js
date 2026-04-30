@@ -24,3 +24,9 @@ export const upsertManualActual = (item) =>
 
 export const upsertManualActualBulk = (items) =>
   axios.put(`${BASE}/manual-actual/bulk`, { items }).then(r => r.data.data);
+
+export const getYearlyPlan = (params) =>
+  axios.get(`${BASE}/yearly-plan`, { params }).then(r => r.data.data);
+
+export const saveYearlyPlan = (body) =>
+  axios.put(`${BASE}/yearly-plan`, body).then(r => r.data.data);
