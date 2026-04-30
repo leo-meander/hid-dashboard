@@ -824,11 +824,11 @@ def debug_ads_platform_yearly_plan(
     branch: str = Query(...),
     year: int = Query(2026),
 ):
-    """Probe upstream /api/budget/yearly-plan?branch=X&year=Y to read the new
-    actual_spend fields (rolled out in Ads Platform commit 844c25c)."""
+    """Probe upstream /api/export/budget/yearly-plan — the X-API-Key mirror of
+    /api/budget/yearly-plan, exposing actual_spend per plan."""
     import urllib.request, json
     base = settings.ADS_PLATFORM_BASE_URL.rstrip("/")
-    url = f"{base}/api/budget/yearly-plan?branch={branch}&year={year}"
+    url = f"{base}/api/export/budget/yearly-plan?branch={branch}&year={year}"
     req = urllib.request.Request(
         url, headers={"X-API-Key": settings.ADS_PLATFORM_API_KEY, "Accept": "application/json"},
     )
