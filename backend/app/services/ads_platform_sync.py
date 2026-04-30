@@ -163,10 +163,16 @@ def _sync_ads(
         logger.warning("get_ads failed: %s", exc)
         return 0
 
+    # Upstream occasionally yields the same ad_id twice across pages; the
+    # session has autoflush=False so a duplicate would race a pending INSERT
+    # and trip the partial unique index ux_ads_performance_ad_external.
+    # Track ids we've already handled in this run.
+    seen: set[str] = set()
     for ad in ads:
         ext_ad_id = str(ad.get("id") or ad.get("ad_id") or "").strip()
-        if not ext_ad_id:
+        if not ext_ad_id or ext_ad_id in seen:
             continue
+        seen.add(ext_ad_id)
         ext_campaign_id = str(ad.get("campaign_id") or "").strip() or None
         campaign_meta = campaign_map.get(ext_campaign_id, {}) if ext_campaign_id else {}
         account_id = ad.get("account_id") or campaign_meta.get("account_id")
