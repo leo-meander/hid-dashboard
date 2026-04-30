@@ -780,6 +780,28 @@ def debug_ads_platform_accounts():
     return _envelope({"count": len(accounts), "accounts": accounts})
 
 
+@router.get("/debug/ads-platform-budget")
+def debug_ads_platform_budget(
+    month: str = Query(..., description="YYYY-MM"),
+):
+    """Dump upstream /api/export/budget/monthly?month=X to inspect plan fields
+    (in particular, whether plans expose an actual_spend per plan)."""
+    from app.services.ads_platform import get_client
+    client = get_client()
+    payload = client.get_budget_monthly(month)
+    plans = (payload or {}).get("plans") or []
+    keys: set = set()
+    for p in plans:
+        keys.update(p.keys())
+    return _envelope({
+        "month": month,
+        "plan_count": len(plans),
+        "all_keys_seen": sorted(keys),
+        "first_3_plans": plans[:3],
+        "raw_top_level_keys": sorted((payload or {}).keys()),
+    })
+
+
 @router.post("/ads-platform")
 def trigger_ads_platform_sync(
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD; default = today-14"),
