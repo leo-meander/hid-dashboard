@@ -696,6 +696,50 @@ def debug_spanning_reservations(
 
 # ── Ads Platform sync (replaces Meta Graph + Google Sheets, migration 028) ──
 
+@router.get("/debug/kol-engine-probe")
+def debug_kol_engine_probe(
+    path: str = Query(..., description="path under base url, e.g. /api/sync/kol-budget"),
+):
+    """Probe arbitrary KOL Engine endpoint. Used to discover the budget API."""
+    import urllib.request, json
+    if not settings.KOL_SYNC_API_KEY:
+        raise HTTPException(400, "KOL_SYNC_API_KEY not configured")
+    base = settings.KOL_ENGINE_URL.rstrip("/")
+    sep = "?" if "?" not in path else "&"
+    url = f"{base}{path}{sep}organization_id={settings.KOL_ENGINE_ORG_ID}"
+    req = urllib.request.Request(
+        url, headers={"X-Sync-API-Key": settings.KOL_SYNC_API_KEY}, method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = r.read().decode("utf-8", errors="replace")
+            status = r.status
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:1000]
+        status = e.code
+    except Exception as e:
+        return _envelope({"url": url, "error": str(e)})
+    parsed = None
+    try:
+        parsed = json.loads(body)
+    except Exception:
+        pass
+    if parsed and isinstance(parsed, dict):
+        # Trim large lists for readability
+        data = parsed.get("data")
+        if isinstance(data, dict):
+            for k, v in list(data.items()):
+                if isinstance(v, list) and len(v) > 3:
+                    parsed["data"][k] = v[:3] + [f"... ({len(v)-3} more truncated)"]
+        elif isinstance(data, list) and len(data) > 5:
+            parsed["data"] = data[:5] + [f"... ({len(data)-5} more truncated)"]
+    return _envelope({
+        "url": url, "status": status,
+        "keys": list(parsed.keys()) if isinstance(parsed, dict) else None,
+        "body": parsed if parsed is not None else body[:1500],
+    })
+
+
 @router.get("/debug/ads-platform-spend")
 def debug_ads_platform_spend(
     date_from: str = Query(...),
