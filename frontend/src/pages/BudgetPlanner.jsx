@@ -17,6 +17,7 @@ import {
   getChannelSplits,
   upsertBudget,
   upsertBudgetBulk,
+  upsertManualActual,
 } from "../api/budgetPlanner";
 
 const CHANNELS = [
@@ -234,34 +235,102 @@ function MonthlyTab({ branchId, year, month }) {
       </div>
 
       {data.channels.map((c) => (
-        <div key={c.channel} className="bg-white rounded-lg border p-4">
-          <div className="flex items-center justify-between mb-1">
-            <span className="font-medium text-gray-900">{c.label}</span>
-            <StatusBadge status={c.status} />
-          </div>
-          <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-            <span>Spent</span>
-            {editing ? (
-              <span>
-                {fmt(c.actual_native)} /{" "}
-                <input
-                  type="number"
-                  value={draft[c.channel] || ""}
-                  onChange={(e) => setDraft({ ...draft, [c.channel]: e.target.value })}
-                  className="w-32 border rounded px-1 py-0.5 text-right text-xs"
-                />{" "}
-                {cur} <span className="text-gray-400 ml-1">(VND value)</span>
-              </span>
-            ) : (
-              <span>{fmt(c.actual_native)} / {fmt(c.allocated_native)} {cur}</span>
-            )}
-          </div>
-          <ProgressBar pct={c.pct} />
-          <div className="text-xs text-gray-400 mt-1">
-            Projected: {fmt(c.projected_native)}
-          </div>
-        </div>
+        <ChannelCard
+          key={c.channel}
+          c={c}
+          cur={cur}
+          rate={data.rate_to_vnd || 1}
+          editing={editing}
+          draft={draft}
+          setDraft={setDraft}
+          branchId={branchId}
+          year={year}
+          month={month}
+          onSaved={load}
+        />
       ))}
+    </div>
+  );
+}
+
+/* Per-channel card on the Monthly tab. CRM has no upstream feed, so it
+   exposes a "Set actual" inline input that writes manual_actual_vnd. */
+function ChannelCard({ c, cur, rate, editing, draft, setDraft, branchId, year, month, onSaved }) {
+  const [crmInput, setCrmInput] = useState("");
+  const [saving, setSaving] = useState(false);
+  const isCrm = c.channel === "crm";
+
+  // Display value as native; multiply by rate to store back as VND.
+  useEffect(() => {
+    if (isCrm) setCrmInput(c.actual_native ? String(Math.round(c.actual_native)) : "");
+  }, [c.actual_native, isCrm, month]);
+
+  const saveCrm = async () => {
+    setSaving(true);
+    try {
+      const native = Number(crmInput || 0);
+      const vnd = native * (rate || 1);
+      await upsertManualActual({
+        branch_id: branchId,
+        year,
+        month,
+        channel: "crm",
+        manual_actual_vnd: vnd > 0 ? vnd : null,
+      });
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-lg border p-4">
+      <div className="flex items-center justify-between mb-1">
+        <span className="font-medium text-gray-900">{c.label}</span>
+        <StatusBadge status={c.status} />
+      </div>
+      <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+        <span>Spent</span>
+        {editing ? (
+          <span>
+            {fmt(c.actual_native)} /{" "}
+            <input
+              type="number"
+              value={draft[c.channel] || ""}
+              onChange={(e) => setDraft({ ...draft, [c.channel]: e.target.value })}
+              className="w-32 border rounded px-1 py-0.5 text-right text-xs"
+            />{" "}
+            {cur} <span className="text-gray-400 ml-1">(VND value)</span>
+          </span>
+        ) : (
+          <span>{fmt(c.actual_native)} / {fmt(c.allocated_native)} {cur}</span>
+        )}
+      </div>
+      <ProgressBar pct={c.pct} />
+      <div className="text-xs text-gray-400 mt-1">
+        Projected: {fmt(c.projected_native)}
+      </div>
+
+      {isCrm && !editing && (
+        <div className="mt-3 pt-3 border-t flex items-center gap-2 text-xs">
+          <span className="text-gray-600">Set actual:</span>
+          <input
+            type="number"
+            value={crmInput}
+            onChange={(e) => setCrmInput(e.target.value)}
+            placeholder="0"
+            className="w-32 border rounded px-1.5 py-1 text-right"
+          />
+          <span className="text-gray-500">{cur}</span>
+          <button
+            onClick={saveCrm}
+            disabled={saving}
+            className="ml-auto px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {saving ? "…" : "Save"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

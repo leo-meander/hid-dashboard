@@ -18,3 +18,9 @@ export const upsertBudget = (item) =>
 
 export const upsertBudgetBulk = (items) =>
   axios.put(`${BASE}/bulk`, { items }).then(r => r.data.data);
+
+export const upsertManualActual = (item) =>
+  axios.put(`${BASE}/manual-actual`, item).then(r => r.data.data);
+
+export const upsertManualActualBulk = (items) =>
+  axios.put(`${BASE}/manual-actual/bulk`, { items }).then(r => r.data.data);

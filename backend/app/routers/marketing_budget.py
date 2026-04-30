@@ -9,10 +9,12 @@ arbitrary channel strings, so adding a new channel later is purely a frontend
 change — no migration needed.
 
 Actual-spend sources (per channel):
-    paid_ads → SUM(ads_performance.cost_*) where grain='daily' and date in month
-    kol      → SUM(kol_records.cost_*) where COALESCE(invitation_date,
-               published_date, created_at::date) is in month
-    crm      → 0 (no spend tracking yet)
+    paid_ads → Ads Platform /api/export/budget/yearly-plan (per-budget-plan
+               actual matching their UI; not every-ad daily aggregate)
+    kol      → KOL Engine  /api/sync/budgets (per-hotel monthly_breakdown.actual,
+               attributed by published_date and converted to VND upstream)
+    crm      → manual_actual_vnd column on marketing_budgets (no upstream
+               source; user enters monthly cost via Budget Planner UI)
 """
 from __future__ import annotations
 
@@ -26,15 +28,18 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import Date, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.ads import AdsPerformance
 from app.models.branch import Branch
-from app.models.kol import KOLRecord
 from app.models.marketing_budget import MarketingBudget
 from app.services.currency import fetch_rate
+from app.services.ads_platform import branch_slug_for
+from app.services.upstream_actuals import (
+    fetch_kol_yearly,
+    fetch_paid_ads_yearly,
+    kol_hotel_id_for,
+)
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -100,40 +105,73 @@ def _resolve_branches(db: Session, branch_id: Optional[UUID]) -> list[Branch]:
 
 
 # ── Actuals ──────────────────────────────────────────────────────────────────
-
-def _paid_ads_actual_vnd(db: Session, branch_id: UUID, d_from: date, d_to: date) -> float:
-    val = db.query(func.coalesce(func.sum(AdsPerformance.cost_vnd), 0)).filter(
-        AdsPerformance.branch_id == branch_id,
-        AdsPerformance.grain == "daily",
-        AdsPerformance.date_from >= d_from,
-        AdsPerformance.date_from <= d_to,
-    ).scalar()
-    return float(val or 0)
+#
+# All actuals come from the upstream platforms — Ads Platform for paid_ads,
+# KOL Engine for kol — fetched once per (branch, year) and cached in an
+# ``ActualsCache`` instance so a single yearly/monthly response makes at most
+# two upstream HTTP calls per branch instead of one per (channel × month).
 
 
-def _kol_actual_vnd(db: Session, branch_id: UUID, d_from: date, d_to: date) -> float:
-    """KOL spend attributed by COALESCE(invitation_date, published_date,
-    created_at::date) — first non-null is the cost-incurred date."""
-    eff_date = func.coalesce(
-        KOLRecord.invitation_date,
-        KOLRecord.published_date,
-        func.cast(KOLRecord.created_at, Date),
-    )
-    val = db.query(func.coalesce(func.sum(KOLRecord.cost_vnd), 0)).filter(
-        KOLRecord.branch_id == branch_id,
-        eff_date >= d_from,
-        eff_date <= d_to,
-    ).scalar()
-    return float(val or 0)
+class ActualsCache:
+    """Per-request cache of upstream actuals + manual CRM values.
 
+    Build once at the top of an endpoint, then call ``get(branch, year, month,
+    channel)`` for each cell. Lazy-loads on first miss.
+    """
 
-def _channel_actual_vnd(db: Session, branch_id: UUID, channel: str,
-                        d_from: date, d_to: date) -> float:
-    if channel == "paid_ads":
-        return _paid_ads_actual_vnd(db, branch_id, d_from, d_to)
-    if channel == "kol":
-        return _kol_actual_vnd(db, branch_id, d_from, d_to)
-    return 0.0
+    def __init__(self, db: Session):
+        self.db = db
+        # (branch_id, year) -> {month -> vnd}
+        self._paid_ads: dict[tuple[str, int], dict[int, float]] = {}
+        self._kol: dict[tuple[str, int], dict[int, float]] = {}
+        self._manual: dict[tuple[str, int], dict[tuple[int, str], float]] = {}
+
+    def _load_paid_ads(self, branch: Branch, year: int) -> dict[int, float]:
+        key = (str(branch.id), year)
+        if key in self._paid_ads:
+            return self._paid_ads[key]
+        slug = branch_slug_for(branch)
+        rows = fetch_paid_ads_yearly(slug, year)
+        self._paid_ads[key] = {m: v.get("spent_vnd", 0.0) for m, v in rows.items()}
+        return self._paid_ads[key]
+
+    def _load_kol(self, branch: Branch, year: int) -> dict[int, float]:
+        key = (str(branch.id), year)
+        if key in self._kol:
+            return self._kol[key]
+        hotel_id = kol_hotel_id_for(branch.id)
+        if hotel_id is None:
+            self._kol[key] = {}
+        else:
+            self._kol[key] = fetch_kol_yearly(hotel_id, year, currency="VND")
+        return self._kol[key]
+
+    def _load_manual(self, branch: Branch, year: int) -> dict[tuple[int, str], float]:
+        """All ``manual_actual_vnd`` rows for this branch+year in one query."""
+        key = (str(branch.id), year)
+        if key in self._manual:
+            return self._manual[key]
+        rows = self.db.query(MarketingBudget).filter(
+            MarketingBudget.branch_id == branch.id,
+            MarketingBudget.year == year,
+            MarketingBudget.manual_actual_vnd.isnot(None),
+        ).all()
+        self._manual[key] = {
+            (r.month, r.channel): float(r.manual_actual_vnd or 0) for r in rows
+        }
+        return self._manual[key]
+
+    def get(self, branch: Branch, year: int, month: int, channel: str) -> float:
+        # Manual override always wins (lets ops correct an upstream miss).
+        manual = self._load_manual(branch, year).get((month, channel))
+        if manual is not None:
+            return manual
+        if channel == "paid_ads":
+            return self._load_paid_ads(branch, year).get(month, 0.0)
+        if channel == "kol":
+            return self._load_kol(branch, year).get(month, 0.0)
+        # crm and any future channel without an upstream feed: 0 unless manual
+        return 0.0
 
 
 # ── Allocation lookup ────────────────────────────────────────────────────────
@@ -168,6 +206,23 @@ class BulkUpsertBody(BaseModel):
     items: list[BudgetUpsertItem]
 
 
+class ManualActualItem(BaseModel):
+    """Per (branch, year, month, channel) manual actual-cost override.
+
+    Currently used for the CRM channel (no upstream feed). ``None`` clears
+    the override and lets the upstream / 0 default win again.
+    """
+    branch_id: UUID
+    year: int = Field(ge=2000, le=2100)
+    month: int = Field(ge=1, le=12)
+    channel: str
+    manual_actual_vnd: Optional[Decimal] = Field(default=None, ge=0)
+
+
+class ManualActualBulk(BaseModel):
+    items: list[ManualActualItem]
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @router.get("/yearly")
@@ -184,21 +239,20 @@ def get_yearly(
     cur = (branch.currency or "VND").upper()
     rate = _get_rate_to_vnd(cur)
     allocs = _allocations_for(db, branch_id, year)
+    actuals = ActualsCache(db)
 
     months_data = []
     year_alloc_vnd = 0.0
     year_actual_vnd = 0.0
 
     for m in range(1, 13):
-        d_from, d_to = _month_range(year, m)
-
         channels = []
         m_alloc = 0.0
         m_actual = 0.0
         for ch in CHANNELS:
             a = allocs.get((m, ch), {})
             alloc_vnd = float(a.get("allocated_vnd", 0))
-            actual_vnd = _channel_actual_vnd(db, branch_id, ch, d_from, d_to)
+            actual_vnd = actuals.get(branch, year, m, ch)
             m_alloc += alloc_vnd
             m_actual += actual_vnd
             channels.append({
@@ -279,6 +333,7 @@ def get_monthly(
         days_remaining = days_in_month - days_elapsed
 
     allocs = _allocations_for(db, branch_id, year)
+    actuals = ActualsCache(db)
 
     channels = []
     total_alloc = 0.0
@@ -287,7 +342,7 @@ def get_monthly(
     for ch in CHANNELS:
         a = allocs.get((month, ch), {})
         alloc_vnd = float(a.get("allocated_vnd", 0))
-        actual_vnd = _channel_actual_vnd(db, branch_id, ch, d_from, d_to)
+        actual_vnd = actuals.get(branch, year, month, ch)
         total_alloc += alloc_vnd
         total_actual += actual_vnd
         proj = (actual_vnd / days_elapsed * days_in_month) if days_elapsed else actual_vnd
@@ -472,6 +527,90 @@ def upsert_bulk(
             "branch_id": str(it.branch_id), "year": it.year,
             "month": it.month, "channel": it.channel,
             "allocated_vnd": float(it.allocated_vnd),
+        })
+    db.commit()
+    return _envelope({"updated": len(out), "items": out})
+
+
+@router.put("/manual-actual")
+def upsert_manual_actual(
+    body: ManualActualItem,
+    db: Session = Depends(get_db),
+):
+    """Set/clear ``manual_actual_vnd`` for one (branch, year, month, channel).
+
+    Used today by the CRM channel input on Budget Planner. Manual override
+    wins over upstream actuals so it also doubles as a correction tool for
+    Paid Ads / KOL when an upstream miss needs to be patched.
+    """
+    if body.channel not in CHANNELS:
+        raise HTTPException(400, f"channel must be one of {CHANNELS}")
+    if not db.query(Branch).filter(Branch.id == body.branch_id).first():
+        raise HTTPException(404, "Branch not found")
+
+    row = db.query(MarketingBudget).filter(
+        MarketingBudget.branch_id == body.branch_id,
+        MarketingBudget.year == body.year,
+        MarketingBudget.month == body.month,
+        MarketingBudget.channel == body.channel,
+    ).first()
+
+    if row is None:
+        row = MarketingBudget(
+            branch_id=body.branch_id,
+            year=body.year,
+            month=body.month,
+            channel=body.channel,
+            allocated_vnd=0,
+            manual_actual_vnd=body.manual_actual_vnd,
+        )
+        db.add(row)
+    else:
+        row.manual_actual_vnd = body.manual_actual_vnd
+
+    db.commit()
+    db.refresh(row)
+    return _envelope({
+        "id": str(row.id),
+        "branch_id": str(row.branch_id),
+        "year": row.year,
+        "month": row.month,
+        "channel": row.channel,
+        "manual_actual_vnd": float(row.manual_actual_vnd) if row.manual_actual_vnd is not None else None,
+    })
+
+
+@router.put("/manual-actual/bulk")
+def upsert_manual_actual_bulk(
+    body: ManualActualBulk,
+    db: Session = Depends(get_db),
+):
+    """Bulk variant of /manual-actual — used by Budget Planner's CRM grid."""
+    out = []
+    for it in body.items:
+        if it.channel not in CHANNELS:
+            raise HTTPException(400, f"channel must be one of {CHANNELS}")
+        row = db.query(MarketingBudget).filter(
+            MarketingBudget.branch_id == it.branch_id,
+            MarketingBudget.year == it.year,
+            MarketingBudget.month == it.month,
+            MarketingBudget.channel == it.channel,
+        ).first()
+        if row is None:
+            row = MarketingBudget(
+                branch_id=it.branch_id, year=it.year, month=it.month,
+                channel=it.channel, allocated_vnd=0,
+                manual_actual_vnd=it.manual_actual_vnd,
+            )
+            db.add(row)
+        else:
+            row.manual_actual_vnd = it.manual_actual_vnd
+        out.append({
+            "branch_id": str(it.branch_id), "year": it.year,
+            "month": it.month, "channel": it.channel,
+            "manual_actual_vnd": (
+                float(it.manual_actual_vnd) if it.manual_actual_vnd is not None else None
+            ),
         })
     db.commit()
     return _envelope({"updated": len(out), "items": out})

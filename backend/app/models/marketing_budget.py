@@ -35,6 +35,9 @@ class MarketingBudget(Base):
     month = Column(Integer, nullable=False)            # 1..12
     channel = Column(String(32), nullable=False)       # paid_ads | kol | crm
     allocated_vnd = Column(Numeric(15, 2), nullable=False, default=0)
+    # Manual override for channels with no upstream actuals feed (e.g. CRM).
+    # NULL ⇒ defer to upstream / 0; non-NULL ⇒ wins over the upstream value.
+    manual_actual_vnd = Column(Numeric(15, 2), nullable=True)
     note = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True),
                         default=lambda: datetime.now(timezone.utc))
