@@ -107,6 +107,27 @@ def _to_vnd(amount: Optional[float], currency: str, rate_map: dict[str, float]) 
     return round(float(amount) * rate, 2)
 
 
+def _from_vnd_to_native(
+    amount_vnd: Optional[float], currency: str, rate_map: dict[str, float]
+) -> Optional[float]:
+    """Convert a VND amount back to the account's native currency.
+
+    Upstream Ads Platform returns ``spend`` and ``revenue`` already in VND
+    (master currency) for every account, regardless of the account's local
+    currency. To populate ``cost_native`` we have to divide by the same FX
+    rate we'd use to go the other way.
+    """
+    if amount_vnd is None:
+        return None
+    cur = (currency or "VND").upper()
+    if cur == "VND":
+        return float(amount_vnd)
+    rate = rate_map.get(cur)
+    if not rate:
+        return None
+    return round(float(amount_vnd) / rate, 2)
+
+
 # ── Per-step syncers ─────────────────────────────────────────────────────────
 
 
@@ -269,6 +290,9 @@ def _sync_spend_daily(
                     )
                     .first()
                 )
+                # Upstream returns spend/revenue already in VND (master) — store
+                # that as cost_vnd directly and derive cost_native by dividing
+                # by the branch's FX rate.
                 values = dict(
                     branch_id=branch.id,
                     grain="daily",
@@ -277,13 +301,13 @@ def _sync_spend_daily(
                     account_id=account_id,
                     date_from=row_date,
                     date_to=row_date,
-                    cost_native=cost,
-                    cost_vnd=_to_vnd(cost, currency, rate_map),
+                    cost_native=_from_vnd_to_native(cost, currency, rate_map),
+                    cost_vnd=cost,
                     impressions=r.get("impressions"),
                     clicks=r.get("clicks"),
                     bookings=r.get("conversions"),
-                    revenue_native=revenue,
-                    revenue_vnd=_to_vnd(revenue, currency, rate_map),
+                    revenue_native=_from_vnd_to_native(revenue, currency, rate_map),
+                    revenue_vnd=revenue,
                 )
                 if existing:
                     for k, v in values.items():
