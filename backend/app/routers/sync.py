@@ -819,6 +819,83 @@ def debug_ads_platform_spend_raw(
     })
 
 
+@router.get("/debug/ads-platform-yearly-plan")
+def debug_ads_platform_yearly_plan(
+    branch: str = Query(...),
+    year: int = Query(2026),
+):
+    """Probe upstream /api/budget/yearly-plan?branch=X&year=Y to read the new
+    actual_spend fields (rolled out in Ads Platform commit 844c25c)."""
+    import urllib.request, json
+    base = settings.ADS_PLATFORM_BASE_URL.rstrip("/")
+    url = f"{base}/api/budget/yearly-plan?branch={branch}&year={year}"
+    req = urllib.request.Request(
+        url, headers={"X-API-Key": settings.ADS_PLATFORM_API_KEY, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = json.loads(r.read())
+            status = r.status
+    except urllib.error.HTTPError as e:
+        return _envelope({"url": url, "status": e.code, "body": e.read()[:1000].decode("utf-8", "replace")})
+    except Exception as e:
+        return _envelope({"url": url, "error": str(e)})
+    data = body.get("data", body)
+    months = data.get("months") or []
+    return _envelope({
+        "url": url,
+        "status": status,
+        "top_keys": sorted(body.keys()) if isinstance(body, dict) else None,
+        "data_keys": sorted(data.keys()) if isinstance(data, dict) else None,
+        "month_count": len(months),
+        "first_month_keys": sorted(months[0].keys()) if months else [],
+        "first_3_months": months[:3],
+        "rate_to_vnd": data.get("rate_to_vnd"),
+        "yearly_spent_vnd": data.get("yearly_spent_vnd"),
+        "yearly_spent_native": data.get("yearly_spent_native"),
+    })
+
+
+@router.get("/debug/kol-budgets")
+def debug_kol_budgets(
+    hotel_id: str = Query(...),
+    year: int = Query(2026),
+    currency: Optional[str] = Query(None),
+):
+    """Probe KOL Engine /api/budgets?hotel_id=X&year=Y (commit 922d75d)."""
+    import urllib.request, json
+    base = settings.KOL_ENGINE_URL.rstrip("/")
+    qs = f"hotel_id={hotel_id}&year={year}"
+    if currency:
+        qs += f"&currency={currency}"
+    url = f"{base}/api/budgets?{qs}"
+    req = urllib.request.Request(
+        url, headers={"X-Sync-API-Key": settings.KOL_SYNC_API_KEY, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = json.loads(r.read())
+            status = r.status
+    except urllib.error.HTTPError as e:
+        return _envelope({"url": url, "status": e.code, "body": e.read()[:1000].decode("utf-8", "replace")})
+    except Exception as e:
+        return _envelope({"url": url, "error": str(e)})
+    data = body.get("data", body)
+    months = (data or {}).get("monthly_breakdown") or []
+    return _envelope({
+        "url": url,
+        "status": status,
+        "top_keys": sorted(body.keys()) if isinstance(body, dict) else None,
+        "data_keys": sorted(data.keys()) if isinstance(data, dict) else None,
+        "month_count": len(months),
+        "first_month_keys": sorted(months[0].keys()) if months else [],
+        "first_3_months": months[:3],
+        "exists": data.get("exists"),
+        "currency": data.get("currency"),
+        "total_actual": data.get("total_actual"),
+    })
+
+
 @router.get("/debug/ads-platform-budget")
 def debug_ads_platform_budget(
     month: str = Query(..., description="YYYY-MM"),
