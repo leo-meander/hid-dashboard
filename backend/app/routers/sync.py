@@ -923,6 +923,19 @@ def debug_ads_platform_budget(
     })
 
 
+@router.post("/marketing-budget-actuals")
+def trigger_marketing_budget_actuals_sync(
+    year: Optional[int] = Query(None, description="Default = current year"),
+    db: Session = Depends(get_db),
+):
+    """Pull paid_ads + kol actuals from upstream into
+    ``marketing_budgets.cached_actual_vnd`` for every active branch.
+    Same job runs nightly via the scheduler — this endpoint is the manual
+    trigger when ops wants fresh numbers right away."""
+    from app.services.budget_actuals_sync import sync_marketing_actuals
+    return _envelope(sync_marketing_actuals(db, year=year))
+
+
 @router.post("/ads-platform")
 def trigger_ads_platform_sync(
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD; default = today-14"),

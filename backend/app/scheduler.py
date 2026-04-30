@@ -181,6 +181,25 @@ def setup_scheduler(app):
             executor="default",
         )
 
+        # Daily marketing-budget actuals sync at 6:30am (after Ads Platform
+        # daily sync at 06:00 — needs ads_performance up-to-date upstream).
+        # Pulls per-month paid_ads + kol actuals into
+        # marketing_budgets.cached_actual_vnd so Budget Planner reads serve
+        # from local DB instead of round-tripping to upstream every request.
+        def _marketing_budget_actuals_job():
+            from app.services.budget_actuals_sync import (
+                run_daily_marketing_actuals_job,
+            )
+            run_daily_marketing_actuals_job()
+
+        scheduler.add_job(
+            _marketing_budget_actuals_job,
+            trigger=CronTrigger(hour=6, minute=30),
+            id="daily_marketing_budget_actuals",
+            replace_existing=True,
+            executor="default",
+        )
+
         # Daily GHL email stats sync at 5:00am (after aggregation)
         def _ghl_email_sync_job():
             from app.services.ghl_email_sync import sync_ghl_email_stats
@@ -241,6 +260,7 @@ def setup_scheduler(app):
             "metrics compute (14-day lookback + next month) at 03:00 ICT, "
             "alert evaluation at 03:15 ICT, "
             "Ads Platform sync at 06:00 ICT, "
+            "marketing-budget actuals at 06:30 ICT, "
             "Insights refresh (14-day lookback) at 09:00 & 14:00 ICT, "
             "verdict sync at 03:30 ICT, "
             "email stats at 04:00 ICT, "

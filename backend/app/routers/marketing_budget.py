@@ -114,64 +114,72 @@ def _resolve_branches(db: Session, branch_id: Optional[UUID]) -> list[Branch]:
 
 
 class ActualsCache:
-    """Per-request cache of upstream actuals + manual CRM values.
+    """Per-request cache of actuals.
 
-    Build once at the top of an endpoint, then call ``get(branch, year, month,
-    channel)`` for each cell. Lazy-loads on first miss.
+    Read order (first non-null wins):
+      1. ``manual_actual_vnd``  — operator override
+      2. ``cached_actual_vnd``  — written by the daily upstream sync
+      3. live upstream fetch    — fallback when cache hasn't been populated
+                                  for this (branch, year) yet (e.g. brand-new
+                                  branch or fresh year)
+      4. 0
     """
 
     def __init__(self, db: Session):
         self.db = db
-        # (branch_id, year) -> {month -> vnd}
-        self._paid_ads: dict[tuple[str, int], dict[int, float]] = {}
-        self._kol: dict[tuple[str, int], dict[int, float]] = {}
-        self._manual: dict[tuple[str, int], dict[tuple[int, str], float]] = {}
+        # (branch_id, year) -> {(month, channel) -> vnd from DB}
+        self._db_loaded: set[tuple[str, int]] = set()
+        self._db_cache: dict[tuple[str, int], dict[tuple[int, str], dict]] = {}
+        # (branch_id, year) -> {month -> vnd from upstream}
+        self._live_paid_ads: dict[tuple[str, int], dict[int, float]] = {}
+        self._live_kol: dict[tuple[str, int], dict[int, float]] = {}
 
-    def _load_paid_ads(self, branch: Branch, year: int) -> dict[int, float]:
+    def _load_db(self, branch: Branch, year: int):
+        """Pull every marketing_budgets row for this (branch, year) once."""
         key = (str(branch.id), year)
-        if key in self._paid_ads:
-            return self._paid_ads[key]
-        slug = branch_slug_for(branch)
-        rows = fetch_paid_ads_yearly(slug, year)
-        self._paid_ads[key] = {m: v.get("spent_vnd", 0.0) for m, v in rows.items()}
-        return self._paid_ads[key]
-
-    def _load_kol(self, branch: Branch, year: int) -> dict[int, float]:
-        key = (str(branch.id), year)
-        if key in self._kol:
-            return self._kol[key]
-        hotel_id = kol_hotel_id_for(branch.id)
-        if hotel_id is None:
-            self._kol[key] = {}
-        else:
-            self._kol[key] = fetch_kol_yearly(hotel_id, year)
-        return self._kol[key]
-
-    def _load_manual(self, branch: Branch, year: int) -> dict[tuple[int, str], float]:
-        """All ``manual_actual_vnd`` rows for this branch+year in one query."""
-        key = (str(branch.id), year)
-        if key in self._manual:
-            return self._manual[key]
+        if key in self._db_loaded:
+            return
         rows = self.db.query(MarketingBudget).filter(
             MarketingBudget.branch_id == branch.id,
             MarketingBudget.year == year,
-            MarketingBudget.manual_actual_vnd.isnot(None),
         ).all()
-        self._manual[key] = {
-            (r.month, r.channel): float(r.manual_actual_vnd or 0) for r in rows
+        self._db_cache[key] = {
+            (r.month, r.channel): {
+                "manual": float(r.manual_actual_vnd) if r.manual_actual_vnd is not None else None,
+                "cached": float(r.cached_actual_vnd) if r.cached_actual_vnd is not None else None,
+            }
+            for r in rows
         }
-        return self._manual[key]
+        self._db_loaded.add(key)
+
+    def _live_fetch(self, branch: Branch, year: int, channel: str, month: int) -> float:
+        """Fall back to upstream when cache is empty for this branch+year."""
+        key = (str(branch.id), year)
+        if channel == "paid_ads":
+            if key not in self._live_paid_ads:
+                slug = branch_slug_for(branch)
+                rows = fetch_paid_ads_yearly(slug, year) if slug else {}
+                self._live_paid_ads[key] = {m: v.get("spent_vnd", 0.0) for m, v in rows.items()}
+            return self._live_paid_ads[key].get(month, 0.0)
+        if channel == "kol":
+            if key not in self._live_kol:
+                hotel_id = kol_hotel_id_for(branch.id)
+                self._live_kol[key] = (
+                    fetch_kol_yearly(hotel_id, year) if hotel_id else {}
+                )
+            return self._live_kol[key].get(month, 0.0)
+        return 0.0
 
     def get(self, branch: Branch, year: int, month: int, channel: str) -> float:
-        # Manual override always wins (lets ops correct an upstream miss).
-        manual = self._load_manual(branch, year).get((month, channel))
-        if manual is not None:
-            return manual
-        if channel == "paid_ads":
-            return self._load_paid_ads(branch, year).get(month, 0.0)
-        if channel == "kol":
-            return self._load_kol(branch, year).get(month, 0.0)
-        # crm and any future channel without an upstream feed: 0 unless manual
+        self._load_db(branch, year)
+        cell = self._db_cache.get((str(branch.id), year), {}).get((month, channel)) or {}
+        if cell.get("manual") is not None:
+            return cell["manual"]
+        if cell.get("cached") is not None:
+            return cell["cached"]
+        if channel in ("paid_ads", "kol"):
+            return self._live_fetch(branch, year, channel, month)
+        # CRM and any future channel without an upstream feed
         return 0.0
 
 

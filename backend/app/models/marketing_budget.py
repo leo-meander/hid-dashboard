@@ -38,6 +38,10 @@ class MarketingBudget(Base):
     # Manual override for channels with no upstream actuals feed (e.g. CRM).
     # NULL ⇒ defer to upstream / 0; non-NULL ⇒ wins over the upstream value.
     manual_actual_vnd = Column(Numeric(15, 2), nullable=True)
+    # Cached upstream actual written by the nightly sync. Read path:
+    # manual_actual_vnd > cached_actual_vnd > live upstream fetch > 0.
+    cached_actual_vnd = Column(Numeric(15, 2), nullable=True)
+    actuals_synced_at = Column(DateTime(timezone=True), nullable=True)
     note = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True),
                         default=lambda: datetime.now(timezone.utc))
