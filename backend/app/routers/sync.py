@@ -780,6 +780,45 @@ def debug_ads_platform_accounts():
     return _envelope({"count": len(accounts), "accounts": accounts})
 
 
+@router.get("/debug/ads-platform-ads-raw")
+def debug_ads_platform_ads_raw():
+    """Dump first 3 ads from upstream get_ads() showing ALL fields — used to
+    discover whether ads expose a budget_plan_id link to budget plans."""
+    from app.services.ads_platform import get_client
+    client = get_client()
+    ads = list(client.get_ads())
+    keys: set = set()
+    for a in ads:
+        keys.update(a.keys())
+    return _envelope({
+        "total": len(ads),
+        "all_keys_seen": sorted(keys),
+        "first_3": ads[:3],
+    })
+
+
+@router.get("/debug/ads-platform-spend-raw")
+def debug_ads_platform_spend_raw(
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    branch: str = Query("saigon"),
+    platform: str = Query("meta"),
+):
+    """Dump first 3 spend/daily rows showing ALL fields — to see if rows
+    expose budget_plan_id or campaign_id we could use to filter."""
+    from app.services.ads_platform import get_client
+    client = get_client()
+    rows = client.get_spend_daily(date_from, date_to, platform=platform, branch=branch) or []
+    keys: set = set()
+    for r in rows:
+        keys.update(r.keys())
+    return _envelope({
+        "row_count": len(rows),
+        "all_keys_seen": sorted(keys),
+        "first_3": rows[:3],
+    })
+
+
 @router.get("/debug/ads-platform-budget")
 def debug_ads_platform_budget(
     month: str = Query(..., description="YYYY-MM"),
