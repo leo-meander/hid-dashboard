@@ -858,17 +858,22 @@ def debug_ads_platform_yearly_plan(
 
 @router.get("/debug/kol-budgets")
 def debug_kol_budgets(
-    hotel_id: str = Query(...),
+    hotel_id: Optional[str] = Query(None),
     year: int = Query(2026),
-    currency: Optional[str] = Query(None),
+    currency: Optional[str] = Query("VND"),
 ):
-    """Probe KOL Engine /api/budgets?hotel_id=X&year=Y (commit 922d75d)."""
+    """Probe KOL Engine /api/sync/budgets — the X-Sync-API-Key mirror exposing
+    monthly_breakdown[].actual per hotel. If hotel_id omitted, returns bulk
+    array for all hotels in the org."""
     import urllib.request, json
     base = settings.KOL_ENGINE_URL.rstrip("/")
-    qs = f"hotel_id={hotel_id}&year={year}"
+    org_id = settings.KOL_ENGINE_ORG_ID
+    qs = f"organization_id={org_id}&year={year}"
+    if hotel_id:
+        qs += f"&hotel_id={hotel_id}"
     if currency:
         qs += f"&currency={currency}"
-    url = f"{base}/api/budgets?{qs}"
+    url = f"{base}/api/sync/budgets?{qs}"
     req = urllib.request.Request(
         url, headers={"X-Sync-API-Key": settings.KOL_SYNC_API_KEY, "Accept": "application/json"},
     )
