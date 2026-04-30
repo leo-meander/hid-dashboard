@@ -20,17 +20,17 @@ class AdsPerformance(Base):
     account_id = Column(String(64), nullable=True)           # Ads Platform account UUID
     data_source = Column(String(32), nullable=True)          # "AdsPlatform"
     grain = Column(String(16), nullable=True)                # "daily" | "ad"
-    campaign_name = Column(String(200), nullable=True)
-    adset_name = Column(String(200), nullable=True)
-    ad_name = Column(String(200), nullable=True)
+    campaign_name = Column(String(500), nullable=True)
+    adset_name = Column(String(500), nullable=True)
+    ad_name = Column(String(500), nullable=True)
     channel = Column(String(50), nullable=True)              # Meta, Google, TikTok
-    target_country = Column(String(100), nullable=True)
-    target_audience = Column(String(100), nullable=True)     # Solo, Couple, Friend, Family, Business, High Intent
+    target_country = Column(String(500), nullable=True)
+    target_audience = Column(String(500), nullable=True)     # Solo, Couple, Friend, Family, Business, High Intent
     funnel_stage = Column(String(20), nullable=True)         # TOF, MOF, BOF
     pic = Column(String(50), nullable=True)                  # PIC name from campaign
     ad_body = Column(Text, nullable=True)                    # Primary text from creative
     ad_angle_id = Column(UUID(as_uuid=True), ForeignKey("ad_angles.id", ondelete="SET NULL"), nullable=True)
-    campaign_category = Column(String(100), nullable=True)
+    campaign_category = Column(String(500), nullable=True)
     date_from = Column(Date, nullable=True)
     date_to = Column(Date, nullable=True)
     cost_native = Column(Numeric(12, 2), nullable=True)
