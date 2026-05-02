@@ -225,33 +225,46 @@ function DataRow({ channel, isDirect, total, grandTotal, cells, bgFn, valueKey, 
         const rate     = cell[valueKey];
         const bg       = bgFn(rate);
         const textCls  = bgFn === cancelBg ? cancelTextColor(rate) : "text-gray-800";
+        // Cancel section: show channel's total bookings for the period
+        // Check-in section: show channel's checked-in bookings for the period
+        const count = bgFn === cancelBg ? cell.total : cell.checked_in;
         return (
           <td key={ci} style={bg}
             className={`px-3 py-2 text-center text-xs tabular-nums ${textCls}`}>
-            {rate !== null ? pct(rate) : <span className="text-gray-300">—</span>}
+            {rate !== null ? (
+              <div className="flex flex-col leading-tight">
+                <span>{pct(rate)}</span>
+                <span className="font-normal opacity-70 text-[11px]">({count.toLocaleString()})</span>
+              </div>
+            ) : <span className="text-gray-300">—</span>}
           </td>
         );
       })}
 
       {/* Total column: total bookings + share of grand total */}
       <td className={`px-3 py-2 text-center text-xs font-semibold tabular-nums ${totalBg}`}>
-        {total.toLocaleString()}{" "}
-        <span className="font-normal opacity-70">({share.toFixed(2)}%)</span>
+        <div className="flex flex-col leading-tight">
+          <span>{total.toLocaleString()}</span>
+          <span className="font-normal opacity-70 text-[11px]">({share.toFixed(2)}%)</span>
+        </div>
       </td>
     </tr>
   );
 }
 
 function TotalRow({ label, periods, channels, grandTotal }) {
-  // Weighted average cancel rate per period
-  const periodAvg = periods.map((_, pi) => {
+  // Weighted average cancel rate + total bookings per period
+  const periodStats = periods.map((_, pi) => {
     let totalN = 0, totalD = 0;
     channels.forEach(ch => {
       const cell = ch.cancel_cells[pi];
       if (!cell) return;
       if (cell.total > 0) { totalN += cell.cancelled; totalD += cell.total; }
     });
-    return totalD > 0 ? totalN / totalD : null;
+    return {
+      rate:  totalD > 0 ? totalN / totalD : null,
+      total: totalD,
+    };
   });
 
   const grandN = channels.reduce((s, ch) =>
@@ -262,17 +275,22 @@ function TotalRow({ label, periods, channels, grandTotal }) {
   return (
     <tr className="bg-gray-100 font-semibold text-gray-700 text-xs border-t border-gray-300">
       <td className="px-4 py-2 sticky left-0 bg-gray-100 z-10 italic text-gray-500">{label}</td>
-      {periodAvg.map((avg, i) => (
+      {periodStats.map((s, i) => (
         <td key={i} className="px-3 py-2 text-center tabular-nums text-gray-600">
-          {avg !== null ? pct(avg) : <span className="text-gray-300">—</span>}
+          {s.rate !== null ? (
+            <div className="flex flex-col leading-tight">
+              <span>{pct(s.rate)}</span>
+              <span className="font-normal opacity-70 text-[11px]">({s.total.toLocaleString()})</span>
+            </div>
+          ) : <span className="text-gray-300">—</span>}
         </td>
       ))}
       <td className="px-3 py-2 text-center tabular-nums">
         {grandTotal > 0 ? (
-          <>
-            {grandTotal.toLocaleString()}{" "}
-            <span className="font-normal opacity-70">({grandD > 0 ? pct(grandN / grandD) : "—"})</span>
-          </>
+          <div className="flex flex-col leading-tight">
+            <span>{grandTotal.toLocaleString()}</span>
+            <span className="font-normal opacity-70 text-[11px]">({grandD > 0 ? pct(grandN / grandD) : "—"})</span>
+          </div>
         ) : "—"}
       </td>
     </tr>
@@ -281,28 +299,36 @@ function TotalRow({ label, periods, channels, grandTotal }) {
 
 // Check-in section total row: sum of all shares = 100% per period
 function CheckinTotalRow({ periods, channels, grandTotal }) {
-  const periodSum = periods.map((_, pi) => {
-    const sum = channels.reduce((s, ch) => {
+  const periodStats = periods.map((_, pi) => {
+    let sum = 0, totalCkin = 0;
+    channels.forEach(ch => {
       const cell = ch.checkin_cells[pi];
-      return s + (cell?.rate ?? 0);
-    }, 0);
-    return sum > 0 ? sum : null;
+      if (!cell) return;
+      sum += cell.rate ?? 0;
+      totalCkin = cell.total; // same total across all channels for the period
+    });
+    return { rate: sum > 0 ? sum : null, total: totalCkin };
   });
 
   return (
     <tr className="bg-gray-100 font-semibold text-gray-700 text-xs border-t border-gray-300">
       <td className="px-4 py-2 sticky left-0 bg-gray-100 z-10 italic text-gray-500">Total (all sources)</td>
-      {periodSum.map((s, i) => (
+      {periodStats.map((s, i) => (
         <td key={i} className="px-3 py-2 text-center tabular-nums text-gray-600">
-          {s !== null ? pct(s) : <span className="text-gray-300">—</span>}
+          {s.rate !== null ? (
+            <div className="flex flex-col leading-tight">
+              <span>{pct(s.rate)}</span>
+              <span className="font-normal opacity-70 text-[11px]">({s.total.toLocaleString()})</span>
+            </div>
+          ) : <span className="text-gray-300">—</span>}
         </td>
       ))}
       <td className="px-3 py-2 text-center tabular-nums">
         {grandTotal > 0 ? (
-          <>
-            {grandTotal.toLocaleString()}{" "}
-            <span className="font-normal opacity-70">(100.00%)</span>
-          </>
+          <div className="flex flex-col leading-tight">
+            <span>{grandTotal.toLocaleString()}</span>
+            <span className="font-normal opacity-70 text-[11px]">(100.00%)</span>
+          </div>
         ) : "—"}
       </td>
     </tr>
