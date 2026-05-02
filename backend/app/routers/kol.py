@@ -78,8 +78,12 @@ def get_kol_summary(
         return _envelope([])
 
     # ── 3. Pull kol_records for management fields ────────────────────────
+    # Only fetch records for the kol_names that appear in the reservations
+    # we just aggregated — and scope to branch_id when provided.
     kol_map: dict[str, dict] = {}
-    kol_rows = db.execute(text("""
+    kol_names_seen = {key[0] for key in agg.keys()}
+    kol_branch_filter = "AND k.branch_id = :bid" if branch_id else ""
+    kol_rows = db.execute(text(f"""
         SELECT k.id, k.kol_name, k.kol_nationality, k.language,
                k.target_audience, k.cost_vnd, k.cost_native,
                k.link_ig, k.link_tiktok, k.link_youtube,
@@ -87,7 +91,12 @@ def get_kol_summary(
                k.usage_rights_expiry_date, k.contract_status,
                k.deliverable_status, k.ad_angle_id, k.notes
         FROM   kol_records k
-    """)).fetchall()
+        WHERE  k.kol_name = ANY(:names)
+          {kol_branch_filter}
+    """), {
+        "names": list(kol_names_seen),
+        **({"bid": str(branch_id)} if branch_id else {}),
+    }).fetchall()
 
     for kr in kol_rows:
         kol_map[kr[1]] = {
