@@ -26,8 +26,8 @@ from sqlalchemy import text
 from app.database import get_db
 from app.models.ads import AdsPerformance
 from app.models.branch import Branch
-from app.models.kol import KOLRecord
 from app.models.reservation import Reservation
+from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -242,14 +242,13 @@ def get_marketing_activity_summary(
 # ── Overview KPIs ────────────────────────────────────────────────────────────
 
 def _build_overview(db, branch_id, d_from, d_to, ads_rows, use_native):
-    cost_key = "cost_native" if use_native else "cost_vnd"
     rev_key = "revenue_native" if use_native else "revenue_vnd"
 
-    # Paid Ads (from Google Sheet)
+    # Paid Ads bookings/revenue still come from local ads_performance.
+    # Cost now comes from the Budget Planner's upstream feed (Ads Platform
+    # /api/export/budget/yearly-plan) so this view matches Budget Planner.
     ads_bookings = sum(r["bookings"] for r in ads_rows)
     ads_revenue = sum(r[rev_key] for r in ads_rows)
-    ads_cost = sum(r[cost_key] for r in ads_rows)
-    ads_roas = round(ads_revenue / ads_cost, 2) if ads_cost > 0 else 0
 
     # KOL (from Cloudbeds) — excludes Blogger/House Use/Special Case
     rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
@@ -269,21 +268,16 @@ def _build_overview(db, branch_id, d_from, d_to, ads_rows, use_native):
     kol_bookings = int(kol_row.bookings)
     kol_revenue = float(kol_row.revenue)
 
-    # KOL cost
-    cost_col = KOLRecord.cost_native if use_native else KOLRecord.cost_vnd
-    kol_cost_q = db.query(func.coalesce(func.sum(cost_col), 0))
-    if branch_id:
-        kol_cost_q = kol_cost_q.filter(KOLRecord.branch_id == branch_id)
-    kol_cost = float(kol_cost_q.scalar() or 0)
-
     # CRM (from Cloudbeds) — excludes Blogger/House Use/Special Case
+    # Filter on reservation_date (Date Booked), not check_in_date (Stay Date) —
+    # CRM activity is measured by when the booking landed, not when the guest stays.
     crm_q = db.query(
         func.count(Reservation.id).label("bookings"),
         func.coalesce(func.sum(rev_col), 0).label("revenue"),
     ).filter(
         _crm_filter(),
-        Reservation.check_in_date >= d_from,
-        Reservation.check_in_date <= d_to,
+        Reservation.reservation_date >= d_from,
+        Reservation.reservation_date <= d_to,
         _status_filter(),
         _revenue_source_filter(),
     )
@@ -293,17 +287,61 @@ def _build_overview(db, branch_id, d_from, d_to, ads_rows, use_native):
     crm_bookings = int(crm_row.bookings)
     crm_revenue = float(crm_row.revenue)
 
+    # Costs — pulled from the same source Budget Planner uses (ActualsCache).
+    # paid_ads → Ads Platform yearly-plan API (or cached_actual_vnd)
+    # kol      → KOL Engine /api/sync/budgets (or cached_actual_vnd)
+    # crm      → manual_actual_vnd entered via Budget Planner UI
+    ads_cost, kol_cost, crm_cost = _budget_actuals_costs(
+        db, branch_id, d_from.year, d_from.month, use_native,
+    )
+
+    ads_roas = round(ads_revenue / ads_cost, 2) if ads_cost > 0 else 0
+    kol_roas = round(kol_revenue / kol_cost, 2) if kol_cost > 0 else 0
+    crm_roas = round(crm_revenue / crm_cost, 2) if crm_cost > 0 else 0
+
     total_bookings = ads_bookings + kol_bookings + crm_bookings
     total_revenue = ads_revenue + kol_revenue + crm_revenue
-    total_cost = ads_cost + kol_cost
+    total_cost = ads_cost + kol_cost + crm_cost
     total_roas = round(total_revenue / total_cost, 2) if total_cost > 0 else 0
 
     return {
         "paid_ads": {"bookings": ads_bookings, "revenue": ads_revenue, "cost": ads_cost, "roas": ads_roas},
-        "kol": {"bookings": kol_bookings, "revenue": kol_revenue, "cost": kol_cost},
-        "crm": {"bookings": crm_bookings, "revenue": crm_revenue},
+        "kol": {"bookings": kol_bookings, "revenue": kol_revenue, "cost": kol_cost, "roas": kol_roas},
+        "crm": {"bookings": crm_bookings, "revenue": crm_revenue, "cost": crm_cost, "roas": crm_roas},
         "total": {"bookings": total_bookings, "revenue": total_revenue, "cost": total_cost, "roas": total_roas},
     }
+
+
+def _budget_actuals_costs(db, branch_id, year: int, month: int, use_native: bool):
+    """Sum (paid_ads, kol, crm) cost from Budget Planner's ActualsCache.
+
+    Aggregates across all active branches when ``branch_id`` is None;
+    otherwise scoped to the single branch. Returns native currency totals
+    when ``use_native`` is True (single-branch view), VND otherwise."""
+    q = db.query(Branch).filter(Branch.is_active.is_(True))
+    if branch_id is not None:
+        q = q.filter(Branch.id == branch_id)
+    branches = q.all()
+
+    cache = ActualsCache(db)
+    ads_total = 0.0
+    kol_total = 0.0
+    crm_total = 0.0
+    for b in branches:
+        ads_vnd = cache.get(b, year, month, "paid_ads")
+        kol_vnd = cache.get(b, year, month, "kol")
+        crm_vnd = cache.get(b, year, month, "crm")
+        if use_native:
+            cur = (b.currency or "VND").upper()
+            rate = _get_rate_to_vnd(cur)
+            ads_total += _vnd_to_native(ads_vnd, cur, rate)
+            kol_total += _vnd_to_native(kol_vnd, cur, rate)
+            crm_total += _vnd_to_native(crm_vnd, cur, rate)
+        else:
+            ads_total += ads_vnd
+            kol_total += kol_vnd
+            crm_total += crm_vnd
+    return ads_total, kol_total, crm_total
 
 
 # ── Monthly by Country ───────────────────────────────────────────────────────
@@ -346,15 +384,15 @@ def _build_monthly_by_country(db, branch_id, d_from, d_to, ads_rows, use_native)
         grid[c]["kol"]["bookings"] += int(bookings)
         grid[c]["kol"]["revenue"] += float(rev)
 
-    # CRM — excludes non-paying
+    # CRM — excludes non-paying. Filter on reservation_date (Date Booked).
     crm_q = db.query(
         Reservation.guest_country_code,
         func.count(Reservation.id),
         func.coalesce(func.sum(rev_col), 0),
     ).filter(
         _crm_filter(),
-        Reservation.check_in_date >= d_from,
-        Reservation.check_in_date <= d_to,
+        Reservation.reservation_date >= d_from,
+        Reservation.reservation_date <= d_to,
         _status_filter(),
         _revenue_source_filter(),
     ).group_by(Reservation.guest_country_code)
@@ -427,8 +465,8 @@ def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date
         func.coalesce(func.sum(rev_col), 0).label("revenue"),
     ).filter(
         _crm_filter(),
-        Reservation.check_in_date >= d_from,
-        Reservation.check_in_date <= d_to,
+        Reservation.reservation_date >= d_from,
+        Reservation.reservation_date <= d_to,
         _status_filter(),
         _revenue_source_filter(),
     ).group_by("rate_plan")

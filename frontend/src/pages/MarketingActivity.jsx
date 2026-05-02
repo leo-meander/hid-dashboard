@@ -232,7 +232,7 @@ function OverviewTab({ overview, prevOverview, prevLabel, cur }) {
             {[
               { label: "Paid Ads", color: "bg-blue-500", data: paid_ads, prev: prevOverview?.paid_ads, hasCost: true },
               { label: "KOL", color: "bg-purple-500", data: kol, prev: prevOverview?.kol, hasCost: true },
-              { label: "CRM", color: "bg-emerald-500", data: crm, prev: prevOverview?.crm, hasCost: false },
+              { label: "CRM", color: "bg-emerald-500", data: crm, prev: prevOverview?.crm, hasCost: true },
             ].map(({ label, color, data: d, prev: p, hasCost }) => (
               <tr key={label} className="hover:bg-gray-50">
                 <td className="px-4 py-3 font-medium">
