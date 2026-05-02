@@ -1041,6 +1041,7 @@ def trigger_cloudbeds_sync(
 
 @router.post("/daily", dependencies=[Depends(verify_sync_token)])
 def trigger_daily_sync(
+    background_tasks: BackgroundTasks,
     lookback_days: int = Query(2, ge=1, le=30, description="Pull reservations modified in last N days. GitHub cron uses 7."),
     db: Session = Depends(get_db),
 ):
@@ -1053,37 +1054,52 @@ def trigger_daily_sync(
     Default 2-day window matches the legacy daytime sync; GitHub Actions cron
     at 02:00 ICT calls this with `?lookback_days=7` (replaces the old nightly
     full sync). Revenue + recompute are out of scope here.
+
+    Runs in a BackgroundTask so the HTTP request returns immediately. Five
+    branches × paginated Cloudbeds API can exceed 10 min total — the GitHub
+    Actions runner's default curl --max-time would time out otherwise.
     """
+    import logging
     from datetime import date
+    _logger = logging.getLogger(__name__)
 
     today = date.today()
-    branches = db.query(Branch).filter_by(is_active=True).all()
-    reservation_results = []
-
-    for branch in branches:
+    # Snapshot which branches will be synced — actual sync happens in background.
+    eligible = []
+    for branch in db.query(Branch).filter_by(is_active=True).all():
         pid = branch.cloudbeds_property_id
         if not pid:
-            reservation_results.append({"branch": branch.name, "error": "no property_id"})
             continue
         api_key = settings.get_api_key_for_property(str(pid))
         if not api_key:
-            reservation_results.append({"branch": branch.name, "error": "no api_key"})
             continue
+        eligible.append({
+            "branch_id": str(branch.id), "name": branch.name,
+            "property_id": pid, "currency": branch.currency, "api_key": api_key,
+        })
 
-        try:
-            res = sync_branch(
-                str(branch.id), pid, branch.currency, api_key=api_key,
-                incremental=True, lookback_days=lookback_days,
-            )
-            res["branch"] = branch.name
-            reservation_results.append(res)
-        except Exception as exc:
-            reservation_results.append({"branch": branch.name, "error": str(exc)})
+    def _run():
+        for cfg in eligible:
+            try:
+                result = sync_branch(
+                    cfg["branch_id"], cfg["property_id"], cfg["currency"],
+                    api_key=cfg["api_key"],
+                    incremental=True, lookback_days=lookback_days,
+                )
+                _logger.info(
+                    "Daily sync OK branch=%s lookback=%dd: %s",
+                    cfg["name"], lookback_days, result,
+                )
+            except Exception:
+                _logger.exception("Daily sync FAILED branch=%s", cfg["name"])
 
+    background_tasks.add_task(_run)
     return _envelope({
+        "status": "started",
         "synced_date": today.isoformat(),
         "lookback_days": lookback_days,
-        "reservations": reservation_results,
+        "branches": [b["name"] for b in eligible],
+        "message": f"Modified-{lookback_days}d sync running in background",
     })
 
 

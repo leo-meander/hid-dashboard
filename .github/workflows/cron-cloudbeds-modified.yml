@@ -29,7 +29,7 @@ jobs:
             http_code=$(curl -sS -o response.json -w "%{http_code}" \
               -X POST "${BACKEND_URL}/api/sync/daily?lookback_days=${LOOKBACK_DAYS}" \
               -H "X-Sync-Token: ${SYNC_TRIGGER_TOKEN}" \
-              --max-time 600) || true
+              --max-time 60) || true
             cat response.json
             echo
             if [ "$http_code" = "200" ]; then
