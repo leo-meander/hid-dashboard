@@ -1,0 +1,41 @@
+name: Cron — GHL email stats sync
+
+# 05:00 ICT (UTC+7) = 22:00 UTC the previous day.
+# Pulls workflow + bulk-email stats from GHL. Workflow rows use a sentinel
+# stat_date so each sync OVERWRITES the previous lifetime snapshot — see
+# backend/app/services/ghl_email_sync.py for the rationale.
+#
+# Auth: this endpoint pre-dates the X-Sync-Token convention and uses its own
+# `?secret=<GHL_WEBHOOK_SECRET>` query-param check, so the workflow passes the
+# GHL secret rather than the generic token.
+on:
+  schedule:
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/email-marketing/sync-ghl
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          GHL_WEBHOOK_SECRET: ${{ secrets.GHL_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt..."
+            http_code=$(curl -sS -o response.json -w "%{http_code}" \
+              -X POST "${BACKEND_URL}/api/email-marketing/sync-ghl?secret=${GHL_WEBHOOK_SECRET}" \
+              --max-time 600) || true
+            cat response.json
+            echo
+            if [ "$http_code" = "200" ]; then
+              echo "OK"
+              exit 0
+            fi
+            echo "Got HTTP $http_code, retrying in 30s..."
+            sleep 30
+          done
+          echo "Failed after 3 attempts"
+          exit 1

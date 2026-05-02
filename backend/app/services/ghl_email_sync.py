@@ -30,6 +30,15 @@ GHL_BASE = "https://services.leadconnectorhq.com"
 # in-memory cache nor the EXCHANGE_RATE_API are available. Updated periodically.
 _FX_FALLBACK_VND = {"VND": 1.0, "TWD": 830.0, "JPY": 165.0, "USD": 26000.0}
 
+# GHL's workflow-stats endpoint returns lifetime cumulative counts (sent,
+# delivered, opened, etc.) — never per-day deltas. Storing one row per
+# (workflow_id, today) would accumulate 365 rows of growing lifetime totals
+# per year and any SUM() across dates would multiply-count. So workflow rows
+# all share one sentinel stat_date and each sync OVERWRITES the previous
+# snapshot. Bulk-campaign rows are unaffected — they keep the real schedule
+# date because each bulk send is a discrete dated event.
+_WORKFLOW_SENTINEL_DATE = date(2000, 1, 1)
+
 
 def _headers(api_key: str) -> dict:
     return {
@@ -112,7 +121,7 @@ def _sync_workflows(client: httpx.Client, db: Session, location: dict, today: da
             "workflow_name": wf["name"],
             "campaign_type": "workflow",
             "branch_name": branch,
-            "stat_date": today,
+            "stat_date": _WORKFLOW_SENTINEL_DATE,
             "total_sent": total_sent,
             "total_delivered": delivered,
             "total_opened": stats.get("opened", 0),
@@ -323,6 +332,17 @@ def sync_ghl_email_stats(db: Session) -> int:
     if not locations:
         logger.warning("No GHL locations configured, skipping email sync")
         return 0
+
+    # One-shot cleanup: prior code wrote workflow rows keyed by `(workflow_id,
+    # today)` so historical syncs left a trail of dated rows whose totals are
+    # all lifetime cumulative. Drop them — only the sentinel-keyed row is the
+    # live snapshot from now on.
+    deleted = db.query(EmailCampaignStats).filter(
+        EmailCampaignStats.campaign_type == "workflow",
+        EmailCampaignStats.stat_date != _WORKFLOW_SENTINEL_DATE,
+    ).delete(synchronize_session=False)
+    if deleted:
+        logger.info("GHL: cleaned %d legacy dated workflow rows", deleted)
 
     today = date.today()
     now = datetime.now(timezone.utc)

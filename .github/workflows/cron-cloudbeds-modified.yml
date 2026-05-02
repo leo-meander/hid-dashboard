@@ -1,0 +1,43 @@
+name: Cron — Cloudbeds modified-7d sync
+
+# 02:00 ICT (UTC+7) = 19:00 UTC the previous day.
+# Pulls reservations whose modified_at falls in the last 7 days and upserts
+# them by cloudbeds_reservation_id (existing → update, new → create).
+on:
+  schedule:
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "Days of modified_at lookback (default 7)"
+        required: false
+        default: "7"
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/sync/daily
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          SYNC_TRIGGER_TOKEN: ${{ secrets.SYNC_TRIGGER_TOKEN }}
+          LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '7' }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt..."
+            http_code=$(curl -sS -o response.json -w "%{http_code}" \
+              -X POST "${BACKEND_URL}/api/sync/daily?lookback_days=${LOOKBACK_DAYS}" \
+              -H "X-Sync-Token: ${SYNC_TRIGGER_TOKEN}" \
+              --max-time 600) || true
+            cat response.json
+            echo
+            if [ "$http_code" = "200" ]; then
+              echo "OK"
+              exit 0
+            fi
+            echo "Got HTTP $http_code, retrying in 30s..."
+            sleep 30
+          done
+          echo "Failed after 3 attempts"
+          exit 1

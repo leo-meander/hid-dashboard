@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, undefer
 from sqlalchemy import func
@@ -11,6 +11,19 @@ from app.database import get_db
 from app.models.branch import Branch
 from app.models.reservation import Reservation
 from pathlib import Path
+
+
+# ── Shared dependency: GitHub Actions cron auth ─────────────────────────────
+# All endpoints triggered by .github/workflows/cron-*.yml require this header.
+# When SYNC_TRIGGER_TOKEN is empty (dev), the check is skipped so local curl
+# still works without ceremony. Production must set the env var on Zeabur.
+def verify_sync_token(x_sync_token: Optional[str] = Header(None)):
+    from app.config import settings
+    expected = settings.SYNC_TRIGGER_TOKEN
+    if not expected:
+        return
+    if not x_sync_token or x_sync_token != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Sync-Token")
 
 from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_room_type_and_rate_plan, map_country_code
 from app.services.ingest_csv import import_all_csvs, import_csv_file, CSV_CONFIGS
@@ -923,7 +936,7 @@ def debug_ads_platform_budget(
     })
 
 
-@router.post("/marketing-budget-actuals")
+@router.post("/marketing-budget-actuals", dependencies=[Depends(verify_sync_token)])
 def trigger_marketing_budget_actuals_sync(
     year: Optional[int] = Query(None, description="Default = current year"),
     db: Session = Depends(get_db),
@@ -936,7 +949,7 @@ def trigger_marketing_budget_actuals_sync(
     return _envelope(sync_marketing_actuals(db, year=year))
 
 
-@router.post("/ads-platform")
+@router.post("/ads-platform", dependencies=[Depends(verify_sync_token)])
 def trigger_ads_platform_sync(
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD; default = today-14"),
     date_to: Optional[str] = Query(None, description="YYYY-MM-DD; default = today"),
@@ -1026,12 +1039,20 @@ def trigger_cloudbeds_sync(
     })
 
 
-@router.post("/daily")
-def trigger_daily_sync(db: Session = Depends(get_db)):
+@router.post("/daily", dependencies=[Depends(verify_sync_token)])
+def trigger_daily_sync(
+    lookback_days: int = Query(2, ge=1, le=30, description="Pull reservations modified in last N days. GitHub cron uses 7."),
+    db: Session = Depends(get_db),
+):
     """
-    Daily sync: incremental reservation sync only (modified in last 2 days).
-    Revenue and recompute are handled separately by /daily-revenue and /recompute.
-    Run daily at 08:00 via scheduler.
+    Incremental Cloudbeds sync — upserts reservations whose modified_at falls
+    in the last `lookback_days` days. Match key is `cloudbeds_reservation_id`:
+    existing rows update in place, new ones get created. Cancellations and
+    status changes are caught because Cloudbeds bumps modified_at on those.
+
+    Default 2-day window matches the legacy daytime sync; GitHub Actions cron
+    at 02:00 ICT calls this with `?lookback_days=7` (replaces the old nightly
+    full sync). Revenue + recompute are out of scope here.
     """
     from datetime import date
 
@@ -1049,11 +1070,11 @@ def trigger_daily_sync(db: Session = Depends(get_db)):
             reservation_results.append({"branch": branch.name, "error": "no api_key"})
             continue
 
-        # Incremental reservation sync (only modified in last 2 days — fast)
-        # Catches new bookings, cancellations, status changes without pulling all history
         try:
-            res = sync_branch(str(branch.id), pid, branch.currency, api_key=api_key,
-                              incremental=True)
+            res = sync_branch(
+                str(branch.id), pid, branch.currency, api_key=api_key,
+                incremental=True, lookback_days=lookback_days,
+            )
             res["branch"] = branch.name
             reservation_results.append(res)
         except Exception as exc:
@@ -1061,6 +1082,7 @@ def trigger_daily_sync(db: Session = Depends(get_db)):
 
     return _envelope({
         "synced_date": today.isoformat(),
+        "lookback_days": lookback_days,
         "reservations": reservation_results,
     })
 
@@ -1415,10 +1437,11 @@ def trigger_kol_engine_sync(
 # Cloudbeds Insights sync (manual trigger)
 # ---------------------------------------------------------------------------
 
-@router.post("/insights")
+@router.post("/insights", dependencies=[Depends(verify_sync_token)])
 def trigger_insights_sync(
     background_tasks: BackgroundTasks,
     full_ingest: bool = Query(False, description="If true, also bulk re-ingest reservations via sync_branch (slow, ~15-25 min)"),
+    insights_only: bool = Query(False, description="If true, skip backfill/revenue/populate and only refresh Cloudbeds Insights overlay (occupancy + filtered). Defaults the window to Jan 1 → Dec 31 of current year. Used by GitHub cron at 09:00 & 14:00 ICT."),
     year: Optional[int] = Query(None, description="If provided, sync Jan 1 → Dec 31 of this year"),
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD — overrides year/default. Used as check_in lower bound."),
     date_to: Optional[str] = Query(None, description="YYYY-MM-DD — overrides year/default. Used as check_in upper bound."),
@@ -1440,6 +1463,11 @@ def trigger_insights_sync(
 
     With ?full_ingest=true: prepends sync_branch (bulk-ingest all reservations
     with check-in in the window). Slow — can take 20+ min per branch.
+
+    With ?insights_only=true: runs ONLY steps 4 + 5 (the Cloudbeds Insights
+    overlay). No reservation backfill or proration recompute. Default window
+    becomes Jan 1 → Dec 31 of current year. Used by GitHub cron at 09:00 &
+    14:00 ICT to keep OCC/ADR/RevPAR/Revenue fresh during the day.
 
     With ?year=YYYY: extends window to Jan 1 → Dec 31 of YYYY. Combine with
     full_ingest=true for full-year reconcile (can take 30-90+ min for all
@@ -1466,6 +1494,10 @@ def trigger_insights_sync(
     elif year is not None:
         sync_start = date(year, 1, 1)
         sync_end = date(year, 12, 31)
+    elif insights_only:
+        # Match cloudbeds_insights_sync_job: full current-year window
+        sync_start = date(today.year, 1, 1)
+        sync_end = date(today.year, 12, 31)
     else:
         sync_start = today.replace(day=1)
         if today.month == 12:
@@ -1518,41 +1550,42 @@ def trigger_insights_sync(
             if not pid or not api_key:
                 continue
             t_branch = _time.time()
-            log.info("Insights sync START branch=%s [%s..%s] full_ingest=%s",
-                     br["name"], sync_start, sync_end, full_ingest)
+            log.info("Insights sync START branch=%s [%s..%s] full_ingest=%s insights_only=%s",
+                     br["name"], sync_start, sync_end, full_ingest, insights_only)
             try:
-                if full_ingest:
+                if not insights_only:
+                    if full_ingest:
+                        t = _time.time()
+                        sync_branch(
+                            br["id"], pid, br["currency"], api_key,
+                            checkin_from=ingest_start, checkin_to=sync_end,
+                        )
+                        log.info("  sync_branch done branch=%s in %.1fs", br["name"], _time.time() - t)
                     t = _time.time()
-                    sync_branch(
+                    backfill_accommodation_total(
                         br["id"], pid, br["currency"], api_key,
                         checkin_from=ingest_start, checkin_to=sync_end,
                     )
-                    log.info("  sync_branch done branch=%s in %.1fs", br["name"], _time.time() - t)
-                t = _time.time()
-                backfill_accommodation_total(
-                    br["id"], pid, br["currency"], api_key,
-                    checkin_from=ingest_start, checkin_to=sync_end,
-                )
-                log.info("  backfill done branch=%s in %.1fs", br["name"], _time.time() - t)
-                t = _time.time()
-                sync_branch_revenue(
-                    br["id"], pid, br["currency"], api_key,
-                    date_from=sync_start, date_to=sync_end,
-                )
-                log.info("  revenue done branch=%s in %.1fs", br["name"], _time.time() - t)
-
-                # Fresh session per remaining step — avoids stale-connection drops.
-                t = _time.time()
-                s = SessionLocal()
-                try:
-                    populate_reservation_daily(
-                        s, br["id"],
+                    log.info("  backfill done branch=%s in %.1fs", br["name"], _time.time() - t)
+                    t = _time.time()
+                    sync_branch_revenue(
+                        br["id"], pid, br["currency"], api_key,
                         date_from=sync_start, date_to=sync_end,
-                        property_id=pid, currency=br["currency"], api_key=api_key,
                     )
-                finally:
-                    s.close()
-                log.info("  populate done branch=%s in %.1fs", br["name"], _time.time() - t)
+                    log.info("  revenue done branch=%s in %.1fs", br["name"], _time.time() - t)
+
+                    # Fresh session per remaining step — avoids stale-connection drops.
+                    t = _time.time()
+                    s = SessionLocal()
+                    try:
+                        populate_reservation_daily(
+                            s, br["id"],
+                            date_from=sync_start, date_to=sync_end,
+                            property_id=pid, currency=br["currency"], api_key=api_key,
+                        )
+                    finally:
+                        s.close()
+                    log.info("  populate done branch=%s in %.1fs", br["name"], _time.time() - t)
 
                 t = _time.time()
                 s = SessionLocal()
@@ -1586,9 +1619,10 @@ def trigger_insights_sync(
     background_tasks.add_task(_run)
     return _envelope({
         "status": "started",
-        "message": f"Insights sync running in background [{sync_start}..{sync_end}]",
+        "message": f"Insights sync running in background [{sync_start}..{sync_end}] insights_only={insights_only}",
         "date_from": str(sync_start),
         "date_to": str(sync_end),
+        "insights_only": insights_only,
     })
 
 

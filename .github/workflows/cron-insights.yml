@@ -1,0 +1,41 @@
+name: Cron — Cloudbeds Insights overlay (2x daily)
+
+# 09:00 ICT = 02:00 UTC; 14:00 ICT = 07:00 UTC.
+# Calls /api/sync/insights?insights_only=true so the endpoint runs ONLY the
+# Cloudbeds Insights overlay (sync_cloudbeds_occupancy + sync_cloudbeds_filtered)
+# across Jan 1 → Dec 31 of the current year. Skips reservation backfill,
+# accommodation revenue refresh, and reservation_daily proration so the job
+# stays fast and cheap (~2 min vs ~5–8 min for the full pipeline).
+on:
+  schedule:
+    - cron: "0 2 * * *"
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/sync/insights?insights_only=true
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          SYNC_TRIGGER_TOKEN: ${{ secrets.SYNC_TRIGGER_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt..."
+            http_code=$(curl -sS -o response.json -w "%{http_code}" \
+              -X POST "${BACKEND_URL}/api/sync/insights?insights_only=true" \
+              -H "X-Sync-Token: ${SYNC_TRIGGER_TOKEN}" \
+              --max-time 300) || true
+            cat response.json
+            echo
+            if [ "$http_code" = "200" ]; then
+              echo "OK — endpoint accepted, sync running in background"
+              exit 0
+            fi
+            echo "Got HTTP $http_code, retrying in 30s..."
+            sleep 30
+          done
+          echo "Failed after 3 attempts"
+          exit 1

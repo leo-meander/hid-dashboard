@@ -880,13 +880,15 @@ def sync_branch(
     currency: str,
     api_key: Optional[str] = None,
     incremental: bool = False,
+    lookback_days: int = 2,
     checkin_from: Optional[date] = None,
     checkin_to: Optional[date] = None,
 ) -> dict:
     """
     Sync a single branch — ingest page-by-page for progressive DB writes.
 
-    incremental=True:  use modifiedAt (last 2 days) — catches cancellations/modifications.
+    incremental=True:  use modifiedAt (last `lookback_days` days, default 2) —
+                       catches cancellations/modifications.
     incremental=False: use checkIn window (past CHECKIN_LOOKBACK_DAYS → future CHECKIN_FUTURE_DAYS)
                        to populate ALL reservations in the date range regardless of when modified.
     checkin_from/to:   explicit override — used by daily sync to limit to current+next month only.
@@ -905,8 +907,8 @@ def sync_branch(
         fetch_kwargs = {"checkin_from": checkin_from, "checkin_to": checkin_to}
         window_desc  = f"checkIn {checkin_from} → {checkin_to}"
     elif incremental:
-        fetch_kwargs = {"modified_since": today - timedelta(days=2)}
-        window_desc = "modifiedAt 2d"
+        fetch_kwargs = {"modified_since": today - timedelta(days=lookback_days)}
+        window_desc = f"modifiedAt {lookback_days}d"
     else:
         _from = today - timedelta(days=CHECKIN_LOOKBACK_DAYS)
         _to   = today + timedelta(days=CHECKIN_FUTURE_DAYS)

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db, SessionLocal
 from app.models.alert import AlertRule, AlertHistory
 from app.models.branch import Branch
+from app.routers.sync import verify_sync_token
 
 router = APIRouter()
 
@@ -286,7 +287,7 @@ def update_alert_rule(rule_id: UUID, body: AlertRuleUpdate, db: Session = Depend
         _err(str(e), 500)
 
 
-@router.post("/evaluate-now")
+@router.post("/evaluate-now", dependencies=[Depends(verify_sync_token)])
 def evaluate_now(db: Session = Depends(get_db)):
     """Manually trigger alert evaluation for yesterday (admin)."""
     try:

@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "changeme"
     FRONTEND_URL: str = ""
 
+    # Shared secret used by GitHub Actions cron workflows to call /api/sync/*
+    # endpoints. Empty string disables the check (dev convenience).
+    SYNC_TRIGGER_TOKEN: str = ""
+
     # GoHighLevel (GHL) — Email Marketing (per-branch)
     GHL_LOCATION_ID_SAIGON: str = ""
     GHL_API_KEY_SAIGON: str = ""
