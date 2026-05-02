@@ -1,20 +1,18 @@
 """
 Email Marketing router — GHL email performance + CRM revenue attribution.
 
-Workflow campaigns store cumulative lifetime stats that grow daily, so summary
-and per-campaign endpoints read the LATEST snapshot per (workflow_id,
-branch_name) within the requested date range — never a SUM across days, which
-would multiply cumulative totals.
-
-Bulk campaigns have one row per scheduled send and the latest-snapshot logic
-collapses to that single row, so the same query works for both types.
+Workflow campaigns now write a single sentinel-dated row per workflow that
+each sync OVERWRITES (lifetime cumulative — see ghl_email_sync.py rationale).
+The summary and per-campaign endpoints therefore include workflow rows
+regardless of the requested date range, while bulk-campaign rows still honor
+the date filter because each bulk send carries its real schedule date.
 """
 import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, HTTPException
-from sqlalchemy import and_, func, desc
+from sqlalchemy import and_, func, desc, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -45,13 +43,22 @@ def _default_dates(date_from, date_to):
 
 def _latest_snapshot_query(db: Session, date_from, date_to, campaign_type=None,
                            workflow_id=None, branch_name=None):
-    """Return a query yielding the latest snapshot row per (workflow_id, branch_name)."""
+    """Return a query yielding the latest snapshot row per (workflow_id, branch_name).
+
+    Workflow rows live at a sentinel stat_date (lifetime cumulative — one row
+    per workflow that gets overwritten each sync), so they're always included
+    regardless of the date window. Bulk rows keep their per-send schedule
+    date and stay date-filtered.
+    """
     inner = db.query(
         EmailCampaignStats.workflow_id,
         EmailCampaignStats.branch_name,
         EmailCampaignStats.campaign_type,
         func.max(EmailCampaignStats.stat_date).label("max_date"),
-    ).filter(EmailCampaignStats.stat_date.between(date_from, date_to))
+    ).filter(or_(
+        EmailCampaignStats.campaign_type == "workflow",
+        EmailCampaignStats.stat_date.between(date_from, date_to),
+    ))
     if campaign_type:
         inner = inner.filter(EmailCampaignStats.campaign_type == campaign_type)
     if workflow_id:
