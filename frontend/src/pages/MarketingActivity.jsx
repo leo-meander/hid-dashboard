@@ -5,6 +5,28 @@
 import { useEffect, useState, useMemo } from "react";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 import { getMarketingActivitySummary } from "../api/marketingActivity";
+import { getEmailSummary, getEmailByCampaign } from "../api/emailMarketing";
+
+// Map HiD branch name to GHL location name (5 branches × different naming)
+function branchToGHL(branchName) {
+  if (!branchName) return null;
+  const lower = branchName.toLowerCase();
+  if (lower.includes("saigon")) return "Saigon";
+  if (lower.includes("1948")) return "1948";
+  if (lower.includes("taipei")) return "Taipei";
+  if (lower.includes("oani")) return "Oani";
+  if (lower.includes("osaka")) return "Osaka";
+  return null;
+}
+
+// First and last day of YYYY-MM month string, returned as YYYY-MM-DD
+function monthBounds(monthStr) {
+  const [y, m] = monthStr.split("-").map(Number);
+  const start = `${y}-${String(m).padStart(2, "0")}-01`;
+  const lastDay = new Date(y, m, 0).getDate();
+  const end = `${y}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+  return { date_from: start, date_to: end };
+}
 
 function fmtNum(val) {
   if (val == null || val === 0) return "0";
@@ -132,6 +154,7 @@ export default function MarketingActivity() {
     { key: "monthly", label: "By Country" },
     { key: "crm-rate-plans", label: "CRM Reservations" },
     { key: "kol-suggest", label: "KOL Suggestions" },
+    { key: "email-stat", label: "Email Stat" },
   ];
 
   // Format prev month label
@@ -156,7 +179,10 @@ export default function MarketingActivity() {
         ))}
       </div>
 
-      {loading ? (
+      {tab === "email-stat" ? (
+        // Email Stat fetches its own data — independent of the activity API
+        <EmailStatTab month={month} />
+      ) : loading ? (
         <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
       ) : !data ? (
         <div className="text-center text-gray-400 py-16 text-sm">No data available</div>
@@ -316,7 +342,8 @@ function CRMRatePlansTab({ rows, cur }) {
   return (
     <div className="space-y-4">
       <p className="text-sm text-gray-500">
-        CRM reservations (CRM / MEANDER&apos;S FRIEND / Travel Guide / Grand Open) broken down by Rate Plan Name.
+        CRM reservations (CRM / MEANDER&apos;S FRIEND / Travel Guide / Grand Open) broken down by Rate Plan Name,
+        filtered by Date Booked (not Stay Date).
         Excludes cancelled bookings and non-paying sources (Blogger / House Use / Special Case).
       </p>
       <div className="bg-white rounded-lg border overflow-x-auto">
@@ -416,6 +443,146 @@ function KOLSuggestTab({ groups }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ── Email Stat Tab — GHL workflow + bulk email performance ─────────────── */
+function pct(v) {
+  if (v == null) return "—";
+  return `${(v * 100).toFixed(2)}%`;
+}
+
+function EmailKPI({ label, value, color = "text-gray-900" }) {
+  return (
+    <div className="bg-white rounded-lg border p-4">
+      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">{label}</p>
+      <p className={`text-xl font-bold ${color}`}>{value}</p>
+    </div>
+  );
+}
+
+function EmailStatTab({ month }) {
+  const { currentBranch, isAll } = useBranch();
+  const [summary, setSummary] = useState(null);
+  const [campaigns, setCampaigns] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const ghlBranch = useMemo(
+    () => isAll ? null : branchToGHL(currentBranch?.name),
+    [currentBranch, isAll]
+  );
+
+  useEffect(() => {
+    setLoading(true);
+    const { date_from, date_to } = monthBounds(month);
+    const params = { date_from, date_to };
+    if (ghlBranch) params.branch_name = ghlBranch;
+
+    Promise.all([
+      getEmailSummary(params),
+      getEmailByCampaign(params),
+    ])
+      .then(([s, c]) => {
+        setSummary(s);
+        setCampaigns(c || []);
+      })
+      .catch(() => {
+        setSummary(null);
+        setCampaigns([]);
+      })
+      .finally(() => setLoading(false));
+  }, [month, ghlBranch]);
+
+  if (loading) {
+    return <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>;
+  }
+  if (!summary || summary.total_sent === 0) {
+    return (
+      <div className="text-center text-gray-400 py-16 text-sm">
+        No email data for this month{ghlBranch ? ` (${ghlBranch})` : ""}.
+      </div>
+    );
+  }
+
+  const workflows = campaigns.filter(c => c.campaign_type === "workflow");
+  const bulks = campaigns.filter(c => c.campaign_type === "bulk");
+
+  return (
+    <div className="space-y-6">
+      <p className="text-xs text-gray-400">
+        Workflow rows show LIFETIME totals (GHL doesn&apos;t expose per-day deltas);
+        bulk rows are filtered to the selected month by schedule date.
+      </p>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <EmailKPI label="Total Sent" value={fmtNum(summary.total_sent)} />
+        <EmailKPI label="Open Rate" value={pct(summary.open_rate)} color="text-green-700" />
+        <EmailKPI label="Click Rate" value={pct(summary.click_rate)} color="text-purple-700" />
+        <EmailKPI label="CRM Revenue (VND)" value={fmtNum(summary.attributed_revenue_vnd)} color="text-emerald-700" />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-white rounded-lg border p-4">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Workflow (lifetime)</p>
+          <p className="text-lg font-bold text-indigo-700">
+            {fmtNum(workflows.reduce((s, c) => s + c.sent, 0))}{" "}
+            <span className="text-sm font-normal text-gray-500">emails · {workflows.length} active</span>
+          </p>
+        </div>
+        <div className="bg-white rounded-lg border p-4">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Bulk (this month)</p>
+          <p className="text-lg font-bold text-amber-700">
+            {fmtNum(bulks.reduce((s, c) => s + c.sent, 0))}{" "}
+            <span className="text-sm font-normal text-gray-500">emails · {bulks.length} sent</span>
+          </p>
+        </div>
+      </div>
+
+      {campaigns.length > 0 && (
+        <div className="bg-white rounded-lg border overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left px-4 py-3 font-semibold text-gray-600">Campaign</th>
+                <th className="text-left px-4 py-3 font-semibold text-gray-600">Branch</th>
+                <th className="text-left px-4 py-3 font-semibold text-gray-600">Type</th>
+                <th className="text-right px-4 py-3 font-semibold text-gray-600">Sent</th>
+                <th className="text-right px-4 py-3 font-semibold text-gray-600">Open%</th>
+                <th className="text-right px-4 py-3 font-semibold text-gray-600">Click%</th>
+                <th className="text-right px-4 py-3 font-semibold text-gray-600">Bookings</th>
+                <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue (VND)</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {campaigns.map((c) => (
+                <tr key={`${c.workflow_id}-${c.branch_name}`} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium text-gray-900 truncate max-w-[280px]">{c.workflow_name}</td>
+                  <td className="px-4 py-3 text-gray-600">{c.branch_name || "—"}</td>
+                  <td className="px-4 py-3">
+                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                      c.campaign_type === "workflow"
+                        ? "bg-indigo-50 text-indigo-700"
+                        : "bg-amber-50 text-amber-700"
+                    }`}>
+                      {c.campaign_type}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right">{fmtNum(c.sent)}</td>
+                  <td className="px-4 py-3 text-right">{pct(c.open_rate)}</td>
+                  <td className="px-4 py-3 text-right">{pct(c.click_rate)}</td>
+                  <td className="px-4 py-3 text-right text-emerald-700 font-medium">
+                    {c.attributed_bookings > 0 ? fmtNum(c.attributed_bookings) : <span className="text-gray-300">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-right text-emerald-700 font-medium">
+                    {c.attributed_revenue_vnd > 0 ? fmtNum(c.attributed_revenue_vnd) : <span className="text-gray-300">—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
