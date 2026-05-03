@@ -1,19 +1,17 @@
 """
 Weekly Report router
-- GET  /report/weekly       → report data (JSON)
-- GET  /report/preview      → HTML email preview (for iframe)
-- POST /report/send-weekly  → generate + send email to team
-- GET  /report/schedule     → current email schedule config
-- PATCH /report/schedule    → update email schedule
+- GET  /report/weekly            → report data (JSON)
+- GET  /report/preview           → HTML email preview (for iframe)
+- POST /report/send-weekly       → generate + send email to team (frontend)
+- POST /report/send-weekly-cron  → cron-triggered send (X-Sync-Token auth)
+- GET  /report/schedule          → current email schedule config
+- PATCH /report/schedule         → update email schedule
 """
 import calendar
 import json
 import logging
-import smtplib
 import textwrap
 from datetime import datetime, date, timedelta, timezone
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from typing import Optional
 from uuid import UUID
 
@@ -33,6 +31,7 @@ from app.models.reservation import Reservation
 from app.models.user import User
 from app.services.cloudbeds import sync_cloudbeds_occupancy
 from app.services.country_scorer import score_countries
+from app.services.email_sender import send_email_html
 from app.services.kpi_engine import (
     compute_kpi_summary,
     compute_next_month_forecast,
@@ -1446,22 +1445,14 @@ def send_weekly_email(
     user_ids: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """Generate and send weekly HTML email via Gmail SMTP.
+    """Generate and send weekly HTML email via SendGrid (Gmail SMTP fallback).
 
     Recipient resolution (in order):
       - ?user_ids=uuid1,uuid2 — look up emails from `users` table
       - ?to=a@x.com,b@y.com   — raw email override (useful for testing)
       - env EMAIL_RECIPIENTS  — fallback default list
     """
-    gmail_user = getattr(settings, "GMAIL_USER", "") or ""
-    gmail_pass = getattr(settings, "GMAIL_APP_PASSWORD", "") or ""
     recipients_raw = getattr(settings, "EMAIL_RECIPIENTS", "") or ""
-
-    if not gmail_user or not gmail_pass:
-        raise HTTPException(
-            status_code=500,
-            detail="GMAIL_USER and GMAIL_APP_PASSWORD not configured in .env"
-        )
 
     recipients: list[str] = []
     if user_ids:
@@ -1486,23 +1477,17 @@ def send_weekly_email(
     today = date.today()
     report = _build_report(db)
     html = _build_html(report, today)
+    subject = f"HiD Weekly Report — {today.strftime('%d %b %Y')}"
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"HiD Weekly Report — {today.strftime('%d %b %Y')}"
-    msg["From"] = gmail_user
-    msg["To"] = ", ".join(recipients)
-    msg.attach(MIMEText(html, "html"))
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(gmail_user, gmail_pass)
-            server.sendmail(gmail_user, recipients, msg.as_string())
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Email send failed: {e}")
+    if not send_email_html(subject, html, recipients):
+        raise HTTPException(
+            status_code=502,
+            detail="Email send failed — check server logs (SendGrid or Gmail SMTP)",
+        )
 
     return _envelope({
         "sent_to": recipients,
-        "subject": msg["Subject"],
+        "subject": subject,
         "branches_included": len(report),
     })
 
@@ -1515,12 +1500,7 @@ def _send_weekly_email_to_default_recipients(db: Session) -> dict:
     Used by the cron-triggered endpoint. Frontend still uses /send-weekly
     which allows ad-hoc recipients via ?to= or ?user_ids=.
     """
-    gmail_user = getattr(settings, "GMAIL_USER", "") or ""
-    gmail_pass = getattr(settings, "GMAIL_APP_PASSWORD", "") or ""
     recipients_raw = getattr(settings, "EMAIL_RECIPIENTS", "") or ""
-
-    if not gmail_user or not gmail_pass:
-        raise HTTPException(500, "GMAIL_USER and GMAIL_APP_PASSWORD not configured")
 
     recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
     seen = set()
@@ -1531,23 +1511,17 @@ def _send_weekly_email_to_default_recipients(db: Session) -> dict:
     today = date.today()
     report = _build_report(db)
     html = _build_html(report, today)
+    subject = f"HiD Weekly Report — {today.strftime('%d %b %Y')}"
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"HiD Weekly Report — {today.strftime('%d %b %Y')}"
-    msg["From"] = gmail_user
-    msg["To"] = ", ".join(recipients)
-    msg.attach(MIMEText(html, "html"))
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(gmail_user, gmail_pass)
-            server.sendmail(gmail_user, recipients, msg.as_string())
-    except Exception as e:
-        raise HTTPException(502, f"Email send failed: {e}")
+    if not send_email_html(subject, html, recipients):
+        raise HTTPException(
+            status_code=502,
+            detail="Email send failed — check server logs (SendGrid or Gmail SMTP)",
+        )
 
     return {
         "sent_to": recipients,
-        "subject": msg["Subject"],
+        "subject": subject,
         "branches_included": len(report),
     }
 
@@ -1632,23 +1606,17 @@ def _apply_schedule_to_scheduler():
         from app.database import SessionLocal
         db = SessionLocal()
         try:
+            recipients = _email_schedule.get("recipients", [])
+            if not recipients:
+                _schedule_logger.warning("Weekly email job: no recipients configured")
+                return
             report = _build_report(db)
             html = _build_html(report, date.today())
-            gmail_user = getattr(settings, "GMAIL_USER", "") or ""
-            gmail_pass = getattr(settings, "GMAIL_APP_PASSWORD", "") or ""
-            recipients = _email_schedule.get("recipients", [])
-            if not gmail_user or not gmail_pass or not recipients:
-                _schedule_logger.warning("Weekly email job: missing credentials or recipients")
-                return
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = f"HiD Weekly Report — {date.today().strftime('%d %b %Y')}"
-            msg["From"] = gmail_user
-            msg["To"] = ", ".join(recipients)
-            msg.attach(MIMEText(html, "html"))
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                server.login(gmail_user, gmail_pass)
-                server.sendmail(gmail_user, recipients, msg.as_string())
-            _schedule_logger.info("Weekly email sent to %s", recipients)
+            subject = f"HiD Weekly Report — {date.today().strftime('%d %b %Y')}"
+            if send_email_html(subject, html, recipients):
+                _schedule_logger.info("Weekly email sent to %s", recipients)
+            else:
+                _schedule_logger.error("Weekly email job: send_email_html returned False")
         except Exception as e:
             _schedule_logger.error("Weekly email job failed: %s", e)
         finally:

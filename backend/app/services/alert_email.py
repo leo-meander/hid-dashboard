@@ -1,11 +1,9 @@
-"""Alert email digest — sends a morning summary of CRITICAL alerts via Gmail SMTP."""
+"""Alert email digest — morning summary of CRITICAL alerts via shared sender."""
 import logging
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 from app.config import settings
 from app.models.alert import AlertHistory
+from app.services.email_sender import send_email_html
 
 logger = logging.getLogger(__name__)
 
@@ -19,19 +17,13 @@ SEVERITY_COLORS = {
 def send_alert_digest_email(alerts: list[AlertHistory], branch_map: dict) -> bool:
     """Send a single digest email with all alerts grouped by branch.
 
-    Returns True if sent successfully, False otherwise.
+    Returns True if sent successfully, False otherwise. Email transport
+    is handled by send_email_html (SendGrid in prod, Gmail SMTP in dev).
     """
-    if not settings.GMAIL_USER or not settings.GMAIL_APP_PASSWORD:
-        logger.warning("Gmail credentials not configured — skipping alert digest email")
-        return False
-
-    recipients_str = settings.EMAIL_RECIPIENTS
-    if not recipients_str:
-        logger.warning("EMAIL_RECIPIENTS not configured — skipping alert digest email")
-        return False
-
+    recipients_str = settings.EMAIL_RECIPIENTS or ""
     recipients = [e.strip() for e in recipients_str.split(",") if e.strip()]
     if not recipients:
+        logger.warning("EMAIL_RECIPIENTS not configured — skipping alert digest email")
         return False
 
     alert_date = alerts[0].alert_date if alerts else "today"
@@ -127,18 +119,12 @@ def send_alert_digest_email(alerts: list[AlertHistory], branch_map: dict) -> boo
     </div>
     """
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[HiD] Daily Alert Digest — {critical_count} Critical, {warning_count} Warning ({alert_date})"
-    msg["From"] = settings.GMAIL_USER
-    msg["To"] = ", ".join(recipients)
-    msg.attach(MIMEText(html, "html"))
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
-            server.login(settings.GMAIL_USER, settings.GMAIL_APP_PASSWORD)
-            server.sendmail(settings.GMAIL_USER, recipients, msg.as_string())
-        logger.info("Alert digest email sent to %d recipients — %d alerts", len(recipients), len(alerts))
-        return True
-    except Exception as e:
-        logger.error("Failed to send alert digest email: %s", e)
-        return False
+    subject = (f"[HiD] Daily Alert Digest — {critical_count} Critical, "
+               f"{warning_count} Warning ({alert_date})")
+    ok = send_email_html(subject, html, recipients)
+    if ok:
+        logger.info("Alert digest email sent to %d recipients — %d alerts",
+                    len(recipients), len(alerts))
+    else:
+        logger.error("Alert digest email send failed (%d alerts)", len(alerts))
+    return ok

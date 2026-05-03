@@ -1,10 +1,8 @@
-"""Email service — Gmail SMTP for approval notifications."""
+"""Email service — sends combo approval notifications via shared sender."""
 import logging
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 from app.config import settings
+from app.services.email_sender import send_email_html
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +20,11 @@ def send_approval_email(
     kol_name: str | None = None,
     submitter_email: str | None = None,
 ) -> bool:
-    """Send approval request email to reviewer via Gmail SMTP.
+    """Send approval request email to reviewer.
 
+    Uses send_email_html → SendGrid (production) or Gmail SMTP (dev).
     Returns True if sent successfully, False otherwise.
     """
-    if not settings.GMAIL_USER or not settings.GMAIL_APP_PASSWORD:
-        logger.warning("Gmail credentials not configured — skipping approval email")
-        return False
-
     review_url = f"{settings.FRONTEND_URL}/combos?review={combo_id}"
 
     html = f"""
@@ -91,26 +86,14 @@ def send_approval_email(
     </div>
     """
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[HiD] Approval Request — {combo_code} ({branch_name})"
-    msg["From"] = settings.GMAIL_USER
-    msg["To"] = reviewer_email
-    # CC the submitter so they know the request was sent
+    subject = f"[HiD] Approval Request — {combo_code} ({branch_name})"
+    cc = []
     if submitter_email and submitter_email.lower() != reviewer_email.lower():
-        msg["Cc"] = submitter_email
-    msg.attach(MIMEText(html, "html"))
+        cc.append(submitter_email)
 
-    # Build recipient list: reviewer + submitter (if different)
-    recipients = [reviewer_email]
-    if submitter_email and submitter_email.lower() != reviewer_email.lower():
-        recipients.append(submitter_email)
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
-            server.login(settings.GMAIL_USER, settings.GMAIL_APP_PASSWORD)
-            server.sendmail(settings.GMAIL_USER, recipients, msg.as_string())
+    ok = send_email_html(subject, html, [reviewer_email], cc=cc)
+    if ok:
         logger.info("Approval email sent to %s for combo %s", reviewer_email, combo_code)
-        return True
-    except Exception as e:
-        logger.error("Failed to send approval email: %s", e)
-        return False
+    else:
+        logger.error("Approval email send failed for combo %s", combo_code)
+    return ok
