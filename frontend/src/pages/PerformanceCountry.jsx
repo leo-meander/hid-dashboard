@@ -1,5 +1,5 @@
 /**
- * Country Reservations Trend — Top 15 countries over 7 weeks / 7 months.
+ * Country Reservations Trend — All countries over 7 weeks / 7 months, sortable.
  * + Compare to Last Year (via Cloudbeds Insights API).
  * + Branch Compare: side-by-side country data across multiple branches.
  */
@@ -39,6 +39,12 @@ export default function PerformanceCountry() {
   const [view, setView] = useState("monthly"); // weekly | monthly | compare | branch
   const [filterCountry, setFilterCountry] = useState("");
 
+  // Trend table sort state. sortKey is one of:
+  //   "country" | "total_reservations" | "total_nights" | "total_revenue"
+  //   or "period:<periodLabel>" for per-period columns
+  const [sortKey, setSortKey] = useState("total_reservations");
+  const [sortDir, setSortDir] = useState("desc");
+
   // Compare (YoY) view state
   const now = new Date();
   const [cmpYear, setCmpYear] = useState(now.getFullYear());
@@ -63,7 +69,7 @@ export default function PerformanceCountry() {
   // Load trend data (weekly/monthly)
   const loadTrend = () => {
     setLoading(true);
-    const params = { view, limit: 15 };
+    const params = { view, limit: 500 };
     if (!isAll && selected) params.branch_id = selected;
 
     axios.get("/api/metrics/country-reservations", { params })
@@ -137,24 +143,72 @@ export default function PerformanceCountry() {
   }, [branchDataMap]);
 
   // Filter countries
-  const countries = useMemo(() => {
+  const filteredCountries = useMemo(() => {
     if (!filterCountry) return allCountries;
     return allCountries.filter((c) => c.country === filterCountry);
   }, [allCountries, filterCountry]);
 
+  // Sort countries by the active sort key/direction
+  const countries = useMemo(() => {
+    const arr = [...filteredCountries];
+    const dir = sortDir === "asc" ? 1 : -1;
+    const periodKey = sortKey.startsWith("period:") ? sortKey.slice(7) : null;
+
+    arr.sort((a, b) => {
+      let av, bv;
+      if (periodKey) {
+        av = (trend[periodKey] || {})[a.country] || 0;
+        bv = (trend[periodKey] || {})[b.country] || 0;
+      } else if (sortKey === "country") {
+        av = (a.country || "").toLowerCase();
+        bv = (b.country || "").toLowerCase();
+        return av < bv ? -1 * dir : av > bv ? 1 * dir : 0;
+      } else {
+        av = a[sortKey] || 0;
+        bv = b[sortKey] || 0;
+      }
+      return (av - bv) * dir;
+    });
+    return arr;
+  }, [filteredCountries, sortKey, sortDir, trend]);
+
   const countryNames = countries.map((c) => c.country);
 
-  // Build chart data
+  // Chart caps at top 15 countries by reservations to stay readable;
+  // the table below still shows the full list.
+  const chartCountryNames = useMemo(() => {
+    return [...filteredCountries]
+      .sort((a, b) => (b.total_reservations || 0) - (a.total_reservations || 0))
+      .slice(0, 15)
+      .map((c) => c.country);
+  }, [filteredCountries]);
+
+  const toggleSort = (key) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      // numeric defaults desc; string defaults asc
+      setSortDir(key === "country" ? "asc" : "desc");
+    }
+  };
+
+  const sortArrow = (key) => {
+    if (sortKey !== key) return <span className="text-gray-300 ml-1">↕</span>;
+    return <span className="text-indigo-600 ml-1">{sortDir === "asc" ? "▲" : "▼"}</span>;
+  };
+
+  // Build chart data (top 15 only, to keep stacked chart readable)
   const chartData = useMemo(() => {
     return periods.map((p) => {
       const row = { period: p };
       const periodData = trend[p] || {};
-      for (const name of countryNames) {
+      for (const name of chartCountryNames) {
         row[name] = periodData[name] || 0;
       }
       return row;
     });
-  }, [periods, trend, countryNames]);
+  }, [periods, trend, chartCountryNames]);
 
   const latestPeriod = periods[periods.length - 1];
   const prevPeriod = periods[periods.length - 2];
@@ -175,7 +229,7 @@ export default function PerformanceCountry() {
     ? `${MONTHS[cmpMonth - 1]} ${cmpYear} vs ${MONTHS[cmpMonth - 1]} ${cmpYear - 1}`
     : view === "branch"
     ? `${MONTHS[branchMonth - 1]} ${branchYear} — Branch Comparison`
-    : `Top 15 countries \u2014 last 7 ${view === "monthly" ? "months" : "weeks"}`;
+    : `All countries \u2014 last 7 ${view === "monthly" ? "months" : "weeks"}`;
 
   // Country filter options differ per view
   const countryFilterOptions = useMemo(() => {
@@ -311,8 +365,8 @@ export default function PerformanceCountry() {
               </div>
               <div className="bg-white rounded-lg border p-4">
                 <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Top Country</p>
-                <p className="text-2xl font-bold text-gray-900">{countries[0]?.country || "-"}</p>
-                <p className="text-xs text-gray-400 mt-1">{fmtNum(countries[0]?.total_reservations)} total reservations</p>
+                <p className="text-2xl font-bold text-gray-900">{filteredCountries[0]?.country || "-"}</p>
+                <p className="text-xs text-gray-400 mt-1">{fmtNum(filteredCountries[0]?.total_reservations)} total reservations</p>
               </div>
               <div className="bg-white rounded-lg border p-4">
                 <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Countries Tracked</p>
@@ -324,7 +378,7 @@ export default function PerformanceCountry() {
             {/* Stacked Area Chart */}
             <div className="bg-white rounded-lg border p-4">
               <h2 className="text-sm font-semibold text-gray-700 mb-4">
-                Reservation Trend by Country
+                Reservation Trend by Country <span className="text-xs font-normal text-gray-400">(top 15)</span>
               </h2>
               <ResponsiveContainer width="100%" height={360}>
                 <AreaChart data={chartData}>
@@ -336,7 +390,7 @@ export default function PerformanceCountry() {
                     formatter={(val, name) => [fmtNum(val), name]}
                   />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
-                  {countryNames.map((name, i) => (
+                  {chartCountryNames.map((name, i) => (
                     <Area
                       key={name}
                       type="monotone"
@@ -357,18 +411,44 @@ export default function PerformanceCountry() {
                 <thead className="bg-gray-50">
                   <tr>
                     <th className="text-center px-3 py-3 font-semibold text-gray-600 w-10">#</th>
-                    <th className="text-left px-4 py-3 font-semibold text-gray-600">Country</th>
-                    <th className="text-right px-4 py-3 font-semibold text-gray-600">Total Reservations</th>
-                    <th className="text-right px-4 py-3 font-semibold text-gray-600">Room Nights</th>
-                    <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue (VND)</th>
+                    <th
+                      onClick={() => toggleSort("country")}
+                      className="text-left px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none"
+                    >
+                      Country{sortArrow("country")}
+                    </th>
+                    <th
+                      onClick={() => toggleSort("total_reservations")}
+                      className="text-right px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none"
+                    >
+                      Total Reservations{sortArrow("total_reservations")}
+                    </th>
+                    <th
+                      onClick={() => toggleSort("total_nights")}
+                      className="text-right px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none"
+                    >
+                      Room Nights{sortArrow("total_nights")}
+                    </th>
+                    <th
+                      onClick={() => toggleSort("total_revenue")}
+                      className="text-right px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none"
+                    >
+                      Revenue (VND){sortArrow("total_revenue")}
+                    </th>
                     {periods.map((p) => (
-                      <th key={p} className="text-right px-3 py-3 font-semibold text-gray-500 text-xs">{p}</th>
+                      <th
+                        key={p}
+                        onClick={() => toggleSort(`period:${p}`)}
+                        className="text-right px-3 py-3 font-semibold text-gray-500 text-xs cursor-pointer hover:bg-gray-100 select-none"
+                      >
+                        {p}{sortArrow(`period:${p}`)}
+                      </th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {countries.map((c, i) => (
-                    <tr key={c.country_code} className="hover:bg-gray-50">
+                    <tr key={`${c.country_code}__${c.country}`} className="hover:bg-gray-50">
                       <td className="px-3 py-2.5 text-center">
                         <span className="inline-block w-5 h-5 rounded-full text-xs font-bold text-white leading-5 text-center"
                           style={{ backgroundColor: COLORS[i % COLORS.length] }}>

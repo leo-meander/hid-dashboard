@@ -521,13 +521,13 @@ def _fetch_country_yoy_cloudbeds(
 
 
 
-# ── Country Reservations Trend (7 weeks / 7 months, top 15) ──────────────────
+# ── Country Reservations Trend (7 weeks / 7 months, all countries) ───────────
 
 @router.get("/country-reservations")
 def get_country_reservations(
     view: str = Query("monthly", regex="^(weekly|monthly)$"),
     branch_id: Optional[UUID] = Query(None),
-    limit: int = Query(15, ge=1, le=50),
+    limit: int = Query(500, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
     """
