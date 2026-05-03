@@ -1005,14 +1005,33 @@ def paid_ads_section(db: Session, branch_id: UUID, today: date,
 # ── 8. KOL — pipeline, ROI, expiring usage rights ───────────────────────────
 
 def kol_section(db: Session, branch_id: UUID, today: date,
-                days: int = 30) -> dict:
-    """KOL summary: deliverables pipeline, ROI from organic bookings,
-    expiring usage rights, ads-eligible KOLs available."""
+                days: int = 7) -> dict:
+    """KOL weekly snapshot.
+
+    Default window 7d (was 30d). "Total KOLs" replaced with
+    `posts_published_this_week` — count of KOL records whose
+    `published_date` falls in the window. One KOL record represents one
+    collaboration / case, so it maps to one post.
+
+    Still surfaces:
+      - Pipeline counts (across all KOLs for the branch — not windowed,
+        because deliverable_status is current state, not history)
+      - Stuck deliverables (>14d in In Progress, branch-wide)
+      - Expiring usage rights (next 60d, branch-wide)
+      - Ads-eligible KOLs available (branch-wide)
+      - Cost MTD + organic bookings/revenue/ROI from KOL_* room types
+    """
     cutoff = today - timedelta(days=days)
     expiry_horizon = today + timedelta(days=60)
 
     # KOL records for this branch
     kols = db.query(KOLRecord).filter(KOLRecord.branch_id == branch_id).all()
+
+    # Posts published in the last `days` window
+    posts_this_week = sum(
+        1 for k in kols
+        if k.published_date and cutoff <= k.published_date <= today
+    )
 
     # Pipeline counts (deliverable_status)
     pipeline = {"Not Started": 0, "In Progress": 0, "Editing": 0, "Done": 0, "Other": 0}
@@ -1100,6 +1119,7 @@ def kol_section(db: Session, branch_id: UUID, today: date,
     return {
         "window_days": days,
         "total_kols": len(kols),
+        "posts_this_week": posts_this_week,
         "pipeline": pipeline,
         "contract_open": contract_open,
         "stuck": stuck[:5],
@@ -1310,8 +1330,8 @@ def build_branch_analytics(db: Session, branch: Branch, today: date) -> dict:
       - channel_mix: 7 days
       - countries:   90 days for top + YoY comparison (need volume)
       - paid_ads:    7 days
-      - kol:         30 days (KOL collab cadence is slower)
-      - crm:         30 days (email workflows + reservation_date window)
+      - kol:         7 days (count of posts published in window)
+      - crm:         7 days (revenue only — simplified)
     """
     total_rooms = branch.total_rooms or 0
     return {
@@ -1322,6 +1342,6 @@ def build_branch_analytics(db: Session, branch: Branch, today: date) -> dict:
         "countries": country_insights(db, branch.id, today, days=90, limit=8),
         "ad_optimizer": ad_budget_optimizer(db, branch.id, today, total_rooms),
         "paid_ads": paid_ads_section(db, branch.id, today, days=7),
-        "kol": kol_section(db, branch.id, today, days=30),
-        "crm": crm_section(db, branch.id, branch.name, today, days=30),
+        "kol": kol_section(db, branch.id, today, days=7),
+        "crm": crm_section(db, branch.id, branch.name, today, days=7),
     }

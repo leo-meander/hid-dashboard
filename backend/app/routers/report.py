@@ -469,7 +469,7 @@ def _render_outliers(b: dict) -> str:
         )
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">⚡ Outliers (last 30d)</p>
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">⚡ Outliers (last 7d, vs 30d baseline)</p>
       <table style="width:100%;border-collapse:collapse;">
         <tr><th style="{_TABLE_TH}">Date</th><th style="{_TABLE_TH};text-align:right;">Type</th>
             <th style="{_TABLE_TH};text-align:right;">Revenue</th><th style="{_TABLE_TH};text-align:right;">OCC</th>
@@ -868,6 +868,69 @@ def _branch_narrative(b: dict) -> list[str]:
     return bullets[:5]
 
 
+# ── Per-branch combined action block ─────────────────────────────────────────
+
+
+def _render_branch_actions(
+    country_actions: list[str],
+    ads_recs: list[str],
+    kol_recs: list[str],
+    ads_actions: list[str],
+    kol_actions: list[str],
+    crm_actions: list[str],
+    ads_rec_month: str,
+    kol_rec_month: str,
+) -> str:
+    """Combined action block — folds Country Intel actions, gov-visitor
+    recommendations (Paid Ads next month + KOLs month+2), and channel-level
+    next actions into one panel attached to a branch card.
+
+    Replaces the three separate end-of-email panels (Country Intel
+    Actions / Next Week Recommendations / Channel Actions) — feedback
+    (2026-05-03) said the standalone panels duplicated context already
+    presented per-branch.
+    """
+    # Combine all action lists by topic. Order: Country Intel first, then
+    # gov-driven Paid Ads (next month), then gov-driven KOL (month+2),
+    # then channel-level next actions per channel.
+    sections: list[tuple[str, str, list[str]]] = []
+    if country_actions:
+        sections.append(("🎯 Country Intel — this week", "#dc2626", country_actions))
+    if ads_recs:
+        sections.append(
+            (f"📣 Paid Ads — {ads_rec_month} demand (gov forecast)", "#4f46e5", ads_recs)
+        )
+    if kol_recs:
+        sections.append(
+            (f"🎥 KOLs — {kol_rec_month} peak (gov forecast)", "#7c3aed", kol_recs)
+        )
+    if ads_actions:
+        sections.append(("📣 Paid Ads — channel signals", "#4f46e5", ads_actions))
+    if kol_actions:
+        sections.append(("🎥 KOL — channel signals", "#7c3aed", kol_actions))
+    if crm_actions:
+        sections.append(("✉️ CRM — channel signals", "#059669", crm_actions))
+
+    if not sections:
+        return ""
+
+    blocks = []
+    for label, color, items in sections:
+        list_html = "".join(f"<li style='margin:2px 0;'>{a}</li>" for a in items)
+        blocks.append(
+            f"<div style='margin-top:8px;'>"
+            f"<span style='font-size:11px;font-weight:700;color:{color};text-transform:uppercase;letter-spacing:0.4px;'>{label}</span>"
+            f"<ul style='margin:3px 0 0;padding-left:20px;color:#374151;font-size:13px;line-height:1.5;'>{list_html}</ul>"
+            f"</div>"
+        )
+
+    return f"""
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+      <p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#374151;">🎯 Action Items</p>
+      {''.join(blocks)}
+    </div>"""
+
+
 # ── Paid Ads / KOL / CRM section renderers ───────────────────────────────────
 
 
@@ -887,8 +950,8 @@ def _render_paid_ads(b: dict) -> str:
 
     if tw["cost"] == 0 and lw["cost"] == 0:
         return f"""
-        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-          <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">📣 Paid Ads — {b['branch_name']}</h3>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">📣 Paid Ads (last {pa['window_days']}d)</p>
           <p style="margin:0;font-size:12px;color:#9ca3af;">No ad spend in the last {pa['window_days']} days.</p>
         </div>"""
 
@@ -942,12 +1005,13 @@ def _render_paid_ads(b: dict) -> str:
     top_html = "".join(_camp_row(c, "#16a34a") for c in pa["top_campaigns"])
     bot_html = "".join(_camp_row(c, "#dc2626") for c in pa["bottom_campaigns"])
 
+    roas_str = f"{tw['roas']:.2f}x" if tw["roas"] is not None else "—"
     return f"""
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-      <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">📣 Paid Ads — {b['branch_name']} (last {pa['window_days']}d)</h3>
-      <p style="margin:0 0 12px;font-size:12px;color:#6b7280;">
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">📣 Paid Ads (last {pa['window_days']}d)</p>
+      <p style="margin:0 0 10px;font-size:12px;color:#6b7280;">
         Spend {_fmt(tw['cost'], cur)} · Bookings {tw['bookings']} · Revenue {_fmt(tw['revenue'], cur)} ·
-        ROAS {tw['roas']:.2f}x ({_wow(pa['wow_roas_pct'])} WoW) · CTR {_pct(tw['ctr_pct'])} · CVR {_pct(tw['cvr_pct'])} · CPA {_fmt(tw['cpa'], cur)}<br/>
+        ROAS {roas_str} ({_wow(pa['wow_roas_pct'])} WoW) · CTR {_pct(tw['ctr_pct'])} · CVR {_pct(tw['cvr_pct'])} · CPA {_fmt(tw['cpa'], cur)}<br/>
         WoW: spend {_wow(pa['wow_cost_pct'])} · revenue {_wow(pa['wow_revenue_pct'])}
       </p>
 
@@ -990,18 +1054,19 @@ def _render_kol(b: dict) -> str:
     k = b.get("analytics", {}).get("kol")
     if not k:
         return f"""
-        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-          <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">🎥 KOL — {b['branch_name']}</h3>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">🎥 KOL</p>
           <p style="margin:0;font-size:12px;color:#9ca3af;">No KOL data available — analytics not computed.</p>
         </div>"""
     if k["total_kols"] == 0:
         return f"""
-        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-          <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">🎥 KOL — {b['branch_name']} (last {k['window_days']}d)</h3>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">🎥 KOL (last {k['window_days']}d)</p>
           <p style="margin:0;font-size:12px;color:#9ca3af;">No KOL records for this branch yet — add via /kol page or CSV sync.</p>
         </div>"""
     cur = b["currency"]
     p = k["pipeline"]
+    posts = k.get("posts_this_week", 0)
 
     pipeline_html = (
         f"<span style='color:#6b7280;font-size:12px;'>"
@@ -1043,11 +1108,13 @@ def _render_kol(b: dict) -> str:
     roi_str = f"{k['roi']:.2f}x" if k["roi"] is not None else "—"
 
     return f"""
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-      <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">🎥 KOL — {b['branch_name']} (last {k['window_days']}d)</h3>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
+        🎥 KOL (last {k['window_days']}d)
+      </p>
       <p style="margin:0 0 10px;font-size:12px;color:#6b7280;">
-        Total KOLs: <strong>{k['total_kols']}</strong> · Open contracts (Draft/Negotiating): <strong>{k['contract_open']}</strong><br/>
-        {pipeline_html}<br/>
+        Posts published this week: <strong>{posts}</strong> · Open contracts (Draft/Negotiating): <strong>{k['contract_open']}</strong><br/>
+        Pipeline (all-time): {pipeline_html}<br/>
         Cost MTD: <strong>{_fmt(k['cost_mtd_native'], cur)}</strong> ·
         Organic bookings: <strong>{k['organic_bookings']}</strong> ({k['organic_nights']} nights) ·
         Revenue: <strong>{_fmt(k['organic_revenue_native'], cur)}</strong> ·
@@ -1071,17 +1138,25 @@ def _render_kol(b: dict) -> str:
 
 
 def _render_crm(b: dict) -> str:
+    """CRM section — revenue only, sourced from CRM-tagged reservations.
+
+    Data source: reservations where room_type or rate_plan_name contains
+    'CRM' / "MEANDER'S FRIEND" / 'Travel guide' / 'Grand Open'. Filtered
+    on reservation_date (Date Booked) per the team rule. Excludes
+    Blogger / House Use / Special Case from revenue.
+
+    Email-stats / workflow / bulk-send tables intentionally omitted —
+    feedback (2026-05-03) wanted CRM down to a single revenue line.
+    """
     c = b.get("analytics", {}).get("crm")
     if not c:
         return f"""
-        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-          <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">✉️ CRM — {b['branch_name']}</h3>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">✉️ CRM</p>
           <p style="margin:0;font-size:12px;color:#9ca3af;">No CRM data available — analytics not computed.</p>
         </div>"""
     cur = b["currency"]
     rev_t = c["crm_revenue_this"]
-    rev_p = c["crm_revenue_prev"]
-    em = c["email"]
 
     def _wow(val):
         if val is None:
@@ -1089,90 +1164,29 @@ def _render_crm(b: dict) -> str:
         color = "#16a34a" if val >= 0 else "#dc2626"
         return f"<span style='color:{color}'>{_signed_pct(val)}</span>"
 
-    if not c.get("ghl_branch_name") and rev_t["bookings"] == 0 and rev_p["bookings"] == 0:
+    if rev_t["bookings"] == 0:
         return f"""
-        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-          <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">✉️ CRM — {b['branch_name']} (last {c['window_days']}d)</h3>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">✉️ CRM (last {c['window_days']}d)</p>
           <p style="margin:0;font-size:12px;color:#9ca3af;">
-            <strong>No CRM activity in window.</strong> Branch not mapped to a GHL location
-            (email stats unavailable) and no CRM-tagged reservations recorded.
-            Confirm GHL workflow is configured + cron-ghl-email running.
+            No CRM-tagged reservations in window. Source: room_type / rate_plan_name
+            containing "CRM" / "MEANDER'S FRIEND" / "Travel guide" / "Grand Open".
           </p>
         </div>"""
 
-    ghl_note = (
-        f" · GHL branch: <code>{c['ghl_branch_name']}</code>"
-        if c.get("ghl_branch_name") else
-        " · <span style='color:#dc2626;'>GHL branch not mapped — email stats unavailable</span>"
-    )
-
-    # Email summary
-    sent = em["sent"]
-    if sent > 0:
-        email_summary_html = (
-            f"<p style='margin:0 0 8px;font-size:12px;color:#6b7280;'>"
-            f"Email sent (last {c['window_days']}d): <strong>{sent:,}</strong> · "
-            f"Open <strong>{_pct(em['open_rate_pct'])}</strong> · "
-            f"Click <strong>{_pct(em['click_rate_pct'])}</strong> · "
-            f"Bounce <strong>{_pct(em['bounce_rate_pct'])}</strong> · "
-            f"Unsub <strong>{_pct(em['unsub_rate_pct'])}</strong> · "
-            f"Attributed bookings <strong>{em['attributed_bookings']}</strong> · "
-            f"Attributed revenue <strong>{_fmt(em['attributed_revenue_native'], cur)}</strong>"
-            f"</p>"
-        )
-    else:
-        email_summary_html = "<p style='margin:0 0 8px;font-size:12px;color:#9ca3af;'>No email sends in window.</p>"
-
-    # Top workflows
-    wf_rows = "".join(
-        f"<tr><td style='{_TABLE_TD}'>{w['name']}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{w['sent']:,}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(w['open_rate_pct'])}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(w['click_rate_pct'])}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{w['bookings']}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{_fmt(w['revenue'], cur)}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;color:#6b7280;'>{_fmt(w['rev_per_email'], cur)}</td></tr>"
-        for w in em["top_workflows"]
-    )
-
-    # Recent bulk sends
-    bulk_rows = "".join(
-        f"<tr><td style='{_TABLE_TD}'>{br['stat_date']}</td>"
-        f"<td style='{_TABLE_TD}'>{br['name']}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{br['sent']:,}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(br['open_rate_pct'])}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(br['click_rate_pct'])}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{br['bookings']}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(br['revenue'], cur)}</td></tr>"
-        for br in em["bulk_recent"]
-    )
-
     return f"""
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-      <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">✉️ CRM — {b['branch_name']} (last {c['window_days']}d){ghl_note}</h3>
-      <p style="margin:0 0 6px;font-size:12px;color:#6b7280;">
-        CRM bookings (Date Booked): <strong>{rev_t['bookings']}</strong> ({rev_t['nights']} nights) ·
-        Revenue <strong>{_fmt(rev_t['revenue'], cur)}</strong> · WoW {_wow(c['wow_revenue_pct'])}
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
+        ✉️ CRM (last {c['window_days']}d)
       </p>
-      {email_summary_html}
-
-      <table style="width:100%;border-collapse:collapse;margin-top:6px;">
-        <tr><th style="{_TABLE_TH}" colspan="7">🏆 Top workflows by attributed revenue (lifetime)</th></tr>
-        <tr><th style="{_TABLE_TH}">Workflow</th><th style="{_TABLE_TH};text-align:right;">Sent</th>
-            <th style="{_TABLE_TH};text-align:right;">Open</th><th style="{_TABLE_TH};text-align:right;">Click</th>
-            <th style="{_TABLE_TH};text-align:right;">Bk</th><th style="{_TABLE_TH};text-align:right;">Revenue</th>
-            <th style="{_TABLE_TH};text-align:right;">Rev/email</th></tr>
-        {wf_rows or '<tr><td colspan="7" style="'+_TABLE_TD+';color:#9ca3af;">No workflow data</td></tr>'}
-      </table>
-
-      <table style="width:100%;border-collapse:collapse;margin-top:8px;">
-        <tr><th style="{_TABLE_TH}" colspan="7">📨 Bulk sends in window</th></tr>
-        <tr><th style="{_TABLE_TH}">Date</th><th style="{_TABLE_TH}">Campaign</th>
-            <th style="{_TABLE_TH};text-align:right;">Sent</th><th style="{_TABLE_TH};text-align:right;">Open</th>
-            <th style="{_TABLE_TH};text-align:right;">Click</th><th style="{_TABLE_TH};text-align:right;">Bk</th>
-            <th style="{_TABLE_TH};text-align:right;">Revenue</th></tr>
-        {bulk_rows or '<tr><td colspan="7" style="'+_TABLE_TD+';color:#9ca3af;">No bulk sends</td></tr>'}
-      </table>
+      <p style="margin:0;font-size:12px;color:#374151;">
+        Bookings: <strong>{rev_t['bookings']}</strong> ({rev_t['nights']} nights) ·
+        Revenue: <strong style="color:#111827;">{_fmt(rev_t['revenue'], cur)}</strong> ·
+        WoW {_wow(c['wow_revenue_pct'])}
+      </p>
+      <p style="margin:4px 0 0;font-size:11px;color:#9ca3af;">
+        Source: CRM-tagged reservations (room_type/rate_plan contains CRM / MEANDER'S FRIEND / Travel guide / Grand Open). Filtered on Date Booked.
+      </p>
     </div>"""
 
 
@@ -1363,6 +1377,24 @@ def _build_html(report: list, today: date) -> str:
             + "</ul></div>"
         ) if narrative_bullets else ""
 
+        # ── Combined per-branch action block ─────────────────────────────
+        # Folds together: Country Intel actions (`actions`), gov-visitor-driven
+        # Paid Ads / KOL recommendations, and channel-level next actions.
+        combined_action_html = _render_branch_actions(
+            country_actions=actions,
+            ads_recs=ads_recs,
+            kol_recs=kol_recs,
+            ads_actions=ads_actions,
+            kol_actions=kol_actions,
+            crm_actions=crm_actions,
+            ads_rec_month=ads_rec_month,
+            kol_rec_month=kol_rec_month,
+        )
+
+        paid_ads_block = _render_paid_ads(b)
+        kol_block = _render_kol(b)
+        crm_block = _render_crm(b)
+
         sections.append(f"""
         <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
@@ -1433,95 +1465,14 @@ def _build_html(report: list, today: date) -> str:
           {_render_behavior(b)}
           {_render_channel_mix(b)}
           {_render_country_detail(b)}
+          {paid_ads_block}
+          {kol_block}
+          {crm_block}
+          {combined_action_html}
         </div>""")
 
-    # Next actions section (Country Intel)
-    action_html = ""
-    for na in next_actions_all:
-        if not na["actions"]:
-            continue
-        items = "".join(f"<li style='margin:4px 0;'>{a}</li>" for a in na["actions"])
-        action_html += f"""
-        <div style="margin-bottom:12px;">
-          <strong style="font-size:13px;color:#374151;">{na['branch']} — {na['city']}</strong>
-          <ul style="margin:6px 0 0;padding-left:20px;color:#374151;font-size:13px;">{items}</ul>
-        </div>"""
-
-    # Next Week Recommendations (based on gov visitor data)
-    recs_html = ""
-    for na in next_actions_all:
-        ads_recs = na.get("ads_recs", [])
-        kol_recs = na.get("kol_recs", [])
-        if not ads_recs and not kol_recs:
-            continue
-
-        branch_recs = f"""
-        <div style="margin-bottom:16px;">
-          <strong style="font-size:13px;color:#374151;">{na['branch']} — {na['city']}</strong>"""
-
-        if ads_recs:
-            ads_items = "".join(f"<li style='margin:4px 0;'>{r}</li>" for r in ads_recs)
-            branch_recs += f"""
-          <div style="margin-top:8px;">
-            <span style="font-size:12px;font-weight:600;color:#4f46e5;text-transform:uppercase;letter-spacing:0.5px;">Paid Ads — {ads_rec_month} Demand</span>
-            <ul style="margin:4px 0 0;padding-left:20px;color:#374151;font-size:13px;">{ads_items}</ul>
-          </div>"""
-
-        if kol_recs:
-            kol_items = "".join(f"<li style='margin:4px 0;'>{r}</li>" for r in kol_recs)
-            branch_recs += f"""
-          <div style="margin-top:8px;">
-            <span style="font-size:12px;font-weight:600;color:#7c3aed;text-transform:uppercase;letter-spacing:0.5px;">KOLs — {kol_rec_month} Peak Travel</span>
-            <ul style="margin:4px 0 0;padding-left:20px;color:#374151;font-size:13px;">{kol_items}</ul>
-          </div>"""
-
-        branch_recs += "\n        </div>"
-        recs_html += branch_recs
-
     ad_optimizer_html = "".join(_render_ad_optimizer(b) for b in report)
-    paid_ads_html = "".join(_render_paid_ads(b) for b in report)
-    kol_html = "".join(_render_kol(b) for b in report)
-    crm_html = "".join(_render_crm(b) for b in report)
     exec_summary_html = _render_exec_summary(report, today)
-
-    # Channel-action panel (Paid Ads / KOL / CRM next actions per branch)
-    channel_action_html = ""
-    for na in next_actions_all:
-        ads_a = na.get("ads_actions") or []
-        kol_a = na.get("kol_actions") or []
-        crm_a = na.get("crm_actions") or []
-        if not (ads_a or kol_a or crm_a):
-            continue
-        block = (
-            f"<div style='margin-bottom:14px;'>"
-            f"<strong style='font-size:13px;color:#374151;'>{na['branch']} — {na['city']}</strong>"
-        )
-        if ads_a:
-            items = "".join(f"<li style='margin:3px 0;'>{a}</li>" for a in ads_a)
-            block += (
-                f"<div style='margin-top:6px;'>"
-                f"<span style='font-size:12px;font-weight:600;color:#4f46e5;text-transform:uppercase;letter-spacing:0.4px;'>📣 Paid Ads</span>"
-                f"<ul style='margin:4px 0 0;padding-left:20px;color:#374151;font-size:13px;'>{items}</ul>"
-                f"</div>"
-            )
-        if kol_a:
-            items = "".join(f"<li style='margin:3px 0;'>{a}</li>" for a in kol_a)
-            block += (
-                f"<div style='margin-top:6px;'>"
-                f"<span style='font-size:12px;font-weight:600;color:#7c3aed;text-transform:uppercase;letter-spacing:0.4px;'>🎥 KOL</span>"
-                f"<ul style='margin:4px 0 0;padding-left:20px;color:#374151;font-size:13px;'>{items}</ul>"
-                f"</div>"
-            )
-        if crm_a:
-            items = "".join(f"<li style='margin:3px 0;'>{a}</li>" for a in crm_a)
-            block += (
-                f"<div style='margin-top:6px;'>"
-                f"<span style='font-size:12px;font-weight:600;color:#059669;text-transform:uppercase;letter-spacing:0.4px;'>✉️ CRM</span>"
-                f"<ul style='margin:4px 0 0;padding-left:20px;color:#374151;font-size:13px;'>{items}</ul>"
-                f"</div>"
-            )
-        block += "</div>"
-        channel_action_html += block
 
     return f"""<!DOCTYPE html>
 <html>
@@ -1540,39 +1491,13 @@ def _build_html(report: list, today: date) -> str:
     <!-- Executive Summary (all branches at a glance) -->
     {exec_summary_html}
 
-    <!-- Per-branch detailed sections (KPI + outliers + behavior + channel mix + country insights) -->
+    <!-- Per-branch sections — each branch self-contained with its own
+         KPI / outliers / behavior / channel mix / countries / Paid Ads /
+         KOL / CRM / actions in one card -->
     {''.join(sections)}
 
-    <!-- Paid Ads weekly snapshot -->
-    {paid_ads_html}
-
-    <!-- KOL pipeline / ROI / expiring usage rights -->
-    {kol_html}
-
-    <!-- CRM (email marketing + reservation revenue) -->
-    {crm_html}
-
-    <!-- Ad Budget Optimizer (6-step framework per country) -->
+    <!-- Ad Budget Optimizer (6-step framework per country, drill-down) -->
     {ad_optimizer_html}
-
-    <!-- Channel actions (Paid Ads / KOL / CRM) -->
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-      <h3 style="margin:0 0 14px;font-size:15px;font-weight:700;color:#111827;">⚡ Channel Actions — This Week</h3>
-      {channel_action_html or '<p style="color:#6b7280;font-size:13px;">No channel-level actions flagged.</p>'}
-    </div>
-
-    <!-- Next Week Recommendations -->
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-      <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">📋 Next Week Recommendations</h3>
-      <p style="margin:0 0 14px;font-size:12px;color:#6b7280;">Based on government visitor forecasts</p>
-      {recs_html or '<p style="color:#6b7280;font-size:13px;">No gov visitor data available.</p>'}
-    </div>
-
-    <!-- Country Intel Actions -->
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-      <h3 style="margin:0 0 14px;font-size:15px;font-weight:700;color:#111827;">🎯 Country Intel Actions</h3>
-      {action_html or '<p style="color:#6b7280;font-size:13px;">No actions required this week.</p>'}
-    </div>
 
     <!-- Footer -->
     <p style="text-align:center;font-size:11px;color:#9ca3af;margin-top:16px;">
