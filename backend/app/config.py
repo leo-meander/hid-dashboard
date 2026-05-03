@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REFRESH_TOKEN: str = ""
 
+    # Email transport — Resend is preferred (HTTP, works on Zeabur).
+    # SendGrid is supported as a fallback. Gmail SMTP is dev-only:
+    # most PaaS providers (Zeabur, Render, Heroku) block outbound SMTP.
+    RESEND_API_KEY: str = ""
     SENDGRID_API_KEY: str = ""
     EMAIL_FROM: str = ""
     EMAIL_RECIPIENTS: str = ""
