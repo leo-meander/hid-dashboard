@@ -11,6 +11,7 @@ export const CURRENCY_SYMBOLS = {
   THB: '฿',
   USD: '$',
   EUR: '€',
+  JPY: '¥',
 }
 
 export function BranchProvider({ children }) {

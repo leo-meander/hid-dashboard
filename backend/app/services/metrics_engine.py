@@ -1231,10 +1231,15 @@ def get_country_yoy_insights_local(
             func.nullif(func.nullif(Reservation.guest_country, ""), "0"),
             "Unknown",
         ).label("country")
+        # Branch-scoped views sum native; All-Branches sums VND so revenue
+        # across mixed-currency branches stays comparable.
+        revenue_col = (
+            Reservation.grand_total_native if branch_id else Reservation.grand_total_vnd
+        )
         q = db.query(
             country_expr,
             func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
-            func.coalesce(func.sum(Reservation.grand_total_native), 0).label("revenue"),
+            func.coalesce(func.sum(revenue_col), 0).label("revenue"),
             func.count(Reservation.id).label("guests"),
         ).filter(
             func.extract("year", Reservation.check_in_date) == target_year,

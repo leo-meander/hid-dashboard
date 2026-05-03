@@ -9,7 +9,7 @@ import {
   AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
-import { useBranch } from "../context/BranchContext";
+import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 
 const COLORS = [
   "#6366f1", "#10b981", "#f59e0b", "#ef4444", "#3b82f6",
@@ -126,6 +126,8 @@ export default function PerformanceCountry() {
   const periods = data?.periods || [];
   const allCountries = data?.countries || [];
   const trend = data?.trend || {};
+  const trendCurrency = data?.currency || "VND";
+  const trendCurrencyLabel = CURRENCY_SYMBOLS[trendCurrency] || trendCurrency;
 
   const currentBranchName = useMemo(() => {
     if (isAll || !selected) return "All Branches";
@@ -433,7 +435,7 @@ export default function PerformanceCountry() {
                       onClick={() => toggleSort("total_revenue")}
                       className="text-right px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none"
                     >
-                      Revenue (VND){sortArrow("total_revenue")}
+                      Revenue ({trendCurrencyLabel}){sortArrow("total_revenue")}
                     </th>
                     {periods.map((p) => (
                       <th
@@ -492,6 +494,8 @@ function CompareView({ data, filterCountry }) {
     ? data.countries.filter((c) => c.country === filterCountry)
     : data.countries;
   const monthName = MONTHS[month - 1];
+  const currency = data.currency || "VND";
+  const currencyLabel = CURRENCY_SYMBOLS[currency] || currency;
 
   const totalCurrentNights = countries.reduce((a, c) => a + c.current_nights, 0);
   const totalPrevNights = countries.reduce((a, c) => a + c.prev_nights, 0);
@@ -544,8 +548,8 @@ function CompareView({ data, filterCountry }) {
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Nights {year}</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Nights {year - 1}</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Change</th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue {year}</th>
-              <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue {year - 1}</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue {year} ({currencyLabel})</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue {year - 1} ({currencyLabel})</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Change</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Guests {year}</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Guests {year - 1}</th>
@@ -593,10 +597,16 @@ function BranchCompareView({ branches, selectedBranches, branchDataMap, filterCo
     return { bid, map };
   });
 
-  // Branch names in selection order
+  // Branch names + currency labels in selection order
   const branchNames = selectedBranches.map((bid) => {
     const b = branches.find((br) => br.id === bid);
     return b?.name || bid;
+  });
+  const branchCurrencyLabels = selectedBranches.map((bid) => {
+    const cur = branchDataMap[bid]?.currency
+      || branches.find((br) => br.id === bid)?.currency
+      || "VND";
+    return CURRENCY_SYMBOLS[cur] || cur;
   });
 
   // Union of all countries
@@ -646,7 +656,7 @@ function BranchCompareView({ branches, selectedBranches, branchDataMap, filterCo
             </div>,
             <div key={`r-${idx}`} className={`bg-white rounded-lg border p-4 ${color.bg}`}>
               <p className={`text-xs uppercase tracking-wider mb-1 ${color.header}`}>
-                {name} Revenue
+                {name} Revenue ({branchCurrencyLabels[idx]})
               </p>
               <p className={`text-2xl font-bold ${color.text}`}>{fmtNum(totals[idx].revenue)}</p>
               <p className="text-xs text-gray-400 mt-1">{monthName} {year}</p>
@@ -669,7 +679,7 @@ function BranchCompareView({ branches, selectedBranches, branchDataMap, filterCo
                     {name}<br /><span className={`text-xs font-normal ${color.headerSub}`}>Nights</span>
                   </th>,
                   <th key={`r-${idx}`} className={`text-right px-4 py-3 font-semibold ${color.header}`}>
-                    {name}<br /><span className={`text-xs font-normal ${color.headerSub}`}>Revenue</span>
+                    {name}<br /><span className={`text-xs font-normal ${color.headerSub}`}>Revenue ({branchCurrencyLabels[idx]})</span>
                   </th>,
                   <th key={`g-${idx}`} className={`text-right px-4 py-3 font-semibold ${color.header}`}>
                     {name}<br /><span className={`text-xs font-normal ${color.headerSub}`}>Guests</span>

@@ -14,6 +14,7 @@ from sqlalchemy import func, extract
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.branch import Branch
 from app.models.reservation import Reservation
 from app.services.metrics_engine import (
     EXCLUDED_STATUSES,
@@ -410,6 +411,13 @@ def get_country_yoy_insights(
     if month is None:
         month = today.month
 
+    # Currency: branch-scoped → native; All-Branches → VND.
+    currency = "VND"
+    if branch_id:
+        b = db.query(Branch.currency).filter(Branch.id == branch_id).first()
+        if b and b.currency:
+            currency = b.currency
+
     try:
         # ── Primary: local DB ─────────────────────────────────────────────
         local = get_country_yoy_insights_local(db, branch_id, year, month)
@@ -454,6 +462,7 @@ def get_country_yoy_insights(
             "year": year,
             "month": month,
             "countries": rows,
+            "currency": currency,
         })
     except Exception as exc:
         logger.exception("country-yoy-insights failed: %s", exc)
@@ -461,6 +470,7 @@ def get_country_yoy_insights(
             "year": year,
             "month": month,
             "countries": [],
+            "currency": currency,
         })
 
 
@@ -547,12 +557,21 @@ def get_country_reservations(
     overall_start = periods[0]["from"]
     overall_end = periods[-1]["to"]
 
+    # Currency: when scoped to a branch we sum native; otherwise we sum VND
+    # so cross-branch revenue stays comparable. Pass back the label so the
+    # frontend doesn't have to re-derive it.
+    currency = "VND"
+    if branch_id:
+        b = db.query(Branch.currency).filter(Branch.id == branch_id).first()
+        if b and b.currency:
+            currency = b.currency
+
     # 1) Find top N countries across the full range
     top_countries = _query_top_countries(db, branch_id, overall_start, overall_end, limit)
     country_names = [c["country"] for c in top_countries]
 
     if not country_names:
-        return _envelope({"view": view, "periods": [], "countries": [], "trend": []})
+        return _envelope({"view": view, "periods": [], "countries": [], "trend": [], "currency": currency})
 
     # 2) Query per-period × per-country breakdown
     if view == "monthly":
@@ -568,6 +587,7 @@ def get_country_reservations(
         "periods": period_labels,
         "countries": top_countries,
         "trend": trend,
+        "currency": currency,
     })
 
 
@@ -612,14 +632,21 @@ def _query_top_countries(db, branch_id, d_from, d_to, limit):
 
     NULL guest_country/guest_country_code is bucketed as "Unknown" so the
     same key flows through to the trend queries below (they filter by name).
+
+    When a branch_id is given we sum grand_total_native (the branch's local
+    currency); for the All-Branches view we fall back to grand_total_vnd so
+    revenue across mixed-currency branches stays comparable.
     """
     code_expr = func.coalesce(Reservation.guest_country_code, "Unknown").label("code")
     country_expr = func.coalesce(Reservation.guest_country, "Unknown").label("country")
+    revenue_col = (
+        Reservation.grand_total_native if branch_id else Reservation.grand_total_vnd
+    )
     q = db.query(
         code_expr,
         country_expr,
         func.count(Reservation.id).label("total"),
-        func.coalesce(func.sum(Reservation.grand_total_vnd), 0).label("revenue"),
+        func.coalesce(func.sum(revenue_col), 0).label("revenue"),
         func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
     ).filter(
         Reservation.check_in_date >= d_from,
