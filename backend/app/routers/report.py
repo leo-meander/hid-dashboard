@@ -1482,7 +1482,7 @@ def send_weekly_email(
     if not send_email_html(subject, html, recipients):
         raise HTTPException(
             status_code=502,
-            detail="Email send failed — check server logs (SendGrid or Gmail SMTP)",
+            detail="Email send failed — check Zeabur logs and GET /api/report/email-config",
         )
 
     return _envelope({
@@ -1490,6 +1490,87 @@ def send_weekly_email(
         "subject": subject,
         "branches_included": len(report),
     })
+
+
+# ── Email config diagnostic (no secrets) ─────────────────────────────────────
+
+
+def _mask_email(addr: str) -> str:
+    """Mask the local part: 'mason@staymeander.com' → 'ma***@staymeander.com'."""
+    if not addr or "@" not in addr:
+        return addr or ""
+    local, _, domain = addr.partition("@")
+    if len(local) <= 2:
+        masked = local + "***"
+    else:
+        masked = local[:2] + "***"
+    return f"{masked}@{domain}"
+
+
+@router.get("/email-config")
+def get_email_config():
+    """Diagnose which email provider is active without exposing secrets.
+
+    Useful for verifying Zeabur env vars are set correctly without trawling
+    logs. Returns the selected provider, masked EMAIL_FROM, list of
+    recipients (masked), and which keys are present/missing per provider.
+    """
+    rs_key = bool((getattr(settings, "RESEND_API_KEY", "") or "").strip())
+    sg_key = bool((getattr(settings, "SENDGRID_API_KEY", "") or "").strip())
+    gmail_user = (getattr(settings, "GMAIL_USER", "") or "").strip()
+    gmail_pass = bool((getattr(settings, "GMAIL_APP_PASSWORD", "") or "").strip())
+    email_from = (getattr(settings, "EMAIL_FROM", "") or "").strip()
+    recipients_raw = (getattr(settings, "EMAIL_RECIPIENTS", "") or "").strip()
+    recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
+
+    # Mirror the provider-selection logic in email_sender.send_email_html
+    if rs_key and email_from:
+        provider = "resend"
+    elif sg_key and email_from:
+        provider = "sendgrid"
+    elif gmail_user and gmail_pass:
+        provider = "gmail-smtp"
+    else:
+        provider = "none"
+
+    return _envelope({
+        "active_provider": provider,
+        "email_from": _mask_email(email_from) if email_from else None,
+        "recipients_count": len(recipients),
+        "recipients_masked": [_mask_email(r) for r in recipients],
+        "keys": {
+            "RESEND_API_KEY": rs_key,
+            "SENDGRID_API_KEY": sg_key,
+            "EMAIL_FROM": bool(email_from),
+            "GMAIL_USER": bool(gmail_user),
+            "GMAIL_APP_PASSWORD": gmail_pass,
+            "EMAIL_RECIPIENTS": bool(recipients_raw),
+            "SYNC_TRIGGER_TOKEN": bool(
+                (getattr(settings, "SYNC_TRIGGER_TOKEN", "") or "").strip()
+            ),
+        },
+        "hints": _email_config_hints(provider, email_from, recipients, rs_key, sg_key),
+    })
+
+
+def _email_config_hints(provider, email_from, recipients, rs_key, sg_key):
+    hints = []
+    if provider == "none":
+        hints.append("No email provider configured. Set RESEND_API_KEY+EMAIL_FROM "
+                     "(preferred) or SENDGRID_API_KEY+EMAIL_FROM on Zeabur.")
+    if (rs_key or sg_key) and not email_from:
+        hints.append("API key set but EMAIL_FROM is empty — both required for HTTP providers.")
+    if not recipients:
+        hints.append("EMAIL_RECIPIENTS is empty — cron send will 400 (no default recipients).")
+    if email_from and "@" in email_from:
+        domain = email_from.split("@", 1)[1]
+        if provider == "resend":
+            hints.append(f"Resend will reject if domain '{domain}' is not verified — "
+                         "check Resend dashboard → Domains.")
+        elif provider == "sendgrid":
+            hints.append(f"SendGrid will reject if sender '{email_from}' is not "
+                         "verified — Settings → Sender Authentication.")
+    return hints
 
 
 # ── Cron-triggered weekly send (auth via X-Sync-Token) ────────────────────────
@@ -1516,7 +1597,7 @@ def _send_weekly_email_to_default_recipients(db: Session) -> dict:
     if not send_email_html(subject, html, recipients):
         raise HTTPException(
             status_code=502,
-            detail="Email send failed — check server logs (SendGrid or Gmail SMTP)",
+            detail="Email send failed — check Zeabur logs and GET /api/report/email-config",
         )
 
     return {
