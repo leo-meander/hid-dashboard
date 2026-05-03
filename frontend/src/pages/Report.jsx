@@ -67,6 +67,9 @@ export default function Report() {
 
   // Email section state
   const [testEmail, setTestEmail] = useState("");
+  const [members, setMembers] = useState([]);
+  const [selectedMemberIds, setSelectedMemberIds] = useState([]);
+  const [membersLoading, setMembersLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [previewKey, setPreviewKey] = useState(0);
   const [toast, setToast] = useState(null);
@@ -97,18 +100,44 @@ export default function Report() {
       .finally(() => setScheduleLoading(false));
   };
 
+  const loadMembers = () => {
+    setMembersLoading(true);
+    axios.get("/api/auth/users")
+      .then(r => setMembers(r.data.data || []))
+      .catch(() => setMembers([]))
+      .finally(() => setMembersLoading(false));
+  };
+
   useEffect(() => { load(); }, [selected, isAll]);
-  useEffect(() => { if (tab === "email") loadSchedule(); }, [tab]);
+  useEffect(() => {
+    if (tab === "email") {
+      loadSchedule();
+      loadMembers();
+    }
+  }, [tab]);
+
+  const toggleMember = (id) => {
+    setSelectedMemberIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+  const selectAllMembers = () => setSelectedMemberIds(members.filter(m => m.is_active).map(m => m.id));
+  const clearMembers = () => setSelectedMemberIds([]);
 
   const sendTestEmail = async () => {
-    if (!testEmail.trim()) {
-      setToast({ message: "Please enter an email address", type: "error" });
+    const rawEmails = testEmail.trim();
+    if (selectedMemberIds.length === 0 && !rawEmails) {
+      setToast({ message: "Select at least one member or enter an email", type: "error" });
       return;
     }
     setSending(true);
     try {
-      const r = await axios.post(`/api/report/send-weekly?to=${encodeURIComponent(testEmail.trim())}`);
-      setToast({ message: `Test email sent to ${testEmail}`, type: "success" });
+      const params = new URLSearchParams();
+      if (selectedMemberIds.length) params.set("user_ids", selectedMemberIds.join(","));
+      if (rawEmails) params.set("to", rawEmails);
+      const r = await axios.post(`/api/report/send-weekly?${params}`);
+      const count = r.data?.data?.sent_to?.length ?? 0;
+      setToast({ message: `Email sent to ${count} recipient${count === 1 ? "" : "s"}`, type: "success" });
     } catch (e) {
       setToast({ message: e.response?.data?.detail || "Failed to send email", type: "error" });
     } finally {
@@ -331,33 +360,92 @@ export default function Report() {
 
           {/* Right: Send & Schedule (1 col) */}
           <div className="space-y-4">
-            {/* Send Test Email */}
+            {/* Send Email to Members */}
             <div className="bg-white rounded-xl border border-gray-200 p-5">
-              <h3 className="font-semibold text-gray-800 text-sm mb-3">Send Test Email</h3>
-              <div className="space-y-3">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-gray-800 text-sm">Send Report</h3>
+                <div className="flex gap-2 text-xs">
+                  <button
+                    onClick={selectAllMembers}
+                    className="text-indigo-600 hover:text-indigo-700 font-medium"
+                  >
+                    Select all
+                  </button>
+                  <span className="text-gray-300">·</span>
+                  <button
+                    onClick={clearMembers}
+                    className="text-gray-500 hover:text-gray-700 font-medium"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              {/* Member list */}
+              <div className="border border-gray-200 rounded-lg max-h-60 overflow-y-auto mb-3">
+                {membersLoading ? (
+                  <div className="p-3 text-xs text-gray-400 animate-pulse">Loading members...</div>
+                ) : members.length === 0 ? (
+                  <div className="p-3 text-xs text-gray-400">No members found</div>
+                ) : (
+                  members.map(m => {
+                    const checked = selectedMemberIds.includes(m.id);
+                    const disabled = !m.is_active;
+                    return (
+                      <label
+                        key={m.id}
+                        className={`flex items-center gap-2 px-3 py-2 border-b border-gray-100 last:border-b-0 cursor-pointer ${disabled ? "opacity-50 cursor-not-allowed" : "hover:bg-gray-50"}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={disabled}
+                          onChange={() => !disabled && toggleMember(m.id)}
+                          className="h-4 w-4 text-indigo-600 rounded focus:ring-indigo-500"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-gray-800 truncate">
+                            {m.name || m.email}
+                          </p>
+                          <p className="text-[11px] text-gray-500 truncate">
+                            {m.email} · {m.role}{!m.is_active && " · inactive"}
+                          </p>
+                        </div>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Free-text override */}
+              <div className="mb-3">
+                <p className="text-[11px] text-gray-500 mb-1">
+                  Also send to (optional, comma-separated):
+                </p>
                 <input
-                  type="email"
+                  type="text"
                   value={testEmail}
                   onChange={e => setTestEmail(e.target.value)}
-                  placeholder="email@example.com"
+                  placeholder="extra@example.com"
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                   onKeyDown={e => e.key === "Enter" && sendTestEmail()}
                 />
-                <button
-                  onClick={sendTestEmail}
-                  disabled={sending}
-                  className="w-full px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                >
-                  {sending ? (
-                    <>
-                      <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                      Sending...
-                    </>
-                  ) : (
-                    <>Send Test</>
-                  )}
-                </button>
               </div>
+
+              <button
+                onClick={sendTestEmail}
+                disabled={sending || (selectedMemberIds.length === 0 && !testEmail.trim())}
+                className="w-full px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {sending ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                    Sending...
+                  </>
+                ) : (
+                  <>Send to {selectedMemberIds.length + (testEmail.trim() ? testEmail.split(",").filter(x => x.trim()).length : 0)} recipient(s)</>
+                )}
+              </button>
             </div>
 
             {/* Schedule */}
