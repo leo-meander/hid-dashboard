@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.reservation import Reservation
 from app.services.metrics_engine import (
+    EXCLUDED_STATUSES,
     get_daily_metrics,
     get_ota_mix,
     get_channel_rates,
@@ -27,8 +28,20 @@ from app.services.metrics_engine import (
 
 logger = logging.getLogger(__name__)
 
-_EXCLUDED_STATUSES = {"Cancelled", "Canceled", "No-Show", "No_Show"}
+# Re-export under the legacy name for backward compatibility — report.py
+# imports _EXCLUDED_STATUSES from this module. The canonical lowercase set
+# lives in metrics_engine.EXCLUDED_STATUSES (covers cancelled/canceled/
+# no_show/noshow/no show/no-show). Comparisons MUST go through
+# func.lower() because Cloudbeds stores statuses lowercase like "canceled"
+# while older code paths assumed Title Case "Canceled" — that mismatch was
+# silently letting cancelled rows leak into Country / OTA dashboards.
+_EXCLUDED_STATUSES = EXCLUDED_STATUSES
 _EXCLUDED_SOURCES_REV = {"blogger", "house use", "houseuse", "special case"}
+
+
+def _status_active_filter():
+    """Reservation.status NOT in excluded set, case-insensitive + NULL-safe."""
+    return ~func.lower(func.coalesce(Reservation.status, "")).in_(list(EXCLUDED_STATUSES))
 
 router = APIRouter()
 
@@ -233,7 +246,7 @@ def get_monthly(
         .filter(
             Reservation.check_in_date >= date_from,
             Reservation.check_in_date <= date_to,
-            Reservation.status.notin_(["cancelled", "canceled", "no_show"]),
+            _status_active_filter(),
         )
     )
     if branch_id:
@@ -611,7 +624,7 @@ def _query_top_countries(db, branch_id, d_from, d_to, limit):
     ).filter(
         Reservation.check_in_date >= d_from,
         Reservation.check_in_date <= d_to,
-        ~Reservation.status.in_(list(_EXCLUDED_STATUSES)),
+        _status_active_filter(),
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
     ).group_by(
         code_expr, country_expr,
@@ -649,7 +662,7 @@ def _query_monthly_trend(db, branch_id, d_from, d_to, country_names):
         Reservation.check_in_date >= d_from,
         Reservation.check_in_date <= d_to,
         country_expr.in_(country_names),
-        ~Reservation.status.in_(list(_EXCLUDED_STATUSES)),
+        _status_active_filter(),
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
     ).group_by("yr", "mo", country_expr)
 
@@ -675,7 +688,7 @@ def _query_weekly_trend(db, branch_id, d_from, d_to, country_names):
         Reservation.check_in_date >= d_from,
         Reservation.check_in_date <= d_to,
         country_expr.in_(country_names),
-        ~Reservation.status.in_(list(_EXCLUDED_STATUSES)),
+        _status_active_filter(),
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
     )
 
