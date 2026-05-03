@@ -469,7 +469,7 @@ def _render_outliers(b: dict) -> str:
         )
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">⚡ Outliers (last 7d, vs 30d baseline)</p>
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">⚡ Outliers (last week, vs 30d baseline σ)</p>
       <table style="width:100%;border-collapse:collapse;">
         <tr><th style="{_TABLE_TH}">Date</th><th style="{_TABLE_TH};text-align:right;">Type</th>
             <th style="{_TABLE_TH};text-align:right;">Revenue</th><th style="{_TABLE_TH};text-align:right;">OCC</th>
@@ -510,7 +510,7 @@ def _render_behavior(b: dict) -> str:
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
       <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
-        🧭 Booking Behavior ({beh['window_days']}d · cancel overall {_pct(beh['cancellation_overall_pct'])})
+        🧭 Booking Behavior (last week · {beh['window_start']} → {beh['window_end']} · cancel overall {_pct(beh['cancellation_overall_pct'])})
       </p>
       <table style="width:32%;display:inline-table;border-collapse:collapse;margin-right:2%;vertical-align:top;">
         <tr><th style="{_TABLE_TH}" colspan="4">Cancellation by source</th></tr>
@@ -568,7 +568,7 @@ def _render_channel_mix(b: dict) -> str:
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
       <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
-        📡 Channel Mix (last {mix['window_days']}d · {mix['total_nights']:,} nights · {_fmt(mix['total_revenue_native'], cur)})
+        📡 Channel Mix (last week · {mix['window_start']} → {mix['window_end']} · {mix['total_nights']:,} nights · {_fmt(mix['total_revenue_native'], cur)})
       </p>
       <table style="width:48%;display:inline-table;border-collapse:collapse;margin-right:2%;vertical-align:top;">
         <tr><th style="{_TABLE_TH}" colspan="5">By Category</th></tr>
@@ -790,17 +790,20 @@ def _branch_narrative(b: dict) -> list[str]:
 
     Order of consideration (only includes a bullet when the data is real):
       1. Pacing vs target (this month).
-      2. WoW revenue / OCC delta.
-      3. Strongest channel or country this week.
-      4. Biggest concern (worst ROAS / cancel spike / low CTR).
+      2. Last-week revenue / OCC / ADR + WoW delta.
+      3. Strongest growth market.
+      4. Biggest concern (worst ROAS / drop day / stuck KOL).
       5. Next-month on-the-books status.
+
+    All "week" framing refers to the most recently completed Mon–Sun
+    (see last_week_range() in weekly_report_builder).
     """
     bullets: list[str] = []
     cur = b["currency"]
     a = b.get("analytics", {}) or {}
     summary = a.get("summary") or {}
-    tw = summary.get("this_week") or {}
-    pa_tw = (a.get("paid_ads") or {}).get("this_week") or {}
+    lw = summary.get("last_week") or {}
+    pa_lw = (a.get("paid_ads") or {}).get("last_week") or {}
 
     # 1. Pacing
     ach = b.get("achievement_pct")
@@ -812,15 +815,15 @@ def _branch_narrative(b: dict) -> list[str]:
         else:
             bullets.append(f"🔴 <strong>At risk</strong> — only {ach:.1f}% of monthly target; review pricing + promo immediately.")
 
-    # 2. WoW revenue movement
+    # 2. Last-week revenue movement
     wow = summary.get("wow_revenue_pct")
     if wow is not None:
         direction = "up" if wow >= 0 else "down"
         emoji = "📈" if wow >= 0 else "📉"
         bullets.append(
-            f"{emoji} Revenue this week {_fmt(tw.get('revenue'), cur)} ({direction} {abs(wow):.1f}% WoW), "
-            f"OCC {_pct((tw.get('occ_pct') or 0)*100) if tw.get('occ_pct') is not None else '—'}, "
-            f"ADR {_fmt(tw.get('adr'), cur)}."
+            f"{emoji} Revenue last week {_fmt(lw.get('revenue'), cur)} ({direction} {abs(wow):.1f}% WoW), "
+            f"OCC {_pct((lw.get('occ_pct') or 0)*100) if lw.get('occ_pct') is not None else '—'}, "
+            f"ADR {_fmt(lw.get('adr'), cur)}."
         )
 
     # 3. Top growth country
@@ -834,8 +837,8 @@ def _branch_narrative(b: dict) -> list[str]:
 
     # 4. Concerns — pick the most urgent of: paid ads ROAS<1, outliers drop, KOL stuck, email open<15%
     concerns: list[str] = []
-    if pa_tw.get("cost") and pa_tw.get("roas") is not None and pa_tw["roas"] < 1.0:
-        concerns.append(f"⚠️ Paid Ads ROAS {pa_tw['roas']:.2f}x — under break-even")
+    if pa_lw.get("cost") and pa_lw.get("roas") is not None and pa_lw["roas"] < 1.0:
+        concerns.append(f"⚠️ Paid Ads ROAS {pa_lw['roas']:.2f}x — under break-even")
     out = a.get("outliers") or []
     drops = [o for o in out if o["direction"] == "drop"]
     if drops:
@@ -939,8 +942,8 @@ def _render_paid_ads(b: dict) -> str:
     if not pa:
         return ""
     cur = b["currency"]
-    tw = pa["this_week"]
     lw = pa["last_week"]
+    pw = pa["prev_week"]
 
     def _wow(val):
         if val is None:
@@ -948,11 +951,11 @@ def _render_paid_ads(b: dict) -> str:
         color = "#16a34a" if val >= 0 else "#dc2626"
         return f"<span style='color:{color}'>{_signed_pct(val)}</span>"
 
-    if tw["cost"] == 0 and lw["cost"] == 0:
+    if lw["cost"] == 0 and pw["cost"] == 0:
         return f"""
         <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">📣 Paid Ads (last {pa['window_days']}d)</p>
-          <p style="margin:0;font-size:12px;color:#9ca3af;">No ad spend in the last {pa['window_days']} days.</p>
+          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">📣 Paid Ads (last week · {pa['window_start']} → {pa['window_end']})</p>
+          <p style="margin:0;font-size:12px;color:#9ca3af;">No ad spend last week or the week before.</p>
         </div>"""
 
     # Channel rows
@@ -1005,13 +1008,13 @@ def _render_paid_ads(b: dict) -> str:
     top_html = "".join(_camp_row(c, "#16a34a") for c in pa["top_campaigns"])
     bot_html = "".join(_camp_row(c, "#dc2626") for c in pa["bottom_campaigns"])
 
-    roas_str = f"{tw['roas']:.2f}x" if tw["roas"] is not None else "—"
+    roas_str = f"{lw['roas']:.2f}x" if lw["roas"] is not None else "—"
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">📣 Paid Ads (last {pa['window_days']}d)</p>
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">📣 Paid Ads (last week · {pa['window_start']} → {pa['window_end']})</p>
       <p style="margin:0 0 10px;font-size:12px;color:#6b7280;">
-        Spend {_fmt(tw['cost'], cur)} · Bookings {tw['bookings']} · Revenue {_fmt(tw['revenue'], cur)} ·
-        ROAS {roas_str} ({_wow(pa['wow_roas_pct'])} WoW) · CTR {_pct(tw['ctr_pct'])} · CVR {_pct(tw['cvr_pct'])} · CPA {_fmt(tw['cpa'], cur)}<br/>
+        Spend {_fmt(lw['cost'], cur)} · Bookings {lw['bookings']} · Revenue {_fmt(lw['revenue'], cur)} ·
+        ROAS {roas_str} ({_wow(pa['wow_roas_pct'])} WoW) · CTR {_pct(lw['ctr_pct'])} · CVR {_pct(lw['cvr_pct'])} · CPA {_fmt(lw['cpa'], cur)}<br/>
         WoW: spend {_wow(pa['wow_cost_pct'])} · revenue {_wow(pa['wow_revenue_pct'])}
       </p>
 
@@ -1061,7 +1064,7 @@ def _render_kol(b: dict) -> str:
     if k["total_kols"] == 0:
         return f"""
         <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">🎥 KOL (last {k['window_days']}d)</p>
+          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">🎥 KOL (last week · {k.get('window_start','')} → {k.get('window_end','')})</p>
           <p style="margin:0;font-size:12px;color:#9ca3af;">No KOL records for this branch yet — add via /kol page or CSV sync.</p>
         </div>"""
     cur = b["currency"]
@@ -1110,10 +1113,10 @@ def _render_kol(b: dict) -> str:
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
       <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
-        🎥 KOL (last {k['window_days']}d)
+        🎥 KOL (last week · {k['window_start']} → {k['window_end']})
       </p>
       <p style="margin:0 0 10px;font-size:12px;color:#6b7280;">
-        Posts published this week: <strong>{posts}</strong> · Open contracts (Draft/Negotiating): <strong>{k['contract_open']}</strong><br/>
+        Posts published last week: <strong>{posts}</strong> · Open contracts (Draft/Negotiating): <strong>{k['contract_open']}</strong><br/>
         Pipeline (all-time): {pipeline_html}<br/>
         Cost MTD: <strong>{_fmt(k['cost_mtd_native'], cur)}</strong> ·
         Organic bookings: <strong>{k['organic_bookings']}</strong> ({k['organic_nights']} nights) ·
@@ -1167,7 +1170,7 @@ def _render_crm(b: dict) -> str:
     if rev_t["bookings"] == 0:
         return f"""
         <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">✉️ CRM (last {c['window_days']}d)</p>
+          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">✉️ CRM (last week · {c['window_start']} → {c['window_end']})</p>
           <p style="margin:0;font-size:12px;color:#9ca3af;">
             No CRM-tagged reservations in window. Source: room_type / rate_plan_name
             containing "CRM" / "MEANDER'S FRIEND" / "Travel guide" / "Grand Open".
@@ -1177,7 +1180,7 @@ def _render_crm(b: dict) -> str:
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
       <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
-        ✉️ CRM (last {c['window_days']}d)
+        ✉️ CRM (last week · {c['window_start']} → {c['window_end']})
       </p>
       <p style="margin:0;font-size:12px;color:#374151;">
         Bookings: <strong>{rev_t['bookings']}</strong> ({rev_t['nights']} nights) ·
@@ -1195,18 +1198,18 @@ def _render_crm(b: dict) -> str:
 
 def _ads_next_actions(b: dict) -> list[str]:
     pa = b.get("analytics", {}).get("paid_ads") or {}
-    tw = pa.get("this_week") or {}
+    lw = pa.get("last_week") or {}
     cur = b["currency"]
     actions = []
-    if tw.get("cost", 0) == 0:
-        actions.append("⚠️ No ad spend last 7d — restart campaigns or confirm tracking is wired")
+    if lw.get("cost", 0) == 0:
+        actions.append("⚠️ No ad spend last week — restart campaigns or confirm tracking is wired")
         return actions
-    roas = tw.get("roas")
+    roas = lw.get("roas")
     if roas is not None and roas < 1.0:
-        actions.append(f"🔴 Weekly ROAS {roas:.2f}x — pause underperformers + reallocate to top-ROAS ads")
+        actions.append(f"🔴 Last-week ROAS {roas:.2f}x — pause underperformers + reallocate to top-ROAS ads")
     elif roas is not None and roas >= 3.0:
-        actions.append(f"🚀 Weekly ROAS {roas:.2f}x — scale top-channel budget +20%")
-    if (tw.get("ctr_pct") or 100) < 1.0 and tw.get("impressions", 0) >= 10_000:
+        actions.append(f"🚀 Last-week ROAS {roas:.2f}x — scale top-channel budget +20%")
+    if (lw.get("ctr_pct") or 100) < 1.0 and lw.get("impressions", 0) >= 10_000:
         actions.append("📉 CTR < 1% — refresh creatives/headlines (test 2-3 new angles)")
     if pa.get("bottom_campaigns"):
         actions.append(f"🛑 {len(pa['bottom_campaigns'])} ad(s) flagged as underperformer — pause or replace")
@@ -1371,7 +1374,7 @@ def _build_html(report: list, today: date) -> str:
         narrative_html = (
             "<div style='background:#f9fafb;border-left:3px solid #4f46e5;padding:12px 14px;"
             "margin-bottom:14px;border-radius:6px;'>"
-            "<p style='margin:0 0 6px;font-size:11px;font-weight:700;color:#4f46e5;text-transform:uppercase;letter-spacing:0.5px;'>This week at a glance</p>"
+            "<p style='margin:0 0 6px;font-size:11px;font-weight:700;color:#4f46e5;text-transform:uppercase;letter-spacing:0.5px;'>Last week at a glance</p>"
             "<ul style='margin:0;padding-left:18px;color:#374151;font-size:13px;line-height:1.5;'>"
             + "".join(f"<li style='margin:2px 0;'>{x}</li>" for x in narrative_bullets)
             + "</ul></div>"

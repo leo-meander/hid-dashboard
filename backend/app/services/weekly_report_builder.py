@@ -37,6 +37,30 @@ from app.services.kpi_engine import _EXCLUDED_SOURCES, _EXCLUDED_STATUSES
 logger = logging.getLogger(__name__)
 
 
+# ── Calendar-week helper ────────────────────────────────────────────────────
+
+
+def last_week_range(today: date) -> tuple[date, date]:
+    """Return (Monday, Sunday) of the most recently completed calendar week.
+
+    The weekly cron runs Monday 07:00 ICT — the email reports on the week
+    that just ended (prior Mon–Sun), not the partial new week that's
+    barely started. This helper is the single source of truth for that
+    range so every section is aligned.
+
+    Day-of-week handling:
+      - Mon: returns last Mon..last Sun (full 7 days, freshly closed)
+      - Tue–Sat (manual / late trigger): still returns the SAME prior
+        Mon..Sun, not a rolling window — keeps "last week" stable
+      - Sun: returns the Mon..Sun two weeks back (current week not yet
+        complete, so "last week" still means the one before that)
+    """
+    dow = today.weekday()  # 0=Mon, 6=Sun
+    last_sun = today - timedelta(days=dow + 1)
+    last_mon = last_sun - timedelta(days=6)
+    return last_mon, last_sun
+
+
 # ── Reservation query helpers ────────────────────────────────────────────────
 
 def _reservations_base(db: Session, branch_id: UUID):
@@ -96,14 +120,22 @@ def _pct_change(cur: Optional[float], prev: Optional[float]) -> Optional[float]:
 
 def summary_metrics(db: Session, branch_id: UUID, total_rooms: int, today: date) -> dict:
     """
-    Current week / last week / this month / last month / YoY (same month last year).
-    YoY renders None when no data exists for last year (graceful).
+    Reframed as a Monday-morning weekly digest:
+
+    - last_week:  the week that just closed (Mon–Sun previous). Primary
+                  number on the email — what the team should be reacting
+                  to first thing Monday.
+    - prev_week:  the Mon–Sun before last_week. Used to compute WoW.
+                  Apples-to-apples (7d vs 7d) — unlike the old comparison
+                  of "this calendar week so far" (often just 1 day on
+                  Monday) vs "last week".
+    - mtd / last_month / yoy: month-level context, unchanged.
+
+    YoY renders None when last year has no data for the same MTD window.
     """
-    # This week (Mon..Sun containing today)
-    this_week_start = today - timedelta(days=today.weekday())
-    this_week_end = this_week_start + timedelta(days=6)
-    last_week_start = this_week_start - timedelta(days=7)
-    last_week_end = this_week_start - timedelta(days=1)
+    last_mon, last_sun = last_week_range(today)
+    prev_mon = last_mon - timedelta(days=7)
+    prev_sun = last_mon - timedelta(days=1)
 
     # This month MTD
     mtd_start = today.replace(day=1)
@@ -123,20 +155,22 @@ def summary_metrics(db: Session, branch_id: UUID, total_rooms: int, today: date)
         yoy_start = date(today.year - 1, today.month, 1)
         yoy_end = date(today.year - 1, today.month, 28)
 
-    this_week = _range_metrics(db, branch_id, total_rooms, this_week_start, min(this_week_end, today))
-    last_week = _range_metrics(db, branch_id, total_rooms, last_week_start, last_week_end)
+    last_week = _range_metrics(db, branch_id, total_rooms, last_mon, last_sun)
+    prev_week = _range_metrics(db, branch_id, total_rooms, prev_mon, prev_sun)
     mtd = _range_metrics(db, branch_id, total_rooms, mtd_start, mtd_end)
     last_month = _range_metrics(db, branch_id, total_rooms, lm_start, lm_end)
     yoy = _range_metrics(db, branch_id, total_rooms, yoy_start, yoy_end)
 
     return {
-        "this_week": this_week,
         "last_week": last_week,
+        "prev_week": prev_week,
+        "last_week_start": last_mon.isoformat(),
+        "last_week_end": last_sun.isoformat(),
         "mtd": mtd,
         "last_month": last_month,
         "yoy": yoy,
-        "wow_revenue_pct": _pct_change(this_week["revenue"], last_week["revenue"]),
-        "wow_occ_pct": _pct_change(this_week["occ_pct"], last_week["occ_pct"]),
+        "wow_revenue_pct": _pct_change(last_week["revenue"], prev_week["revenue"]),
+        "wow_occ_pct": _pct_change(last_week["occ_pct"], prev_week["occ_pct"]),
         "mom_revenue_pct": _pct_change(mtd["revenue"], last_month["revenue"]),
         "yoy_revenue_pct": _pct_change(mtd["revenue"], yoy["revenue"]) if yoy["sold"] > 0 else None,
         "yoy_occ_pct": _pct_change(mtd["occ_pct"], yoy["occ_pct"]) if yoy["sold"] > 0 else None,
@@ -146,22 +180,21 @@ def summary_metrics(db: Session, branch_id: UUID, total_rooms: int, today: date)
 # ── 2. Outliers (days with unusual OCC or revenue) ──────────────────────────
 
 def outliers(db: Session, branch_id: UUID, today: date,
-             baseline_days: int = 30, report_days: int = 7) -> list[dict]:
+             baseline_days: int = 30) -> list[dict]:
     """
-    Flag days where revenue or OCC deviates > 1.5σ from a `baseline_days`
-    rolling mean, but only report events that fell within the last
-    `report_days` (default 7) — this is a weekly digest.
+    Flag days from last calendar week (Mon–Sun previous) where revenue or
+    OCC deviates > 1.5σ from a `baseline_days` rolling mean.
 
     Why split: 7 days is too few to compute a reliable σ on its own, so we
     keep the 30-day window for the baseline statistic and slice the
-    reporting window separately.
+    reporting window to last calendar week.
 
     Annotate each outlier with a probable cause:
       - weekend (Sat/Sun)
       - cancellation spike (cancellation_pct > 0.15)
     """
-    baseline_start = today - timedelta(days=baseline_days)
-    report_start = today - timedelta(days=report_days)
+    last_mon, last_sun = last_week_range(today)
+    baseline_start = last_sun - timedelta(days=baseline_days)
     rows = db.query(
         DailyMetrics.date,
         DailyMetrics.revenue_native,
@@ -170,7 +203,7 @@ def outliers(db: Session, branch_id: UUID, today: date,
     ).filter(
         DailyMetrics.branch_id == branch_id,
         DailyMetrics.date >= baseline_start,
-        DailyMetrics.date <= today,
+        DailyMetrics.date <= last_sun,
     ).order_by(DailyMetrics.date).all()
 
     if len(rows) < 5:
@@ -188,8 +221,8 @@ def outliers(db: Session, branch_id: UUID, today: date,
 
     out = []
     for r in rows:
-        # Only report events in the past `report_days`
-        if r.date < report_start:
+        # Only report events in last calendar week
+        if r.date < last_mon:
             continue
         rev = float(r.revenue_native or 0)
         occ = float(r.occ_pct or 0)
@@ -256,10 +289,12 @@ def _los_buckets(values: list[int]) -> dict:
 
 def booking_behavior(db: Session, branch_id: UUID, today: date, days: int = 7) -> dict:
     """
-    Cancellation %, lead time distribution, LOS distribution — last `days` days
-    based on check_in_date.
+    Cancellation %, lead time distribution, LOS distribution — last
+    calendar week (Mon–Sun previous) based on check_in_date. The `days`
+    parameter is kept for backward compatibility but ignored when the
+    range falls naturally on last calendar week.
     """
-    cutoff = today - timedelta(days=days)
+    cutoff, end_date = last_week_range(today)
 
     # ── Cancellation % by source_category (compute in Python) ─────────
     all_rows = db.query(
@@ -267,7 +302,7 @@ def booking_behavior(db: Session, branch_id: UUID, today: date, days: int = 7) -
     ).filter(
         Reservation.branch_id == branch_id,
         Reservation.check_in_date >= cutoff,
-        Reservation.check_in_date <= today,
+        Reservation.check_in_date <= end_date,
     ).all()
 
     by_source = {}
@@ -300,7 +335,7 @@ def booking_behavior(db: Session, branch_id: UUID, today: date, days: int = 7) -
     ).filter(
         Reservation.branch_id == branch_id,
         Reservation.check_in_date >= cutoff,
-        Reservation.check_in_date <= today,
+        Reservation.check_in_date <= end_date,
         ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
     ).all()
 
@@ -320,7 +355,9 @@ def booking_behavior(db: Session, branch_id: UUID, today: date, days: int = 7) -
     los_avg = round(sum(los_values) / len(los_values), 2) if los_values else None
 
     return {
-        "window_days": days,
+        "window_days": (end_date - cutoff).days + 1,
+        "window_start": cutoff.isoformat(),
+        "window_end": end_date.isoformat(),
         "cancellation_overall_pct": cancellation_overall_pct,
         "cancellation_by_source": cancellation_by_source,
         "lead_time_avg_days": lead_time_avg,
@@ -336,13 +373,14 @@ def booking_behavior(db: Session, branch_id: UUID, today: date, days: int = 7) -
 
 def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7) -> dict:
     """
-    Room-nights and revenue share by source_category (OTA/Direct/LTA) and by specific source.
+    Room-nights and revenue share by source_category (OTA/Direct/LTA) and by
+    specific source — over last calendar week (Mon–Sun previous).
     Revenue excludes the usual non-paying sources.
     """
-    cutoff = today - timedelta(days=days)
+    cutoff, end_date = last_week_range(today)
     base = _reservations_base(db, branch_id).filter(
         Reservation.check_in_date >= cutoff,
-        Reservation.check_in_date <= today,
+        Reservation.check_in_date <= end_date,
     )
 
     # By category
@@ -411,7 +449,9 @@ def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7) -> dic
         })
 
     return {
-        "window_days": days,
+        "window_days": (end_date - cutoff).days + 1,
+        "window_start": cutoff.isoformat(),
+        "window_end": end_date.isoformat(),
         "total_nights": total_nights,
         "total_revenue_native": round(total_rev, 2),
         "categories": categories,
@@ -858,18 +898,19 @@ def _ads_window_aggregate(db: Session, branch_id: UUID,
 
 def paid_ads_section(db: Session, branch_id: UUID, today: date,
                      days: int = 7) -> dict:
-    """Paid Ads weekly snapshot — totals (this week vs prior), by channel,
-    by funnel, top/bottom campaigns, and country breakdown.
+    """Paid Ads snapshot — last calendar week vs the week before it
+    (apples-to-apples 7d vs 7d), plus channel / funnel / top + bottom
+    campaign breakdowns. Sourced from grain='daily' rows of
+    ads_performance (Ads Platform sync).
     """
-    week_end = today
-    week_start = today - timedelta(days=days - 1)
+    week_start, week_end = last_week_range(today)
     prev_end = week_start - timedelta(days=1)
-    prev_start = prev_end - timedelta(days=days - 1)
+    prev_start = prev_end - timedelta(days=6)
 
-    this_week = _ads_window_aggregate(db, branch_id, week_start, week_end)
-    last_week = _ads_window_aggregate(db, branch_id, prev_start, prev_end)
+    last_week = _ads_window_aggregate(db, branch_id, week_start, week_end)
+    prev_week = _ads_window_aggregate(db, branch_id, prev_start, prev_end)
 
-    # By channel (this week)
+    # By channel (last week)
     ch_rows = db.query(
         AdsPerformance.channel,
         func.coalesce(func.sum(AdsPerformance.cost_native), 0),
@@ -989,12 +1030,14 @@ def paid_ads_section(db: Session, branch_id: UUID, today: date,
     )[:5]
 
     return {
-        "window_days": days,
-        "this_week": this_week,
+        "window_days": (week_end - week_start).days + 1,
+        "window_start": week_start.isoformat(),
+        "window_end": week_end.isoformat(),
         "last_week": last_week,
-        "wow_cost_pct": _pct_change(this_week["cost"], last_week["cost"]),
-        "wow_revenue_pct": _pct_change(this_week["revenue"], last_week["revenue"]),
-        "wow_roas_pct": _pct_change(this_week["roas"], last_week["roas"]),
+        "prev_week": prev_week,
+        "wow_cost_pct": _pct_change(last_week["cost"], prev_week["cost"]),
+        "wow_revenue_pct": _pct_change(last_week["revenue"], prev_week["revenue"]),
+        "wow_roas_pct": _pct_change(last_week["roas"], prev_week["roas"]),
         "by_channel": by_channel,
         "by_funnel": by_funnel,
         "top_campaigns": top_campaigns,
@@ -1006,12 +1049,11 @@ def paid_ads_section(db: Session, branch_id: UUID, today: date,
 
 def kol_section(db: Session, branch_id: UUID, today: date,
                 days: int = 7) -> dict:
-    """KOL weekly snapshot.
+    """KOL last-week snapshot (Mon–Sun previous calendar week).
 
-    Default window 7d (was 30d). "Total KOLs" replaced with
-    `posts_published_this_week` — count of KOL records whose
-    `published_date` falls in the window. One KOL record represents one
-    collaboration / case, so it maps to one post.
+    "Total KOLs" replaced with `posts_this_week` — count of KOL records
+    whose `published_date` falls in last calendar week. One KOL record
+    represents one collaboration / case so it maps to one post.
 
     Still surfaces:
       - Pipeline counts (across all KOLs for the branch — not windowed,
@@ -1021,16 +1063,16 @@ def kol_section(db: Session, branch_id: UUID, today: date,
       - Ads-eligible KOLs available (branch-wide)
       - Cost MTD + organic bookings/revenue/ROI from KOL_* room types
     """
-    cutoff = today - timedelta(days=days)
+    week_start, week_end = last_week_range(today)
     expiry_horizon = today + timedelta(days=60)
 
     # KOL records for this branch
     kols = db.query(KOLRecord).filter(KOLRecord.branch_id == branch_id).all()
 
-    # Posts published in the last `days` window
+    # Posts published in last calendar week
     posts_this_week = sum(
         1 for k in kols
-        if k.published_date and cutoff <= k.published_date <= today
+        if k.published_date and week_start <= k.published_date <= week_end
     )
 
     # Pipeline counts (deliverable_status)
@@ -1098,6 +1140,7 @@ def kol_section(db: Session, branch_id: UUID, today: date,
     cost_mtd = float(cost_row[0] or 0)
 
     # Organic KOL bookings + revenue from reservations (room_type ILIKE '%KOL_%')
+    # — last calendar week, by check_in_date.
     res_rows = db.query(
         func.count(Reservation.id),
         func.coalesce(func.sum(Reservation.nights), 0),
@@ -1105,8 +1148,8 @@ def kol_section(db: Session, branch_id: UUID, today: date,
     ).filter(
         Reservation.branch_id == branch_id,
         Reservation.room_type.ilike("%KOL_%"),
-        Reservation.check_in_date >= cutoff,
-        Reservation.check_in_date <= today,
+        Reservation.check_in_date >= week_start,
+        Reservation.check_in_date <= week_end,
         ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_NON_PAYING_SOURCES)),
     ).one()
@@ -1117,7 +1160,9 @@ def kol_section(db: Session, branch_id: UUID, today: date,
     roi = round(organic_revenue / cost_mtd, 2) if cost_mtd > 0 else None
 
     return {
-        "window_days": days,
+        "window_days": (week_end - week_start).days + 1,
+        "window_start": week_start.isoformat(),
+        "window_end": week_end.isoformat(),
         "total_kols": len(kols),
         "posts_this_week": posts_this_week,
         "pipeline": pipeline,
@@ -1194,14 +1239,14 @@ def _resolve_ghl_branch_name(branch_name: str) -> Optional[str]:
 
 
 def crm_section(db: Session, branch_id: UUID, branch_name: str,
-                today: date, days: int = 30) -> dict:
-    """CRM summary: email workflow performance + CRM revenue attribution."""
-    week_end = today
-    week_start = today - timedelta(days=days - 1)
+                today: date, days: int = 7) -> dict:
+    """CRM revenue from CRM-tagged reservations — last calendar week
+    vs the week before (apples-to-apples)."""
+    week_start, week_end = last_week_range(today)
     prev_end = week_start - timedelta(days=1)
-    prev_start = prev_end - timedelta(days=days - 1)
+    prev_start = prev_end - timedelta(days=6)
 
-    # CRM revenue from reservations (this period vs prior)
+    # CRM revenue from reservations (last week vs prev week)
     rev_this = _crm_revenue(db, branch_id, week_start, week_end)
     rev_prev = _crm_revenue(db, branch_id, prev_start, prev_end)
 
@@ -1216,13 +1261,19 @@ def crm_section(db: Session, branch_id: UUID, branch_name: str,
         "top_workflows": [], "bulk_recent": [],
     }
 
+    common_return = {
+        "window_days": (week_end - week_start).days + 1,
+        "window_start": week_start.isoformat(),
+        "window_end": week_end.isoformat(),
+        "crm_revenue_this": rev_this,
+        "crm_revenue_prev": rev_prev,
+        "wow_revenue_pct": _pct_change(rev_this["revenue"], rev_prev["revenue"]),
+    }
+
     if not ghl_name:
         return {
-            "window_days": days,
+            **common_return,
             "ghl_branch_name": None,
-            "crm_revenue_this": rev_this,
-            "crm_revenue_prev": rev_prev,
-            "wow_revenue_pct": _pct_change(rev_this["revenue"], rev_prev["revenue"]),
             "email": email_summary,
         }
 
@@ -1309,11 +1360,8 @@ def crm_section(db: Session, branch_id: UUID, branch_name: str,
     email_summary["bulk_recent"] = bulk_recent[:5]
 
     return {
-        "window_days": days,
+        **common_return,
         "ghl_branch_name": ghl_name,
-        "crm_revenue_this": rev_this,
-        "crm_revenue_prev": rev_prev,
-        "wow_revenue_pct": _pct_change(rev_this["revenue"], rev_prev["revenue"]),
         "email": email_summary,
     }
 
@@ -1323,15 +1371,18 @@ def crm_section(db: Session, branch_id: UUID, branch_name: str,
 def build_branch_analytics(db: Session, branch: Branch, today: date) -> dict:
     """Combine all analytical sections for a single branch.
 
-    Window choices (weekly digest mindset):
-      - summary:     this-week + WoW deltas (computed inside summary_metrics)
-      - outliers:    30-day baseline σ, only events in last 7 days
-      - behavior:    7 days (cancel %, lead time, LOS distributions)
-      - channel_mix: 7 days
+    Window choices (Monday-morning weekly digest):
+      - summary:     last calendar week + prev week for WoW (apples-to-apples)
+      - outliers:    30-day baseline σ, only events in last calendar week
+      - behavior:    last calendar week (cancel %, lead time, LOS)
+      - channel_mix: last calendar week
       - countries:   90 days for top + YoY comparison (need volume)
-      - paid_ads:    7 days
-      - kol:         7 days (count of posts published in window)
-      - crm:         7 days (revenue only — simplified)
+      - paid_ads:    last calendar week vs prev calendar week
+      - kol:         last calendar week (posts published; expiring is forward-looking 60d)
+      - crm:         last calendar week (revenue only; from CRM-tagged reservations)
+
+    "Last calendar week" = the most recently completed Mon–Sun. See
+    last_week_range() docstring for day-of-week edge cases.
     """
     total_rooms = branch.total_rooms or 0
     return {
