@@ -17,7 +17,7 @@ from email.mime.text import MIMEText
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import func, or_
@@ -25,10 +25,12 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
+from app.routers.sync import verify_sync_token
 from app.models.branch import Branch
 from app.models.daily_metrics import DailyMetrics
 from app.models.kpi import KPITarget
 from app.models.reservation import Reservation
+from app.models.user import User
 from app.services.cloudbeds import sync_cloudbeds_occupancy
 from app.services.country_scorer import score_countries
 from app.services.kpi_engine import (
@@ -37,6 +39,7 @@ from app.services.kpi_engine import (
     _EXCLUDED_STATUSES,
     _EXCLUDED_SOURCES,
 )
+from app.services.weekly_report_builder import build_branch_analytics
 from app.models.gov_visitor import GovVisitorData
 
 router = APIRouter()
@@ -51,18 +54,33 @@ def _envelope(data):
 
 
 def _fmt(val, currency=""):
+    """Full number with currency symbol, no K/M/B abbreviation (per team rule)."""
     if val is None:
         return "—"
     sym = {"VND": "₫", "TWD": "NT$", "JPY": "¥"}.get(currency, currency + " ")
-    if abs(val) >= 1_000_000_000:
-        return f"{sym}{val/1_000_000_000:.1f}B"
-    if abs(val) >= 1_000_000:
-        return f"{sym}{val/1_000_000:.1f}M"
     return f"{sym}{round(val):,}"
 
 
 def _pct(val):
-    return f"{round(val)}%" if val is not None else "—"
+    """Percentage with 2 decimals (per team rule)."""
+    if val is None:
+        return "—"
+    return f"{val:.2f}%"
+
+
+def _num(val):
+    """Integer with thousands separator."""
+    if val is None:
+        return "—"
+    return f"{int(val):,}"
+
+
+def _signed_pct(val):
+    """Signed percentage with 2 decimals (e.g. +12.34% / -5.67%)."""
+    if val is None:
+        return "—"
+    sign = "+" if val >= 0 else ""
+    return f"{sign}{val:.2f}%"
 
 
 def _top_countries(db: Session, branch_id, days: int = 90, limit: int = 5):
@@ -312,11 +330,16 @@ def _build_report(db: Session):
         gov_ads_growth = _gov_growth_countries(db, dest, ads_month, ads_prior, limit=5) if dest else []
         gov_kol_top = _gov_top_countries(db, dest, kol_month, limit=5) if dest else []
 
+        # Analytical sections (summary, outliers, behavior, channel mix,
+        # country insights, ad budget optimizer)
+        analytics = build_branch_analytics(db, b, today)
+
         report.append({
             "branch_id": str(b.id),
             "branch_name": b.name,
             "branch_city": b.city,
             "currency": b.currency,
+            "analytics": analytics,
             # This month
             "actual_revenue": kpi["actual_revenue_native"],
             "target_revenue": kpi["target_revenue_native"],
@@ -352,6 +375,743 @@ def _build_report(db: Session):
     return report
 
 
+# ── Analytical section renderers ─────────────────────────────────────────────
+
+_TABLE_TH = (
+    "padding:6px 10px;text-align:left;color:#6b7280;font-weight:500;"
+    "font-size:11px;text-transform:uppercase;background:#f9fafb;"
+    "border-bottom:1px solid #e5e7eb;"
+)
+_TABLE_TD = "padding:6px 10px;color:#374151;font-size:12px;border-bottom:1px solid #f3f4f6;"
+
+
+def _render_exec_summary(report: list, today: date) -> str:
+    """Top-of-email pacing table — one row per branch."""
+    rows_html = []
+    for b in report:
+        cur = b["currency"]
+        ach = b["achievement_pct"]
+        ach_color = "#16a34a" if ach and ach >= 100 else "#ca8a04" if ach and ach >= 80 else "#dc2626"
+        a = b.get("analytics", {})
+        mtd = a.get("summary", {}).get("mtd", {})
+        wow = a.get("summary", {}).get("wow_revenue_pct")
+        yoy = a.get("summary", {}).get("yoy_revenue_pct")
+        wow_html = f"<span style='color:{'#16a34a' if (wow or 0)>=0 else '#dc2626'}'>{_signed_pct(wow)}</span>" if wow is not None else "—"
+        yoy_html = f"<span style='color:{'#16a34a' if (yoy or 0)>=0 else '#dc2626'}'>{_signed_pct(yoy)}</span>" if yoy is not None else "—"
+        rows_html.append(f"""
+          <tr>
+            <td style="{_TABLE_TD}"><strong>{b['branch_name']}</strong></td>
+            <td style="{_TABLE_TD};text-align:right;">{_fmt(mtd.get('revenue'), cur)}</td>
+            <td style="{_TABLE_TD};text-align:right;">{_fmt(b['target_revenue'], cur)}</td>
+            <td style="{_TABLE_TD};text-align:right;color:{ach_color};font-weight:700;">{_pct(ach)}</td>
+            <td style="{_TABLE_TD};text-align:right;">{_pct((mtd.get('occ_pct') or 0)*100) if mtd.get('occ_pct') is not None else '—'}</td>
+            <td style="{_TABLE_TD};text-align:right;">{_fmt(b['avg_adr'], cur)}</td>
+            <td style="{_TABLE_TD};text-align:right;">{_fmt(mtd.get('revpar'), cur)}</td>
+            <td style="{_TABLE_TD};text-align:right;">{wow_html}</td>
+            <td style="{_TABLE_TD};text-align:right;">{yoy_html}</td>
+          </tr>""")
+
+    return f"""
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+      <h3 style="margin:0 0 12px;font-size:15px;font-weight:700;color:#111827;">📊 Executive Summary</h3>
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <tr>
+            <th style="{_TABLE_TH}">Branch</th>
+            <th style="{_TABLE_TH};text-align:right;">Revenue MTD</th>
+            <th style="{_TABLE_TH};text-align:right;">Target</th>
+            <th style="{_TABLE_TH};text-align:right;">Pacing</th>
+            <th style="{_TABLE_TH};text-align:right;">OCC</th>
+            <th style="{_TABLE_TH};text-align:right;">ADR</th>
+            <th style="{_TABLE_TH};text-align:right;">RevPAR</th>
+            <th style="{_TABLE_TH};text-align:right;">WoW Rev</th>
+            <th style="{_TABLE_TH};text-align:right;">YoY Rev</th>
+          </tr>
+          {''.join(rows_html)}
+        </table>
+      </div>
+      <p style="margin:10px 0 0;font-size:11px;color:#6b7280;">
+        Revenue = accommodation-only (excl. Blogger / House Use / KOL / Special Case). OCC counts all sources.
+      </p>
+    </div>"""
+
+
+def _render_outliers(b: dict) -> str:
+    out = b.get("analytics", {}).get("outliers", [])
+    if not out:
+        return ""
+    cur = b["currency"]
+    rows = []
+    for o in out:
+        arrow = "▲" if o["direction"] == "spike" else "▼"
+        color = "#16a34a" if o["direction"] == "spike" else "#dc2626"
+        reasons = " · ".join(o["reasons"]) if o["reasons"] else "no tagged cause"
+        rows.append(
+            f"<tr><td style='{_TABLE_TD}'>{o['date']}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;color:{color};font-weight:600;'>{arrow} {o['direction']}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(o['revenue'], cur)}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{o['occ_pct']:.2f}%</td>"
+            f"<td style='{_TABLE_TD};color:#6b7280;'>{reasons}</td></tr>"
+        )
+    return f"""
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">⚡ Outliers (last 30d)</p>
+      <table style="width:100%;border-collapse:collapse;">
+        <tr><th style="{_TABLE_TH}">Date</th><th style="{_TABLE_TH};text-align:right;">Type</th>
+            <th style="{_TABLE_TH};text-align:right;">Revenue</th><th style="{_TABLE_TH};text-align:right;">OCC</th>
+            <th style="{_TABLE_TH}">Reasons</th></tr>
+        {''.join(rows)}
+      </table>
+    </div>"""
+
+
+def _render_behavior(b: dict) -> str:
+    beh = b.get("analytics", {}).get("behavior")
+    if not beh:
+        return ""
+
+    cxl_rows = []
+    for c in beh["cancellation_by_source"][:6]:
+        cxl_rows.append(
+            f"<tr><td style='{_TABLE_TD}'>{c['source_category']}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{c['total']:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{c['cancelled']:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{_pct(c['pct'])}</td></tr>"
+        )
+
+    def _bucket_row(label, val, total):
+        pct = f"{val/total*100:.2f}%" if total > 0 else "—"
+        return (
+            f"<tr><td style='{_TABLE_TD}'>{label}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{val:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;color:#6b7280;'>{pct}</td></tr>"
+        )
+
+    lt_total = sum(beh["lead_time_buckets"].values())
+    lt_rows = "".join(_bucket_row(k, v, lt_total) for k, v in beh["lead_time_buckets"].items())
+
+    los_total = sum(beh["los_buckets"].values())
+    los_rows = "".join(_bucket_row(k, v, los_total) for k, v in beh["los_buckets"].items())
+
+    return f"""
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
+        🧭 Booking Behavior ({beh['window_days']}d · cancel overall {_pct(beh['cancellation_overall_pct'])})
+      </p>
+      <table style="width:32%;display:inline-table;border-collapse:collapse;margin-right:2%;vertical-align:top;">
+        <tr><th style="{_TABLE_TH}" colspan="4">Cancellation by source</th></tr>
+        <tr><th style="{_TABLE_TH}">Cat.</th><th style="{_TABLE_TH};text-align:right;">Total</th>
+            <th style="{_TABLE_TH};text-align:right;">Cxl</th><th style="{_TABLE_TH};text-align:right;">%</th></tr>
+        {''.join(cxl_rows) or '<tr><td style="'+_TABLE_TD+'" colspan="4">No data</td></tr>'}
+      </table>
+      <table style="width:32%;display:inline-table;border-collapse:collapse;margin-right:2%;vertical-align:top;">
+        <tr><th style="{_TABLE_TH}" colspan="3">Lead time (avg {beh['lead_time_avg_days'] or '—'}d, n={beh['lead_time_samples']})</th></tr>
+        <tr><th style="{_TABLE_TH}">Bucket</th><th style="{_TABLE_TH};text-align:right;">Count</th><th style="{_TABLE_TH};text-align:right;">%</th></tr>
+        {lt_rows}
+      </table>
+      <table style="width:32%;display:inline-table;border-collapse:collapse;vertical-align:top;">
+        <tr><th style="{_TABLE_TH}" colspan="3">LOS (avg {beh['los_avg_nights'] or '—'}n, n={beh['los_samples']})</th></tr>
+        <tr><th style="{_TABLE_TH}">Bucket</th><th style="{_TABLE_TH};text-align:right;">Count</th><th style="{_TABLE_TH};text-align:right;">%</th></tr>
+        {los_rows}
+      </table>
+    </div>"""
+
+
+def _render_channel_mix(b: dict) -> str:
+    mix = b.get("analytics", {}).get("channel_mix")
+    if not mix or mix["total_nights"] == 0:
+        return ""
+    cur = b["currency"]
+
+    cat_rows = []
+    for c in mix["categories"]:
+        cat_rows.append(
+            f"<tr><td style='{_TABLE_TD}'>{c['source_category']}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{c['room_nights']:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_pct(c['nights_share_pct'])}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['revenue_native'], cur)}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_pct(c['revenue_share_pct'])}</td></tr>"
+        )
+
+    src_rows = []
+    for s in mix["top_sources"]:
+        src_rows.append(
+            f"<tr><td style='{_TABLE_TD}'>{s['source']}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{s['room_nights']:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_pct(s['nights_share_pct'])}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(s['revenue_native'], cur)}</td></tr>"
+        )
+
+    trend_rows = []
+    for t in mix["direct_trend"]:
+        trend_rows.append(
+            f"<tr><td style='{_TABLE_TD}'>{t['label']}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{t['direct_nights']:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{t['total_nights']:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{_pct(t['direct_pct'])}</td></tr>"
+        )
+
+    return f"""
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
+        📡 Channel Mix (last {mix['window_days']}d · {mix['total_nights']:,} nights · {_fmt(mix['total_revenue_native'], cur)})
+      </p>
+      <table style="width:48%;display:inline-table;border-collapse:collapse;margin-right:2%;vertical-align:top;">
+        <tr><th style="{_TABLE_TH}" colspan="5">By Category</th></tr>
+        <tr><th style="{_TABLE_TH}">Category</th><th style="{_TABLE_TH};text-align:right;">Nights</th>
+            <th style="{_TABLE_TH};text-align:right;">N%</th><th style="{_TABLE_TH};text-align:right;">Revenue</th>
+            <th style="{_TABLE_TH};text-align:right;">R%</th></tr>
+        {''.join(cat_rows)}
+      </table>
+      <table style="width:48%;display:inline-table;border-collapse:collapse;vertical-align:top;">
+        <tr><th style="{_TABLE_TH}" colspan="4">Top Sources</th></tr>
+        <tr><th style="{_TABLE_TH}">Source</th><th style="{_TABLE_TH};text-align:right;">Nights</th>
+            <th style="{_TABLE_TH};text-align:right;">N%</th><th style="{_TABLE_TH};text-align:right;">Revenue</th></tr>
+        {''.join(src_rows)}
+      </table>
+      <table style="width:100%;border-collapse:collapse;margin-top:10px;">
+        <tr><th style="{_TABLE_TH}" colspan="4">Direct booking trend</th></tr>
+        <tr><th style="{_TABLE_TH}">Month</th><th style="{_TABLE_TH};text-align:right;">Direct nights</th>
+            <th style="{_TABLE_TH};text-align:right;">Total nights</th><th style="{_TABLE_TH};text-align:right;">Direct %</th></tr>
+        {''.join(trend_rows)}
+      </table>
+    </div>"""
+
+
+def _render_country_detail(b: dict) -> str:
+    ci = b.get("analytics", {}).get("countries")
+    if not ci or not ci["top"]:
+        return ""
+    cur = b["currency"]
+
+    top_rows = []
+    for c in ci["top"]:
+        yoy = c["yoy_bookings_pct"]
+        yoy_html = (
+            f"<span style='color:{'#16a34a' if (yoy or 0)>=0 else '#dc2626'}'>{_signed_pct(yoy)}</span>"
+            if yoy is not None else "—"
+        )
+        top_rows.append(
+            f"<tr><td style='{_TABLE_TD}'>{c['country']}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{c['bookings']:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{c['nights']:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['adr_native'], cur)}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{c['avg_los']:.2f}n</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{yoy_html}</td></tr>"
+        )
+
+    def _chips(lst, color):
+        if not lst:
+            return "<span style='color:#9ca3af;font-size:12px;'>none</span>"
+        chips = []
+        for x in lst:
+            label = x.get("country", "")
+            detail = (f" {_signed_pct(x.get('change_pct'))}"
+                      if x.get("change_pct") is not None else
+                      f" ({x.get('bookings')} bookings)")
+            chips.append(
+                f"<span style='background:{color};color:#fff;padding:2px 8px;border-radius:12px;"
+                f"font-size:11px;margin-right:4px;display:inline-block;margin-bottom:3px;'>"
+                f"{label}{detail}</span>"
+            )
+        return "".join(chips)
+
+    return f"""
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
+        🌏 Country Insights (last {ci['window_days']}d)
+      </p>
+      <table style="width:100%;border-collapse:collapse;">
+        <tr><th style="{_TABLE_TH}">Country</th><th style="{_TABLE_TH};text-align:right;">Bookings</th>
+            <th style="{_TABLE_TH};text-align:right;">Nights</th><th style="{_TABLE_TH};text-align:right;">ADR</th>
+            <th style="{_TABLE_TH};text-align:right;">Avg LOS</th><th style="{_TABLE_TH};text-align:right;">YoY</th></tr>
+        {''.join(top_rows)}
+      </table>
+      <div style="margin-top:10px;font-size:12px;color:#374151;">
+        <div style="margin-bottom:4px;"><strong>Growing:</strong> {_chips(ci['growing'], '#16a34a')}</div>
+        <div style="margin-bottom:4px;"><strong>Shrinking:</strong> {_chips(ci['shrinking'], '#dc2626')}</div>
+        <div><strong>Emerging (new):</strong> {_chips(ci['emerging'], '#6366f1')}</div>
+      </div>
+    </div>"""
+
+
+def _render_ad_optimizer(b: dict) -> str:
+    ads = b.get("analytics", {}).get("ad_optimizer", [])
+    if not ads:
+        return ""
+    cur = b["currency"]
+
+    country_blocks = []
+    for c in ads:
+        action_color = {
+            "BOOST": "#dc2626", "STABILIZE": "#ca8a04",
+            "MAINTAIN": "#16a34a", "REVIEW": "#6b7280",
+        }.get(c["action"], "#6b7280")
+
+        holidays_html = (
+            " · ".join(
+                f"{h['name']} [{h['propensity']}]" for h in c["holidays"][:3]
+            ) or "none in window"
+        )
+
+        camp_rows = []
+        for cp in c["campaigns"]["campaigns"][:5]:
+            roas_cell = f"{cp['roas']:.2f}x" if cp["roas"] is not None else "—"
+            audience_chip = (
+                f"<span style='background:#eef2ff;color:#4338ca;padding:1px 6px;border-radius:8px;font-size:10px;margin-right:4px;'>{cp['target_audience']}</span>"
+                if cp.get("target_audience") else ""
+            )
+            funnel_chip = (
+                f"<span style='background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:10px;margin-right:4px;'>{cp['funnel_stage']}</span>"
+                if cp.get("funnel_stage") else ""
+            )
+            angle_chip = (
+                f"<span style='background:#dcfce7;color:#166534;padding:1px 6px;border-radius:8px;font-size:10px;'>{cp['angle_name']}{' · '+cp['hook_type'] if cp.get('hook_type') else ''}</span>"
+                if cp.get("angle_name") else ""
+            )
+            chips = audience_chip + funnel_chip + angle_chip
+            usp_html = (
+                f"<div style='font-size:11px;color:#6b7280;margin-top:2px;'><strong>USP:</strong> {cp['usp']}</div>"
+                if cp.get("usp") else ""
+            )
+            body_html = (
+                f"<div style='font-size:11px;color:#9ca3af;margin-top:2px;font-style:italic;'>“{cp['ad_body_excerpt']}”</div>"
+                if cp.get("ad_body_excerpt") else ""
+            )
+            name_cell = (
+                f"<div>{(cp['ad_name'] or cp['adset'] or cp['campaign'] or '')[:60]}</div>"
+                f"<div style='margin-top:3px;'>{chips}</div>"
+                f"{usp_html}{body_html}"
+            )
+            camp_rows.append(
+                f"<tr><td style='{_TABLE_TD};vertical-align:top;'>{cp['channel'] or '—'}</td>"
+                f"<td style='{_TABLE_TD};vertical-align:top;'>{name_cell}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{_fmt(cp['cost'], cur)}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{cp['impressions']:,}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{_pct(cp['ctr_pct'])}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{_pct(cp['cvr_pct'])}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{cp['bookings']}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{_fmt(cp['cpa'], cur)}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;font-weight:600;'>{roas_cell}</td></tr>"
+            )
+
+        recs_items = "".join(f"<li style='margin:2px 0;'>{r}</li>" for r in c["recommendations"])
+
+        overall = c["campaigns"]
+        country_blocks.append(f"""
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-bottom:10px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <div>
+              <strong style="font-size:14px;color:#111827;">{c['country']}</strong>
+              <span style="font-size:11px;color:#6b7280;margin-left:8px;">
+                Spend MTD: {_fmt(c['spend_mtd'], cur)} · Lead time: {c['lead_time_days']}d
+              </span>
+            </div>
+            <span style="background:{action_color};color:#fff;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700;">
+              {c['action']}
+            </span>
+          </div>
+          <p style="margin:0 0 8px;font-size:11px;color:#6b7280;">
+            Target window: {c['window_start']} → {c['window_end']} ·
+            Window OCC: {_pct(c['window_occ_pct'])} vs Predicted: {_pct(c['predicted_occ_pct'])}<br/>
+            {c['action_reason']}<br/>
+            <strong>Holidays:</strong> {holidays_html}
+          </p>
+          <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+            <tr><th style="{_TABLE_TH}">Ch.</th><th style="{_TABLE_TH}">Name</th>
+                <th style="{_TABLE_TH};text-align:right;">Cost</th><th style="{_TABLE_TH};text-align:right;">Impr</th>
+                <th style="{_TABLE_TH};text-align:right;">CTR</th><th style="{_TABLE_TH};text-align:right;">CVR</th>
+                <th style="{_TABLE_TH};text-align:right;">Bk</th><th style="{_TABLE_TH};text-align:right;">CPA</th>
+                <th style="{_TABLE_TH};text-align:right;">ROAS</th></tr>
+            {''.join(camp_rows) or '<tr><td colspan="9" style="'+_TABLE_TD+'">No campaign rows</td></tr>'}
+            <tr style="background:#f9fafb;font-weight:600;">
+              <td style="{_TABLE_TD}" colspan="2">Overall</td>
+              <td style="{_TABLE_TD};text-align:right;">{_fmt(overall['total_cost'], cur)}</td>
+              <td style="{_TABLE_TD};text-align:right;">{overall['total_impressions']:,}</td>
+              <td style="{_TABLE_TD};text-align:right;">{_pct(overall['overall_ctr_pct'])}</td>
+              <td style="{_TABLE_TD};text-align:right;">{_pct(overall['overall_cvr_pct'])}</td>
+              <td style="{_TABLE_TD};text-align:right;">{overall['total_bookings']}</td>
+              <td style="{_TABLE_TD};text-align:right;">{_fmt(overall['overall_cpa'], cur)}</td>
+              <td style="{_TABLE_TD};text-align:right;">{overall['overall_roas']:.2f}x</td>
+            </tr>
+          </table>
+          <ul style="margin:0;padding-left:18px;font-size:12px;color:#374151;">{recs_items}</ul>
+        </div>""")
+
+    return f"""
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+      <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">🎯 Ad Budget Optimizer</h3>
+      <p style="margin:0 0 12px;font-size:12px;color:#6b7280;">
+        6-step workflow per country running ads this month. Window OCC compared to predicted OCC
+        drives BOOST / MAINTAIN / STABILIZE.
+      </p>
+      {''.join(country_blocks)}
+    </div>"""
+
+
+# ── Paid Ads / KOL / CRM section renderers ───────────────────────────────────
+
+
+def _render_paid_ads(b: dict) -> str:
+    pa = b.get("analytics", {}).get("paid_ads")
+    if not pa:
+        return ""
+    cur = b["currency"]
+    tw = pa["this_week"]
+    lw = pa["last_week"]
+
+    def _wow(val):
+        if val is None:
+            return "—"
+        color = "#16a34a" if val >= 0 else "#dc2626"
+        return f"<span style='color:{color}'>{_signed_pct(val)}</span>"
+
+    if tw["cost"] == 0 and lw["cost"] == 0:
+        return f"""
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+          <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">📣 Paid Ads — {b['branch_name']}</h3>
+          <p style="margin:0;font-size:12px;color:#9ca3af;">No ad spend in the last {pa['window_days']} days.</p>
+        </div>"""
+
+    # Channel rows
+    ch_rows = "".join(
+        f"<tr><td style='{_TABLE_TD}'>{c['channel']}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['cost'], cur)}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{c['impressions']:,}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(c['ctr_pct'])}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(c['cvr_pct'])}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{c['bookings']}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{c['roas']:.2f}x</td></tr>"
+        if c["roas"] is not None else
+        f"<tr><td style='{_TABLE_TD}'>{c['channel']}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['cost'], cur)}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{c['impressions']:,}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(c['ctr_pct'])}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(c['cvr_pct'])}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{c['bookings']}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>—</td></tr>"
+        for c in pa["by_channel"]
+    )
+
+    # Funnel rows
+    fn_rows = "".join(
+        f"<tr><td style='{_TABLE_TD}'>{f['funnel']}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(f['cost'], cur)}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{f['bookings']}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(f['revenue'], cur)}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{f['roas']:.2f}x</td></tr>"
+        if f["roas"] is not None else
+        f"<tr><td style='{_TABLE_TD}'>{f['funnel']}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(f['cost'], cur)}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{f['bookings']}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(f['revenue'], cur)}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>—</td></tr>"
+        for f in pa["by_funnel"]
+    )
+
+    def _camp_row(cp, color="#374151"):
+        roas = f"{cp['roas']:.2f}x" if cp["roas"] is not None else "—"
+        return (
+            f"<tr><td style='{_TABLE_TD};color:{color};'>{cp['channel']}</td>"
+            f"<td style='{_TABLE_TD};color:{color};'>{(cp['ad_name'] or cp['adset'] or cp['campaign'] or '')[:55]}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(cp['cost'], cur)}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{cp['impressions']:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{cp['bookings']}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;font-weight:600;color:{color};'>{roas}</td></tr>"
+        )
+
+    top_html = "".join(_camp_row(c, "#16a34a") for c in pa["top_campaigns"])
+    bot_html = "".join(_camp_row(c, "#dc2626") for c in pa["bottom_campaigns"])
+
+    return f"""
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+      <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">📣 Paid Ads — {b['branch_name']} (last {pa['window_days']}d)</h3>
+      <p style="margin:0 0 12px;font-size:12px;color:#6b7280;">
+        Spend {_fmt(tw['cost'], cur)} · Bookings {tw['bookings']} · Revenue {_fmt(tw['revenue'], cur)} ·
+        ROAS {tw['roas']:.2f}x ({_wow(pa['wow_roas_pct'])} WoW) · CTR {_pct(tw['ctr_pct'])} · CVR {_pct(tw['cvr_pct'])} · CPA {_fmt(tw['cpa'], cur)}<br/>
+        WoW: spend {_wow(pa['wow_cost_pct'])} · revenue {_wow(pa['wow_revenue_pct'])}
+      </p>
+
+      <table style="width:48%;display:inline-table;border-collapse:collapse;margin-right:2%;vertical-align:top;">
+        <tr><th style="{_TABLE_TH}" colspan="7">By Channel</th></tr>
+        <tr><th style="{_TABLE_TH}">Channel</th><th style="{_TABLE_TH};text-align:right;">Cost</th>
+            <th style="{_TABLE_TH};text-align:right;">Impr</th><th style="{_TABLE_TH};text-align:right;">CTR</th>
+            <th style="{_TABLE_TH};text-align:right;">CVR</th><th style="{_TABLE_TH};text-align:right;">Bk</th>
+            <th style="{_TABLE_TH};text-align:right;">ROAS</th></tr>
+        {ch_rows or '<tr><td colspan="7" style="'+_TABLE_TD+';color:#9ca3af;">No channel data</td></tr>'}
+      </table>
+
+      <table style="width:48%;display:inline-table;border-collapse:collapse;vertical-align:top;">
+        <tr><th style="{_TABLE_TH}" colspan="5">By Funnel Stage</th></tr>
+        <tr><th style="{_TABLE_TH}">Stage</th><th style="{_TABLE_TH};text-align:right;">Cost</th>
+            <th style="{_TABLE_TH};text-align:right;">Bk</th><th style="{_TABLE_TH};text-align:right;">Revenue</th>
+            <th style="{_TABLE_TH};text-align:right;">ROAS</th></tr>
+        {fn_rows or '<tr><td colspan="5" style="'+_TABLE_TD+';color:#9ca3af;">No funnel data</td></tr>'}
+      </table>
+
+      <table style="width:100%;border-collapse:collapse;margin-top:12px;">
+        <tr><th style="{_TABLE_TH}" colspan="6">🏆 Top by ROAS (≥1K impressions)</th></tr>
+        <tr><th style="{_TABLE_TH}">Ch.</th><th style="{_TABLE_TH}">Name</th>
+            <th style="{_TABLE_TH};text-align:right;">Cost</th><th style="{_TABLE_TH};text-align:right;">Impr</th>
+            <th style="{_TABLE_TH};text-align:right;">Bk</th><th style="{_TABLE_TH};text-align:right;">ROAS</th></tr>
+        {top_html or '<tr><td colspan="6" style="'+_TABLE_TD+';color:#9ca3af;">No qualified campaigns</td></tr>'}
+      </table>
+
+      <table style="width:100%;border-collapse:collapse;margin-top:8px;">
+        <tr><th style="{_TABLE_TH}" colspan="6">⚠️ Underperformers (ROAS&lt;1, &lt;2 bookings, ≥5K impressions)</th></tr>
+        <tr><th style="{_TABLE_TH}">Ch.</th><th style="{_TABLE_TH}">Name</th>
+            <th style="{_TABLE_TH};text-align:right;">Cost</th><th style="{_TABLE_TH};text-align:right;">Impr</th>
+            <th style="{_TABLE_TH};text-align:right;">Bk</th><th style="{_TABLE_TH};text-align:right;">ROAS</th></tr>
+        {bot_html or '<tr><td colspan="6" style="'+_TABLE_TD+';color:#9ca3af;">None — clean week</td></tr>'}
+      </table>
+    </div>"""
+
+
+def _render_kol(b: dict) -> str:
+    k = b.get("analytics", {}).get("kol")
+    if not k or k["total_kols"] == 0:
+        return ""
+    cur = b["currency"]
+    p = k["pipeline"]
+
+    pipeline_html = (
+        f"<span style='color:#6b7280;font-size:12px;'>"
+        f"Not Started <strong>{p['Not Started']}</strong> · "
+        f"In Progress <strong>{p['In Progress']}</strong> · "
+        f"Editing <strong>{p['Editing']}</strong> · "
+        f"Done <strong>{p['Done']}</strong>"
+        f"</span>"
+    )
+
+    stuck_html = (
+        "".join(
+            f"<li style='margin:2px 0;'>{s['kol_name']} · stuck {s['days_stuck']}d "
+            f"<span style='color:#9ca3af;'>(since {s['updated_at']})</span></li>"
+            for s in k["stuck"]
+        ) or "<li style='color:#9ca3af;'>No stuck deliverables</li>"
+    )
+
+    expiring_html = (
+        "".join(
+            f"<li style='margin:2px 0;'>{e['kol_name']} · {e['expiry_date']} "
+            f"<span style='color:{'#dc2626' if e['days_left']<=14 else '#ca8a04'};'>"
+            f"({e['days_left']}d left)</span>"
+            f"{' · '+e['channel'] if e['channel'] else ''}</li>"
+            for e in k["expiring"]
+        ) or "<li style='color:#9ca3af;'>No usage rights expiring soon</li>"
+    )
+
+    available_html = (
+        "".join(
+            f"<li style='margin:2px 0;'>{a['kol_name']}"
+            f"{' · '+a['nationality'] if a['nationality'] else ''}"
+            f"{' · '+a['channel'] if a['channel'] else ''}"
+            f"{' · until '+a['expiry'] if a['expiry'] else ''}</li>"
+            for a in k["available_for_ads"]
+        ) or "<li style='color:#9ca3af;'>None available for ads usage</li>"
+    )
+
+    roi_str = f"{k['roi']:.2f}x" if k["roi"] is not None else "—"
+
+    return f"""
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+      <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">🎥 KOL — {b['branch_name']} (last {k['window_days']}d)</h3>
+      <p style="margin:0 0 10px;font-size:12px;color:#6b7280;">
+        Total KOLs: <strong>{k['total_kols']}</strong> · Open contracts (Draft/Negotiating): <strong>{k['contract_open']}</strong><br/>
+        {pipeline_html}<br/>
+        Cost MTD: <strong>{_fmt(k['cost_mtd_native'], cur)}</strong> ·
+        Organic bookings: <strong>{k['organic_bookings']}</strong> ({k['organic_nights']} nights) ·
+        Revenue: <strong>{_fmt(k['organic_revenue_native'], cur)}</strong> ·
+        ROI MTD: <strong>{roi_str}</strong>
+      </p>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:240px;">
+          <p style="margin:6px 0 4px;font-size:12px;font-weight:600;color:#dc2626;">🚧 Stuck "In Progress" &gt;14d</p>
+          <ul style="margin:0;padding-left:18px;font-size:12px;color:#374151;">{stuck_html}</ul>
+        </div>
+        <div style="flex:1;min-width:240px;">
+          <p style="margin:6px 0 4px;font-size:12px;font-weight:600;color:#ca8a04;">⏰ Usage rights expiring (≤60d)</p>
+          <ul style="margin:0;padding-left:18px;font-size:12px;color:#374151;">{expiring_html}</ul>
+        </div>
+        <div style="flex:1;min-width:240px;">
+          <p style="margin:6px 0 4px;font-size:12px;font-weight:600;color:#16a34a;">✅ Ads-eligible & Available</p>
+          <ul style="margin:0;padding-left:18px;font-size:12px;color:#374151;">{available_html}</ul>
+        </div>
+      </div>
+    </div>"""
+
+
+def _render_crm(b: dict) -> str:
+    c = b.get("analytics", {}).get("crm")
+    if not c:
+        return ""
+    cur = b["currency"]
+    rev_t = c["crm_revenue_this"]
+    rev_p = c["crm_revenue_prev"]
+    em = c["email"]
+
+    def _wow(val):
+        if val is None:
+            return "—"
+        color = "#16a34a" if val >= 0 else "#dc2626"
+        return f"<span style='color:{color}'>{_signed_pct(val)}</span>"
+
+    if not c.get("ghl_branch_name") and rev_t["bookings"] == 0 and rev_p["bookings"] == 0:
+        return ""  # nothing to show
+
+    ghl_note = (
+        f" · GHL branch: <code>{c['ghl_branch_name']}</code>"
+        if c.get("ghl_branch_name") else
+        " · <span style='color:#dc2626;'>GHL branch not mapped — email stats unavailable</span>"
+    )
+
+    # Email summary
+    sent = em["sent"]
+    if sent > 0:
+        email_summary_html = (
+            f"<p style='margin:0 0 8px;font-size:12px;color:#6b7280;'>"
+            f"Email sent (last {c['window_days']}d): <strong>{sent:,}</strong> · "
+            f"Open <strong>{_pct(em['open_rate_pct'])}</strong> · "
+            f"Click <strong>{_pct(em['click_rate_pct'])}</strong> · "
+            f"Bounce <strong>{_pct(em['bounce_rate_pct'])}</strong> · "
+            f"Unsub <strong>{_pct(em['unsub_rate_pct'])}</strong> · "
+            f"Attributed bookings <strong>{em['attributed_bookings']}</strong> · "
+            f"Attributed revenue <strong>{_fmt(em['attributed_revenue_native'], cur)}</strong>"
+            f"</p>"
+        )
+    else:
+        email_summary_html = "<p style='margin:0 0 8px;font-size:12px;color:#9ca3af;'>No email sends in window.</p>"
+
+    # Top workflows
+    wf_rows = "".join(
+        f"<tr><td style='{_TABLE_TD}'>{w['name']}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{w['sent']:,}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(w['open_rate_pct'])}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(w['click_rate_pct'])}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{w['bookings']}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{_fmt(w['revenue'], cur)}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;color:#6b7280;'>{_fmt(w['rev_per_email'], cur)}</td></tr>"
+        for w in em["top_workflows"]
+    )
+
+    # Recent bulk sends
+    bulk_rows = "".join(
+        f"<tr><td style='{_TABLE_TD}'>{br['stat_date']}</td>"
+        f"<td style='{_TABLE_TD}'>{br['name']}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{br['sent']:,}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(br['open_rate_pct'])}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(br['click_rate_pct'])}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{br['bookings']}</td>"
+        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(br['revenue'], cur)}</td></tr>"
+        for br in em["bulk_recent"]
+    )
+
+    return f"""
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+      <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">✉️ CRM — {b['branch_name']} (last {c['window_days']}d){ghl_note}</h3>
+      <p style="margin:0 0 6px;font-size:12px;color:#6b7280;">
+        CRM bookings (Date Booked): <strong>{rev_t['bookings']}</strong> ({rev_t['nights']} nights) ·
+        Revenue <strong>{_fmt(rev_t['revenue'], cur)}</strong> · WoW {_wow(c['wow_revenue_pct'])}
+      </p>
+      {email_summary_html}
+
+      <table style="width:100%;border-collapse:collapse;margin-top:6px;">
+        <tr><th style="{_TABLE_TH}" colspan="7">🏆 Top workflows by attributed revenue (lifetime)</th></tr>
+        <tr><th style="{_TABLE_TH}">Workflow</th><th style="{_TABLE_TH};text-align:right;">Sent</th>
+            <th style="{_TABLE_TH};text-align:right;">Open</th><th style="{_TABLE_TH};text-align:right;">Click</th>
+            <th style="{_TABLE_TH};text-align:right;">Bk</th><th style="{_TABLE_TH};text-align:right;">Revenue</th>
+            <th style="{_TABLE_TH};text-align:right;">Rev/email</th></tr>
+        {wf_rows or '<tr><td colspan="7" style="'+_TABLE_TD+';color:#9ca3af;">No workflow data</td></tr>'}
+      </table>
+
+      <table style="width:100%;border-collapse:collapse;margin-top:8px;">
+        <tr><th style="{_TABLE_TH}" colspan="7">📨 Bulk sends in window</th></tr>
+        <tr><th style="{_TABLE_TH}">Date</th><th style="{_TABLE_TH}">Campaign</th>
+            <th style="{_TABLE_TH};text-align:right;">Sent</th><th style="{_TABLE_TH};text-align:right;">Open</th>
+            <th style="{_TABLE_TH};text-align:right;">Click</th><th style="{_TABLE_TH};text-align:right;">Bk</th>
+            <th style="{_TABLE_TH};text-align:right;">Revenue</th></tr>
+        {bulk_rows or '<tr><td colspan="7" style="'+_TABLE_TD+';color:#9ca3af;">No bulk sends</td></tr>'}
+      </table>
+    </div>"""
+
+
+# ── Next-action helpers (Paid Ads / KOL / CRM) ────────────────────────────────
+
+
+def _ads_next_actions(b: dict) -> list[str]:
+    pa = b.get("analytics", {}).get("paid_ads") or {}
+    tw = pa.get("this_week") or {}
+    cur = b["currency"]
+    actions = []
+    if tw.get("cost", 0) == 0:
+        actions.append("⚠️ No ad spend last 7d — restart campaigns or confirm tracking is wired")
+        return actions
+    roas = tw.get("roas")
+    if roas is not None and roas < 1.0:
+        actions.append(f"🔴 Weekly ROAS {roas:.2f}x — pause underperformers + reallocate to top-ROAS ads")
+    elif roas is not None and roas >= 3.0:
+        actions.append(f"🚀 Weekly ROAS {roas:.2f}x — scale top-channel budget +20%")
+    if (tw.get("ctr_pct") or 100) < 1.0 and tw.get("impressions", 0) >= 10_000:
+        actions.append("📉 CTR < 1% — refresh creatives/headlines (test 2-3 new angles)")
+    if pa.get("bottom_campaigns"):
+        actions.append(f"🛑 {len(pa['bottom_campaigns'])} ad(s) flagged as underperformer — pause or replace")
+    wow_rev = pa.get("wow_revenue_pct")
+    if wow_rev is not None and wow_rev <= -25:
+        actions.append(f"📉 Revenue down {wow_rev:.1f}% WoW — diagnose attribution + lead-time shift")
+    return actions
+
+
+def _kol_next_actions(b: dict) -> list[str]:
+    k = b.get("analytics", {}).get("kol") or {}
+    actions = []
+    if k.get("total_kols", 0) == 0:
+        return actions
+    if k.get("stuck"):
+        names = ", ".join(s["kol_name"] for s in k["stuck"][:3])
+        actions.append(f"⏳ Follow up stuck KOLs (>14d): {names}")
+    if k.get("expiring"):
+        urgent = [e for e in k["expiring"] if e["days_left"] <= 14]
+        if urgent:
+            actions.append(f"⏰ Renew/replace {len(urgent)} usage right(s) expiring within 14d")
+        else:
+            actions.append(f"📅 {len(k['expiring'])} KOL usage right(s) expiring in next 60d — plan renewal")
+    if k.get("available_for_ads"):
+        names = ", ".join(a["kol_name"] for a in k["available_for_ads"][:3])
+        actions.append(f"✅ Activate ads-eligible KOLs available: {names}")
+    if k.get("contract_open", 0) > 0:
+        actions.append(f"📝 {k['contract_open']} contract(s) Draft/Negotiating — close this week")
+    roi = k.get("roi")
+    if roi is not None and roi < 0.5 and k.get("cost_mtd_native", 0) > 0:
+        actions.append(f"⚠️ KOL ROI MTD {roi:.2f}x — review which KOLs are driving organic bookings")
+    return actions
+
+
+def _crm_next_actions(b: dict) -> list[str]:
+    c = b.get("analytics", {}).get("crm") or {}
+    em = c.get("email") or {}
+    actions = []
+    if not c.get("ghl_branch_name"):
+        actions.append("⚠️ CRM email stats unavailable — branch not mapped to GHL location")
+        return actions
+    if em.get("sent", 0) == 0:
+        actions.append("📭 No bulk emails sent last 30d — schedule re-engagement campaign")
+    elif (em.get("open_rate_pct") or 100) < 15:
+        actions.append(f"📬 Open rate {em.get('open_rate_pct'):.2f}% — A/B test new subject lines")
+    if (em.get("click_rate_pct") or 100) < 1.0 and em.get("sent", 0) > 500:
+        actions.append("🔗 Click rate < 1% — review CTAs and offer relevance")
+    if (em.get("unsub_rate_pct") or 0) > 1.0:
+        actions.append(f"🚫 Unsub rate {em.get('unsub_rate_pct'):.2f}% — segmentation/cadence is too aggressive")
+    # Underperforming workflows: bookings=0 after >1000 sent
+    weak = [w for w in em.get("top_workflows", [])
+            if w["sent"] >= 1000 and w["bookings"] == 0]
+    if weak:
+        actions.append(f"💤 {len(weak)} workflow(s) with 0 bookings after 1K+ sent — pause or rewrite")
+    wow_rev = c.get("wow_revenue_pct")
+    if wow_rev is not None and wow_rev <= -25:
+        actions.append(f"📉 CRM revenue down {wow_rev:.1f}% WoW — investigate cancellations / cohort drop")
+    return actions
+
+
 def _build_html(report: list, today: date) -> str:
     month_name = MONTHS_EN[today.month]
     next_month_name = MONTHS_EN[today.month % 12 + 1]
@@ -367,7 +1127,7 @@ def _build_html(report: list, today: date) -> str:
         cur = b["currency"]
         ach = b["achievement_pct"]
         ach_color = "#16a34a" if ach and ach >= 100 else "#ca8a04" if ach and ach >= 80 else "#dc2626"
-        ach_str = f"{ach}%" if ach else "—"
+        ach_str = _pct(ach)
 
         # Country intel next actions — driven by country_scorer tiers
         actions = []
@@ -422,12 +1182,20 @@ def _build_html(report: list, today: date) -> str:
                 f"🎥 {g['source_country']} — {g['visitor_count']:,} visitors in {kol_rec_month[:3]} (gov #{g['gov_rank']}) → activate/recruit KOLs now"
             )
 
+        # Per-channel actionables driven by Paid Ads / KOL / CRM analytics
+        ads_actions = _ads_next_actions(b)
+        kol_actions = _kol_next_actions(b)
+        crm_actions = _crm_next_actions(b)
+
         next_actions_all.append({
             "branch": b["branch_name"],
             "city": b["branch_city"],
             "actions": actions,
             "ads_recs": ads_recs,
             "kol_recs": kol_recs,
+            "ads_actions": ads_actions,
+            "kol_actions": kol_actions,
+            "crm_actions": crm_actions,
         })
 
         top_c = " · ".join(f"{c['country']} ({c['bookings']})" for c in b["top_countries"][:3])
@@ -505,6 +1273,10 @@ def _build_html(report: list, today: date) -> str:
             <strong style="color:#374151;">Growing markets:</strong> {growth_c}<br/>
             <strong style="color:#374151;">Country Intel:</strong> {intel_c}
           </div>
+          {_render_outliers(b)}
+          {_render_behavior(b)}
+          {_render_channel_mix(b)}
+          {_render_country_detail(b)}
         </div>""")
 
     # Next actions section (Country Intel)
@@ -550,11 +1322,56 @@ def _build_html(report: list, today: date) -> str:
         branch_recs += "\n        </div>"
         recs_html += branch_recs
 
+    ad_optimizer_html = "".join(_render_ad_optimizer(b) for b in report)
+    paid_ads_html = "".join(_render_paid_ads(b) for b in report)
+    kol_html = "".join(_render_kol(b) for b in report)
+    crm_html = "".join(_render_crm(b) for b in report)
+    exec_summary_html = _render_exec_summary(report, today)
+
+    # Channel-action panel (Paid Ads / KOL / CRM next actions per branch)
+    channel_action_html = ""
+    for na in next_actions_all:
+        ads_a = na.get("ads_actions") or []
+        kol_a = na.get("kol_actions") or []
+        crm_a = na.get("crm_actions") or []
+        if not (ads_a or kol_a or crm_a):
+            continue
+        block = (
+            f"<div style='margin-bottom:14px;'>"
+            f"<strong style='font-size:13px;color:#374151;'>{na['branch']} — {na['city']}</strong>"
+        )
+        if ads_a:
+            items = "".join(f"<li style='margin:3px 0;'>{a}</li>" for a in ads_a)
+            block += (
+                f"<div style='margin-top:6px;'>"
+                f"<span style='font-size:12px;font-weight:600;color:#4f46e5;text-transform:uppercase;letter-spacing:0.4px;'>📣 Paid Ads</span>"
+                f"<ul style='margin:4px 0 0;padding-left:20px;color:#374151;font-size:13px;'>{items}</ul>"
+                f"</div>"
+            )
+        if kol_a:
+            items = "".join(f"<li style='margin:3px 0;'>{a}</li>" for a in kol_a)
+            block += (
+                f"<div style='margin-top:6px;'>"
+                f"<span style='font-size:12px;font-weight:600;color:#7c3aed;text-transform:uppercase;letter-spacing:0.4px;'>🎥 KOL</span>"
+                f"<ul style='margin:4px 0 0;padding-left:20px;color:#374151;font-size:13px;'>{items}</ul>"
+                f"</div>"
+            )
+        if crm_a:
+            items = "".join(f"<li style='margin:3px 0;'>{a}</li>" for a in crm_a)
+            block += (
+                f"<div style='margin-top:6px;'>"
+                f"<span style='font-size:12px;font-weight:600;color:#059669;text-transform:uppercase;letter-spacing:0.4px;'>✉️ CRM</span>"
+                f"<ul style='margin:4px 0 0;padding-left:20px;color:#374151;font-size:13px;'>{items}</ul>"
+                f"</div>"
+            )
+        block += "</div>"
+        channel_action_html += block
+
     return f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f3f4f6;margin:0;padding:24px;">
-  <div style="max-width:680px;margin:0 auto;">
+  <div style="max-width:960px;margin:0 auto;">
 
     <!-- Header -->
     <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:12px;padding:24px;margin-bottom:20px;color:#fff;">
@@ -564,8 +1381,29 @@ def _build_html(report: list, today: date) -> str:
       </p>
     </div>
 
-    <!-- Branch sections -->
+    <!-- Executive Summary (all branches at a glance) -->
+    {exec_summary_html}
+
+    <!-- Per-branch detailed sections (KPI + outliers + behavior + channel mix + country insights) -->
     {''.join(sections)}
+
+    <!-- Paid Ads weekly snapshot -->
+    {paid_ads_html}
+
+    <!-- KOL pipeline / ROI / expiring usage rights -->
+    {kol_html}
+
+    <!-- CRM (email marketing + reservation revenue) -->
+    {crm_html}
+
+    <!-- Ad Budget Optimizer (6-step framework per country) -->
+    {ad_optimizer_html}
+
+    <!-- Channel actions (Paid Ads / KOL / CRM) -->
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+      <h3 style="margin:0 0 14px;font-size:15px;font-weight:700;color:#111827;">⚡ Channel Actions — This Week</h3>
+      {channel_action_html or '<p style="color:#6b7280;font-size:13px;">No channel-level actions flagged.</p>'}
+    </div>
 
     <!-- Next Week Recommendations -->
     <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
@@ -603,9 +1441,18 @@ def weekly_report(db: Session = Depends(get_db)):
 
 
 @router.post("/send-weekly")
-def send_weekly_email(to: Optional[str] = None, db: Session = Depends(get_db)):
+def send_weekly_email(
+    to: Optional[str] = None,
+    user_ids: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """Generate and send weekly HTML email via Gmail SMTP.
-    Pass ?to=email@example.com to override recipients (useful for testing)."""
+
+    Recipient resolution (in order):
+      - ?user_ids=uuid1,uuid2 — look up emails from `users` table
+      - ?to=a@x.com,b@y.com   — raw email override (useful for testing)
+      - env EMAIL_RECIPIENTS  — fallback default list
+    """
     gmail_user = getattr(settings, "GMAIL_USER", "") or ""
     gmail_pass = getattr(settings, "GMAIL_APP_PASSWORD", "") or ""
     recipients_raw = getattr(settings, "EMAIL_RECIPIENTS", "") or ""
@@ -616,12 +1463,25 @@ def send_weekly_email(to: Optional[str] = None, db: Session = Depends(get_db)):
             detail="GMAIL_USER and GMAIL_APP_PASSWORD not configured in .env"
         )
 
+    recipients: list[str] = []
+    if user_ids:
+        id_list = [i.strip() for i in user_ids.split(",") if i.strip()]
+        users = db.query(User).filter(User.id.in_(id_list)).all()
+        recipients.extend(u.email for u in users if u.email)
     if to:
-        recipients = [t.strip() for t in to.split(",") if t.strip()]
-    else:
-        recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
+        recipients.extend(t.strip() for t in to.split(",") if t.strip())
     if not recipients:
-        raise HTTPException(status_code=500, detail="EMAIL_RECIPIENTS not configured in .env")
+        recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
+
+    # Dedupe while preserving order
+    seen = set()
+    recipients = [r for r in recipients if not (r in seen or seen.add(r))]
+
+    if not recipients:
+        raise HTTPException(
+            status_code=400,
+            detail="No recipients — pass ?user_ids=… or ?to=… or set EMAIL_RECIPIENTS"
+        )
 
     today = date.today()
     report = _build_report(db)
@@ -645,6 +1505,61 @@ def send_weekly_email(to: Optional[str] = None, db: Session = Depends(get_db)):
         "subject": msg["Subject"],
         "branches_included": len(report),
     })
+
+
+# ── Cron-triggered weekly send (auth via X-Sync-Token) ────────────────────────
+
+
+def _send_weekly_email_to_default_recipients(db: Session) -> dict:
+    """Shared internal: render report and send to env EMAIL_RECIPIENTS.
+    Used by the cron-triggered endpoint. Frontend still uses /send-weekly
+    which allows ad-hoc recipients via ?to= or ?user_ids=.
+    """
+    gmail_user = getattr(settings, "GMAIL_USER", "") or ""
+    gmail_pass = getattr(settings, "GMAIL_APP_PASSWORD", "") or ""
+    recipients_raw = getattr(settings, "EMAIL_RECIPIENTS", "") or ""
+
+    if not gmail_user or not gmail_pass:
+        raise HTTPException(500, "GMAIL_USER and GMAIL_APP_PASSWORD not configured")
+
+    recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
+    seen = set()
+    recipients = [r for r in recipients if not (r in seen or seen.add(r))]
+    if not recipients:
+        raise HTTPException(400, "EMAIL_RECIPIENTS env var is empty — set it on Zeabur")
+
+    today = date.today()
+    report = _build_report(db)
+    html = _build_html(report, today)
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"HiD Weekly Report — {today.strftime('%d %b %Y')}"
+    msg["From"] = gmail_user
+    msg["To"] = ", ".join(recipients)
+    msg.attach(MIMEText(html, "html"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(gmail_user, gmail_pass)
+            server.sendmail(gmail_user, recipients, msg.as_string())
+    except Exception as e:
+        raise HTTPException(502, f"Email send failed: {e}")
+
+    return {
+        "sent_to": recipients,
+        "subject": msg["Subject"],
+        "branches_included": len(report),
+    }
+
+
+@router.post("/send-weekly-cron", dependencies=[Depends(verify_sync_token)])
+def send_weekly_cron(db: Session = Depends(get_db)):
+    """Cron-triggered weekly email send. Auth: X-Sync-Token header.
+
+    Always sends to env EMAIL_RECIPIENTS — no recipient overrides accepted
+    (intentional: removes the chance of cron leaking to a wrong list).
+    """
+    return _envelope(_send_weekly_email_to_default_recipients(db))
 
 
 # ── Email preview ─────────────────────────────────────────────────────────────
