@@ -3,7 +3,7 @@
  * + Compare to Last Year (via Cloudbeds Insights API).
  * + Branch Compare: side-by-side country data across multiple branches.
  */
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import axios from "axios";
 import {
   AreaChart, Area,
@@ -193,13 +193,11 @@ export default function PerformanceCountry() {
           <p className="text-sm text-gray-500">{subtitle}</p>
         </div>
         <div className="flex items-center gap-3">
-          <select value={filterCountry} onChange={(e) => setFilterCountry(e.target.value)}
-            className="border rounded px-2 py-1.5 text-sm">
-            <option value="">All Countries</option>
-            {countryFilterOptions.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
+          <CountryCombobox
+            value={filterCountry}
+            onChange={setFilterCountry}
+            options={countryFilterOptions}
+          />
           {view === "compare" && (
             <div className="flex items-center gap-2">
               <select value={cmpMonth} onChange={(e) => setCmpMonth(Number(e.target.value))}
@@ -651,6 +649,125 @@ function PctChange({ current, previous, label }) {
         {isUp ? "\u25B2" : pct < 0 ? "\u25BC" : ""}{Math.abs(pct).toFixed(1)}%
       </span>
       <span className="text-xs text-gray-400">vs {label}</span>
+    </div>
+  );
+}
+
+
+/* \u2500\u2500 CountryCombobox \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+ * Searchable replacement for the old <select> filter. Needed because backfilling
+ * NULL guest_country to "Unknown" surfaced 50+ countries that used to be hidden,
+ * making a plain dropdown unwieldy.
+ *
+ * Behaviour:
+ *   - Click input: opens panel showing full list (or filtered by current text)
+ *   - Type: filters case-insensitively; Enter picks the first match
+ *   - Esc closes; click outside closes
+ *   - Selecting an item commits it to `value` and shows it as the input text
+ *   - "All Countries" is the synthetic top item that maps to value = ""
+ */
+function CountryCombobox({ value, onChange, options }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const wrapRef = useRef(null);
+  const inputRef = useRef(null);
+
+  // Close on outside click
+  useEffect(() => {
+    function onDocClick(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
+        setOpen(false);
+        setQuery("");
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  // Filter options against the live query (case-insensitive, substring match)
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((o) => o.toLowerCase().includes(q));
+  }, [options, query]);
+
+  const select = (val) => {
+    onChange(val);
+    setQuery("");
+    setOpen(false);
+    inputRef.current?.blur();
+  };
+
+  // Display: when closed, show selected value; when open, show what user types
+  const displayValue = open ? query : (value || "");
+  const placeholder = value ? "" : "All Countries";
+
+  return (
+    <div ref={wrapRef} className="relative w-48">
+      <input
+        ref={inputRef}
+        type="text"
+        value={displayValue}
+        placeholder={placeholder}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") { setOpen(false); setQuery(""); inputRef.current?.blur(); }
+          else if (e.key === "Enter" && open) {
+            // Enter on empty query with a current value clears it; otherwise pick first match
+            if (!query && value) select("");
+            else if (filtered.length > 0) select(filtered[0]);
+          }
+        }}
+        className="border rounded px-2 py-1.5 text-sm w-full pr-7 bg-white"
+      />
+      {/* Clear / chevron */}
+      {value && !open ? (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); select(""); }}
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs px-1"
+          title="Clear"
+        >
+          \u00D7
+        </button>
+      ) : (
+        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none text-xs">
+          \u25BE
+        </span>
+      )}
+
+      {open && (
+        <div className="absolute z-20 mt-1 w-full max-h-72 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg text-sm">
+          {/* "All Countries" sentinel */}
+          <button
+            type="button"
+            onClick={() => select("")}
+            className={`w-full text-left px-3 py-1.5 hover:bg-indigo-50 ${
+              value === "" ? "bg-indigo-100 text-indigo-700 font-medium" : "text-gray-700"
+            }`}
+          >
+            All Countries
+          </button>
+          <div className="border-t border-gray-100" />
+          {filtered.length === 0 ? (
+            <div className="px-3 py-2 text-gray-400 italic">No matches</div>
+          ) : (
+            filtered.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => select(c)}
+                className={`w-full text-left px-3 py-1.5 hover:bg-indigo-50 ${
+                  value === c ? "bg-indigo-100 text-indigo-700 font-medium" : "text-gray-700"
+                }`}
+              >
+                {c}
+              </button>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }

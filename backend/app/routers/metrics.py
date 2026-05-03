@@ -595,10 +595,16 @@ def _build_weekly_periods(today, count):
 
 
 def _query_top_countries(db, branch_id, d_from, d_to, limit):
-    """Get top N countries by total reservations in the full date range."""
+    """Get top N countries by total reservations in the full date range.
+
+    NULL guest_country/guest_country_code is bucketed as "Unknown" so the
+    same key flows through to the trend queries below (they filter by name).
+    """
+    code_expr = func.coalesce(Reservation.guest_country_code, "Unknown").label("code")
+    country_expr = func.coalesce(Reservation.guest_country, "Unknown").label("country")
     q = db.query(
-        Reservation.guest_country_code.label("code"),
-        Reservation.guest_country.label("country"),
+        code_expr,
+        country_expr,
         func.count(Reservation.id).label("total"),
         func.coalesce(func.sum(Reservation.grand_total_vnd), 0).label("revenue"),
         func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
@@ -608,7 +614,7 @@ def _query_top_countries(db, branch_id, d_from, d_to, limit):
         ~Reservation.status.in_(list(_EXCLUDED_STATUSES)),
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
     ).group_by(
-        Reservation.guest_country_code, Reservation.guest_country,
+        code_expr, country_expr,
     ).order_by(func.count(Reservation.id).desc())
 
     if branch_id:
@@ -616,8 +622,8 @@ def _query_top_countries(db, branch_id, d_from, d_to, limit):
 
     return [
         {
-            "country_code": r.code or "Unknown",
-            "country": r.country or r.code or "Unknown",
+            "country_code": r.code,
+            "country": r.country,
             "total_reservations": int(r.total),
             "total_revenue": float(r.revenue),
             "total_nights": int(r.nights),
@@ -627,19 +633,25 @@ def _query_top_countries(db, branch_id, d_from, d_to, limit):
 
 
 def _query_monthly_trend(db, branch_id, d_from, d_to, country_names):
-    """Per month × country reservation counts."""
+    """Per month × country reservation counts.
+
+    Uses COALESCE(guest_country, 'Unknown') so NULL rows match the "Unknown"
+    bucket from _query_top_countries. Without this, NULL IN (...) evaluates
+    to FALSE in SQL and the Unknown column on the chart is silently empty.
+    """
+    country_expr = func.coalesce(Reservation.guest_country, "Unknown").label("country")
     q = db.query(
         extract("year", Reservation.check_in_date).label("yr"),
         extract("month", Reservation.check_in_date).label("mo"),
-        Reservation.guest_country.label("country"),
+        country_expr,
         func.count(Reservation.id).label("cnt"),
     ).filter(
         Reservation.check_in_date >= d_from,
         Reservation.check_in_date <= d_to,
-        Reservation.guest_country.in_(country_names),
+        country_expr.in_(country_names),
         ~Reservation.status.in_(list(_EXCLUDED_STATUSES)),
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
-    ).group_by("yr", "mo", Reservation.guest_country)
+    ).group_by("yr", "mo", country_expr)
 
     if branch_id:
         q = q.filter(Reservation.branch_id == branch_id)
@@ -654,14 +666,15 @@ def _query_monthly_trend(db, branch_id, d_from, d_to, country_names):
 
 
 def _query_weekly_trend(db, branch_id, d_from, d_to, country_names):
-    """Per week × country reservation counts."""
+    """Per week × country reservation counts. NULL country bucketed as 'Unknown'."""
+    country_expr = func.coalesce(Reservation.guest_country, "Unknown")
     q = db.query(
         Reservation.check_in_date,
-        Reservation.guest_country,
+        country_expr.label("country"),
     ).filter(
         Reservation.check_in_date >= d_from,
         Reservation.check_in_date <= d_to,
-        Reservation.guest_country.in_(country_names),
+        country_expr.in_(country_names),
         ~Reservation.status.in_(list(_EXCLUDED_STATUSES)),
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
     )

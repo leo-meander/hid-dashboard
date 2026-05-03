@@ -10,18 +10,37 @@ from app.services.cloudbeds import (
 
 
 class TestMapCountryCode:
-    def test_known_mappings(self):
-        assert map_country_code("United States of America") == "USA"
-        assert map_country_code("United Kingdom") == "UK"
-        assert map_country_code("Unknown") == "Others"
+    def test_known_aliases(self):
+        # Full-name aliases canonicalise to the standard display name.
+        assert map_country_code("United States of America") == "United States"
+        assert map_country_code("Viet Nam") == "Vietnam"
+        assert map_country_code("Korea, Republic of") == "South Korea"
+
+    def test_iso_codes(self):
+        # 2-letter ISO codes map to full names.
+        assert map_country_code("JP") == "Japan"
+        assert map_country_code("VN") == "Vietnam"
+        assert map_country_code("tw") == "Taiwan"  # case-insensitive
 
     def test_passthrough(self):
+        # Recognised but un-aliased strings pass through unchanged so we
+        # don't lose granularity for less-common countries.
         assert map_country_code("Australia") == "Australia"
         assert map_country_code("Vietnam") == "Vietnam"
+        assert map_country_code("Bhutan") == "Bhutan"
 
-    def test_none_or_empty(self):
-        assert map_country_code(None) == "Others"
-        assert map_country_code("") == "Others"
+    def test_literal_unknown_passes_through(self):
+        # Per current semantics: "Unknown" sentinel is reserved for missing
+        # data. If Cloudbeds ever sends the literal string "Unknown", treat
+        # it the same way (i.e. preserve as "Unknown").
+        assert map_country_code("Unknown") == "Unknown"
+
+    def test_none_or_empty_returns_unknown(self):
+        # Missing data → "Unknown" (NOT "Others" — "Others" is reserved for
+        # a future change covering "country present but unrecognised").
+        assert map_country_code(None) == "Unknown"
+        assert map_country_code("") == "Unknown"
+        assert map_country_code("   ") == "Unknown"
 
 
 class TestMapRoomTypeCategory:

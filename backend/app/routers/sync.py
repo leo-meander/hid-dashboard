@@ -25,7 +25,7 @@ def verify_sync_token(x_sync_token: Optional[str] = Header(None)):
     if not x_sync_token or x_sync_token != expected:
         raise HTTPException(status_code=401, detail="Invalid or missing X-Sync-Token")
 
-from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_room_type_and_rate_plan, map_country_code
+from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_room_type_and_rate_plan, backfill_guest_country, map_country_code
 from app.services.ingest_csv import import_all_csvs, import_csv_file, CSV_CONFIGS
 from app.services.ads_platform_sync import run_ads_platform_sync
 from app.services.metrics_engine import recompute_branch_range, recompute_occ_and_bookings
@@ -202,6 +202,81 @@ def trigger_rate_plan_backfill(
     return _envelope({
         "status": "started",
         "message": "Rate plan backfill running in background. Check Railway logs for progress.",
+        "window": {"from": df.isoformat(), "to": dt.isoformat()},
+        "branches_queued": [c["name"] for c in branch_configs],
+        "skipped": skipped,
+    })
+
+
+def _run_guest_country_backfill_bg(branch_configs: list, df, dt):
+    """Background worker: runs guest_country backfill for each branch config."""
+    import logging
+    log = logging.getLogger(__name__)
+    for cfg in branch_configs:
+        try:
+            result = backfill_guest_country(
+                cfg["branch_id"], cfg["property_id"],
+                api_key=cfg["api_key"], checkin_from=df, checkin_to=dt, limit=cfg.get("limit")
+            )
+            log.info("Guest country backfill %s: fetched=%s filled=%s still_unknown=%s",
+                     cfg["name"], result.get("fetched"), result.get("filled"), result.get("still_unknown"))
+        except Exception as exc:
+            log.error("Guest country backfill failed for %s: %s", cfg["name"], exc)
+
+
+@router.post("/backfill-guest-country")
+def trigger_guest_country_backfill(
+    background_tasks: BackgroundTasks,
+    branch_id: Optional[UUID] = Query(None),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD check-in from (default: 2025-01-01)"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD check-in to (default: today)"),
+    limit: Optional[int] = Query(None, description="Max reservations per branch (for testing)"),
+    db: Session = Depends(get_db),
+):
+    """
+    Backfill guest_country for reservations currently 'Unknown'.
+    Calls Cloudbeds /getReservation per row and reads ISO-2 country from
+    guestList[*].guestCountry — the bulk endpoint never includes it.
+
+    Default window 2025-01-01..today: pre-2025 detail responses also have
+    no country, so backfilling them wastes ~7 hours of API calls. Returns
+    immediately; backfill runs in background. Check logs for progress.
+    """
+    from datetime import date as date_cls
+
+    today = date_cls.today()
+    df = date_cls.fromisoformat(date_from) if date_from else date_cls(2025, 1, 1)
+    dt = date_cls.fromisoformat(date_to) if date_to else today
+
+    branches_q = db.query(Branch).filter_by(is_active=True)
+    if branch_id:
+        branches_q = branches_q.filter(Branch.id == branch_id)
+    branches = branches_q.all()
+
+    branch_configs = []
+    skipped = []
+    for branch in branches:
+        pid = branch.cloudbeds_property_id
+        if not pid:
+            skipped.append({"branch": branch.name, "reason": "no property_id"})
+            continue
+        api_key = settings.get_api_key_for_property(str(pid))
+        if not api_key:
+            skipped.append({"branch": branch.name, "reason": f"no api_key for property {pid}"})
+            continue
+        branch_configs.append({
+            "branch_id": str(branch.id),
+            "property_id": str(pid),
+            "api_key": api_key,
+            "name": branch.name,
+            "limit": limit,
+        })
+
+    background_tasks.add_task(_run_guest_country_backfill_bg, branch_configs, df, dt)
+
+    return _envelope({
+        "status": "started",
+        "message": "Guest country backfill running in background. Check logs for progress.",
         "window": {"from": df.isoformat(), "to": dt.isoformat()},
         "branches_queued": [c["name"] for c in branch_configs],
         "skipped": skipped,
@@ -988,6 +1063,28 @@ def trigger_cloudbeds_sync(
     import logging
     _logger = logging.getLogger(__name__)
 
+    def _sync_then_backfill_country(branch_id_str: str, pid: str, currency: str, api_key: str, branch_name: str):
+        """Run bulk sync + country backfill for one branch.
+
+        Cloudbeds bulk /getReservations omits guestCountry — without the
+        backfill chain, every new ingestion lands as Unknown. Chained here
+        with the same 14-day default window used by the nightly cron.
+        """
+        from datetime import date as _date, timedelta as _td
+        result = sync_branch(branch_id_str, pid, currency, api_key=api_key)
+        _logger.info("Cloudbeds sync done branch=%s: %s", branch_name, result)
+        try:
+            today = _date.today()
+            gc_result = backfill_guest_country(
+                branch_id_str, pid,
+                api_key=api_key,
+                checkin_from=today - _td(days=14),
+                checkin_to=today,
+            )
+            _logger.info("Country backfill done branch=%s: %s", branch_name, gc_result)
+        except Exception:
+            _logger.exception("Country backfill failed branch=%s", branch_name)
+
     def _run_sync(branch_id=None):
         from app.database import SessionLocal
         sdb = SessionLocal()
@@ -1002,8 +1099,7 @@ def trigger_cloudbeds_sync(
                 if not pid or not api_key:
                     _logger.error("No property_id/api_key for branch %s", branch.name)
                     return
-                result = sync_branch(str(branch.id), pid, branch.currency, api_key=api_key)
-                _logger.info("Cloudbeds sync done branch=%s: %s", branch.name, result)
+                _sync_then_backfill_country(str(branch.id), pid, branch.currency, api_key, branch.name)
             else:
                 branches = sdb.query(Branch).filter_by(is_active=True).all()
                 for branch in branches:
@@ -1014,8 +1110,7 @@ def trigger_cloudbeds_sync(
                     if not api_key:
                         continue
                     try:
-                        result = sync_branch(str(branch.id), pid, branch.currency, api_key=api_key)
-                        _logger.info("Cloudbeds sync done branch=%s: %s", branch.name, result)
+                        _sync_then_backfill_country(str(branch.id), pid, branch.currency, api_key, branch.name)
                     except Exception as exc:
                         _logger.error("Cloudbeds sync failed branch=%s: %s", branch.name, exc)
         except Exception as exc:
@@ -1079,6 +1174,13 @@ def trigger_daily_sync(
         })
 
     def _run():
+        from datetime import timedelta as _td
+        # Window for the country backfill follow-up: lookback_days extended
+        # by 7 days for late check-ins, capped at today (no point checking
+        # future rows that haven't been ingested yet).
+        country_from = today - _td(days=lookback_days + 7)
+        country_to = today
+
         for cfg in eligible:
             try:
                 result = sync_branch(
@@ -1092,6 +1194,25 @@ def trigger_daily_sync(
                 )
             except Exception:
                 _logger.exception("Daily sync FAILED branch=%s", cfg["name"])
+                continue  # don't try country backfill if bulk sync failed
+
+            # Cloudbeds bulk /getReservations does NOT return guestCountry —
+            # the field lives in /getReservation > guestList[*].guestCountry.
+            # Without this follow-up, every new ingestion would arrive with
+            # guest_country = "Unknown". Bounded to last lookback_days+7 to
+            # keep the API cost small (~10-100 rows/branch/day).
+            try:
+                gc_result = backfill_guest_country(
+                    cfg["branch_id"], cfg["property_id"],
+                    api_key=cfg["api_key"],
+                    checkin_from=country_from, checkin_to=country_to,
+                )
+                _logger.info(
+                    "Country backfill OK branch=%s window=%s..%s: %s",
+                    cfg["name"], country_from, country_to, gc_result,
+                )
+            except Exception:
+                _logger.exception("Country backfill FAILED branch=%s", cfg["name"])
 
     background_tasks.add_task(_run)
     return _envelope({

@@ -1224,8 +1224,15 @@ def get_country_yoy_insights_local(
     """
 
     def _query_month(target_year: int, target_month: int) -> dict[str, dict]:
+        # COALESCE NULL/empty/junk to "Unknown" so all reservations are accounted
+        # for. Previous behaviour silently dropped them, making YoY totals lower
+        # than the main dashboard.
+        country_expr = func.coalesce(
+            func.nullif(func.nullif(Reservation.guest_country, ""), "0"),
+            "Unknown",
+        ).label("country")
         q = db.query(
-            Reservation.guest_country,
+            country_expr,
             func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
             func.coalesce(func.sum(Reservation.grand_total_native), 0).label("revenue"),
             func.count(Reservation.id).label("guests"),
@@ -1233,17 +1240,13 @@ def get_country_yoy_insights_local(
             func.extract("year", Reservation.check_in_date) == target_year,
             func.extract("month", Reservation.check_in_date) == target_month,
             Reservation.status.notin_(list(EXCLUDED_STATUSES)),
-            Reservation.guest_country.isnot(None),
-            Reservation.guest_country != "",
-            Reservation.guest_country != "0",
-            func.length(Reservation.guest_country) > 1,
         )
         if branch_id:
             q = q.filter(Reservation.branch_id == branch_id)
 
-        rows = q.group_by(Reservation.guest_country).all()
+        rows = q.group_by(country_expr).all()
         return {
-            row.guest_country: {
+            row.country: {
                 "nights": int(row.nights),
                 "revenue": float(row.revenue),
                 "guests": int(row.guests),

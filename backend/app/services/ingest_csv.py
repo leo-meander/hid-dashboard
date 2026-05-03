@@ -265,8 +265,9 @@ def import_csv_file(csv_path: Path, branch_id: str, currency: str,
                 room_type=room_type,
                 room_type_category=map_room_type_category(room_type) if room_type else None,
                 room_number=room_number,
-                guest_country=country,
-                guest_country_code=map_country_code(country) if country else None,
+                # Always set — map_country_code handles None/empty → "Unknown"
+                guest_country=map_country_code(country),
+                guest_country_code=map_country_code(country),
                 reservation_date=res_date,
                 cancellation_date=cancel_date,
             )

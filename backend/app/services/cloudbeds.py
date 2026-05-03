@@ -63,14 +63,19 @@ _NAME_ALIASES: dict[str, str] = {
     "Macao": "Macau",
     "Macau SAR China": "Macau",
     "Taiwan, Province of China": "Taiwan",
-    "Unknown": "Others",
 }
 
 
 def map_country_code(raw: Optional[str]) -> str:
-    """Normalize country to a canonical display name."""
-    if not raw:
-        return "Others"
+    """Normalize country to a canonical display name.
+
+    Semantics:
+    - NULL / empty / whitespace input → "Unknown" (data missing)
+    - Known ISO code or alias → canonical name
+    - Recognized but un-mapped string → returned as-is (preserve granularity)
+    """
+    if not raw or not str(raw).strip():
+        return "Unknown"
     stripped = raw.strip()
     # 1. If it's a 2-3 letter ISO code, map to full name
     if len(stripped) <= 3:
@@ -80,7 +85,7 @@ def map_country_code(raw: Optional[str]) -> str:
     # 2. Check aliases
     if stripped in _NAME_ALIASES:
         return _NAME_ALIASES[stripped]
-    # 3. Fallback: return as-is
+    # 3. Fallback: return as-is (preserve unrecognized country names)
     return stripped
 
 
@@ -88,6 +93,29 @@ def map_room_type_category(room_type: Optional[str]) -> str:
     if room_type and "dorm" in room_type.lower():
         return "Dorm"
     return "Room"
+
+
+def _extract_guest_country_from_detail(data: dict) -> Optional[str]:
+    """Extract primary guest country from a /getReservation detail response.
+
+    The bulk /getReservations endpoint returns a lite payload without country
+    info. The detail endpoint returns a `guestList` dict keyed by guest ID,
+    where each entry has `guestCountry` as an ISO-2 code (e.g. 'IT', 'AU').
+
+    Cloudbeds uses '00' as a placeholder when the guest didn't select a
+    country — treat that the same as missing. Returns the first non-empty
+    ISO code found, or None if no guest in the list has a country set.
+    """
+    gl = data.get("guestList") or {}
+    if not isinstance(gl, dict):
+        return None
+    for ginfo in gl.values():
+        if not isinstance(ginfo, dict):
+            continue
+        gc = (ginfo.get("guestCountry") or "").strip()
+        if gc and gc != "00":
+            return gc
+    return None
 
 
 DIRECT_KEYWORDS = [
@@ -474,7 +502,8 @@ def backfill_accommodation_total(
     logger.info("Backfill: %d NULL reservations for branch %s", len(null_res), branch_id)
 
     with httpx.Client(timeout=30) as client:
-        batch_buf: list[tuple[str, float, Optional[str], Optional[str]]] = []
+        # (cb_id, accom, rate_plan, room_type, guest_country_iso)
+        batch_buf: list[tuple[str, float, Optional[str], Optional[str], Optional[str]]] = []
         for i, r in enumerate(null_res):
             try:
                 resp = client.get(
@@ -502,8 +531,13 @@ def backfill_accommodation_total(
                         if not room_type_name:
                             room_type_name = room.get("roomTypeName")
 
+                # Bulk /getReservations doesn't include guestList — only the detail
+                # endpoint exposes country. Capture it here while we already have
+                # the full response, but only when current value is missing.
+                gc_iso = _extract_guest_country_from_detail(res_data) if r.guest_country in (None, "Unknown") else None
+
                 if accom > 0:
-                    batch_buf.append((r.cloudbeds_reservation_id, accom, rate_plan, room_type_name if not r.room_type else None))
+                    batch_buf.append((r.cloudbeds_reservation_id, accom, rate_plan, room_type_name if not r.room_type else None, gc_iso))
                 total_fetched += 1
             except Exception as e:
                 logger.warning("Backfill fetch failed res %s: %s", r.cloudbeds_reservation_id, e)
@@ -512,7 +546,7 @@ def backfill_accommodation_total(
             if len(batch_buf) >= BATCH_SIZE or (i == len(null_res) - 1 and batch_buf):
                 _s = SessionLocal()
                 try:
-                    for cb_id, accom, rp, rt in batch_buf:
+                    for cb_id, accom, rp, rt, gc in batch_buf:
                         native = round(accom, 2)
                         vnd = round(accom * rate, 2) if rate else None
                         set_parts = ["grand_total_native=:n", "grand_total_vnd=:v", "updated_at=:t"]
@@ -525,6 +559,12 @@ def backfill_accommodation_total(
                             set_parts.append("room_type_category=:rc")
                             params["rt"] = rt
                             params["rc"] = map_room_type_category(rt)
+                        if gc:
+                            mapped = map_country_code(gc)
+                            set_parts.append("guest_country=:gc")
+                            set_parts.append("guest_country_code=:gcc")
+                            params["gc"] = mapped
+                            params["gcc"] = mapped
                         result = _s.execute(_text(
                             f"UPDATE reservations SET {', '.join(set_parts)} "
                             "WHERE cloudbeds_reservation_id=:cid"
@@ -586,8 +626,8 @@ def backfill_room_type_and_rate_plan(
     logger.info("Room type backfill: %d reservations for branch %s", len(null_res), branch_id)
 
     with httpx.Client(timeout=30) as client:
-        # (cb_id, room_type, rate_plan)
-        batch_buf: list[tuple[str, Optional[str], Optional[str]]] = []
+        # (cb_id, room_type, rate_plan, guest_country_iso)
+        batch_buf: list[tuple[str, Optional[str], Optional[str], Optional[str]]] = []
         for i, r in enumerate(null_res):
             try:
                 resp = client.get(
@@ -611,7 +651,11 @@ def backfill_room_type_and_rate_plan(
                         if not room_type_name:
                             room_type_name = room.get("roomTypeName")
 
-                batch_buf.append((r.cloudbeds_reservation_id, room_type_name, rate_plan))
+                # Country lives in guestList, only in detail responses — capture
+                # opportunistically when current row is missing it.
+                gc_iso = _extract_guest_country_from_detail(data) if r.guest_country in (None, "Unknown") else None
+
+                batch_buf.append((r.cloudbeds_reservation_id, room_type_name, rate_plan, gc_iso))
                 total_fetched += 1
             except Exception as e:
                 logger.warning("Room type backfill fetch failed res %s: %s", r.cloudbeds_reservation_id, e)
@@ -620,7 +664,7 @@ def backfill_room_type_and_rate_plan(
             if len(batch_buf) >= BATCH_SIZE or (i == len(null_res) - 1 and batch_buf):
                 _s = SessionLocal()
                 try:
-                    for cb_id, rt, rp in batch_buf:
+                    for cb_id, rt, rp, gc in batch_buf:
                         updates = ["updated_at=:t"]
                         params = {"t": now, "cid": cb_id}
                         if rt:
@@ -631,6 +675,12 @@ def backfill_room_type_and_rate_plan(
                         if rp:
                             updates.append("rate_plan_name=:rp")
                             params["rp"] = rp
+                        if gc:
+                            mapped = map_country_code(gc)
+                            updates.append("guest_country=:gc")
+                            updates.append("guest_country_code=:gcc")
+                            params["gc"] = mapped
+                            params["gcc"] = mapped
                         if len(updates) > 1:  # more than just updated_at
                             result = _s.execute(_text(
                                 f"UPDATE reservations SET {', '.join(updates)} "
@@ -662,6 +712,110 @@ def backfill_room_type_and_rate_plan(
         "fetched": total_fetched,
         "room_types_filled": room_type_filled,
         "rate_plans_filled": rate_plan_filled,
+    }
+
+
+def backfill_guest_country(
+    branch_id: str,
+    property_id: str,
+    api_key: str,
+    checkin_from: Optional[date] = None,
+    checkin_to: Optional[date] = None,
+    limit: Optional[int] = None,
+) -> dict:
+    """Dedicated backfill of guest_country for rows currently 'Unknown'.
+
+    Calls /getReservation per row and reads ISO-2 country from
+    guestList[*].guestCountry. Skips rows where Cloudbeds also returns no
+    country (rows stay 'Unknown'). Mutates only guest_country and
+    guest_country_code; raw_data is not touched.
+
+    Default window: 2025-01-01 to today. Pre-2025 reservations have no
+    guestCountry in either bulk OR detail responses (verified empirically),
+    so backfilling them is wasted API calls.
+    """
+    import time
+
+    today = date.today()
+    df = checkin_from or date(2025, 1, 1)
+    dt = checkin_to or today
+
+    db = SessionLocal()
+    query = db.query(Reservation).filter(
+        Reservation.branch_id == branch_id,
+        Reservation.check_in_date >= df,
+        Reservation.check_in_date <= dt,
+        Reservation.guest_country == "Unknown",
+        Reservation.cloudbeds_reservation_id != None,  # noqa: E711
+    )
+    if limit:
+        query = query.limit(limit)
+    targets = query.all()
+    db.close()
+
+    total_fetched = filled = empty = 0
+    now = datetime.now(timezone.utc)
+    BATCH_SIZE = 20
+
+    logger.info("Guest country backfill: %d Unknown rows for branch %s (%s..%s)",
+                len(targets), branch_id, df, dt)
+
+    with httpx.Client(timeout=30) as client:
+        # (cb_id, guest_country_iso)
+        batch_buf: list[tuple[str, str]] = []
+        for i, r in enumerate(targets):
+            try:
+                resp = client.get(
+                    f"{CLOUDBEDS_BASE_URL}/getReservation",
+                    headers=_headers(api_key),
+                    params={"propertyID": property_id, "reservationID": r.cloudbeds_reservation_id},
+                )
+                resp.raise_for_status()
+                data = resp.json().get("data") or {}
+                gc_iso = _extract_guest_country_from_detail(data)
+                total_fetched += 1
+                if gc_iso:
+                    batch_buf.append((r.cloudbeds_reservation_id, gc_iso))
+                else:
+                    empty += 1
+            except Exception as e:
+                logger.warning("Guest country backfill failed res %s: %s", r.cloudbeds_reservation_id, e)
+
+            # Flush batch
+            if len(batch_buf) >= BATCH_SIZE or (i == len(targets) - 1 and batch_buf):
+                _s = SessionLocal()
+                try:
+                    for cb_id, gc in batch_buf:
+                        mapped = map_country_code(gc)
+                        result = _s.execute(_text(
+                            "UPDATE reservations "
+                            "SET guest_country=:gc, guest_country_code=:gcc, updated_at=:t "
+                            "WHERE cloudbeds_reservation_id=:cid AND guest_country = 'Unknown'"
+                        ), {"gc": mapped, "gcc": mapped, "t": now, "cid": cb_id})
+                        if result.rowcount:
+                            filled += 1
+                    _s.commit()
+                except Exception as e:
+                    _s.rollback()
+                    logger.warning("Guest country backfill batch write failed: %s", e)
+                finally:
+                    _s.close()
+                batch_buf.clear()
+
+            if (i + 1) % 50 == 0:
+                logger.info("Guest country progress: %d/%d fetched, %d filled, %d still empty",
+                            i + 1, len(targets), filled, empty)
+
+            # Rate limit: 0.2s between API calls (matches existing backfills)
+            time.sleep(0.2)
+
+    logger.info("Guest country backfill complete branch %s: %d fetched, %d filled, %d still empty",
+                branch_id, total_fetched, filled, empty)
+    return {
+        "branch_id": branch_id,
+        "fetched": total_fetched,
+        "filled": filled,
+        "still_unknown": empty,
     }
 
 
@@ -805,9 +959,9 @@ def ingest_reservations(
         if source is not None:
             payload["source"] = normalize_source(source)
             payload["source_category"] = map_source_category(source)
-        if guest_country is not None:
-            payload["guest_country"] = guest_country
-            payload["guest_country_code"] = map_country_code(guest_country)
+        # guest_country: always set — map_country_code handles None → "Unknown"
+        payload["guest_country"] = map_country_code(guest_country)
+        payload["guest_country_code"] = map_country_code(guest_country)
         if has_revenue:
             payload["grand_total_native"] = grand_total_native
             payload["grand_total_vnd"] = grand_total_vnd
@@ -829,7 +983,7 @@ def ingest_reservations(
                 payload["source"] = normalize_source(source)
                 payload["source_category"] = map_source_category(source)
             if "guest_country" not in payload:
-                payload["guest_country"] = guest_country
+                payload["guest_country"] = map_country_code(guest_country)
                 payload["guest_country_code"] = map_country_code(guest_country)
             db.add(Reservation(cloudbeds_reservation_id=cloudbeds_id, **payload))
             created += 1
