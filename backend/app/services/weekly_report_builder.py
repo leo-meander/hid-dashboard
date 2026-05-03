@@ -145,15 +145,23 @@ def summary_metrics(db: Session, branch_id: UUID, total_rooms: int, today: date)
 
 # ── 2. Outliers (days with unusual OCC or revenue) ──────────────────────────
 
-def outliers(db: Session, branch_id: UUID, today: date, lookback_days: int = 30) -> list[dict]:
+def outliers(db: Session, branch_id: UUID, today: date,
+             baseline_days: int = 30, report_days: int = 7) -> list[dict]:
     """
-    Flag days where revenue or OCC deviates > 1.5σ from the lookback-day mean.
+    Flag days where revenue or OCC deviates > 1.5σ from a `baseline_days`
+    rolling mean, but only report events that fell within the last
+    `report_days` (default 7) — this is a weekly digest.
+
+    Why split: 7 days is too few to compute a reliable σ on its own, so we
+    keep the 30-day window for the baseline statistic and slice the
+    reporting window separately.
+
     Annotate each outlier with a probable cause:
       - weekend (Sat/Sun)
-      - holiday (from holiday_calendars matching branch country)
       - cancellation spike (cancellation_pct > 0.15)
     """
-    start = today - timedelta(days=lookback_days)
+    baseline_start = today - timedelta(days=baseline_days)
+    report_start = today - timedelta(days=report_days)
     rows = db.query(
         DailyMetrics.date,
         DailyMetrics.revenue_native,
@@ -161,7 +169,7 @@ def outliers(db: Session, branch_id: UUID, today: date, lookback_days: int = 30)
         DailyMetrics.cancellation_pct,
     ).filter(
         DailyMetrics.branch_id == branch_id,
-        DailyMetrics.date >= start,
+        DailyMetrics.date >= baseline_start,
         DailyMetrics.date <= today,
     ).order_by(DailyMetrics.date).all()
 
@@ -180,6 +188,9 @@ def outliers(db: Session, branch_id: UUID, today: date, lookback_days: int = 30)
 
     out = []
     for r in rows:
+        # Only report events in the past `report_days`
+        if r.date < report_start:
+            continue
         rev = float(r.revenue_native or 0)
         occ = float(r.occ_pct or 0)
         cxl = float(r.cancellation_pct or 0)
@@ -243,7 +254,7 @@ def _los_buckets(values: list[int]) -> dict:
     return buckets
 
 
-def booking_behavior(db: Session, branch_id: UUID, today: date, days: int = 90) -> dict:
+def booking_behavior(db: Session, branch_id: UUID, today: date, days: int = 7) -> dict:
     """
     Cancellation %, lead time distribution, LOS distribution — last `days` days
     based on check_in_date.
@@ -323,7 +334,7 @@ def booking_behavior(db: Session, branch_id: UUID, today: date, days: int = 90) 
 
 # ── 4. Channel mix ──────────────────────────────────────────────────────────
 
-def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 30) -> dict:
+def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7) -> dict:
     """
     Room-nights and revenue share by source_category (OTA/Direct/LTA) and by specific source.
     Revenue excludes the usual non-paying sources.
@@ -1290,13 +1301,24 @@ def crm_section(db: Session, branch_id: UUID, branch_name: str,
 # ── Public orchestrator ──────────────────────────────────────────────────────
 
 def build_branch_analytics(db: Session, branch: Branch, today: date) -> dict:
-    """Combine all analytical sections for a single branch."""
+    """Combine all analytical sections for a single branch.
+
+    Window choices (weekly digest mindset):
+      - summary:     this-week + WoW deltas (computed inside summary_metrics)
+      - outliers:    30-day baseline σ, only events in last 7 days
+      - behavior:    7 days (cancel %, lead time, LOS distributions)
+      - channel_mix: 7 days
+      - countries:   90 days for top + YoY comparison (need volume)
+      - paid_ads:    7 days
+      - kol:         30 days (KOL collab cadence is slower)
+      - crm:         30 days (email workflows + reservation_date window)
+    """
     total_rooms = branch.total_rooms or 0
     return {
         "summary": summary_metrics(db, branch.id, total_rooms, today),
-        "outliers": outliers(db, branch.id, today, lookback_days=30),
-        "behavior": booking_behavior(db, branch.id, today, days=90),
-        "channel_mix": channel_mix(db, branch.id, today, days=30),
+        "outliers": outliers(db, branch.id, today, baseline_days=30, report_days=7),
+        "behavior": booking_behavior(db, branch.id, today, days=7),
+        "channel_mix": channel_mix(db, branch.id, today, days=7),
         "countries": country_insights(db, branch.id, today, days=90, limit=8),
         "ad_optimizer": ad_budget_optimizer(db, branch.id, today, total_rooms),
         "paid_ads": paid_ads_section(db, branch.id, today, days=7),

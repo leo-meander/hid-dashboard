@@ -247,20 +247,33 @@ def _gov_growth_countries(db: Session, destination: str, target_month: int, prio
 
 
 def _actual_occ_pct(db: Session, branch_id, year: int, month: int, total_rooms: int) -> Optional[float]:
-    """Compute actual average OCC% from daily_metrics for the month (up to today)."""
+    """Compute MTD OCC% the right way: total room-nights sold / (rooms × days).
+
+    Was previously using AVG(daily_metrics.occ_pct), which gave skewed
+    numbers when one day had 0 sold (closed days, sync gaps) — that 0
+    dragged the simple average down even when the rest of the month was
+    healthy. The room-nights formula matches metrics-rules.md and never
+    weighs a low-data day against a normal day.
+    """
     if total_rooms <= 0:
         return None
     first_day = date(year, month, 1)
     today = date.today()
     last_day = min(today, date(year, month, calendar.monthrange(year, month)[1]))
-    row = db.query(
-        func.avg(DailyMetrics.occ_pct),
+    days = (last_day - first_day).days + 1
+    if days <= 0:
+        return None
+    sold = db.query(
+        func.coalesce(func.sum(DailyMetrics.total_sold), 0),
     ).filter(
         DailyMetrics.branch_id == branch_id,
         DailyMetrics.date >= first_day,
         DailyMetrics.date <= last_day,
     ).scalar()
-    return float(row) if row else None
+    sold_int = int(sold or 0)
+    if sold_int == 0:
+        return None
+    return sold_int / (total_rooms * days)
 
 
 def _sync_fresh_insights(db: Session, branches):
@@ -360,6 +373,7 @@ def _build_report(db: Session):
                 if (nxt["next_month_forecast_native"] and nxt["next_month_target_native"]) else None,
             "next_adr": nxt["next_month_adr"],
             "next_booked_nights": nxt["next_month_booked_nights"],
+            "next_booked_revenue": nxt.get("next_month_booked_revenue"),
             "predicted_occ_next": round(predicted_occ_next * 100, 1) if predicted_occ_next else None,
             # Country intel
             "top_countries": top,
@@ -430,7 +444,8 @@ def _render_exec_summary(report: list, today: date) -> str:
         </table>
       </div>
       <p style="margin:10px 0 0;font-size:11px;color:#6b7280;">
-        Revenue = accommodation-only (excl. Blogger / House Use / KOL / Special Case). OCC counts all sources.
+        Revenue = accommodation-only (excl. Blogger / House Use / KOL / Special Case). OCC counts all sources.<br/>
+        WoW Rev = current week vs prior week. YoY Rev = MTD this year vs same MTD last year (— if no 2025 data for this window).
       </p>
     </div>"""
 
@@ -584,12 +599,17 @@ def _render_country_detail(b: dict) -> str:
     cur = b["currency"]
 
     top_rows = []
+    yoy_present_count = 0
     for c in ci["top"]:
         yoy = c["yoy_bookings_pct"]
-        yoy_html = (
-            f"<span style='color:{'#16a34a' if (yoy or 0)>=0 else '#dc2626'}'>{_signed_pct(yoy)}</span>"
-            if yoy is not None else "—"
-        )
+        if yoy is not None:
+            yoy_present_count += 1
+            yoy_html = (
+                f"<span style='color:{'#16a34a' if yoy >= 0 else '#dc2626'};font-weight:600;'>"
+                f"{_signed_pct(yoy)}</span>"
+            )
+        else:
+            yoy_html = "<span style='color:#9ca3af;' title='No data for same window in 2025'>n/a</span>"
         top_rows.append(
             f"<tr><td style='{_TABLE_TD}'>{c['country']}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{c['bookings']:,}</td>"
@@ -615,21 +635,31 @@ def _render_country_detail(b: dict) -> str:
             )
         return "".join(chips)
 
+    yoy_coverage_note = (
+        f" · YoY data: {yoy_present_count}/{len(ci['top'])} countries"
+        if yoy_present_count < len(ci["top"]) else ""
+    )
+
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
       <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
-        🌏 Country Insights (last {ci['window_days']}d)
+        🌏 Country Insights (last {ci['window_days']}d){yoy_coverage_note}
       </p>
       <table style="width:100%;border-collapse:collapse;">
         <tr><th style="{_TABLE_TH}">Country</th><th style="{_TABLE_TH};text-align:right;">Bookings</th>
             <th style="{_TABLE_TH};text-align:right;">Nights</th><th style="{_TABLE_TH};text-align:right;">ADR</th>
-            <th style="{_TABLE_TH};text-align:right;">Avg LOS</th><th style="{_TABLE_TH};text-align:right;">YoY</th></tr>
+            <th style="{_TABLE_TH};text-align:right;">Avg LOS</th>
+            <th style="{_TABLE_TH};text-align:right;" title="bookings this window vs same window in 2025">YoY</th></tr>
         {''.join(top_rows)}
       </table>
+      <p style="margin:6px 0 0;font-size:11px;color:#9ca3af;">
+        YoY = bookings (last {ci['window_days']}d) vs same window in {date.today().year - 1}.
+        "n/a" = no data for that country in 2025.
+      </p>
       <div style="margin-top:10px;font-size:12px;color:#374151;">
-        <div style="margin-bottom:4px;"><strong>Growing:</strong> {_chips(ci['growing'], '#16a34a')}</div>
-        <div style="margin-bottom:4px;"><strong>Shrinking:</strong> {_chips(ci['shrinking'], '#dc2626')}</div>
-        <div><strong>Emerging (new):</strong> {_chips(ci['emerging'], '#6366f1')}</div>
+        <div style="margin-bottom:4px;"><strong>Growing (vs prior 90d):</strong> {_chips(ci['growing'], '#16a34a')}</div>
+        <div style="margin-bottom:4px;"><strong>Shrinking (vs prior 90d):</strong> {_chips(ci['shrinking'], '#dc2626')}</div>
+        <div><strong>Emerging (new countries):</strong> {_chips(ci['emerging'], '#6366f1')}</div>
       </div>
     </div>"""
 
@@ -746,6 +776,96 @@ def _render_ad_optimizer(b: dict) -> str:
       </p>
       {''.join(country_blocks)}
     </div>"""
+
+
+# ── Per-branch executive narrative ───────────────────────────────────────────
+
+
+def _branch_narrative(b: dict) -> list[str]:
+    """3-5 plain-English bullets summarizing where the branch stands.
+
+    Reads precomputed analytics + KPI fields and stitches a top-of-branch
+    briefing so a reader knows the headline story before scrolling into
+    the detailed tables.
+
+    Order of consideration (only includes a bullet when the data is real):
+      1. Pacing vs target (this month).
+      2. WoW revenue / OCC delta.
+      3. Strongest channel or country this week.
+      4. Biggest concern (worst ROAS / cancel spike / low CTR).
+      5. Next-month on-the-books status.
+    """
+    bullets: list[str] = []
+    cur = b["currency"]
+    a = b.get("analytics", {}) or {}
+    summary = a.get("summary") or {}
+    tw = summary.get("this_week") or {}
+    pa_tw = (a.get("paid_ads") or {}).get("this_week") or {}
+
+    # 1. Pacing
+    ach = b.get("achievement_pct")
+    if ach is not None:
+        if ach >= 100:
+            bullets.append(f"🟢 <strong>On track</strong> — {ach:.1f}% of {MONTHS_EN[date.today().month]} target hit.")
+        elif ach >= 80:
+            bullets.append(f"🟡 <strong>Behind target</strong> — {ach:.1f}% pacing; needs +{100-ach:.0f}pp this week.")
+        else:
+            bullets.append(f"🔴 <strong>At risk</strong> — only {ach:.1f}% of monthly target; review pricing + promo immediately.")
+
+    # 2. WoW revenue movement
+    wow = summary.get("wow_revenue_pct")
+    if wow is not None:
+        direction = "up" if wow >= 0 else "down"
+        emoji = "📈" if wow >= 0 else "📉"
+        bullets.append(
+            f"{emoji} Revenue this week {_fmt(tw.get('revenue'), cur)} ({direction} {abs(wow):.1f}% WoW), "
+            f"OCC {_pct((tw.get('occ_pct') or 0)*100) if tw.get('occ_pct') is not None else '—'}, "
+            f"ADR {_fmt(tw.get('adr'), cur)}."
+        )
+
+    # 3. Top growth country
+    growth = b.get("growth_countries") or []
+    if growth:
+        g = growth[0]
+        bullets.append(
+            f"🚀 Hottest market: <strong>{g['country']}</strong> "
+            f"+{g['growth_pct']:.0f}% bookings vs prior 90d."
+        )
+
+    # 4. Concerns — pick the most urgent of: paid ads ROAS<1, outliers drop, KOL stuck, email open<15%
+    concerns: list[str] = []
+    if pa_tw.get("cost") and pa_tw.get("roas") is not None and pa_tw["roas"] < 1.0:
+        concerns.append(f"⚠️ Paid Ads ROAS {pa_tw['roas']:.2f}x — under break-even")
+    out = a.get("outliers") or []
+    drops = [o for o in out if o["direction"] == "drop"]
+    if drops:
+        worst = max(drops, key=lambda o: abs(o.get("rev_z", 0)))
+        concerns.append(f"⚠️ Drop day {worst['date']} (rev z={worst['rev_z']})")
+    kol = a.get("kol") or {}
+    if kol.get("stuck"):
+        concerns.append(f"⚠️ {len(kol['stuck'])} KOL deliverable(s) stuck >14d")
+    crm = a.get("crm") or {}
+    em = crm.get("email") or {}
+    if em.get("sent", 0) > 500 and (em.get("open_rate_pct") or 100) < 15:
+        concerns.append(f"⚠️ Email open rate only {em['open_rate_pct']:.1f}%")
+    if concerns:
+        bullets.append(concerns[0])  # one most-urgent
+
+    # 5. Next-month status
+    nxt_pct = b.get("next_forecast_pct")
+    nxt_booked = b.get("next_booked_revenue")
+    if nxt_pct is not None and nxt_pct >= 60:
+        bullets.append(
+            f"📅 {b.get('next_month') and MONTHS_EN[b['next_month']] or 'Next month'} "
+            f"on-the-books {_fmt(nxt_booked, cur)} ({nxt_pct}% of target) — solid pipeline."
+        )
+    elif nxt_pct is not None and nxt_pct < 30:
+        bullets.append(
+            f"⏰ {b.get('next_month') and MONTHS_EN[b['next_month']] or 'Next month'} "
+            f"only {nxt_pct}% of target on-the-books — push ad spend + CRM activation now."
+        )
+
+    return bullets[:5]
 
 
 # ── Paid Ads / KOL / CRM section renderers ───────────────────────────────────
@@ -868,8 +988,18 @@ def _render_paid_ads(b: dict) -> str:
 
 def _render_kol(b: dict) -> str:
     k = b.get("analytics", {}).get("kol")
-    if not k or k["total_kols"] == 0:
-        return ""
+    if not k:
+        return f"""
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+          <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">🎥 KOL — {b['branch_name']}</h3>
+          <p style="margin:0;font-size:12px;color:#9ca3af;">No KOL data available — analytics not computed.</p>
+        </div>"""
+    if k["total_kols"] == 0:
+        return f"""
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+          <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">🎥 KOL — {b['branch_name']} (last {k['window_days']}d)</h3>
+          <p style="margin:0;font-size:12px;color:#9ca3af;">No KOL records for this branch yet — add via /kol page or CSV sync.</p>
+        </div>"""
     cur = b["currency"]
     p = k["pipeline"]
 
@@ -943,7 +1073,11 @@ def _render_kol(b: dict) -> str:
 def _render_crm(b: dict) -> str:
     c = b.get("analytics", {}).get("crm")
     if not c:
-        return ""
+        return f"""
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+          <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">✉️ CRM — {b['branch_name']}</h3>
+          <p style="margin:0;font-size:12px;color:#9ca3af;">No CRM data available — analytics not computed.</p>
+        </div>"""
     cur = b["currency"]
     rev_t = c["crm_revenue_this"]
     rev_p = c["crm_revenue_prev"]
@@ -956,7 +1090,15 @@ def _render_crm(b: dict) -> str:
         return f"<span style='color:{color}'>{_signed_pct(val)}</span>"
 
     if not c.get("ghl_branch_name") and rev_t["bookings"] == 0 and rev_p["bookings"] == 0:
-        return ""  # nothing to show
+        return f"""
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+          <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">✉️ CRM — {b['branch_name']} (last {c['window_days']}d)</h3>
+          <p style="margin:0;font-size:12px;color:#9ca3af;">
+            <strong>No CRM activity in window.</strong> Branch not mapped to a GHL location
+            (email stats unavailable) and no CRM-tagged reservations recorded.
+            Confirm GHL workflow is configured + cron-ghl-email running.
+          </p>
+        </div>"""
 
     ghl_note = (
         f" · GHL branch: <code>{c['ghl_branch_name']}</code>"
@@ -1211,6 +1353,16 @@ def _build_html(report: list, today: date) -> str:
             for c in intel[:5]
         ) or "—"
 
+        narrative_bullets = _branch_narrative(b)
+        narrative_html = (
+            "<div style='background:#f9fafb;border-left:3px solid #4f46e5;padding:12px 14px;"
+            "margin-bottom:14px;border-radius:6px;'>"
+            "<p style='margin:0 0 6px;font-size:11px;font-weight:700;color:#4f46e5;text-transform:uppercase;letter-spacing:0.5px;'>This week at a glance</p>"
+            "<ul style='margin:0;padding-left:18px;color:#374151;font-size:13px;line-height:1.5;'>"
+            + "".join(f"<li style='margin:2px 0;'>{x}</li>" for x in narrative_bullets)
+            + "</ul></div>"
+        ) if narrative_bullets else ""
+
         sections.append(f"""
         <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
@@ -1223,6 +1375,8 @@ def _build_html(report: list, today: date) -> str:
             </span>
           </div>
 
+          {narrative_html}
+
           <table style="width:100%;border-collapse:collapse;font-size:13px;">
             <tr style="background:#f9fafb;">
               <th style="padding:8px 12px;text-align:left;color:#6b7280;font-weight:500;font-size:11px;text-transform:uppercase;">Metric</th>
@@ -1232,7 +1386,10 @@ def _build_html(report: list, today: date) -> str:
             <tr style="border-top:1px solid #f3f4f6;">
               <td style="padding:8px 12px;color:#374151;">Revenue</td>
               <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;">{_fmt(b['actual_revenue'], cur)}</td>
-              <td style="padding:8px 12px;text-align:right;color:#6b7280;">booked: {_fmt(b.get('next_booked_nights'), '')} nights</td>
+              <td style="padding:8px 12px;text-align:right;color:#111827;font-weight:600;">
+                {_fmt(b.get('next_booked_revenue'), cur)}
+                <span style="font-weight:400;color:#6b7280;font-size:11px;display:block;">on-the-books · {_num(b.get('next_booked_nights'))} nights</span>
+              </td>
             </tr>
             <tr style="border-top:1px solid #f3f4f6;background:#f9fafb;">
               <td style="padding:8px 12px;color:#374151;">Target</td>
