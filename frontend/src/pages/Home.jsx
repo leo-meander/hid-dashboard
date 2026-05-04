@@ -84,7 +84,7 @@ function forecastBreakdown(row, type) {
         <div className="font-semibold text-white mb-1">
           {isNext ? "Next-Month Forecast" : "Forecast (this month)"}
         </div>
-        <div className="text-gray-300">Insufficient data \u2014 set Predicted OCC% and confirm ADR.</div>
+        <div className="text-gray-300">Insufficient data — set Predicted OCC% and confirm ADR.</div>
       </>
     );
   }
@@ -97,12 +97,12 @@ function forecastBreakdown(row, type) {
     totalNights = roomNights + dormNights;
     nightsBlock = (
       <div className="space-y-0.5">
-        <div className="text-gray-300">Predicted nights = days \u00d7 rooms \u00d7 OCC%</div>
+        <div className="text-gray-300">Predicted nights = days × rooms × OCC%</div>
         <div className="ml-2">
-          Room: {days} \u00d7 {roomCount} \u00d7 {fmtPctRound(rOcc)} = <span className="font-mono">{fmtPlain(roomNights)}</span>
+          Room: {days} × {roomCount} × {fmtPctRound(rOcc)} = <span className="font-mono">{fmtPlain(roomNights)}</span>
         </div>
         <div className="ml-2">
-          Dorm: {days} \u00d7 {dormCount} \u00d7 {fmtPctRound(dOcc)} = <span className="font-mono">{fmtPlain(dormNights)}</span>
+          Dorm: {days} × {dormCount} × {fmtPctRound(dOcc)} = <span className="font-mono">{fmtPlain(dormNights)}</span>
         </div>
         <div className="ml-2 text-white">
           Total: <span className="font-mono">{fmtPlain(totalNights)}</span> nights
@@ -113,9 +113,9 @@ function forecastBreakdown(row, type) {
     totalNights = Math.round(days * totalRooms * fbOcc);
     nightsBlock = (
       <div className="space-y-0.5">
-        <div className="text-gray-300">Predicted nights = days \u00d7 rooms \u00d7 OCC%</div>
+        <div className="text-gray-300">Predicted nights = days × rooms × OCC%</div>
         <div className="ml-2">
-          {days} \u00d7 {totalRooms} \u00d7 {fmtPctRound(fbOcc)} = <span className="font-mono">{fmtPlain(totalNights)}</span> nights
+          {days} × {totalRooms} × {fmtPctRound(fbOcc)} = <span className="font-mono">{fmtPlain(totalNights)}</span> nights
         </div>
       </div>
     );
@@ -126,12 +126,12 @@ function forecastBreakdown(row, type) {
       <div className="font-semibold text-white mb-1.5">
         {isNext ? "Next-Month Forecast" : "Forecast (this month)"}
       </div>
-      <div className="text-gray-300 mb-1.5">Forecast = ADR \u00d7 Predicted Nights</div>
+      <div className="text-gray-300 mb-1.5">Forecast = ADR × Predicted Nights</div>
       <div className="border-t border-gray-700 pt-1.5 mb-1.5">{nightsBlock}</div>
       <div className="border-t border-gray-700 pt-1.5 space-y-0.5">
         <div>ADR: <span className="font-mono">{fmt(adr, cur)}</span></div>
         <div>
-          {fmt(adr, cur)} \u00d7 <span className="font-mono">{fmtPlain(totalNights)}</span>
+          {fmt(adr, cur)} × <span className="font-mono">{fmtPlain(totalNights)}</span>
         </div>
         <div className="text-white font-semibold">
           = <span className="font-mono">{fmt(forecast, cur)}</span>
@@ -141,7 +141,7 @@ function forecastBreakdown(row, type) {
   );
 }
 
-// Tooltip content for the Adjusted forecast (= forecast \u00d7 (1 - dedPct) + otherRev).
+// Tooltip content for the Adjusted forecast (= forecast × (1 - dedPct) + otherRev).
 function adjustedBreakdown(row, type) {
   const cur = row.currency || "VND";
   const isNext = type === "next";
@@ -154,7 +154,7 @@ function adjustedBreakdown(row, type) {
       <div className="font-semibold text-white mb-1.5">
         {isNext ? "Adjusted Next Forecast" : "Adjusted Forecast"}
       </div>
-      <div className="text-gray-300 mb-1.5">Adjusted = Forecast \u00d7 (1 \u2212 Deduct%) + Other Rev</div>
+      <div className="text-gray-300 mb-1.5">Adjusted = Forecast × (1 − Deduct%) + Other Rev</div>
       <div className="border-t border-gray-700 pt-1.5 space-y-0.5">
         <div>Forecast: <span className="font-mono">{fmt(base, cur)}</span></div>
         <div>Deduction: <span className="font-mono">{dedPct}%</span></div>
@@ -162,7 +162,7 @@ function adjustedBreakdown(row, type) {
       </div>
       <div className="border-t border-gray-700 pt-1.5 mt-1.5 space-y-0.5">
         <div>
-          {fmt(base, cur)} \u00d7 {(1 - dedPct / 100).toFixed(2)} + {fmt(otherRev, cur)}
+          {fmt(base, cur)} × {(1 - dedPct / 100).toFixed(2)} + {fmt(otherRev, cur)}
         </div>
         <div className="text-white font-semibold">
           = <span className="font-mono">{fmt(adjusted, cur)}</span>
