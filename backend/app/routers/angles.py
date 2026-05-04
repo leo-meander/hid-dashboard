@@ -180,6 +180,12 @@ def list_angles(
         q = q.filter(CreativeAngle.branch_id == branch_id)
     angles = q.order_by(CreativeAngle.created_at.desc()).all()
 
+    last_synced_q = db.query(func.max(AdCombo.last_synced_at))
+    if branch_id:
+        last_synced_q = last_synced_q.filter(AdCombo.branch_id == branch_id)
+    last_synced_ts = last_synced_q.scalar()
+    last_synced_iso = last_synced_ts.isoformat() if last_synced_ts else None
+
     if not angles:
         return _envelope([])
 
@@ -269,6 +275,7 @@ def list_angles(
             "cpb_native": cpb,
             "score": score,
             "combo_count": total_combos,
+            "data_synced_at": last_synced_iso,
         })
 
     # Filter by status if requested
