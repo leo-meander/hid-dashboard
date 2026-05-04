@@ -575,6 +575,7 @@ function CompareView({ data, filterCountry }) {
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Change</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Guests {year}</th>
               <th className="text-right px-4 py-3 font-semibold text-gray-600">Guests {year - 1}</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Change</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -594,6 +595,9 @@ function CompareView({ data, filterCountry }) {
                 </td>
                 <td className="px-4 py-2.5 text-right font-semibold">{fmtNum(c.current_guests)}</td>
                 <td className="px-4 py-2.5 text-right text-gray-500">{fmtNum(c.prev_guests)}</td>
+                <td className="px-4 py-2.5 text-right">
+                  <ChangeBadge value={c.guests_change_pct} />
+                </td>
               </tr>
             ))}
           </tbody>
