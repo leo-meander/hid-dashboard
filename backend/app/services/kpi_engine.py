@@ -6,7 +6,7 @@ via custom reports with proper filters — cached for 1 hour.
 First request per branch/month: ~5s (API call).
 Subsequent requests within 1 hour: instant (from cache).
 
-Revenue EXCLUDES sources: "House use", "Blogger", "Special case"
+Revenue EXCLUDES sources: "House use", "Blogger", "KOL", "Special case", "Work Exchange"
 Rooms Sold / OCC counts ALL sources (no exclusions).
 Room/Dorm split uses room_type filter (Dorm = name contains 'Dorm').
 Each month uses its OWN ADR.
@@ -54,6 +54,7 @@ _EXCLUDED_SOURCES = {
     "blogger", "house use", "houseuse",
     "kol",
     "special case",
+    "work exchange",
 }
 
 
@@ -76,7 +77,7 @@ def _base_reservation_daily_query(
     - branch_id matches
     - date within [first_day, last_day]
     - reservation status is not cancelled/no-show
-    - If exclude_sources=True: also exclude House use, Blogger, Special case
+    - If exclude_sources=True: also exclude House use, Blogger, KOL, Special case, Work Exchange
       (use for REVENUE queries only — OCC/rooms_sold count ALL sources)
     Returns a SQLAlchemy query on ReservationDaily.
     """
@@ -444,6 +445,7 @@ def compute_next_month_forecast(
     return {
         "next_year": next_year,
         "next_month": next_month,
+        "next_month_total_days": total_days,
         "next_month_target_native": next_month_target,
         "next_month_adr": round(total_adr, 2) if total_adr else None,
         "next_month_room_adr": room_adr,
@@ -564,6 +566,7 @@ def compute_kpi_summary(
         "month": month,
         "total_days": total_days,
         "days_elapsed": days_elapsed,
+        "total_rooms": total_rooms,
         # Target
         "target_revenue_native": target_revenue_native,
         "target_revenue_vnd": target_revenue_vnd,

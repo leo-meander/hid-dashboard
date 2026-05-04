@@ -22,6 +22,156 @@ function fmt(value, currency) {
   return sym + new Intl.NumberFormat("en").format(Math.round(value));
 }
 
+function fmtPlain(value) {
+  if (value == null) return "\u2014";
+  return new Intl.NumberFormat("en").format(Math.round(value));
+}
+
+function fmtPctRound(p) {
+  if (p == null) return "\u2014";
+  return Math.round(p * 100) + "%";
+}
+
+// Hover tooltip \u2014 uses fixed positioning so it isn't clipped by the
+// table's overflow-x-auto wrapper. Positions itself above the trigger.
+function HoverTooltip({ children, content, className = "" }) {
+  const [show, setShow] = useState(false);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const onEnter = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setPos({ x: r.left + r.width / 2, y: r.top });
+    setShow(true);
+  };
+  const onLeave = () => setShow(false);
+  return (
+    <span
+      className={"cursor-help " + className}
+      onMouseEnter={onEnter}
+      onMouseLeave={onLeave}
+    >
+      {children}
+      {show && (
+        <div
+          className="fixed z-50 w-80 p-3 bg-gray-900 text-white text-[11px] leading-relaxed rounded-lg shadow-xl pointer-events-none text-left"
+          style={{ left: pos.x, top: pos.y - 10, transform: "translate(-50%, -100%)" }}
+        >
+          {content}
+        </div>
+      )}
+    </span>
+  );
+}
+
+// Build the breakdown content for the forecast tooltip.
+// type: "current" | "next"
+function forecastBreakdown(row, type) {
+  const cur = row.currency || "VND";
+  const isNext = type === "next";
+  const days = isNext ? row.next_month_total_days : row.total_days;
+  const adr = isNext ? row.next_month_adr : row.avg_adr_native;
+  const rOcc = isNext ? row.predicted_room_occ_next : row.predicted_room_occ_pct;
+  const dOcc = isNext ? row.predicted_dorm_occ_next : row.predicted_dorm_occ_pct;
+  const fbOcc = isNext ? row.predicted_occ_next : row.predicted_occ_pct;
+  const forecast = isNext ? row.next_month_forecast_native : row.occ_forecast_native;
+  const totalRooms = row.total_rooms;
+  const roomCount = row.total_room_count || 0;
+  const dormCount = row.total_dorm_count || 0;
+  const hasSplit = roomCount > 0 && dormCount > 0 && rOcc != null && dOcc != null;
+
+  if (!adr || (!hasSplit && (fbOcc == null || !totalRooms))) {
+    return (
+      <>
+        <div className="font-semibold text-white mb-1">
+          {isNext ? "Next-Month Forecast" : "Forecast (this month)"}
+        </div>
+        <div className="text-gray-300">Insufficient data \u2014 set Predicted OCC% and confirm ADR.</div>
+      </>
+    );
+  }
+
+  let nightsBlock;
+  let totalNights;
+  if (hasSplit) {
+    const roomNights = Math.round(days * roomCount * rOcc);
+    const dormNights = Math.round(days * dormCount * dOcc);
+    totalNights = roomNights + dormNights;
+    nightsBlock = (
+      <div className="space-y-0.5">
+        <div className="text-gray-300">Predicted nights = days \u00d7 rooms \u00d7 OCC%</div>
+        <div className="ml-2">
+          Room: {days} \u00d7 {roomCount} \u00d7 {fmtPctRound(rOcc)} = <span className="font-mono">{fmtPlain(roomNights)}</span>
+        </div>
+        <div className="ml-2">
+          Dorm: {days} \u00d7 {dormCount} \u00d7 {fmtPctRound(dOcc)} = <span className="font-mono">{fmtPlain(dormNights)}</span>
+        </div>
+        <div className="ml-2 text-white">
+          Total: <span className="font-mono">{fmtPlain(totalNights)}</span> nights
+        </div>
+      </div>
+    );
+  } else {
+    totalNights = Math.round(days * totalRooms * fbOcc);
+    nightsBlock = (
+      <div className="space-y-0.5">
+        <div className="text-gray-300">Predicted nights = days \u00d7 rooms \u00d7 OCC%</div>
+        <div className="ml-2">
+          {days} \u00d7 {totalRooms} \u00d7 {fmtPctRound(fbOcc)} = <span className="font-mono">{fmtPlain(totalNights)}</span> nights
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="font-semibold text-white mb-1.5">
+        {isNext ? "Next-Month Forecast" : "Forecast (this month)"}
+      </div>
+      <div className="text-gray-300 mb-1.5">Forecast = ADR \u00d7 Predicted Nights</div>
+      <div className="border-t border-gray-700 pt-1.5 mb-1.5">{nightsBlock}</div>
+      <div className="border-t border-gray-700 pt-1.5 space-y-0.5">
+        <div>ADR: <span className="font-mono">{fmt(adr, cur)}</span></div>
+        <div>
+          {fmt(adr, cur)} \u00d7 <span className="font-mono">{fmtPlain(totalNights)}</span>
+        </div>
+        <div className="text-white font-semibold">
+          = <span className="font-mono">{fmt(forecast, cur)}</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// Tooltip content for the Adjusted forecast (= forecast \u00d7 (1 - dedPct) + otherRev).
+function adjustedBreakdown(row, type) {
+  const cur = row.currency || "VND";
+  const isNext = type === "next";
+  const base = isNext ? row.next_month_forecast_native : row.occ_forecast_native;
+  const dedPct = row.deduction_pct_local || 0;
+  const otherRev = row.other_revenue_local || 0;
+  const adjusted = isNext ? row.adjusted_next_forecast : row.adjusted_forecast;
+  return (
+    <>
+      <div className="font-semibold text-white mb-1.5">
+        {isNext ? "Adjusted Next Forecast" : "Adjusted Forecast"}
+      </div>
+      <div className="text-gray-300 mb-1.5">Adjusted = Forecast \u00d7 (1 \u2212 Deduct%) + Other Rev</div>
+      <div className="border-t border-gray-700 pt-1.5 space-y-0.5">
+        <div>Forecast: <span className="font-mono">{fmt(base, cur)}</span></div>
+        <div>Deduction: <span className="font-mono">{dedPct}%</span></div>
+        <div>Other Rev: <span className="font-mono">{fmt(otherRev, cur)}</span></div>
+      </div>
+      <div className="border-t border-gray-700 pt-1.5 mt-1.5 space-y-0.5">
+        <div>
+          {fmt(base, cur)} \u00d7 {(1 - dedPct / 100).toFixed(2)} + {fmt(otherRev, cur)}
+        </div>
+        <div className="text-white font-semibold">
+          = <span className="font-mono">{fmt(adjusted, cur)}</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function AchievementBadge({ value }) {
   if (value == null) return <span className="text-gray-400">{"\u2014"}</span>;
   const cls =
@@ -183,14 +333,16 @@ function AllBranchesTable({ data, loading }) {
                   <td className="px-3 py-3.5 text-center">
                     {row.occ_forecast_native != null
                       ? <div>
-                          <span className="text-indigo-700 font-medium">
-                            {fmt(row.occ_forecast_native, cur)}
-                            {row.target_revenue_native
-                              ? <span className="ml-1 text-xs text-gray-400 font-normal">
-                                  ({Math.round(row.occ_forecast_native / row.target_revenue_native * 100)}%)
-                                </span>
-                              : null}
-                          </span>
+                          <HoverTooltip content={forecastBreakdown(row, "current")}>
+                            <span className="text-indigo-700 font-medium border-b border-dotted border-indigo-300">
+                              {fmt(row.occ_forecast_native, cur)}
+                              {row.target_revenue_native
+                                ? <span className="ml-1 text-xs text-gray-400 font-normal">
+                                    ({Math.round(row.occ_forecast_native / row.target_revenue_native * 100)}%)
+                                  </span>
+                                : null}
+                            </span>
+                          </HoverTooltip>
                           {(() => {
                             const rOcc = row.predicted_room_occ_pct;
                             const dOcc = row.predicted_dorm_occ_pct;
@@ -265,14 +417,16 @@ function AllBranchesTable({ data, loading }) {
                   {/* Adjusted forecast */}
                   <td className="px-3 py-3.5 text-center">
                     {row.adjusted_forecast != null
-                      ? <span className={dedPct > 0 ? "text-orange-600 font-medium" : "text-indigo-700 font-medium"}>
-                          {fmt(row.adjusted_forecast, cur)}
-                          {row.target_revenue_native
-                            ? <span className="ml-1 text-xs text-gray-400 font-normal">
-                                ({Math.round(row.adjusted_forecast / row.target_revenue_native * 100)}%)
-                              </span>
-                            : null}
-                        </span>
+                      ? <HoverTooltip content={adjustedBreakdown(row, "current")}>
+                          <span className={(dedPct > 0 ? "text-orange-600" : "text-indigo-700") + " font-medium border-b border-dotted border-gray-300"}>
+                            {fmt(row.adjusted_forecast, cur)}
+                            {row.target_revenue_native
+                              ? <span className="ml-1 text-xs text-gray-400 font-normal">
+                                  ({Math.round(row.adjusted_forecast / row.target_revenue_native * 100)}%)
+                                </span>
+                              : null}
+                          </span>
+                        </HoverTooltip>
                       : <span className="text-gray-300">{"\u2014"}</span>}
                   </td>
                   {/* Next month actual booked revenue */}
@@ -292,14 +446,25 @@ function AllBranchesTable({ data, loading }) {
                   <td className="px-3 py-3.5 text-center">
                     {row.adjusted_next_forecast != null
                       ? <div>
-                          <span className={dedPct > 0 ? "text-orange-600 font-medium" : "text-purple-700 font-medium"}>
-                            {fmt(row.adjusted_next_forecast, cur)}
-                            {row.next_month_target_native
-                              ? <span className="ml-1 text-xs text-gray-400 font-normal">
-                                  ({Math.round(row.adjusted_next_forecast / row.next_month_target_native * 100)}%)
-                                </span>
-                              : null}
-                          </span>
+                          <HoverTooltip content={
+                            <>
+                              {forecastBreakdown(row, "next")}
+                              {(dedPct > 0 || (row.other_revenue_local || 0) > 0) && (
+                                <div className="border-t border-gray-700 mt-1.5 pt-1.5">
+                                  {adjustedBreakdown(row, "next")}
+                                </div>
+                              )}
+                            </>
+                          }>
+                            <span className={(dedPct > 0 ? "text-orange-600" : "text-purple-700") + " font-medium border-b border-dotted border-purple-300"}>
+                              {fmt(row.adjusted_next_forecast, cur)}
+                              {row.next_month_target_native
+                                ? <span className="ml-1 text-xs text-gray-400 font-normal">
+                                    ({Math.round(row.adjusted_next_forecast / row.next_month_target_native * 100)}%)
+                                  </span>
+                                : null}
+                            </span>
+                          </HoverTooltip>
                           {(() => {
                             const rOcc = row.predicted_room_occ_next;
                             const dOcc = row.predicted_dorm_occ_next;
