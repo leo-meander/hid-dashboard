@@ -33,6 +33,7 @@ from app.models.ads_booking_match import AdsBookingMatch
 from app.models.branch import Branch
 from app.models.reservation import Reservation
 from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
+from app.services.ads_platform import branch_slug_for, get_client as _get_ads_client
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -83,26 +84,70 @@ def _fetch_paid_ads_totals(
     d_to: date,
     use_native: bool,
 ) -> tuple[int, float]:
-    """Authoritative Paid Ads (bookings, revenue) for a month.
+    """Authoritative Paid Ads (bookings, revenue) for a month — live from API.
 
-    Reads from ``ads_booking_matches``, which is unique per
-    ``external_match_id`` and matches what the Ads Platform dashboard reports
-    (the legacy ``ads_performance(grain='daily')`` aggregate double-counts
-    conversions across overlapping account rows — observed ~1.57x inflation
-    on April 2026 vs the platform dashboard).
+    Streams ``/api/export/booking-matches`` (the same endpoint feeding the
+    Ads Platform dashboard) and sums in-memory, so the user sees fresh
+    matches without waiting for the nightly sync. Falls back to the local
+    ``ads_booking_matches`` table if the API is unreachable.
+
+    Rationale: the legacy ``ads_performance(grain='daily')`` aggregate
+    double-counts conversions across overlapping account rows (~1.57x
+    inflation observed on April 2026). Local cache is also vulnerable to
+    silent slug-mismatch drops in ``_sync_booking_matches``.
     """
-    rev_col = AdsBookingMatch.revenue_native if use_native else AdsBookingMatch.revenue_vnd
-    q = db.query(
-        func.count(AdsBookingMatch.id).label("bookings"),
-        func.coalesce(func.sum(rev_col), 0).label("revenue"),
-    ).filter(
-        AdsBookingMatch.booking_date >= d_from,
-        AdsBookingMatch.booking_date <= d_to,
-    )
+    branch_obj: Optional[Branch] = None
+    slug: Optional[str] = None
     if branch_id is not None:
-        q = q.filter(AdsBookingMatch.branch_id == branch_id)
-    row = q.one()
-    return int(row.bookings or 0), float(row.revenue or 0)
+        branch_obj = db.query(Branch).filter(Branch.id == branch_id).first()
+        if branch_obj:
+            slug = branch_slug_for(branch_obj)
+
+    try:
+        client = _get_ads_client()
+        rate_cache: dict[str, Optional[float]] = {"VND": 1.0}
+        bookings = 0
+        revenue_vnd = 0.0
+        for m in client.get_booking_matches(d_from.isoformat(), d_to.isoformat(), branch=slug):
+            bookings += 1
+            raw = m.get("revenue")
+            if raw is None:
+                raw = m.get("revenue_native") or 0
+            cur = (m.get("currency") or (branch_obj.currency if branch_obj else "VND") or "VND").upper()
+            if cur not in rate_cache:
+                rate_cache[cur] = _get_rate_to_vnd(cur)
+            rate = rate_cache[cur]
+            try:
+                amt = float(raw or 0)
+            except (TypeError, ValueError):
+                amt = 0.0
+            if rate is not None:
+                revenue_vnd += amt * rate
+        if use_native and branch_obj:
+            cur = (branch_obj.currency or "VND").upper()
+            if cur == "VND":
+                return bookings, revenue_vnd
+            rate = rate_cache.get(cur) or _get_rate_to_vnd(cur)
+            if rate:
+                return bookings, round(revenue_vnd / rate, 2)
+        return bookings, revenue_vnd
+    except Exception as exc:
+        log.warning(
+            "Paid Ads live API failed (%s) — falling back to local ads_booking_matches",
+            exc,
+        )
+        rev_col = AdsBookingMatch.revenue_native if use_native else AdsBookingMatch.revenue_vnd
+        q = db.query(
+            func.count(AdsBookingMatch.id).label("bookings"),
+            func.coalesce(func.sum(rev_col), 0).label("revenue"),
+        ).filter(
+            AdsBookingMatch.booking_date >= d_from,
+            AdsBookingMatch.booking_date <= d_to,
+        )
+        if branch_id is not None:
+            q = q.filter(AdsBookingMatch.branch_id == branch_id)
+        row = q.one()
+        return int(row.bookings or 0), float(row.revenue or 0)
 
 
 def _fetch_paid_ads_by_country(
