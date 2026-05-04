@@ -1387,7 +1387,7 @@ def build_branch_analytics(db: Session, branch: Branch, today: date) -> dict:
     total_rooms = branch.total_rooms or 0
     return {
         "summary": summary_metrics(db, branch.id, total_rooms, today),
-        "outliers": outliers(db, branch.id, today, baseline_days=30, report_days=7),
+        "outliers": outliers(db, branch.id, today, baseline_days=30),
         "behavior": booking_behavior(db, branch.id, today, days=7),
         "channel_mix": channel_mix(db, branch.id, today, days=7),
         "countries": country_insights(db, branch.id, today, days=90, limit=8),
