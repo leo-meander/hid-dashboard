@@ -229,7 +229,7 @@ def trigger_guest_country_backfill(
     background_tasks: BackgroundTasks,
     branch_id: Optional[UUID] = Query(None),
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD check-in from (default: 2025-01-01)"),
-    date_to: Optional[str] = Query(None, description="YYYY-MM-DD check-in to (default: today)"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD check-in to (default: today + 365d)"),
     limit: Optional[int] = Query(None, description="Max reservations per branch (for testing)"),
     db: Session = Depends(get_db),
 ):
@@ -238,15 +238,17 @@ def trigger_guest_country_backfill(
     Calls Cloudbeds /getReservation per row and reads ISO-2 country from
     guestList[*].guestCountry — the bulk endpoint never includes it.
 
-    Default window 2025-01-01..today: pre-2025 detail responses also have
-    no country, so backfilling them wastes ~7 hours of API calls. Returns
-    immediately; backfill runs in background. Check logs for progress.
+    Default window 2025-01-01..today+365d: pre-2025 detail responses also
+    have no country, so backfilling them wastes ~7 hours of API calls. The
+    forward year covers future check-ins (booked-now-stay-later) which the
+    "By Date Booked" dashboard view depends on. Returns immediately; backfill
+    runs in background. Check logs for progress.
     """
-    from datetime import date as date_cls
+    from datetime import date as date_cls, timedelta as _td
 
     today = date_cls.today()
     df = date_cls.fromisoformat(date_from) if date_from else date_cls(2025, 1, 1)
-    dt = date_cls.fromisoformat(date_to) if date_to else today
+    dt = date_cls.fromisoformat(date_to) if date_to else (today + _td(days=365))
 
     branches_q = db.query(Branch).filter_by(is_active=True)
     if branch_id:
@@ -1067,8 +1069,10 @@ def trigger_cloudbeds_sync(
         """Run bulk sync + country backfill for one branch.
 
         Cloudbeds bulk /getReservations omits guestCountry — without the
-        backfill chain, every new ingestion lands as Unknown. Chained here
-        with the same 14-day default window used by the nightly cron.
+        backfill chain, every new ingestion lands as Unknown. Window covers
+        last 14 days back AND a full year forward so future-dated bookings
+        (booked-now-stay-later) get their country populated, otherwise the
+        Country dashboard's "By Date Booked" view fills with Unknowns.
         """
         from datetime import date as _date, timedelta as _td
         result = sync_branch(branch_id_str, pid, currency, api_key=api_key)
@@ -1079,7 +1083,7 @@ def trigger_cloudbeds_sync(
                 branch_id_str, pid,
                 api_key=api_key,
                 checkin_from=today - _td(days=14),
-                checkin_to=today,
+                checkin_to=today + _td(days=365),
             )
             _logger.info("Country backfill done branch=%s: %s", branch_name, gc_result)
         except Exception:
@@ -1175,11 +1179,13 @@ def trigger_daily_sync(
 
     def _run():
         from datetime import timedelta as _td
-        # Window for the country backfill follow-up: lookback_days extended
-        # by 7 days for late check-ins, capped at today (no point checking
-        # future rows that haven't been ingested yet).
+        # Country backfill window: lookback_days+7 back (catches late check-ins)
+        # AND 365 days forward. The forward extension is essential — most newly
+        # booked rows in this incremental sync have a future check-in date, so
+        # without it they'd be ingested as guest_country="Unknown" and never
+        # picked up because subsequent syncs would also skip them.
         country_from = today - _td(days=lookback_days + 7)
-        country_to = today
+        country_to = today + _td(days=365)
 
         for cfg in eligible:
             try:

@@ -730,15 +730,17 @@ def backfill_guest_country(
     country (rows stay 'Unknown'). Mutates only guest_country and
     guest_country_code; raw_data is not touched.
 
-    Default window: 2025-01-01 to today. Pre-2025 reservations have no
-    guestCountry in either bulk OR detail responses (verified empirically),
-    so backfilling them is wasted API calls.
+    Default window: 2025-01-01 to today+365d. Pre-2025 reservations have
+    no guestCountry in either bulk OR detail responses (verified empirically),
+    so backfilling them is wasted API calls. The forward year covers future
+    check-ins (booked-now-stay-later) which dominate "By Date Booked" views;
+    without it, recently-booked rows for far-future stays stay Unknown forever.
     """
     import time
 
     today = date.today()
     df = checkin_from or date(2025, 1, 1)
-    dt = checkin_to or today
+    dt = checkin_to or (today + timedelta(days=365))
 
     db = SessionLocal()
     query = db.query(Reservation).filter(
