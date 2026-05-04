@@ -400,10 +400,16 @@ def get_country_yoy_insights(
     year: int = Query(None),
     month: int = Query(None, ge=1, le=12),
     branch_id: Optional[UUID] = Query(None),
+    date_type: str = Query("check_in", regex="^(check_in|booked)$"),
     db: Session = Depends(get_db),
 ):
     """
     Country YoY comparison — local DB first, Cloudbeds Data Insights fallback.
+
+    `date_type`: "check_in" buckets by check-in month (default);
+                 "booked" buckets by reservation_date (when booking was made).
+    Cloudbeds Insights fallback only supports check-in date — the booked-date
+    view always reads from local DB.
     """
     today = date.today()
     if year is None:
@@ -420,12 +426,14 @@ def get_country_yoy_insights(
 
     try:
         # ── Primary: local DB ─────────────────────────────────────────────
-        local = get_country_yoy_insights_local(db, branch_id, year, month)
+        local = get_country_yoy_insights_local(db, branch_id, year, month, date_type)
         current_totals = local["current"]
         prev_totals = local["previous"]
 
         # ── Fallback: Cloudbeds Data Insights API (if local is empty) ─────
-        if not current_totals and not prev_totals:
+        # Cloudbeds Insights only supports check-in based grouping, so we
+        # only fall back when date_type=check_in.
+        if not current_totals and not prev_totals and date_type == "check_in":
             logger.info("Local DB empty for country YoY %d-%02d, trying Cloudbeds", year, month)
             current_totals, prev_totals = _fetch_country_yoy_cloudbeds(
                 db, branch_id, year, month,
@@ -463,6 +471,7 @@ def get_country_yoy_insights(
             "month": month,
             "countries": rows,
             "currency": currency,
+            "date_type": date_type,
         })
     except Exception as exc:
         logger.exception("country-yoy-insights failed: %s", exc)
@@ -471,6 +480,7 @@ def get_country_yoy_insights(
             "month": month,
             "countries": [],
             "currency": currency,
+            "date_type": date_type,
         })
 
 
@@ -538,12 +548,16 @@ def get_country_reservations(
     view: str = Query("monthly", regex="^(weekly|monthly)$"),
     branch_id: Optional[UUID] = Query(None),
     limit: int = Query(500, ge=1, le=500),
+    date_type: str = Query("check_in", regex="^(check_in|booked)$"),
     db: Session = Depends(get_db),
 ):
     """
     Top N countries with trend data over 7 periods.
     - monthly: last 7 months, grouped by month
     - weekly: last 7 weeks, grouped by ISO week
+    - date_type: "check_in" filters/groups by check_in_date (default);
+                 "booked" filters/groups by reservation_date (when booking
+                 was made) — matches the OTA Mix page's date toggle.
     Returns: top_countries (sorted by total) + trend data per period per country.
     """
     today = date.today()
@@ -566,18 +580,25 @@ def get_country_reservations(
         if b and b.currency:
             currency = b.currency
 
+    date_col = (
+        Reservation.reservation_date if date_type == "booked" else Reservation.check_in_date
+    )
+
     # 1) Find top N countries across the full range
-    top_countries = _query_top_countries(db, branch_id, overall_start, overall_end, limit)
+    top_countries = _query_top_countries(db, branch_id, overall_start, overall_end, limit, date_col)
     country_names = [c["country"] for c in top_countries]
 
     if not country_names:
-        return _envelope({"view": view, "periods": [], "countries": [], "trend": [], "currency": currency})
+        return _envelope({
+            "view": view, "periods": [], "countries": [], "trend": [],
+            "currency": currency, "date_type": date_type,
+        })
 
     # 2) Query per-period × per-country breakdown
     if view == "monthly":
-        trend = _query_monthly_trend(db, branch_id, overall_start, overall_end, country_names)
+        trend = _query_monthly_trend(db, branch_id, overall_start, overall_end, country_names, date_col)
     else:
-        trend = _query_weekly_trend(db, branch_id, overall_start, overall_end, country_names)
+        trend = _query_weekly_trend(db, branch_id, overall_start, overall_end, country_names, date_col)
 
     # 3) Build period labels
     period_labels = [p["label"] for p in periods]
@@ -588,6 +609,7 @@ def get_country_reservations(
         "countries": top_countries,
         "trend": trend,
         "currency": currency,
+        "date_type": date_type,
     })
 
 
@@ -627,7 +649,7 @@ def _build_weekly_periods(today, count):
     return periods
 
 
-def _query_top_countries(db, branch_id, d_from, d_to, limit):
+def _query_top_countries(db, branch_id, d_from, d_to, limit, date_col=None):
     """Get top N countries by total reservations in the full date range.
 
     NULL guest_country/guest_country_code is bucketed as "Unknown" so the
@@ -636,7 +658,12 @@ def _query_top_countries(db, branch_id, d_from, d_to, limit):
     When a branch_id is given we sum grand_total_native (the branch's local
     currency); for the All-Branches view we fall back to grand_total_vnd so
     revenue across mixed-currency branches stays comparable.
+
+    `date_col` selects which date column to filter on — Reservation.check_in_date
+    (default) or Reservation.reservation_date (when the booking was made).
     """
+    if date_col is None:
+        date_col = Reservation.check_in_date
     code_expr = func.coalesce(Reservation.guest_country_code, "Unknown").label("code")
     country_expr = func.coalesce(Reservation.guest_country, "Unknown").label("country")
     revenue_col = (
@@ -649,8 +676,8 @@ def _query_top_countries(db, branch_id, d_from, d_to, limit):
         func.coalesce(func.sum(revenue_col), 0).label("revenue"),
         func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
     ).filter(
-        Reservation.check_in_date >= d_from,
-        Reservation.check_in_date <= d_to,
+        date_col >= d_from,
+        date_col <= d_to,
         _status_active_filter(),
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
     ).group_by(
@@ -672,22 +699,24 @@ def _query_top_countries(db, branch_id, d_from, d_to, limit):
     ]
 
 
-def _query_monthly_trend(db, branch_id, d_from, d_to, country_names):
+def _query_monthly_trend(db, branch_id, d_from, d_to, country_names, date_col=None):
     """Per month × country reservation counts.
 
     Uses COALESCE(guest_country, 'Unknown') so NULL rows match the "Unknown"
     bucket from _query_top_countries. Without this, NULL IN (...) evaluates
     to FALSE in SQL and the Unknown column on the chart is silently empty.
     """
+    if date_col is None:
+        date_col = Reservation.check_in_date
     country_expr = func.coalesce(Reservation.guest_country, "Unknown").label("country")
     q = db.query(
-        extract("year", Reservation.check_in_date).label("yr"),
-        extract("month", Reservation.check_in_date).label("mo"),
+        extract("year", date_col).label("yr"),
+        extract("month", date_col).label("mo"),
         country_expr,
         func.count(Reservation.id).label("cnt"),
     ).filter(
-        Reservation.check_in_date >= d_from,
-        Reservation.check_in_date <= d_to,
+        date_col >= d_from,
+        date_col <= d_to,
         country_expr.in_(country_names),
         _status_active_filter(),
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
@@ -705,15 +734,17 @@ def _query_monthly_trend(db, branch_id, d_from, d_to, country_names):
     return dict(result)
 
 
-def _query_weekly_trend(db, branch_id, d_from, d_to, country_names):
+def _query_weekly_trend(db, branch_id, d_from, d_to, country_names, date_col=None):
     """Per week × country reservation counts. NULL country bucketed as 'Unknown'."""
+    if date_col is None:
+        date_col = Reservation.check_in_date
     country_expr = func.coalesce(Reservation.guest_country, "Unknown")
     q = db.query(
-        Reservation.check_in_date,
+        date_col.label("d"),
         country_expr.label("country"),
     ).filter(
-        Reservation.check_in_date >= d_from,
-        Reservation.check_in_date <= d_to,
+        date_col >= d_from,
+        date_col <= d_to,
         country_expr.in_(country_names),
         _status_active_filter(),
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
@@ -723,8 +754,10 @@ def _query_weekly_trend(db, branch_id, d_from, d_to, country_names):
         q = q.filter(Reservation.branch_id == branch_id)
 
     result = defaultdict(lambda: defaultdict(int))
-    for check_in, country in q.all():
-        week_start = check_in - timedelta(days=check_in.weekday())
+    for d_val, country in q.all():
+        if d_val is None:
+            continue
+        week_start = d_val - timedelta(days=d_val.weekday())
         label = week_start.strftime("%d %b")
         result[label][country] += 1
 

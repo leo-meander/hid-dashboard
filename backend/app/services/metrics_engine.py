@@ -1216,12 +1216,20 @@ def get_country_yoy_insights_local(
     branch_id: Optional[UUID],
     year: int,
     month: int,
+    date_type: str = "check_in",
 ) -> dict:
     """
     Country YoY comparison using local reservations table.
+
+    `date_type`: "check_in" groups by check_in_date (default);
+                 "booked"   groups by reservation_date (when the booking was made).
+
     Returns {current: {country: {nights, revenue, guests}},
              previous: {country: {nights, revenue, guests}}}
     """
+    date_col = (
+        Reservation.reservation_date if date_type == "booked" else Reservation.check_in_date
+    )
 
     def _query_month(target_year: int, target_month: int) -> dict[str, dict]:
         # COALESCE NULL/empty/junk to "Unknown" so all reservations are accounted
@@ -1242,8 +1250,8 @@ def get_country_yoy_insights_local(
             func.coalesce(func.sum(revenue_col), 0).label("revenue"),
             func.count(Reservation.id).label("guests"),
         ).filter(
-            func.extract("year", Reservation.check_in_date) == target_year,
-            func.extract("month", Reservation.check_in_date) == target_month,
+            func.extract("year", date_col) == target_year,
+            func.extract("month", date_col) == target_month,
             Reservation.status.notin_(list(EXCLUDED_STATUSES)),
         )
         if branch_id:
