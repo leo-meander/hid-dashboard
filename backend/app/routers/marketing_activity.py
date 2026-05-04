@@ -84,70 +84,33 @@ def _fetch_paid_ads_totals(
     d_to: date,
     use_native: bool,
 ) -> tuple[int, float]:
-    """Authoritative Paid Ads (bookings, revenue) for a month — live from API.
+    """Paid Ads (bookings, revenue) for a month.
 
-    Streams ``/api/export/booking-matches`` (the same endpoint feeding the
-    Ads Platform dashboard) and sums in-memory, so the user sees fresh
-    matches without waiting for the nightly sync. Falls back to the local
-    ``ads_booking_matches`` table if the API is unreachable.
+    Sums local ``ads_performance(grain='daily')`` rows. Known caveat: this
+    aggregate runs ~1.57x higher than the Ads Platform dashboard's totals
+    on April 2026 (423 vs 269 conversions, 2.55B vs 1.63B revenue). The
+    inflation source is still being investigated — see the
+    /api/marketing-activity/debug/paid-ads endpoint for raw API responses.
 
-    Rationale: the legacy ``ads_performance(grain='daily')`` aggregate
-    double-counts conversions across overlapping account rows (~1.57x
-    inflation observed on April 2026). Local cache is also vulnerable to
-    silent slug-mismatch drops in ``_sync_booking_matches``.
+    Earlier attempts (ads_booking_matches table, live booking-matches API)
+    surfaced a different problem: matches sparse / revenue-null in upstream
+    data, leaving the page showing 0 revenue. Sticking with the daily
+    aggregate keeps numbers visible until the right authoritative source
+    is identified.
     """
-    branch_obj: Optional[Branch] = None
-    slug: Optional[str] = None
+    rev_col = AdsPerformance.revenue_native if use_native else AdsPerformance.revenue_vnd
+    q = db.query(
+        func.coalesce(func.sum(AdsPerformance.bookings), 0).label("bookings"),
+        func.coalesce(func.sum(rev_col), 0).label("revenue"),
+    ).filter(
+        AdsPerformance.grain == "daily",
+        AdsPerformance.date_from >= d_from,
+        AdsPerformance.date_from <= d_to,
+    )
     if branch_id is not None:
-        branch_obj = db.query(Branch).filter(Branch.id == branch_id).first()
-        if branch_obj:
-            slug = branch_slug_for(branch_obj)
-
-    try:
-        client = _get_ads_client()
-        rate_cache: dict[str, Optional[float]] = {"VND": 1.0}
-        bookings = 0
-        revenue_vnd = 0.0
-        for m in client.get_booking_matches(d_from.isoformat(), d_to.isoformat(), branch=slug):
-            bookings += 1
-            raw = m.get("revenue")
-            if raw is None:
-                raw = m.get("revenue_native") or 0
-            cur = (m.get("currency") or (branch_obj.currency if branch_obj else "VND") or "VND").upper()
-            if cur not in rate_cache:
-                rate_cache[cur] = _get_rate_to_vnd(cur)
-            rate = rate_cache[cur]
-            try:
-                amt = float(raw or 0)
-            except (TypeError, ValueError):
-                amt = 0.0
-            if rate is not None:
-                revenue_vnd += amt * rate
-        if use_native and branch_obj:
-            cur = (branch_obj.currency or "VND").upper()
-            if cur == "VND":
-                return bookings, revenue_vnd
-            rate = rate_cache.get(cur) or _get_rate_to_vnd(cur)
-            if rate:
-                return bookings, round(revenue_vnd / rate, 2)
-        return bookings, revenue_vnd
-    except Exception as exc:
-        log.warning(
-            "Paid Ads live API failed (%s) — falling back to local ads_booking_matches",
-            exc,
-        )
-        rev_col = AdsBookingMatch.revenue_native if use_native else AdsBookingMatch.revenue_vnd
-        q = db.query(
-            func.count(AdsBookingMatch.id).label("bookings"),
-            func.coalesce(func.sum(rev_col), 0).label("revenue"),
-        ).filter(
-            AdsBookingMatch.booking_date >= d_from,
-            AdsBookingMatch.booking_date <= d_to,
-        )
-        if branch_id is not None:
-            q = q.filter(AdsBookingMatch.branch_id == branch_id)
-        row = q.one()
-        return int(row.bookings or 0), float(row.revenue or 0)
+        q = q.filter(AdsPerformance.branch_id == branch_id)
+    row = q.one()
+    return int(row.bookings or 0), float(row.revenue or 0)
 
 
 def _fetch_paid_ads_by_country(
@@ -587,3 +550,134 @@ def _build_kol_suggestions(db: Session, branch_id: Optional[UUID], d_from: date,
 
     result.sort(key=lambda x: (x["country"], -x["organic_revenue_vnd"]))
     return result
+
+
+# ── Debug: probe Ads Platform endpoints to find authoritative source ────────
+
+@router.get("/debug/paid-ads")
+def debug_paid_ads_sources(
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    branch: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Side-by-side compare every plausible source for Paid Ads totals.
+
+    Hit this in browser to see which endpoint matches the Ads Platform
+    dashboard's KPI cards. Helps figure out whether spend/daily,
+    booking-matches, or booking-matches/summary is the right source.
+    """
+    from datetime import datetime as _dt
+    df = _dt.fromisoformat(date_from).date()
+    dt = _dt.fromisoformat(date_to).date()
+
+    # ── Local DB sums ──────────────────────────────────────────────────────
+    daily_q = db.query(
+        func.coalesce(func.sum(AdsPerformance.bookings), 0).label("bookings"),
+        func.coalesce(func.sum(AdsPerformance.revenue_vnd), 0).label("revenue_vnd"),
+        func.coalesce(func.sum(AdsPerformance.cost_vnd), 0).label("cost_vnd"),
+        func.count(AdsPerformance.id).label("row_count"),
+    ).filter(
+        AdsPerformance.grain == "daily",
+        AdsPerformance.date_from >= df,
+        AdsPerformance.date_from <= dt,
+    )
+    matches_q = db.query(
+        func.count(AdsBookingMatch.id).label("count"),
+        func.coalesce(func.sum(AdsBookingMatch.revenue_vnd), 0).label("revenue_vnd"),
+    ).filter(
+        AdsBookingMatch.booking_date >= df,
+        AdsBookingMatch.booking_date <= dt,
+    )
+    daily_row = daily_q.one()
+    matches_row = matches_q.one()
+    local_summary = {
+        "ads_performance_grain_daily": {
+            "row_count": int(daily_row.row_count or 0),
+            "bookings_sum": int(daily_row.bookings or 0),
+            "revenue_vnd_sum": float(daily_row.revenue_vnd or 0),
+            "cost_vnd_sum": float(daily_row.cost_vnd or 0),
+        },
+        "ads_booking_matches_table": {
+            "row_count": int(matches_row.count or 0),
+            "revenue_vnd_sum": float(matches_row.revenue_vnd or 0),
+        },
+    }
+
+    # ── Live Ads Platform API ──────────────────────────────────────────────
+    api_results: dict = {}
+    try:
+        client = _get_ads_client()
+        # 1. summary endpoint (likely the dashboard's KPI source)
+        try:
+            api_results["booking_matches_summary"] = client.get_booking_matches_summary(
+                date_from, date_to, branch=branch,
+            )
+        except Exception as e:
+            api_results["booking_matches_summary"] = {"error": repr(e)}
+
+        # 2. paginated booking-matches — count + revenue + sample
+        try:
+            matches = list(client.get_booking_matches(date_from, date_to, branch=branch))
+            fields_seen: set = set()
+            for m in matches:
+                fields_seen.update(m.keys())
+            rev_total = 0.0
+            null_rev_count = 0
+            for m in matches:
+                r = m.get("revenue")
+                if r is None:
+                    r = m.get("revenue_native")
+                if r is None:
+                    null_rev_count += 1
+                else:
+                    try:
+                        rev_total += float(r)
+                    except (TypeError, ValueError):
+                        null_rev_count += 1
+            api_results["booking_matches_paginated"] = {
+                "count": len(matches),
+                "raw_revenue_sum": rev_total,
+                "matches_with_null_revenue": null_rev_count,
+                "fields_seen": sorted(fields_seen),
+                "first_3": matches[:3],
+            }
+        except Exception as e:
+            api_results["booking_matches_paginated"] = {"error": repr(e)}
+
+        # 3. spend/daily summed across platforms (if branch supplied)
+        if branch:
+            try:
+                totals = {"conversions": 0, "revenue": 0.0, "spend": 0.0}
+                fields_seen2: set = set()
+                first_rows = []
+                for platform in ("meta", "google", "tiktok"):
+                    rows = client.get_spend_daily(
+                        date_from, date_to, platform=platform, branch=branch,
+                    ) or []
+                    for r in rows:
+                        fields_seen2.update(r.keys())
+                        totals["conversions"] += int(r.get("conversions") or 0)
+                        totals["revenue"] += float(r.get("revenue") or 0)
+                        totals["spend"] += float(r.get("spend") or 0)
+                    if rows and len(first_rows) < 3:
+                        first_rows.extend(rows[: max(0, 3 - len(first_rows))])
+                api_results["spend_daily_summed"] = {
+                    "totals": totals,
+                    "fields_seen": sorted(fields_seen2),
+                    "first_3_rows": first_rows,
+                }
+            except Exception as e:
+                api_results["spend_daily_summed"] = {"error": repr(e)}
+        else:
+            api_results["spend_daily_summed"] = {
+                "skipped": "spend/daily requires branch slug; pass ?branch=<slug>",
+            }
+    except Exception as e:
+        api_results["client_init_error"] = repr(e)
+
+    return _envelope({
+        "params": {"date_from": date_from, "date_to": date_to, "branch": branch},
+        "local_db": local_summary,
+        "ads_platform_api": api_results,
+    })
