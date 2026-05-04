@@ -5,7 +5,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import text
+from sqlalchemy import text, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -135,6 +135,13 @@ def list_insights(
         0 if (x["expiry_days_left"] is not None and 0 < x["expiry_days_left"] <= 30) else 1,
         x["expiry_days_left"] if x["expiry_days_left"] is not None else 9999,
     ))
+    sync_q = db.query(func.max(KOLRecord.updated_at))
+    if branch_id:
+        sync_q = sync_q.filter(KOLRecord.branch_id == branch_id)
+    sync_ts = sync_q.scalar()
+    last_synced_iso = sync_ts.isoformat() if sync_ts else None
+    for row in result:
+        row["data_synced_at"] = last_synced_iso
     return _envelope(result)
 
 

@@ -7,6 +7,7 @@ import { useBranch } from "../context/BranchContext";
 import { listCopies, createCopy, getCopy } from "../api/copies";
 import { listAngles } from "../api/angles";
 import VerdictBadge from "../components/VerdictBadge";
+import SyncBadge from "../components/SyncBadge";
 import { AUDIENCES, getTAClasses } from "../constants/audiences";
 
 const CHANNELS = ["Facebook", "Instagram", "TikTok", "YouTube", "Meta", "Google"];
@@ -66,7 +67,13 @@ export default function CreativeCopies() {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-bold text-gray-900">Copy Library</h1>
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">Copy Library</h1>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Derived verdict from combos
+            <SyncBadge timestamp={rows[0]?.data_synced_at} />
+          </p>
+        </div>
         <button onClick={() => setShowForm(true)}
           className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700">+ New Copy</button>
       </div>

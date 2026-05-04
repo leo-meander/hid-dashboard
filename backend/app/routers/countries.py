@@ -19,6 +19,14 @@ def _envelope(data):
             "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+def _last_reservations_synced_at(db: Session, branch_id: Optional[UUID]) -> Optional[str]:
+    q = db.query(func.max(Reservation.updated_at))
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+    ts = q.scalar()
+    return ts.isoformat() if ts else None
+
+
 @router.get("/ranking")
 def country_ranking(
     branch_id: Optional[UUID] = Query(None),
@@ -34,9 +42,11 @@ def country_ranking(
         branch_id=branch_id,
         top_n=top_n,
     )
+    last_synced_iso = _last_reservations_synced_at(db, branch_id)
     # Add rank
     for i, r in enumerate(results, 1):
         r["rank"] = i
+        r["data_synced_at"] = last_synced_iso
     return _envelope(results)
 
 
@@ -96,4 +106,5 @@ def country_trend(
         "country_code": country_code.upper(),
         "country": country_name,
         "trend": trend,
+        "data_synced_at": _last_reservations_synced_at(db, branch_id),
     })

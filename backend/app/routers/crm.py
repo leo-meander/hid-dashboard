@@ -26,6 +26,14 @@ def _envelope(data):
     }
 
 
+def _last_reservations_synced_at(db: Session, branch_id: Optional[UUID]) -> Optional[str]:
+    q = db.query(func.max(Reservation.updated_at))
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+    ts = q.scalar()
+    return ts.isoformat() if ts else None
+
+
 def _crm_filter():
     """Filter for CRM-related room types/rate plans: CRM, MEANDER'S FRIEND, Travel guide, Grand Open."""
     return or_(
@@ -98,6 +106,7 @@ def crm_summary(
             "cancellations": cancellations,
             "cancellation_rate": cancel_rate,
             "confirmed_bookings": total - cancellations,
+            "data_synced_at": _last_reservations_synced_at(db, branch_id),
         })
     except Exception as e:
         import logging

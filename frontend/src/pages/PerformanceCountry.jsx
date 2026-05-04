@@ -9,6 +9,7 @@ import {
   AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
+import SyncBadge from "../components/SyncBadge";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 
 const COLORS = [
@@ -247,7 +248,10 @@ export default function PerformanceCountry() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-lg font-bold text-gray-900">Country Reservations</h1>
-          <p className="text-sm text-gray-500">{subtitle}</p>
+          <p className="text-sm text-gray-500">
+            {subtitle}
+            <SyncBadge timestamp={data?.data_synced_at || cmpData?.data_synced_at} />
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <CountryCombobox

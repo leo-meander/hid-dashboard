@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../context/AuthContext";
+import SyncBadge from "../components/SyncBadge";
 
 const MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
 const MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -104,6 +105,7 @@ export default function GovVisitorData() {
           <h1 className="text-xl font-bold text-gray-900">Government Visitor Data</h1>
           <p className="text-sm text-gray-500 mt-0.5">
             Import & manage government tourism statistics by country
+            <SyncBadge timestamp={data[0]?.data_synced_at} />
           </p>
         </div>
       </div>

@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -67,7 +68,17 @@ def list_gov_visitor(
         q = q.filter(GovVisitorData.destination == destination)
     q = q.order_by(GovVisitorData.destination, GovVisitorData.rank.asc().nullslast())
     rows = q.all()
-    return _envelope([_row_to_dict(r) for r in rows])
+    sync_q = db.query(func.max(GovVisitorData.updated_at))
+    if destination:
+        sync_q = sync_q.filter(GovVisitorData.destination == destination)
+    ts = sync_q.scalar()
+    last_synced_iso = ts.isoformat() if ts else None
+    out = []
+    for r in rows:
+        d = _row_to_dict(r)
+        d["data_synced_at"] = last_synced_iso
+        out.append(d)
+    return _envelope(out)
 
 
 @router.get("/destinations")

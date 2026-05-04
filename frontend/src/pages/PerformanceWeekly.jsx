@@ -8,6 +8,7 @@ import {
   PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
+import SyncBadge from "../components/SyncBadge";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 
 const BRANCH_COLORS = ["#6366f1", "#10b981", "#f59e0b", "#ef4444", "#3b82f6"];
@@ -329,6 +330,11 @@ export default function PerformanceWeekly() {
     return `${weeks[0]} to ${weeks[weeks.length - 1]}`;
   }, [tableRows]);
 
+  const lastSynced = useMemo(() => {
+    const ts = tableRows.map((r) => r.data_synced_at).filter(Boolean).sort();
+    return ts.length ? ts[ts.length - 1] : null;
+  }, [tableRows]);
+
   /* ── Render ───────────────────────────────────────────────────────────── */
 
   if (loading) {
@@ -349,6 +355,7 @@ export default function PerformanceWeekly() {
         <h1 className="text-xl font-bold text-gray-800">Weekly Brief</h1>
         <p className="text-sm text-gray-500">
           Last 13 weeks {dateRange && `\u00B7 ${dateRange}`}
+          <SyncBadge timestamp={lastSynced} />
         </p>
       </div>
 

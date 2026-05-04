@@ -5,6 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -18,6 +19,16 @@ router = APIRouter()
 def _envelope(data):
     return {"success": True, "data": data, "error": None,
             "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+def _last_combo_synced_at(db: Session, branch_id: Optional[UUID]) -> Optional[str]:
+    """Latest verdict_sync timestamp from ad_combos — represents creative-library
+    data freshness for derived_verdict on copies/materials/angles."""
+    q = db.query(func.max(AdCombo.last_synced_at))
+    if branch_id:
+        q = q.filter(AdCombo.branch_id == branch_id)
+    ts = q.scalar()
+    return ts.isoformat() if ts else None
 
 
 def _copy_dict(c: CreativeCopy) -> dict:
@@ -93,7 +104,13 @@ def list_copies(
         q = q.filter(CreativeCopy.target_audience.any(target_audience))
     if derived_verdict:
         q = q.filter(CreativeCopy.derived_verdict == derived_verdict)
-    return _envelope([_copy_dict(c) for c in q.order_by(CreativeCopy.created_at.desc()).all()])
+    last_synced_iso = _last_combo_synced_at(db, branch_id)
+    out = []
+    for c in q.order_by(CreativeCopy.created_at.desc()).all():
+        d = _copy_dict(c)
+        d["data_synced_at"] = last_synced_iso
+        out.append(d)
+    return _envelope(out)
 
 
 @router.post("")

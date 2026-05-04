@@ -4,6 +4,7 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import axios from "axios";
 import { useBranch } from "../context/BranchContext";
+import SyncBadge from "../components/SyncBadge";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -352,6 +353,7 @@ export default function KOL() {
           <h1 className="text-xl font-bold text-gray-800">KOL Management</h1>
           <p className="text-xs text-gray-400 mt-0.5">
             Aggregated from reservations · Room type pattern: <code className="bg-gray-100 px-1 rounded">XYZ (KOL_Name)</code>
+            <SyncBadge timestamp={rows[0]?.data_synced_at} />
           </p>
         </div>
         <div className="flex gap-2">

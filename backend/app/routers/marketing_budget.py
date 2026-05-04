@@ -28,6 +28,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -59,6 +60,23 @@ def _envelope(data):
         "success": True, "data": data, "error": None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _last_actuals_synced_at(
+    db: Session,
+    branch_id: UUID,
+    year: int,
+    month: Optional[int] = None,
+) -> Optional[str]:
+    """Latest actuals_synced_at across MarketingBudget rows for the given scope."""
+    q = db.query(func.max(MarketingBudget.actuals_synced_at)).filter(
+        MarketingBudget.branch_id == branch_id,
+        MarketingBudget.year == year,
+    )
+    if month is not None:
+        q = q.filter(MarketingBudget.month == month)
+    ts = q.scalar()
+    return ts.isoformat() if ts else None
 
 
 def _month_range(year: int, month: int) -> tuple[date, date]:
@@ -499,6 +517,7 @@ def get_yearly(
         "pct": round((year_actual_vnd / year_alloc_vnd * 100)
                      if year_alloc_vnd > 0 else 0, 1),
         "months": months_data,
+        "data_synced_at": _last_actuals_synced_at(db, branch_id, year),
     })
 
 
@@ -587,6 +606,7 @@ def get_monthly(
             "status": _status_label(total_actual, total_alloc, total_proj),
         },
         "channels": channels,
+        "data_synced_at": _last_actuals_synced_at(db, branch_id, year, month),
     })
 
 

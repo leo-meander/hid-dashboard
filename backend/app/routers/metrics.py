@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # while older code paths assumed Title Case "Canceled" — that mismatch was
 # silently letting cancelled rows leak into Country / OTA dashboards.
 _EXCLUDED_STATUSES = EXCLUDED_STATUSES
-_EXCLUDED_SOURCES_REV = {"blogger", "house use", "houseuse", "special case"}
+_EXCLUDED_SOURCES_REV = {"blogger", "house use", "houseuse", "special case", "work exchange"}
 
 
 def _status_active_filter():
@@ -54,6 +54,19 @@ def _envelope(data):
         "error": None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _last_reservations_synced_at(db: Session, branch_id: Optional[UUID]) -> Optional[str]:
+    """Return ISO timestamp of latest reservations.updated_at for the given branch
+    (or all branches if branch_id is None). Used to surface a freshness badge on
+    derived views (OTA mix, channel rates, country views) — those views aggregate
+    reservations directly, not daily_metrics.
+    """
+    q = db.query(func.max(Reservation.updated_at))
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+    ts = q.scalar()
+    return ts.isoformat() if ts else None
 
 
 def _dm_to_dict(dm) -> dict:
@@ -119,6 +132,13 @@ def get_weekly(
 
     rows = get_daily_metrics(db, branch_id, date_from, date_to)
 
+    # Latest computed_at across all daily_metrics that feed this aggregation —
+    # surfaced to FE as data_synced_at so dashboards show "Last synced: …".
+    last_synced = max(
+        (dm.computed_at for dm in rows if dm.computed_at), default=None
+    )
+    last_synced_iso = last_synced.isoformat() if last_synced else None
+
     # Group by branch + ISO week
     from collections import defaultdict
     weekly: dict = defaultdict(lambda: {
@@ -176,6 +196,7 @@ def get_weekly(
             "avg_occ_pct": avg_occ,
             "avg_adr_native": avg_adr,
             "avg_revpar_native": avg_revpar,
+            "data_synced_at": last_synced_iso,
         })
 
     result.sort(key=lambda x: (x.get("branch_id", ""), x.get("year", 0), x.get("week", 0)))
@@ -210,6 +231,11 @@ def get_monthly(
     date_to = date(year_to, 12, 31)
 
     rows = get_daily_metrics(db, branch_id, date_from, date_to)
+
+    last_synced = max(
+        (dm.computed_at for dm in rows if dm.computed_at), default=None
+    )
+    last_synced_iso = last_synced.isoformat() if last_synced else None
 
     monthly: dict = defaultdict(lambda: {
         "rooms_sold": 0, "dorms_sold": 0, "total_sold": 0,
@@ -298,6 +324,7 @@ def get_monthly(
                 key=lambda x: x["count"],
                 reverse=True,
             )[:20],
+            "data_synced_at": last_synced_iso,
         })
 
     result.sort(key=lambda x: (x.get("branch_id", ""), x.get("year", 0), x.get("month", 0)))
@@ -324,6 +351,7 @@ def get_ota_mix_endpoint(
     total_count = sum(v["count"] for v in mix.values())
     total_revenue = sum(v["revenue_native"] for v in mix.values())
 
+    last_synced_iso = _last_reservations_synced_at(db, branch_id)
     result = []
     for channel, vals in sorted(mix.items(), key=lambda x: -x[1]["count"]):
         result.append({
@@ -334,6 +362,7 @@ def get_ota_mix_endpoint(
             "revenue_vnd": vals["revenue_vnd"],
             "count_pct": round(vals["count"] / total_count, 4) if total_count > 0 else 0,
             "revenue_pct": round(vals["revenue_native"] / total_revenue, 4) if total_revenue > 0 else 0,
+            "data_synced_at": last_synced_iso,
         })
     return _envelope(result)
 
@@ -353,6 +382,13 @@ def get_channel_rates_endpoint(
         date_from = date_to - timedelta(days=29)
 
     result = get_channel_rates(db, branch_id, date_from, date_to)
+    last_synced_iso = _last_reservations_synced_at(db, branch_id)
+    if isinstance(result, list):
+        for row in result:
+            if isinstance(row, dict):
+                row["data_synced_at"] = last_synced_iso
+    elif isinstance(result, dict):
+        result["data_synced_at"] = last_synced_iso
     return _envelope(result)
 
 
@@ -364,6 +400,9 @@ def get_ota_trend_endpoint(
 ):
     """OTA channel share pivot: % per period (daily/weekly/monthly)."""
     result = get_ota_trend(db, branch_id, mode)
+    last_synced_iso = _last_reservations_synced_at(db, branch_id)
+    if isinstance(result, dict):
+        result["data_synced_at"] = last_synced_iso
     return _envelope(result)
 
 
@@ -376,6 +415,9 @@ def get_rates_trend_endpoint(
 ):
     """Cancel rate & check-in rate pivot per channel × period."""
     result = get_rates_trend(db, branch_id, mode, date_type)
+    last_synced_iso = _last_reservations_synced_at(db, branch_id)
+    if isinstance(result, dict):
+        result["data_synced_at"] = last_synced_iso
     return _envelope(result)
 
 
@@ -390,6 +432,11 @@ def get_country_yoy_endpoint(
 ):
     """Country YoY comparison: current year vs previous year."""
     rows = get_country_yoy(db, branch_id, year, month)
+    last_synced_iso = _last_reservations_synced_at(db, branch_id)
+    if isinstance(rows, list):
+        for r in rows:
+            if isinstance(r, dict):
+                r["data_synced_at"] = last_synced_iso
     return _envelope(rows)
 
 
@@ -472,6 +519,7 @@ def get_country_yoy_insights(
             "countries": rows,
             "currency": currency,
             "date_type": date_type,
+            "data_synced_at": _last_reservations_synced_at(db, branch_id),
         })
     except Exception as exc:
         logger.exception("country-yoy-insights failed: %s", exc)
@@ -481,6 +529,7 @@ def get_country_yoy_insights(
             "countries": [],
             "currency": currency,
             "date_type": date_type,
+            "data_synced_at": _last_reservations_synced_at(db, branch_id),
         })
 
 
@@ -592,6 +641,7 @@ def get_country_reservations(
         return _envelope({
             "view": view, "periods": [], "countries": [], "trend": [],
             "currency": currency, "date_type": date_type,
+            "data_synced_at": _last_reservations_synced_at(db, branch_id),
         })
 
     # 2) Query per-period × per-country breakdown
@@ -610,6 +660,7 @@ def get_country_reservations(
         "trend": trend,
         "currency": currency,
         "date_type": date_type,
+        "data_synced_at": _last_reservations_synced_at(db, branch_id),
     })
 
 

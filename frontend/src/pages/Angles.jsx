@@ -4,6 +4,7 @@
  */
 import { useEffect, useState } from "react";
 import axios from "axios";
+import SyncBadge from "../components/SyncBadge";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 
 const STATUS_OPTIONS = ["WIN", "TEST", "LOSE"];
@@ -100,7 +101,10 @@ export default function Angles() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-gray-800">Ad Angles</h1>
-          <p className="text-xs text-gray-400 mt-0.5">Verdict: TOF Sales only · Benchmark = Branch AVG ROAS</p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Verdict: TOF Sales only · Benchmark = Branch AVG ROAS
+            <SyncBadge timestamp={rows[0]?.data_synced_at} />
+          </p>
         </div>
         <button onClick={openNew} className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700">+ New Angle</button>
       </div>

@@ -11,6 +11,7 @@ import {
   getEmailByCampaign,
 } from "../api/emailMarketing";
 import TrendChart from "../components/TrendChart";
+import SyncBadge from "../components/SyncBadge";
 
 function pct(val) {
   if (val == null) return "—";
@@ -124,6 +125,7 @@ export default function EmailMarketing() {
           <h1 className="text-xl font-bold text-gray-800">Email Marketing</h1>
           <p className="text-sm text-gray-500">
             GHL email performance{ghlBranch ? ` — ${ghlBranch}` : " — All Branches"}
+            <SyncBadge timestamp={summary?.data_synced_at} />
           </p>
         </div>
         <div className="flex gap-2 items-center text-sm">

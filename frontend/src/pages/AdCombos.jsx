@@ -14,6 +14,7 @@ import { listAngles } from "../api/angles";
 import { listKolRecords } from "../api/kol";
 import ComboCard from "../components/ComboCard";
 import VerdictBadge from "../components/VerdictBadge";
+import SyncBadge from "../components/SyncBadge";
 import { AUDIENCES } from "../constants/audiences";
 const CHANNELS = ["Facebook", "Instagram", "TikTok", "YouTube", "Meta", "Google"];
 const LANGUAGES = ["Vietnamese", "English", "Japanese", "Korean", "Thai", "Indonesian", "Malay"];
@@ -104,7 +105,13 @@ export default function AdCombos() {
     <div>
       {/* Header + Insights Strip */}
       <div className="flex items-center justify-between mb-3">
-        <h1 className="text-xl font-bold text-gray-900">Ad Combos</h1>
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">Ad Combos</h1>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Copy × Material verdicts
+            <SyncBadge timestamp={combos.find((c) => c.last_synced_at)?.last_synced_at} />
+          </p>
+        </div>
         <div className="flex gap-2">
           {isAdmin && (
             <>

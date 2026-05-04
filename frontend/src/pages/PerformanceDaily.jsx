@@ -4,6 +4,7 @@
 import { useEffect, useState, useMemo } from "react";
 import axios from "axios";
 import TrendChart from "../components/TrendChart";
+import SyncBadge from "../components/SyncBadge";
 import { useBranch } from "../context/BranchContext";
 
 const OCC_COLORS = [
@@ -71,6 +72,11 @@ export default function PerformanceDaily() {
     [metrics]
   );
 
+  const lastSynced = useMemo(() => {
+    const ts = metrics.map((m) => m.computed_at).filter(Boolean).sort();
+    return ts.length ? ts[ts.length - 1] : null;
+  }, [metrics]);
+
   const chartData = useMemo(() => {
     return [...new Set(metrics.map((m) => m.date))].sort().map((date) => {
       const row = { date };
@@ -88,8 +94,11 @@ export default function PerformanceDaily() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-800">Daily Brief</h1>
-          <p className="text-sm text-gray-500">OCC%, Revenue, ADR, RevPAR</p>
-          <p className="text-xs text-gray-400 mt-0.5">OCC: all sources (excl. Cancelled · No-show) · Revenue/ADR/RevPAR: excl. Blogger · House Use · Special Case</p>
+          <p className="text-sm text-gray-500">
+            OCC%, Revenue, ADR, RevPAR
+            <SyncBadge timestamp={lastSynced} />
+          </p>
+          <p className="text-xs text-gray-400 mt-0.5">OCC: all sources (excl. Cancelled · No-show) · Revenue/ADR/RevPAR: excl. Blogger · House Use · KOL · Special Case · Work Exchange</p>
         </div>
         <div className="flex gap-2 items-center text-sm">
           <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}

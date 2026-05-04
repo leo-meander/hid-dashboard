@@ -7,6 +7,7 @@ import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
+import SyncBadge from "../components/SyncBadge";
 import { listResults, getInsights, analyzeBatch } from "../api/analyzer";
 import { getTAClasses, AUDIENCES } from "../constants/audiences";
 import {
@@ -117,7 +118,10 @@ export default function AdAnalyzer() {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Ad Analyzer</h1>
-          <p className="text-sm text-gray-400">{insights?.total_analyzed || 0} ads analyzed · Last 14 days</p>
+          <p className="text-sm text-gray-400">
+            {insights?.total_analyzed || 0} ads analyzed · Last 14 days
+            <SyncBadge timestamp={insights?.data_synced_at} />
+          </p>
         </div>
         <button onClick={handleBatchAnalyze}
           disabled={analyzing || isAll || !selected}

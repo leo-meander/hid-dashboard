@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 import CountryBadge from "../components/CountryBadge";
+import SyncBadge from "../components/SyncBadge";
 
 const TIER_ORDER = { Hot: 0, Warm: 1, Cold: 2 };
 
@@ -45,7 +46,10 @@ export default function Countries() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-800">Country Intelligence</h1>
-          <p className="text-sm text-gray-500">Guest origin ranking by score</p>
+          <p className="text-sm text-gray-500">
+            Guest origin ranking by score
+            <SyncBadge timestamp={countries[0]?.data_synced_at} />
+          </p>
         </div>
         <div className="flex gap-2 items-center text-sm flex-wrap">
           <select value={year} onChange={(e) => setYear(Number(e.target.value))}

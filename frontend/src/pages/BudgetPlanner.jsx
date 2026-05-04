@@ -11,6 +11,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
+import SyncBadge from "../components/SyncBadge";
 import {
   getYearlyBudget,
   getMonthlyBudget,
@@ -530,6 +531,10 @@ function MonthlyTab({ branchId, year, month }) {
     <div className="bg-white rounded-lg border p-5 space-y-4">
       <div>
         <h2 className="font-semibold text-gray-900">{data.branch_name.replace(/^MEANDER\s+/i, "")}</h2>
+        <p className="text-xs text-gray-400 mt-0.5">
+          Actuals from Paid Ads · KOL · CRM
+          <SyncBadge timestamp={data.data_synced_at} />
+        </p>
       </div>
 
       <div className="space-y-1.5">
@@ -657,6 +662,7 @@ function YearlyTab({ branchId, year }) {
           <h2 className="font-semibold text-gray-900">{data.branch_name.replace(/^MEANDER\s+/i, "")}</h2>
           <p className="text-xs text-gray-500 mt-0.5">
             {fmtDot(data.total_actual_native)} / {fmtDot(data.total_allocated_native)} {cur}
+            <SyncBadge timestamp={data.data_synced_at} className="text-gray-400" />
           </p>
         </div>
         <span className="px-2 py-0.5 rounded text-xs font-medium bg-yellow-50 text-yellow-700">

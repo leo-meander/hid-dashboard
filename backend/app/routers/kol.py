@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import text, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -151,12 +151,23 @@ def get_kol_summary(
         result.append(item)
 
     result.sort(key=lambda x: (x["kol_rate_plan_name"], x["branch"]))
+    last_synced_iso = _last_kol_synced_at(db, branch_id)
+    for item in result:
+        item["data_synced_at"] = last_synced_iso
     return _envelope(result)
 
 
 def _envelope(data):
     return {"success": True, "data": data, "error": None,
             "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+def _last_kol_synced_at(db: Session, branch_id: Optional[UUID]) -> Optional[str]:
+    q = db.query(func.max(KOLRecord.updated_at))
+    if branch_id:
+        q = q.filter(KOLRecord.branch_id == branch_id)
+    ts = q.scalar()
+    return ts.isoformat() if ts else None
 
 
 def _blank_none(v):
@@ -225,6 +236,9 @@ def list_kol(
             if row["expiry_days_left"] is None or row["expiry_days_left"] > expiry_within_days:
                 continue
         result.append(row)
+    last_synced_iso = _last_kol_synced_at(db, branch_id)
+    for row in result:
+        row["data_synced_at"] = last_synced_iso
     return _envelope(result)
 
 

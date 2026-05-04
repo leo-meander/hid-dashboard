@@ -9,6 +9,7 @@ import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 import KPICard from "../components/KPICard";
 import CountryBadge from "../components/CountryBadge";
 import OCCHeatmap from "../components/OCCHeatmap";
+import SyncBadge from "../components/SyncBadge";
 
 const now        = new Date();
 const YEAR       = now.getFullYear();
@@ -293,9 +294,7 @@ function AllBranchesTable({ data, loading }) {
         <h2 className="font-semibold text-gray-800">Group Summary \u2014 {MONTH_NAME}</h2>
         <p className="text-xs text-gray-400 mt-0.5">
           Native currency per branch
-          {data[0]?.data_synced_at && (
-            <span> \u00b7 Last synced: {new Date(data[0].data_synced_at).toLocaleString("en-GB", { timeZone: "Asia/Ho_Chi_Minh", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
-          )}
+          <SyncBadge timestamp={data[0]?.data_synced_at} />
         </p>
       </div>
       <div className="overflow-x-auto">

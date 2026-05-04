@@ -153,6 +153,11 @@ def email_summary(
         nights = sum(int(r.attributed_nights or 0) for r in rows)
         revenue_vnd = sum(float(r.attributed_revenue_vnd or 0) for r in rows)
 
+        last_synced = max(
+            (getattr(r, "updated_at", None) for r in rows
+             if getattr(r, "updated_at", None)),
+            default=None,
+        )
         data = {
             "total_sent": sent,
             "total_delivered": delivered,
@@ -175,6 +180,7 @@ def email_summary(
             "booking_rate": round(bookings / sent, 6) if sent > 0 else 0,
             "date_from": date_from.isoformat(),
             "date_to": date_to.isoformat(),
+            "data_synced_at": last_synced.isoformat() if last_synced else None,
         }
         return _envelope(data)
     except Exception as e:

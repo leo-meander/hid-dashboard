@@ -5,9 +5,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.ad_combo import AdCombo
 from app.models.creative_angle import CreativeAngle
 from app.services.id_generator import generate_code
 
@@ -17,6 +19,14 @@ router = APIRouter()
 def _envelope(data):
     return {"success": True, "data": data, "error": None,
             "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+def _last_combo_synced_at(db: Session, branch_id: Optional[UUID]) -> Optional[str]:
+    q = db.query(func.max(AdCombo.last_synced_at))
+    if branch_id:
+        q = q.filter(AdCombo.branch_id == branch_id)
+    ts = q.scalar()
+    return ts.isoformat() if ts else None
 
 
 def _angle_dict(a: CreativeAngle) -> dict:
@@ -78,7 +88,13 @@ def list_angles(
         q = q.filter(CreativeAngle.hook_type == hook_type)
     if target_audience:
         q = q.filter(CreativeAngle.target_audience.any(target_audience))
-    return _envelope([_angle_dict(a) for a in q.order_by(CreativeAngle.created_at.desc()).all()])
+    last_synced_iso = _last_combo_synced_at(db, branch_id)
+    out = []
+    for a in q.order_by(CreativeAngle.created_at.desc()).all():
+        d = _angle_dict(a)
+        d["data_synced_at"] = last_synced_iso
+        out.append(d)
+    return _envelope(out)
 
 
 @router.post("")

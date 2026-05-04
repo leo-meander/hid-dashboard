@@ -8,6 +8,7 @@ import {
   BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
+import SyncBadge from "../components/SyncBadge";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 
 const BRANCH_COLORS = ["#6366f1", "#10b981", "#f59e0b", "#ef4444", "#3b82f6"];
@@ -364,6 +365,7 @@ export default function PerformanceMonthly() {
           <h1 className="text-xl font-bold text-gray-800">Monthly Brief</h1>
           <p className="text-sm text-gray-500">
             Multi-year performance + country breakdown
+            <SyncBadge timestamp={monthly.find((m) => m.data_synced_at)?.data_synced_at} />
           </p>
         </div>
         {yearPicker}

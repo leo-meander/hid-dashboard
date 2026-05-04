@@ -5,6 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -18,6 +19,14 @@ router = APIRouter()
 def _envelope(data):
     return {"success": True, "data": data, "error": None,
             "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+def _last_combo_synced_at(db: Session, branch_id: Optional[UUID]) -> Optional[str]:
+    q = db.query(func.max(AdCombo.last_synced_at))
+    if branch_id:
+        q = q.filter(AdCombo.branch_id == branch_id)
+    ts = q.scalar()
+    return ts.isoformat() if ts else None
 
 
 def _mat_dict(m: CreativeMaterial) -> dict:
@@ -111,7 +120,13 @@ def list_materials(
         q = q.filter(CreativeMaterial.derived_verdict == derived_verdict)
     if paid_ads_eligible is not None:
         q = q.filter(CreativeMaterial.paid_ads_eligible == paid_ads_eligible)
-    return _envelope([_mat_dict(m) for m in q.order_by(CreativeMaterial.created_at.desc()).all()])
+    last_synced_iso = _last_combo_synced_at(db, branch_id)
+    out = []
+    for m in q.order_by(CreativeMaterial.created_at.desc()).all():
+        d = _mat_dict(m)
+        d["data_synced_at"] = last_synced_iso
+        out.append(d)
+    return _envelope(out)
 
 
 @router.post("")

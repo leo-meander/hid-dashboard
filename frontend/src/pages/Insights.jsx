@@ -4,6 +4,7 @@
 import axios from "axios";
 import { useQuery } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
+import SyncBadge from "../components/SyncBadge";
 
 function OpportunityBadge({ types }) {
   if (!types || types.length === 0) return null;
@@ -36,7 +37,10 @@ export default function Insights() {
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-bold text-gray-800">KOL Insights</h1>
-        <p className="text-xs text-gray-400 mt-0.5">KOL content eligible for paid ads — untapped opportunities</p>
+        <p className="text-xs text-gray-400 mt-0.5">
+          KOL content eligible for paid ads — untapped opportunities
+          <SyncBadge timestamp={rows[0]?.data_synced_at} />
+        </p>
       </div>
 
       {loading ? (

@@ -14,6 +14,7 @@ import {
   getCRMReservations,
 } from "../api/crm";
 import TrendChart from "../components/TrendChart";
+import SyncBadge from "../components/SyncBadge";
 
 function fmt(val, style = "number") {
   if (val == null) return "—";
@@ -110,7 +111,10 @@ export default function CRMDashboard() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-800">CRM Dashboard</h1>
-          <p className="text-sm text-gray-500">Revenue & Bookings from CRM room types</p>
+          <p className="text-sm text-gray-500">
+            Revenue & Bookings from CRM room types
+            <SyncBadge timestamp={summary?.data_synced_at} />
+          </p>
         </div>
         <div className="flex gap-2 items-center text-sm">
           <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}

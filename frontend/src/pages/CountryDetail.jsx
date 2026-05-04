@@ -9,6 +9,7 @@ import {
   Tooltip, Legend, ResponsiveContainer, Cell,
 } from "recharts";
 import CountryBadge from "../components/CountryBadge";
+import SyncBadge from "../components/SyncBadge";
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
@@ -89,6 +90,7 @@ export default function CountryDetail() {
               {rankData?.rank && (
                 <span className="text-xs text-gray-400">Rank #{rankData.rank}</span>
               )}
+              <SyncBadge timestamp={rankData?.data_synced_at} className="text-xs text-gray-400" prefix="" />
             </div>
           </div>
         </div>

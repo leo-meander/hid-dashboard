@@ -245,6 +245,11 @@ def analyzer_insights(
         q = q.filter(AdCombo.branch_id == branch_id)
     results = q.all()
 
+    last_synced = max(
+        (r.analyzed_at for r in results if r.analyzed_at), default=None
+    )
+    last_synced_iso = last_synced.isoformat() if last_synced else None
+
     if not results:
         return _envelope({
             "total_analyzed": 0,
@@ -252,6 +257,7 @@ def analyzer_insights(
             "ta_angle_matrix": [],
             "recommendation_summary": {},
             "funnel_aggregate": {},
+            "data_synced_at": None,
         })
 
     # Angle performance: avg CTR per angle
@@ -338,4 +344,5 @@ def analyzer_insights(
         "ta_angle_matrix": ta_angle_matrix,
         "recommendation_summary": rec_counts,
         "funnel_aggregate": funnel_aggregate,
+        "data_synced_at": last_synced_iso,
     })

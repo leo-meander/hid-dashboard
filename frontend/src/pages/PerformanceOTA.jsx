@@ -4,6 +4,7 @@
  */
 import { useEffect, useState } from "react";
 import axios from "axios";
+import SyncBadge from "../components/SyncBadge";
 import { useBranch } from "../context/BranchContext";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -61,7 +62,10 @@ export default function PerformanceOTA() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-800">OTA Channel Mix</h1>
-          <p className="text-sm text-gray-500">Cancellation &amp; check-in rate by booking source</p>
+          <p className="text-sm text-gray-500">
+            Cancellation &amp; check-in rate by booking source
+            <SyncBadge timestamp={data?.data_synced_at} />
+          </p>
         </div>
 
         {/* Mode selector */}

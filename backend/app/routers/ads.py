@@ -19,6 +19,15 @@ def _envelope(data):
             "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+def _last_ads_synced_at(db: Session, branch_id: Optional[UUID]) -> Optional[str]:
+    """Latest updated_at across the AdsPerformance rows that feed this view."""
+    q = db.query(func.max(AdsPerformance.updated_at))
+    if branch_id:
+        q = q.filter(AdsPerformance.branch_id == branch_id)
+    ts = q.scalar()
+    return ts.isoformat() if ts else None
+
+
 def _clean(data: dict) -> dict:
     for k in ("date_from", "date_to"):
         if data.get(k) == "":
@@ -61,7 +70,13 @@ def list_ads(
     if channel:
         q = q.filter(AdsPerformance.channel == channel)
     rows = q.order_by(AdsPerformance.date_from.desc().nullslast()).limit(limit).all()
-    return _envelope([_row(r) for r in rows])
+    last_synced_iso = _last_ads_synced_at(db, branch_id)
+    out = []
+    for r in rows:
+        d = _row(r)
+        d["data_synced_at"] = last_synced_iso
+        out.append(d)
+    return _envelope(out)
 
 
 @router.get("/summary")
@@ -88,6 +103,7 @@ def ads_summary(
     if channel:
         q = q.filter(AdsPerformance.channel == channel)
     rows = q.group_by(AdsPerformance.channel).all()
+    last_synced_iso = _last_ads_synced_at(db, branch_id)
 
     result = []
     for r in rows:
@@ -109,6 +125,7 @@ def ads_summary(
             "roas": round(rev / cost, 2) if cost > 0 else None,
             "ctr_pct": round(clicks / impr * 100, 2) if impr > 0 else None,
             "cpc_native": round(cost / clicks, 2) if clicks > 0 else None,
+            "data_synced_at": last_synced_iso,
         })
     return _envelope(result)
 

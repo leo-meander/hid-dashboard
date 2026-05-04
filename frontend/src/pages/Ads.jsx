@@ -3,6 +3,7 @@
  */
 import { useEffect, useState } from "react";
 import axios from "axios";
+import SyncBadge from "../components/SyncBadge";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 
 const CHANNELS = ["Meta", "Google", "TikTok"];
@@ -170,7 +171,10 @@ export default function Ads() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-gray-800">Paid Ads Performance</h1>
-          <p className="text-xs text-gray-400 mt-0.5">Meta · Google · TikTok</p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Meta · Google · TikTok
+            <SyncBadge timestamp={summary[0]?.data_synced_at || rows[0]?.data_synced_at} />
+          </p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <button onClick={importCsv} disabled={recomputing}
