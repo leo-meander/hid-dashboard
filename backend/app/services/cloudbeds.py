@@ -1628,22 +1628,33 @@ def sync_cloudbeds_filtered(
             dsold_all = int(vals.get("dorm_sold_all") or 0)
             tsold_all = int(vals.get("total_sold_all") or 0)
 
-            # Total revenue / ADR / RevPAR — override unfiltered values from
-            # sync_cloudbeds_occupancy so the rule applies consistently.
-            dm.revenue_native = rev
-            dm.revenue_vnd = round(rev * rate, 2) if rate else None
-            if tsold_all > 0:
-                dm.adr_native = round(rev / tsold_all, 2)
-            if total_rooms and total_rooms > 0:
-                dm.revpar_native = round(rev / total_rooms, 2)
+            # SAFETY GUARD: only override total revenue/ADR when the filtered
+            # report actually returned data. If rev == 0 we cannot tell whether
+            # the property genuinely had zero paying revenue or the custom
+            # report failed silently / returned no rows for the property — in
+            # either case we'd rather show the unfiltered value from
+            # sync_cloudbeds_occupancy (slight rule violation) than wipe the
+            # number to 0 (data loss). This caused a regression where Taipei /
+            # 1948 / Osaka showed NT$0 / ¥0 across all months.
+            if rev > 0:
+                dm.revenue_native = rev
+                dm.revenue_vnd = round(rev * rate, 2) if rate else None
+                if tsold_all > 0:
+                    dm.adr_native = round(rev / tsold_all, 2)
+                if total_rooms and total_rooms > 0:
+                    dm.revpar_native = round(rev / total_rooms, 2)
 
-            # Room/Dorm split: revenue filtered, denominator unfiltered
-            dm.room_revenue_native = rrev if rsold_all > 0 else None
-            dm.dorm_revenue_native = drev if dsold_all > 0 else None
-            dm.room_adr_native = round(rrev / rsold_all, 2) if rsold_all > 0 else None
-            dm.dorm_adr_native = round(drev / dsold_all, 2) if dsold_all > 0 else None
-            dm.rooms_sold = rsold_all
-            dm.dorms_sold = dsold_all
+            # Room split: same guard — only override if filtered room rev > 0
+            if rrev > 0 and rsold_all > 0:
+                dm.room_revenue_native = rrev
+                dm.room_adr_native = round(rrev / rsold_all, 2)
+                dm.rooms_sold = rsold_all
+
+            # Dorm split: same guard
+            if drev > 0 and dsold_all > 0:
+                dm.dorm_revenue_native = drev
+                dm.dorm_adr_native = round(drev / dsold_all, 2)
+                dm.dorms_sold = dsold_all
 
             dm.computed_at = now
 
