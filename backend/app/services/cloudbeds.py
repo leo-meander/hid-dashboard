@@ -1371,10 +1371,15 @@ def sync_cloudbeds_occupancy(
     date_to: Optional[date] = None,
 ) -> dict:
     """
-    Sync OCC, ADR, RevPAR, Revenue from Cloudbeds Data Insights API directly
-    into daily_metrics. Numbers come from stock report 110 (the same source
-    the Cloudbeds Occupancy Report UI uses), so daily_metrics matches what
-    users see in Cloudbeds Insights exactly.
+    Sync OCC, total_sold + UNFILTERED revenue/ADR/RevPAR from Cloudbeds Data
+    Insights stock report 110 (same source the Cloudbeds Occupancy Report UI
+    uses) into daily_metrics.
+
+    NOTE: revenue_native / adr_native / revpar_native written here include ALL
+    sources (Blogger / KOL / House Use / Special Case / Work Exchange). They
+    are intentionally overridden by sync_cloudbeds_filtered, which applies the
+    project ADR rule: filtered revenue / unfiltered rooms_sold. This step still
+    writes them so the page has fallback values if the filtered overlay fails.
 
     Returns: { branch_id, dates_updated, date_from, date_to }
     """
@@ -1438,8 +1443,19 @@ def _compute_daily_from_reservation_daily(
     year: int,
     month: int,
 ) -> dict:
-    """Fallback: compute per-day filtered revenue from reservation_daily when Insights API is unavailable.
-    Returns same format as fetch_filtered_daily: {date: {total_rev, room_rev, dorm_rev, total_sold, room_sold, dorm_sold}}
+    """Fallback: compute per-day revenue (filtered) + sold (filtered + unfiltered)
+    from reservation_daily when Insights API is unavailable.
+
+    Returns same shape as fetch_filtered_daily:
+        {date: {
+            total_rev,
+            total_sold_excl, total_sold_all,
+            room_rev, room_sold_excl, room_sold_all,
+            dorm_rev, dorm_sold_excl, dorm_sold_all,
+        }}
+
+    ADR rule: revenue excludes Blogger / KOL / House Use / Special Case /
+    Work Exchange; rooms_sold (denominator) counts ALL sources.
     """
     from app.models.reservation_daily import ReservationDaily
     from app.services.metrics_engine import EXCLUDED_SOURCES_REVENUE, EXCLUDED_STATUSES
@@ -1459,24 +1475,41 @@ def _compute_daily_from_reservation_daily(
         status = (rd.status or "").lower().strip()
         status_norm = status.replace("-", "_").replace(" ", "_")
         if status in EXCLUDED_STATUSES or status_norm in EXCLUDED_STATUSES:
-            continue
-        src = (rd.source or "").lower().strip()
-        if src in EXCLUDED_SOURCES_REVENUE:
+            # Cancelled / no-show — drop from both filtered and unfiltered
             continue
         d = rd.date
         if d not in out:
-            out[d] = {"total_rev": 0.0, "room_rev": 0.0, "dorm_rev": 0.0,
-                      "total_sold": 0.0, "room_sold": 0.0, "dorm_sold": 0.0}
-        night = float(rd.nightly_rate or 0)
-        out[d]["total_rev"] += night
-        out[d]["total_sold"] += 1
+            out[d] = {
+                "total_rev": 0.0,
+                "total_sold_excl": 0.0, "total_sold_all": 0.0,
+                "room_rev": 0.0, "room_sold_excl": 0.0, "room_sold_all": 0.0,
+                "dorm_rev": 0.0, "dorm_sold_excl": 0.0, "dorm_sold_all": 0.0,
+            }
+
+        src = (rd.source or "").lower().strip()
+        is_excl_rev = src in EXCLUDED_SOURCES_REVENUE
         rtc = (rd.room_type_category or "").lower()
+        night = float(rd.nightly_rate or 0)
+
+        # ALL-sources sold (ADR denominator)
+        out[d]["total_sold_all"] += 1
+        if rtc == "room":
+            out[d]["room_sold_all"] += 1
+        elif rtc == "dorm":
+            out[d]["dorm_sold_all"] += 1
+
+        if is_excl_rev:
+            # Excluded source: counts toward _all only, not toward filtered rev/_excl
+            continue
+
+        out[d]["total_rev"] += night
+        out[d]["total_sold_excl"] += 1
         if rtc == "room":
             out[d]["room_rev"] += night
-            out[d]["room_sold"] += 1
+            out[d]["room_sold_excl"] += 1
         elif rtc == "dorm":
             out[d]["dorm_rev"] += night
-            out[d]["dorm_sold"] += 1
+            out[d]["dorm_sold_excl"] += 1
 
     logger.info(
         "reservation_daily fallback for branch=%s %d/%d: %d days, total_rev=%.0f",
@@ -1498,21 +1531,28 @@ def sync_cloudbeds_filtered(
     date_to: Optional[date] = None,
 ) -> dict:
     """
-    Write per-day filtered revenue into daily_metrics using Cloudbeds Data
-    Insights custom reports (exclude Blogger / KOL / House Use / Special Case).
+    Overlay per-day revenue + ADR + RevPAR + room/dorm split into daily_metrics
+    using Cloudbeds Data Insights custom reports.
 
-    For each month in range, runs 3 custom reports at stay_date granularity
-    (total / room / dorm) and writes per-day:
-      - revenue_native, revenue_vnd
-      - room_revenue_native, dorm_revenue_native
-      - adr_native, room_adr_native, dorm_adr_native
-      - revpar_native
+    ADR rule (applied here, overrides values written by sync_cloudbeds_occupancy):
+        Revenue   = filtered (excl Blogger / KOL / House Use / Special Case / Work Exchange)
+        rooms_sold = ALL sources (no source exclusion — same denominator as OCC)
+        ADR       = filtered revenue / unfiltered rooms_sold
 
-    rooms_sold / dorms_sold / occ_pct are left untouched — sync_cloudbeds_occupancy
-    already populated them from stock report 110 (unfiltered, correct for OCC).
+    For each month in range, runs 6 custom reports at stay_date granularity
+    (total/room/dorm × filtered/unfiltered) and writes per-day:
+      - revenue_native, revenue_vnd                    (filtered totals)
+      - room_revenue_native, dorm_revenue_native       (filtered split)
+      - adr_native, room_adr_native, dorm_adr_native   (rule applied)
+      - revpar_native                                  (filtered_rev / total_rooms)
+      - rooms_sold, dorms_sold                         (unfiltered split — ADR denominator)
+
+    total_sold / occ_pct are left untouched — sync_cloudbeds_occupancy already
+    populated them from stock report 110 (unfiltered, correct for OCC).
 
     If a property's API key lacks Custom Reports permission (403), falls back
-    to leaving revenue fields as-is (logged as warning).
+    to reservation_daily-based computation; if that also yields nothing the
+    unfiltered values from sync_cloudbeds_occupancy remain (logged warning).
 
     Returns: { branch_id, months_synced }
     """
@@ -1579,20 +1619,32 @@ def sync_cloudbeds_filtered(
                 db.add(dm)
                 existing[dday] = dm
 
-            rev = round(vals["total_rev"], 2)
+            # Filtered revenue (Blogger/KOL/HouseUse/SpecialCase/WorkExchange excluded)
+            rev  = round(vals["total_rev"], 2)
             rrev = round(vals["room_rev"], 2)
             drev = round(vals["dorm_rev"], 2)
-            rsold = int(vals["room_sold"] or 0)
-            dsold = int(vals["dorm_sold"] or 0)
-            tsold = int(vals["total_sold"] or 0)
+            # Unfiltered rooms_sold (ALL sources) — ADR denominator per the rule
+            rsold_all = int(vals.get("room_sold_all") or 0)
+            dsold_all = int(vals.get("dorm_sold_all") or 0)
+            tsold_all = int(vals.get("total_sold_all") or 0)
 
-            # Total revenue / ADR / RevPAR come from stock report 110 (sync_cloudbeds_occupancy)
-            # — that's the authoritative source matching Cloudbeds Insights UI. Here we only
-            # populate the room/dorm split (stock report 110 doesn't break that down).
-            dm.room_revenue_native = rrev if rsold > 0 else None
-            dm.dorm_revenue_native = drev if dsold > 0 else None
-            dm.room_adr_native = round(rrev / rsold, 2) if rsold > 0 else None
-            dm.dorm_adr_native = round(drev / dsold, 2) if dsold > 0 else None
+            # Total revenue / ADR / RevPAR — override unfiltered values from
+            # sync_cloudbeds_occupancy so the rule applies consistently.
+            dm.revenue_native = rev
+            dm.revenue_vnd = round(rev * rate, 2) if rate else None
+            if tsold_all > 0:
+                dm.adr_native = round(rev / tsold_all, 2)
+            if total_rooms and total_rooms > 0:
+                dm.revpar_native = round(rev / total_rooms, 2)
+
+            # Room/Dorm split: revenue filtered, denominator unfiltered
+            dm.room_revenue_native = rrev if rsold_all > 0 else None
+            dm.dorm_revenue_native = drev if dsold_all > 0 else None
+            dm.room_adr_native = round(rrev / rsold_all, 2) if rsold_all > 0 else None
+            dm.dorm_adr_native = round(drev / dsold_all, 2) if dsold_all > 0 else None
+            dm.rooms_sold = rsold_all
+            dm.dorms_sold = dsold_all
+
             dm.computed_at = now
 
         months_synced += 1
@@ -1608,7 +1660,7 @@ def sync_cloudbeds_filtered(
 # ── Filtered Insights via Custom Reports ──────────────────────────────────────
 
 # Sources excluded from REVENUE (but counted for rooms_sold / OCC)
-_REVENUE_EXCLUDED_SOURCES = ["Blogger", "House Use", "KOL", "Special case"]
+_REVENUE_EXCLUDED_SOURCES = ["Blogger", "House Use", "KOL", "Special case", "Work Exchange"]
 
 
 def _make_date_filters(date_from: str, date_to: str) -> list[dict]:
@@ -1619,7 +1671,7 @@ def _make_date_filters(date_from: str, date_to: str) -> list[dict]:
 
 
 def _make_source_exclude_filters() -> list[dict]:
-    """Filters to exclude Blogger, House Use, KOL, Special case from revenue.
+    """Filters to exclude Blogger, House Use, KOL, Special case, Work Exchange from revenue.
     Uses not_equals (exact match) to avoid partial-match over-exclusion."""
     return [
         {"cdf": {"type": "default", "column": "reservation_source"},
@@ -1762,14 +1814,20 @@ def fetch_filtered_daily(
     month: int,
 ) -> dict:
     """
-    Per-day filtered revenue + sold, for one branch/month.
+    Per-day revenue (filtered) + rooms_sold (unfiltered), for one branch/month.
 
     Returns { date: {
-        total_rev, total_sold,
-        room_rev, room_sold,
-        dorm_rev, dorm_sold,
+        total_rev,                              # excl Blogger/HouseUse/KOL/SpecialCase/WorkExchange
+        total_sold_excl, total_sold_all,        # _excl matches filtered rev; _all = ALL sources
+        room_rev,
+        room_sold_excl, room_sold_all,
+        dorm_rev,
+        dorm_sold_excl, dorm_sold_all,
     } }
-    All values exclude Blogger / KOL / House Use / Special Case sources.
+
+    ADR rule (sync_cloudbeds_filtered uses these fields):
+        ADR = revenue (filtered) / rooms_sold (ALL sources)
+    so revenue uses *_rev and ADR's denominator uses *_sold_all.
     Returns empty dict on 403 or other failure (caller skips month).
     """
     import calendar
@@ -1791,19 +1849,42 @@ def fetch_filtered_daily(
         api_key, property_id, f"HiD-dorm-{mkey}",
         date_f + [_make_room_type_filter(True)] + _make_source_exclude_filters(),
     )
+    # Unfiltered (ALL sources) — for ADR denominator per the rule
+    total_all = _fetch_custom_report_daily(
+        api_key, property_id, f"HiD-totalAll-{mkey}",
+        date_f,
+    )
+    room_all = _fetch_custom_report_daily(
+        api_key, property_id, f"HiD-roomAll-{mkey}",
+        date_f + [_make_room_type_filter(False)],
+    )
+    dorm_all = _fetch_custom_report_daily(
+        api_key, property_id, f"HiD-dormAll-{mkey}",
+        date_f + [_make_room_type_filter(True)],
+    )
 
     out: dict = {}
-    for d in set(total_excl) | set(room_excl) | set(dorm_excl):
+    all_dates = (
+        set(total_excl) | set(room_excl) | set(dorm_excl)
+        | set(total_all) | set(room_all) | set(dorm_all)
+    )
+    for d in all_dates:
         t = total_excl.get(d, {"rev": 0, "sold": 0})
         r = room_excl.get(d, {"rev": 0, "sold": 0})
         dm = dorm_excl.get(d, {"rev": 0, "sold": 0})
+        ta = total_all.get(d, {"rev": 0, "sold": 0})
+        ra = room_all.get(d, {"rev": 0, "sold": 0})
+        da = dorm_all.get(d, {"rev": 0, "sold": 0})
         out[d] = {
             "total_rev": t["rev"],
-            "total_sold": t["sold"],
+            "total_sold_excl": t["sold"],
+            "total_sold_all": ta["sold"],
             "room_rev": r["rev"],
-            "room_sold": r["sold"],
+            "room_sold_excl": r["sold"],
+            "room_sold_all": ra["sold"],
             "dorm_rev": dm["rev"],
-            "dorm_sold": dm["sold"],
+            "dorm_sold_excl": dm["sold"],
+            "dorm_sold_all": da["sold"],
         }
     return out
 
@@ -1818,7 +1899,7 @@ def fetch_occupancy_filtered(
     Fetch occupancy metrics with proper filtering from Cloudbeds Insights API.
 
     Uses custom reports to get:
-    - Revenue with excluded sources (Blogger, House Use, Special case)
+    - Revenue with excluded sources (Blogger, House Use, KOL, Special case, Work Exchange)
     - Rooms sold with ALL sources (no exclusions)
     - Room vs Dorm split
 

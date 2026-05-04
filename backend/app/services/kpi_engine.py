@@ -175,11 +175,18 @@ def _get_insights_filtered(
     db: Session, branch_id: UUID, year: int, month: int,
 ) -> dict:
     """
-    Get revenue, rooms_sold, ADR with room/dorm split.
+    Get revenue, rooms_sold, ADR with room/dorm split from daily_metrics.
 
-    Reads from daily_metrics, populated by sync_cloudbeds_occupancy (stock
-    report 110 — same source as the Cloudbeds Occupancy Report UI). Revenue,
-    rooms_sold, ADR all match what users see in Cloudbeds Insights directly.
+    Source pipeline:
+      - total_sold / occ_pct: sync_cloudbeds_occupancy (stock report 110, ALL sources)
+      - revenue_native / adr_native / revpar_native: sync_cloudbeds_filtered
+        (filtered revenue / unfiltered total_sold) — overrides the unfiltered
+        values from sync_cloudbeds_occupancy
+      - rooms_sold / dorms_sold: sync_cloudbeds_filtered (UNFILTERED split)
+      - room_revenue_native / dorm_revenue_native: sync_cloudbeds_filtered (filtered)
+
+    ADR rule applied here: total_rev (filtered) / total_sold (ALL sources);
+    same for room/dorm split.
 
     Returns dict with keys: total_rev, total_sold, total_adr,
     room_rev, room_sold, room_adr, dorm_rev, dorm_sold, dorm_adr, has_dorm.
@@ -212,7 +219,9 @@ def _get_insights_filtered(
     dorm_rev = float(row[5])
 
     if total_sold > 0:
-        # ADR = revenue / rooms_sold from stock report 110 — matches Cloudbeds UI exactly.
+        # ADR rule: filtered revenue / unfiltered rooms_sold (excl Blogger / KOL /
+        # House Use / Special Case / Work Exchange in numerator only). Per-day
+        # values populated by sync_cloudbeds_filtered.
         total_adr = round(total_rev / total_sold, 2)
         room_adr = round(room_rev / room_sold, 2) if room_sold > 0 else 0
         dorm_adr = round(dorm_rev / dorm_sold, 2) if dorm_sold > 0 else 0
