@@ -246,6 +246,10 @@ function CRMRatePlansTab({ rows, cur }) {
   );
   const totalAdr = totals.nights > 0 ? totals.revenue / totals.nights : 0;
 
+  const hasZeroRevenueRow = rows.some((r) => (r.bookings || 0) > 0 && (r.revenue || 0) === 0);
+  const zeroRevTooltip =
+    "Bookings exist but accommodation total = 0 in Cloudbeds — typically complimentary stays, voucher redemptions, or comp event guests where the room rate was waived.";
+
   return (
     <div className="space-y-4">
       <p className="text-sm text-gray-500">
@@ -253,6 +257,14 @@ function CRMRatePlansTab({ rows, cur }) {
         filtered by Date Booked (not Stay Date).
         Excludes cancelled bookings and non-paying sources (Blogger / House Use / Special Case).
       </p>
+      {hasZeroRevenueRow && (
+        <p className="text-xs text-gray-500 italic">
+          <span className="font-semibold not-italic">Note:</span> rows marked with{" "}
+          <span className="font-semibold text-amber-600">0*</span> in Revenue have bookings whose
+          accommodation total = 0 in Cloudbeds (typically complimentary stays, voucher redemptions,
+          or comp event guests where the room rate was waived).
+        </p>
+      )}
       <div className="bg-white rounded-lg border overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
@@ -265,15 +277,26 @@ function CRMRatePlansTab({ rows, cur }) {
             </tr>
           </thead>
           <tbody className="divide-y">
-            {rows.map((r, i) => (
-              <tr key={i} className="hover:bg-gray-50">
-                <td className="px-4 py-3 font-medium text-gray-900">{r.rate_plan_name}</td>
-                <td className="px-4 py-3 text-right">{fmtNum(r.bookings)}</td>
-                <td className="px-4 py-3 text-right">{fmtNum(r.nights)}</td>
-                <td className="px-4 py-3 text-right">{fmtNum(r.revenue)}</td>
-                <td className="px-4 py-3 text-right">{fmtNum(r.adr)}</td>
-              </tr>
-            ))}
+            {rows.map((r, i) => {
+              const isZeroRev = (r.bookings || 0) > 0 && (r.revenue || 0) === 0;
+              return (
+                <tr key={i} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium text-gray-900">{r.rate_plan_name}</td>
+                  <td className="px-4 py-3 text-right">{fmtNum(r.bookings)}</td>
+                  <td className="px-4 py-3 text-right">{fmtNum(r.nights)}</td>
+                  <td className="px-4 py-3 text-right">
+                    {isZeroRev ? (
+                      <span className="text-amber-600 font-semibold cursor-help" title={zeroRevTooltip}>
+                        0*
+                      </span>
+                    ) : (
+                      fmtNum(r.revenue)
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-right">{fmtNum(r.adr)}</td>
+                </tr>
+              );
+            })}
             <tr className="bg-gray-50 font-semibold">
               <td className="px-4 py-3">Total</td>
               <td className="px-4 py-3 text-right">{fmtNum(totals.bookings)}</td>
