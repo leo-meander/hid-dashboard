@@ -399,27 +399,40 @@ _TABLE_TD = "padding:6px 10px;color:#374151;font-size:12px;border-bottom:1px sol
 
 
 def _render_exec_summary(report: list, today: date) -> str:
-    """Top-of-email pacing table — one row per branch."""
+    """Top-of-email pacing table — one row per branch.
+
+    Revenue / OCC / ADR pulled from `b` (kpi_engine via Cloudbeds Insights
+    filtered API) — same source the dashboard's Group Summary page uses.
+    The previously-shown `mtd.revenue` came from daily_metrics cache which
+    excludes nothing and could lag the live Insights pull, so the email
+    showed lower numbers than the dashboard. RevPAR computed as ADR × OCC
+    so it stays consistent with the same source.
+    """
     rows_html = []
     for b in report:
         cur = b["currency"]
         ach = b["achievement_pct"]
         ach_color = "#16a34a" if ach and ach >= 100 else "#ca8a04" if ach and ach >= 80 else "#dc2626"
         a = b.get("analytics", {})
-        mtd = a.get("summary", {}).get("mtd", {})
         wow = a.get("summary", {}).get("wow_revenue_pct")
         yoy = a.get("summary", {}).get("yoy_revenue_pct")
         wow_html = f"<span style='color:{'#16a34a' if (wow or 0)>=0 else '#dc2626'}'>{_signed_pct(wow)}</span>" if wow is not None else "—"
         yoy_html = f"<span style='color:{'#16a34a' if (yoy or 0)>=0 else '#dc2626'}'>{_signed_pct(yoy)}</span>" if yoy is not None else "—"
+
+        # RevPAR = ADR × OCC% (per metrics-rules)
+        adr = b.get("avg_adr") or 0
+        occ_pct = b.get("avg_occ_pct") or 0  # 0..100 scale (already %)
+        revpar = round(adr * occ_pct / 100, 2) if (adr and occ_pct) else None
+
         rows_html.append(f"""
           <tr>
             <td style="{_TABLE_TD}"><strong>{b['branch_name']}</strong></td>
-            <td style="{_TABLE_TD};text-align:right;">{_fmt(mtd.get('revenue'), cur)}</td>
-            <td style="{_TABLE_TD};text-align:right;">{_fmt(b['target_revenue'], cur)}</td>
+            <td style="{_TABLE_TD};text-align:right;">{_fmt(b.get('actual_revenue'), cur)}</td>
+            <td style="{_TABLE_TD};text-align:right;">{_fmt(b.get('target_revenue'), cur)}</td>
             <td style="{_TABLE_TD};text-align:right;color:{ach_color};font-weight:700;">{_pct(ach)}</td>
-            <td style="{_TABLE_TD};text-align:right;">{_pct((mtd.get('occ_pct') or 0)*100) if mtd.get('occ_pct') is not None else '—'}</td>
-            <td style="{_TABLE_TD};text-align:right;">{_fmt(b['avg_adr'], cur)}</td>
-            <td style="{_TABLE_TD};text-align:right;">{_fmt(mtd.get('revpar'), cur)}</td>
+            <td style="{_TABLE_TD};text-align:right;">{_pct(b.get('avg_occ_pct'))}</td>
+            <td style="{_TABLE_TD};text-align:right;">{_fmt(b.get('avg_adr'), cur)}</td>
+            <td style="{_TABLE_TD};text-align:right;">{_fmt(revpar, cur)}</td>
             <td style="{_TABLE_TD};text-align:right;">{wow_html}</td>
             <td style="{_TABLE_TD};text-align:right;">{yoy_html}</td>
           </tr>""")
@@ -444,8 +457,8 @@ def _render_exec_summary(report: list, today: date) -> str:
         </table>
       </div>
       <p style="margin:10px 0 0;font-size:11px;color:#6b7280;">
-        Revenue = accommodation-only (excl. Blogger / House Use / KOL / Special Case). OCC counts all sources.<br/>
-        WoW Rev = current week vs prior week. YoY Rev = MTD this year vs same MTD last year (— if no 2025 data for this window).
+        Revenue / OCC / ADR = Cloudbeds Insights filtered (excl. Blogger / House Use / Special Case) — same source as the Group Summary dashboard.<br/>
+        RevPAR = ADR × OCC. WoW Rev = last calendar week vs prev calendar week. YoY Rev = MTD this year vs same MTD last year (— if no prior-year data for this window).
       </p>
     </div>"""
 
