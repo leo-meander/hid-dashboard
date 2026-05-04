@@ -65,21 +65,6 @@ function RoasBadge({ value }) {
   return <span className={"px-2 py-0.5 rounded text-xs font-semibold " + cls}>{value.toFixed(2)}x</span>;
 }
 
-function ActivityBadges({ activities }) {
-  const colors = {
-    "Paid Ads": "bg-blue-100 text-blue-700",
-    KOL: "bg-purple-100 text-purple-700",
-    CRM: "bg-emerald-100 text-emerald-700",
-  };
-  return (
-    <div className="flex gap-1 flex-wrap">
-      {activities.map((a) => (
-        <span key={a} className={"px-2 py-0.5 rounded text-xs font-medium " + (colors[a] || "bg-gray-100 text-gray-600")}>{a}</span>
-      ))}
-    </div>
-  );
-}
-
 function KPICard({ label, value, sub, prev, prevLabel }) {
   return (
     <div className="bg-white rounded-lg border p-4">
@@ -105,7 +90,6 @@ export default function MarketingActivity() {
   const today = new Date();
   const currentMonthStr = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0");
   const [month, setMonth] = useState(currentMonthStr);
-  const [filterCountry, setFilterCountry] = useState("");
 
   const load = () => {
     setLoading(true);
@@ -124,36 +108,11 @@ export default function MarketingActivity() {
   const overview = data?.overview;
   const prevOverview = data?.prev_overview;
   const prevMonth = data?.prev_month;
-  const monthly = data?.monthly_by_country || [];
-  const suggestions = data?.kol_suggestions || [];
   const crmRatePlans = data?.crm_by_rate_plan || [];
-
-  const countries = useMemo(() => {
-    const set = new Set(monthly.map((r) => r.country));
-    return [...set].sort();
-  }, [monthly]);
-
-  const filteredMonthly = useMemo(() => {
-    if (!filterCountry) return monthly;
-    return monthly.filter((r) => r.country === filterCountry);
-  }, [monthly, filterCountry]);
-
-  // Group KOL suggestions by country
-  const suggestionsByCountry = useMemo(() => {
-    const groups = {};
-    for (const s of suggestions) {
-      const c = s.country || "Unknown";
-      if (!groups[c]) groups[c] = [];
-      groups[c].push(s);
-    }
-    return Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [suggestions]);
 
   const TABS = [
     { key: "overview", label: "Overview" },
-    { key: "monthly", label: "By Country" },
     { key: "crm-rate-plans", label: "CRM Reservations" },
-    { key: "kol-suggest", label: "KOL Suggestions" },
     { key: "email-stat", label: "Email Stat" },
   ];
 
@@ -189,12 +148,7 @@ export default function MarketingActivity() {
       ) : (
         <>
           {tab === "overview" && <OverviewTab overview={overview} prevOverview={prevOverview} prevLabel={prevLabel} cur={cur} />}
-          {tab === "monthly" && (
-            <MonthlyTab rows={filteredMonthly} countries={countries}
-              filterCountry={filterCountry} setFilterCountry={setFilterCountry} cur={cur} />
-          )}
           {tab === "crm-rate-plans" && <CRMRatePlansTab rows={crmRatePlans} cur={cur} />}
-          {tab === "kol-suggest" && <KOLSuggestTab groups={suggestionsByCountry} />}
         </>
       )}
     </div>
@@ -272,53 +226,6 @@ function OverviewTab({ overview, prevOverview, prevLabel, cur }) {
   );
 }
 
-/* ── By Country Tab ────────────────────────────────────────────────────────── */
-function MonthlyTab({ rows, countries, filterCountry, setFilterCountry, cur }) {
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <label className="text-sm text-gray-600">Country:</label>
-        <select value={filterCountry} onChange={(e) => setFilterCountry(e.target.value)}
-          className="border rounded px-2 py-1 text-sm">
-          <option value="">All</option>
-          {countries.map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
-      </div>
-
-      {rows.length === 0 ? (
-        <p className="text-gray-400 text-sm text-center py-8">No marketing activity found for this month.</p>
-      ) : (
-        <div className="bg-white rounded-lg border overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="text-left px-4 py-3 font-semibold text-gray-600">Country</th>
-                <th className="text-left px-4 py-3 font-semibold text-gray-600">Activities</th>
-                <th className="text-right px-4 py-3 font-semibold text-gray-600">Bookings</th>
-                <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue ({cur})</th>
-                <th className="text-right px-4 py-3 font-semibold text-gray-600">Cost ({cur})</th>
-                <th className="text-right px-4 py-3 font-semibold text-gray-600">ROAS</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {rows.map((r, i) => (
-                <tr key={i} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium">{r.country}</td>
-                  <td className="px-4 py-3"><ActivityBadges activities={r.activities} /></td>
-                  <td className="px-4 py-3 text-right">{fmtNum(r.total_bookings)}</td>
-                  <td className="px-4 py-3 text-right">{fmtNum(r.total_revenue)}</td>
-                  <td className="px-4 py-3 text-right">{r.total_cost > 0 ? fmtNum(r.total_cost) : "\u2014"}</td>
-                  <td className="px-4 py-3 text-right"><RoasBadge value={r.roas} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
 /* ── CRM Reservations Tab — grouped by Rate Plan Name ────────────────────── */
 function CRMRatePlansTab({ rows, cur }) {
   if (!rows || rows.length === 0) {
@@ -377,72 +284,6 @@ function CRMRatePlansTab({ rows, cur }) {
           </tbody>
         </table>
       </div>
-    </div>
-  );
-}
-
-/* ── KOL Suggestions Tab — grouped by Country ────────────────────────────── */
-function KOLSuggestTab({ groups }) {
-  if (groups.length === 0) {
-    return (
-      <p className="text-gray-400 text-sm text-center py-8">
-        No KOL suggestions available. KOLs already used in paid ads are excluded.
-      </p>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      <p className="text-sm text-gray-500">
-        KOLs with organic bookings not yet used in Paid Ads — grouped by country, sorted by revenue.
-      </p>
-      {groups.map(([country, rows]) => (
-        <div key={country}>
-          <h3 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-500" />
-            {country}
-            <span className="text-xs text-gray-400 font-normal">({rows.length} KOL{rows.length > 1 ? "s" : ""})</span>
-          </h3>
-          <div className="bg-white rounded-lg border overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="text-left px-4 py-2.5 font-semibold text-gray-600">KOL</th>
-                  <th className="text-left px-4 py-2.5 font-semibold text-gray-600">Branch</th>
-                  <th className="text-right px-4 py-2.5 font-semibold text-gray-600">Organic Bookings</th>
-                  <th className="text-right px-4 py-2.5 font-semibold text-gray-600">Organic Revenue (VND)</th>
-                  <th className="text-left px-4 py-2.5 font-semibold text-gray-600">Nationality</th>
-                  <th className="text-left px-4 py-2.5 font-semibold text-gray-600">Usage Rights Until</th>
-                  <th className="text-center px-4 py-2.5 font-semibold text-gray-600">Ads Eligible</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {rows.map((r, i) => (
-                  <tr key={i} className="hover:bg-gray-50">
-                    <td className="px-4 py-2.5 font-medium text-gray-900">{r.kol_name.replace("KOL_", "")}</td>
-                    <td className="px-4 py-2.5 text-gray-600">{r.branch}</td>
-                    <td className="px-4 py-2.5 text-right font-medium">{fmtNum(r.organic_bookings)}</td>
-                    <td className="px-4 py-2.5 text-right">{fmtNum(r.organic_revenue_vnd)}</td>
-                    <td className="px-4 py-2.5 text-gray-600">{r.kol_nationality || "\u2014"}</td>
-                    <td className="px-4 py-2.5">
-                      {r.usage_rights_until ? (
-                        <span className={new Date(r.usage_rights_until) < new Date() ? "text-red-600" : "text-gray-700"}>
-                          {r.usage_rights_until}
-                        </span>
-                      ) : <span className="text-gray-400">{"\u2014"}</span>}
-                    </td>
-                    <td className="px-4 py-2.5 text-center">
-                      {r.paid_ads_eligible
-                        ? <span className="text-green-600 font-medium">Yes</span>
-                        : <span className="text-gray-400">No</span>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
