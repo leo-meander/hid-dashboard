@@ -412,7 +412,6 @@ def _render_exec_summary(report: list, today: date) -> str:
     for b in report:
         cur = b["currency"]
         ach = b["achievement_pct"]
-        ach_color = "#16a34a" if ach and ach >= 100 else "#ca8a04" if ach and ach >= 80 else "#dc2626"
         a = b.get("analytics", {})
         wow = a.get("summary", {}).get("wow_revenue_pct")
         yoy = a.get("summary", {}).get("yoy_revenue_pct")
@@ -424,12 +423,43 @@ def _render_exec_summary(report: list, today: date) -> str:
         occ_pct = b.get("avg_occ_pct") or 0  # 0..100 scale (already %)
         revpar = round(adr * occ_pct / 100, 2) if (adr and occ_pct) else None
 
+        # Forecast: ADR × predicted-room-nights (set in KPI Dashboard).
+        # Forecast % drives the color — pacing alone (actual MTD / target)
+        # is misleading early in the month.
+        fcst = b.get("occ_forecast")
+        fcst_pct = b.get("occ_forecast_pct")
+        if fcst_pct is not None:
+            fcst_color = (
+                "#16a34a" if fcst_pct >= 100 else
+                "#ca8a04" if fcst_pct >= 90 else
+                "#ea580c" if fcst_pct >= 75 else
+                "#dc2626"
+            )
+            fcst_html = (
+                f"<div style='font-weight:700;color:{fcst_color};'>{_fmt(fcst, cur)}</div>"
+                f"<div style='font-size:10px;color:{fcst_color};'>{_pct(fcst_pct)} of target</div>"
+            )
+        else:
+            fcst_html = "<span style='color:#9ca3af;'>not set</span>"
+
+        # Pacing color now follows forecast % (true risk signal), not actual MTD %
+        if fcst_pct is not None:
+            ach_color = (
+                "#16a34a" if fcst_pct >= 100 else
+                "#ca8a04" if fcst_pct >= 90 else
+                "#ea580c" if fcst_pct >= 75 else
+                "#dc2626"
+            )
+        else:
+            ach_color = "#6b7280"
+
         rows_html.append(f"""
           <tr>
             <td style="{_TABLE_TD}"><strong>{b['branch_name']}</strong></td>
             <td style="{_TABLE_TD};text-align:right;">{_fmt(b.get('actual_revenue'), cur)}</td>
             <td style="{_TABLE_TD};text-align:right;">{_fmt(b.get('target_revenue'), cur)}</td>
             <td style="{_TABLE_TD};text-align:right;color:{ach_color};font-weight:700;">{_pct(ach)}</td>
+            <td style="{_TABLE_TD};text-align:right;vertical-align:top;">{fcst_html}</td>
             <td style="{_TABLE_TD};text-align:right;">{_pct(b.get('avg_occ_pct'))}</td>
             <td style="{_TABLE_TD};text-align:right;">{_fmt(b.get('avg_adr'), cur)}</td>
             <td style="{_TABLE_TD};text-align:right;">{_fmt(revpar, cur)}</td>
@@ -447,6 +477,7 @@ def _render_exec_summary(report: list, today: date) -> str:
             <th style="{_TABLE_TH};text-align:right;">Revenue MTD</th>
             <th style="{_TABLE_TH};text-align:right;">Target</th>
             <th style="{_TABLE_TH};text-align:right;">Pacing</th>
+            <th style="{_TABLE_TH};text-align:right;" title="ADR × predicted nights for the month">Forecast</th>
             <th style="{_TABLE_TH};text-align:right;">OCC</th>
             <th style="{_TABLE_TH};text-align:right;">ADR</th>
             <th style="{_TABLE_TH};text-align:right;">RevPAR</th>
@@ -458,6 +489,11 @@ def _render_exec_summary(report: list, today: date) -> str:
       </div>
       <p style="margin:10px 0 0;font-size:11px;color:#6b7280;">
         Revenue / OCC / ADR = Cloudbeds Insights filtered (excl. Blogger / House Use / Special Case) — same source as the Group Summary dashboard.<br/>
+        Forecast = ADR × predicted-nights (set predicted OCC% in KPI Dashboard). Pacing color follows forecast vs target:
+        <span style="color:#16a34a;">green ≥100%</span> ·
+        <span style="color:#ca8a04;">yellow 90-99%</span> ·
+        <span style="color:#ea580c;">orange 75-89%</span> ·
+        <span style="color:#dc2626;">red &lt;75%</span>.<br/>
         RevPAR = ADR × OCC. WoW Rev = last calendar week vs prev calendar week. YoY Rev = MTD this year vs same MTD last year (— if no prior-year data for this window).
       </p>
     </div>"""
@@ -818,15 +854,42 @@ def _branch_narrative(b: dict) -> list[str]:
     lw = summary.get("last_week") or {}
     pa_lw = (a.get("paid_ads") or {}).get("last_week") or {}
 
-    # 1. Pacing
-    ach = b.get("achievement_pct")
-    if ach is not None:
-        if ach >= 100:
-            bullets.append(f"🟢 <strong>On track</strong> — {ach:.1f}% of {MONTHS_EN[date.today().month]} target hit.")
-        elif ach >= 80:
-            bullets.append(f"🟡 <strong>Behind target</strong> — {ach:.1f}% pacing; needs +{100-ach:.0f}pp this week.")
+    # 1. Pacing — judged by FORECAST vs target (will the month hit KPI?),
+    #    not by actual MTD vs target. Early-month MTD is naturally low —
+    #    flagging "🔴 At risk" when MTD < 80% would fire on day 5 of every
+    #    month even if forecast is 110%. Forecast = ADR × (predicted OCC ×
+    #    rooms × days), set per branch in the KPI Dashboard.
+    fcst_pct = b.get("occ_forecast_pct")
+    ach = b.get("achievement_pct")  # current actual/target — shown as context
+    month_name = MONTHS_EN[date.today().month]
+    if fcst_pct is not None:
+        ach_str = f"{ach:.1f}% MTD" if ach is not None else "MTD n/a"
+        if fcst_pct >= 100:
+            bullets.append(
+                f"🟢 <strong>On track to hit {month_name} target</strong> — "
+                f"forecast {fcst_pct:.1f}% of target ({ach_str})."
+            )
+        elif fcst_pct >= 90:
+            bullets.append(
+                f"🟡 <strong>Forecast just under target</strong> — projected {fcst_pct:.1f}% "
+                f"({ach_str}); needs +{100-fcst_pct:.1f}pp lift to close."
+            )
+        elif fcst_pct >= 75:
+            bullets.append(
+                f"🟠 <strong>Forecast behind target</strong> — projected {fcst_pct:.1f}% "
+                f"({ach_str}); push pricing + ads to recover."
+            )
         else:
-            bullets.append(f"🔴 <strong>At risk</strong> — only {ach:.1f}% of monthly target; review pricing + promo immediately.")
+            bullets.append(
+                f"🔴 <strong>At risk of missing target</strong> — forecast only {fcst_pct:.1f}% "
+                f"({ach_str}); review pricing + promo immediately."
+            )
+    elif ach is not None:
+        # Forecast unavailable — fall back to MTD-only signal but be explicit
+        bullets.append(
+            f"📊 MTD pacing {ach:.1f}% — forecast unavailable. "
+            f"Set predicted OCC% in KPI Dashboard for a real projection."
+        )
 
     # 2. Last-week revenue movement
     wow = summary.get("wow_revenue_pct")
