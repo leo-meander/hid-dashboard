@@ -181,7 +181,7 @@ export default function MarketingActivity() {
 
       {tab === "email-stat" ? (
         // Email Stat fetches its own data — independent of the activity API
-        <EmailStatTab month={month} />
+        <EmailStatTab month={month} onViewRevenue={() => setTab("crm-rate-plans")} />
       ) : loading ? (
         <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
       ) : !data ? (
@@ -462,11 +462,12 @@ function EmailKPI({ label, value, color = "text-gray-900" }) {
   );
 }
 
-function EmailStatTab({ month }) {
+function EmailStatTab({ month, onViewRevenue }) {
   const { currentBranch, isAll } = useBranch();
   const [summary, setSummary] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
 
   const ghlBranch = useMemo(
     () => isAll ? null : branchToGHL(currentBranch?.name),
@@ -507,6 +508,10 @@ function EmailStatTab({ month }) {
 
   const workflows = campaigns.filter(c => c.campaign_type === "workflow");
   const bulks = campaigns.filter(c => c.campaign_type === "bulk");
+  const q = search.trim().toLowerCase();
+  const filteredCampaigns = q
+    ? campaigns.filter(c => (c.workflow_name || "").toLowerCase().includes(q))
+    : campaigns;
 
   return (
     <div className="space-y-6">
@@ -541,6 +546,25 @@ function EmailStatTab({ month }) {
 
       {campaigns.length > 0 && (
         <div className="bg-white rounded-lg border overflow-x-auto">
+          <div className="px-4 py-3 border-b bg-gray-50/50 flex items-center gap-3 flex-wrap">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search campaign name..."
+              className="w-full md:w-80 px-3 py-1.5 text-sm border rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
+            />
+            <span className="text-xs text-gray-500 whitespace-nowrap">
+              {filteredCampaigns.length} of {campaigns.length}
+            </span>
+            <button
+              type="button"
+              onClick={onViewRevenue}
+              className="ml-auto text-xs font-medium text-indigo-600 hover:text-indigo-800 hover:underline whitespace-nowrap"
+            >
+              View revenue → CRM Reservations
+            </button>
+          </div>
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
               <tr>
@@ -550,12 +574,10 @@ function EmailStatTab({ month }) {
                 <th className="text-right px-4 py-3 font-semibold text-gray-600">Sent</th>
                 <th className="text-right px-4 py-3 font-semibold text-gray-600">Open%</th>
                 <th className="text-right px-4 py-3 font-semibold text-gray-600">Click%</th>
-                <th className="text-right px-4 py-3 font-semibold text-gray-600">Bookings</th>
-                <th className="text-right px-4 py-3 font-semibold text-gray-600">Revenue (VND)</th>
               </tr>
             </thead>
             <tbody className="divide-y">
-              {campaigns.map((c) => (
+              {filteredCampaigns.map((c) => (
                 <tr key={`${c.workflow_id}-${c.branch_name}`} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-900 truncate max-w-[280px]">{c.workflow_name}</td>
                   <td className="px-4 py-3 text-gray-600">{c.branch_name || "—"}</td>
@@ -571,14 +593,15 @@ function EmailStatTab({ month }) {
                   <td className="px-4 py-3 text-right">{fmtNum(c.sent)}</td>
                   <td className="px-4 py-3 text-right">{pct(c.open_rate)}</td>
                   <td className="px-4 py-3 text-right">{pct(c.click_rate)}</td>
-                  <td className="px-4 py-3 text-right text-emerald-700 font-medium">
-                    {c.attributed_bookings > 0 ? fmtNum(c.attributed_bookings) : <span className="text-gray-300">—</span>}
-                  </td>
-                  <td className="px-4 py-3 text-right text-emerald-700 font-medium">
-                    {c.attributed_revenue_vnd > 0 ? fmtNum(c.attributed_revenue_vnd) : <span className="text-gray-300">—</span>}
-                  </td>
                 </tr>
               ))}
+              {filteredCampaigns.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-4 py-8 text-center text-gray-400 text-sm">
+                    No campaigns match &quot;{search}&quot;.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

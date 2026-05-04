@@ -2,11 +2,15 @@
 Marketing Activity router — consolidated view of Paid Ads, KOL, and CRM performance.
 
 Data sources (post migration 028):
-  - Paid Ads: local ``ads_performance`` table, populated by the Ads Platform
-              sync service (grain='daily' for totals, grain='ad' for country
-              breakdown).
-  - KOL:      Cloudbeds reservations (room_type ILIKE '%KOL_%')
-  - CRM:      Cloudbeds reservations (CRM/MEANDER'S FRIEND/Travel guide/Grand Open)
+  - Paid Ads bookings/revenue: ``ads_booking_matches`` (de-duped by
+    ``external_match_id`` — same source the Ads Platform dashboard uses).
+    For By-Country breakdown, joined to ``ads_performance(grain='ad')`` via
+    ``external_ad_id`` to pick up ``target_country``.
+  - Paid Ads cost:             Budget Planner's ActualsCache (Ads Platform
+    yearly-plan feed). Not split per-country — daily grain has no country.
+  - KOL:                       Cloudbeds reservations (room_type ILIKE '%KOL_%')
+  - CRM:                       Cloudbeds reservations (CRM/MEANDER'S FRIEND/
+                               Travel guide/Grand Open)
 
 Revenue exclusion: Blogger, House Use, Special Case (non-paying guests)
 """
@@ -25,6 +29,7 @@ from sqlalchemy import text
 
 from app.database import get_db
 from app.models.ads import AdsPerformance
+from app.models.ads_booking_match import AdsBookingMatch
 from app.models.branch import Branch
 from app.models.reservation import Reservation
 from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
@@ -71,112 +76,79 @@ def _status_filter():
 # ── Ads data readers ─────────────────────────────────────────────────────────
 
 
-def _fetch_daily_ads_rows(
+def _fetch_paid_ads_totals(
     db: Session,
     branch_id: Optional[UUID],
     d_from: date,
     d_to: date,
-) -> list[dict]:
-    """Daily-grain ads spend rows, one per (branch, channel, date, account).
+    use_native: bool,
+) -> tuple[int, float]:
+    """Authoritative Paid Ads (bookings, revenue) for a month.
 
-    The ``grain='daily'`` rows carry authoritative spend / revenue / bookings
-    aggregates — they are what KPI totals SUM on. Country is not present at
-    this grain (see ``_fetch_ad_country_rows``).
+    Reads from ``ads_booking_matches``, which is unique per
+    ``external_match_id`` and matches what the Ads Platform dashboard reports
+    (the legacy ``ads_performance(grain='daily')`` aggregate double-counts
+    conversions across overlapping account rows — observed ~1.57x inflation
+    on April 2026 vs the platform dashboard).
     """
-    q = (
-        db.query(
-            AdsPerformance.branch_id.label("branch_id"),
-            Branch.name.label("branch_name"),
-            Branch.currency.label("currency"),
-            AdsPerformance.channel,
-            AdsPerformance.funnel_stage.label("funnel"),
-            AdsPerformance.date_from.label("date"),
-            func.coalesce(AdsPerformance.cost_native, 0).label("cost_native"),
-            func.coalesce(AdsPerformance.cost_vnd, 0).label("cost_vnd"),
-            func.coalesce(AdsPerformance.revenue_native, 0).label("revenue_native"),
-            func.coalesce(AdsPerformance.revenue_vnd, 0).label("revenue_vnd"),
-            func.coalesce(AdsPerformance.bookings, 0).label("bookings"),
-        )
-        .join(Branch, Branch.id == AdsPerformance.branch_id)
-        .filter(
-            AdsPerformance.grain == "daily",
-            AdsPerformance.date_from >= d_from,
-            AdsPerformance.date_from <= d_to,
-        )
+    rev_col = AdsBookingMatch.revenue_native if use_native else AdsBookingMatch.revenue_vnd
+    q = db.query(
+        func.count(AdsBookingMatch.id).label("bookings"),
+        func.coalesce(func.sum(rev_col), 0).label("revenue"),
+    ).filter(
+        AdsBookingMatch.booking_date >= d_from,
+        AdsBookingMatch.booking_date <= d_to,
     )
     if branch_id is not None:
-        q = q.filter(AdsPerformance.branch_id == branch_id)
-
-    return [
-        {
-            "branch_id": str(r.branch_id),
-            "branch_name": r.branch_name,
-            "currency": r.currency or "VND",
-            "channel": r.channel or "",
-            "funnel": r.funnel or "",
-            "date": r.date,
-            "cost_native": float(r.cost_native or 0),
-            "cost_vnd": float(r.cost_vnd or 0),
-            "revenue_native": float(r.revenue_native or 0),
-            "revenue_vnd": float(r.revenue_vnd or 0),
-            "bookings": int(r.bookings or 0),
-            "mkt_activity": "Paid Ads",
-        }
-        for r in q.all()
-    ]
+        q = q.filter(AdsBookingMatch.branch_id == branch_id)
+    row = q.one()
+    return int(row.bookings or 0), float(row.revenue or 0)
 
 
-def _fetch_ad_country_rows(
+def _fetch_paid_ads_by_country(
     db: Session,
     branch_id: Optional[UUID],
     d_from: date,
     d_to: date,
-) -> list[dict]:
-    """Per-ad rows with ``target_country``. Used to build the By-Country tab
-    (daily-grain rows don't carry country). Spend/revenue here are per-ad
-    cumulative values across the ad's full lifetime — see
-    ``_build_monthly_by_country`` for how we re-weight against daily totals.
+    use_native: bool,
+) -> dict[str, dict]:
+    """Per-country Paid Ads bookings + revenue.
+
+    Joins ``ads_booking_matches`` (booking_date in window) to
+    ``ads_performance(grain='ad')`` on ``external_ad_id`` to pick up
+    ``target_country``. Bookings without a matching ad row land under
+    'Unknown'.
     """
+    rev_col = AdsBookingMatch.revenue_native if use_native else AdsBookingMatch.revenue_vnd
+    country_expr = func.coalesce(
+        func.nullif(func.trim(AdsPerformance.target_country), ""),
+        "Unknown",
+    ).label("country")
+
     q = (
         db.query(
-            AdsPerformance.branch_id.label("branch_id"),
-            Branch.name.label("branch_name"),
-            Branch.currency.label("currency"),
-            AdsPerformance.channel,
-            AdsPerformance.target_country.label("country"),
-            func.coalesce(AdsPerformance.cost_native, 0).label("cost_native"),
-            func.coalesce(AdsPerformance.cost_vnd, 0).label("cost_vnd"),
-            func.coalesce(AdsPerformance.revenue_native, 0).label("revenue_native"),
-            func.coalesce(AdsPerformance.revenue_vnd, 0).label("revenue_vnd"),
-            func.coalesce(AdsPerformance.bookings, 0).label("bookings"),
+            country_expr,
+            func.count(AdsBookingMatch.id).label("bookings"),
+            func.coalesce(func.sum(rev_col), 0).label("revenue"),
         )
-        .join(Branch, Branch.id == AdsPerformance.branch_id)
+        .outerjoin(
+            AdsPerformance,
+            (AdsPerformance.external_ad_id == AdsBookingMatch.external_ad_id)
+            & (AdsPerformance.grain == "ad"),
+        )
         .filter(
-            AdsPerformance.grain == "ad",
-            # Fall back to all-time ad rows when date_from is null (metadata-only).
-            or_(
-                AdsPerformance.date_from.is_(None),
-                AdsPerformance.date_from <= d_to,
-            ),
+            AdsBookingMatch.booking_date >= d_from,
+            AdsBookingMatch.booking_date <= d_to,
         )
+        .group_by("country")
     )
     if branch_id is not None:
-        q = q.filter(AdsPerformance.branch_id == branch_id)
+        q = q.filter(AdsBookingMatch.branch_id == branch_id)
 
-    return [
-        {
-            "branch_id": str(r.branch_id),
-            "currency": r.currency or "VND",
-            "channel": r.channel or "",
-            "country": r.country or "",
-            "cost_native": float(r.cost_native or 0),
-            "cost_vnd": float(r.cost_vnd or 0),
-            "revenue_native": float(r.revenue_native or 0),
-            "revenue_vnd": float(r.revenue_vnd or 0),
-            "bookings": int(r.bookings or 0),
-        }
+    return {
+        r.country: {"bookings": int(r.bookings or 0), "revenue": float(r.revenue or 0)}
         for r in q.all()
-    ]
+    }
 
 
 def _month_range(month_str: str):
@@ -210,22 +182,19 @@ def get_marketing_activity_summary(
     d_from, d_to = _month_range(current_month)
     p_from, p_to = _month_range(prev_month)
 
-    # Ads data now lives in local ads_performance (populated by Ads Platform sync).
-    ads_cur = _fetch_daily_ads_rows(db, branch_id, d_from, d_to)
-    ads_prev = _fetch_daily_ads_rows(db, branch_id, p_from, p_to)
-    ads_country = _fetch_ad_country_rows(db, branch_id, d_from, d_to)
-
     use_native = branch_id is not None
 
-    overview_cur = _build_overview(db, branch_id, d_from, d_to, ads_cur, use_native)
-    overview_prev = _build_overview(db, branch_id, p_from, p_to, ads_prev, use_native)
-    monthly = _build_monthly_by_country(db, branch_id, d_from, d_to, ads_country, use_native)
+    overview_cur = _build_overview(db, branch_id, d_from, d_to, use_native)
+    overview_prev = _build_overview(db, branch_id, p_from, p_to, use_native)
+    monthly = _build_monthly_by_country(db, branch_id, d_from, d_to, use_native)
     suggestions = _build_kol_suggestions(db, branch_id, d_from, d_to)
     crm_rate_plans = _build_crm_by_rate_plan(db, branch_id, d_from, d_to, use_native)
 
     currency = "VND"
-    if use_native and ads_cur:
-        currency = ads_cur[0].get("currency", "VND")
+    if use_native and branch_id is not None:
+        b = db.query(Branch).filter(Branch.id == branch_id).first()
+        if b and b.currency:
+            currency = b.currency
 
     return _envelope({
         "overview": overview_cur,
@@ -241,14 +210,12 @@ def get_marketing_activity_summary(
 
 # ── Overview KPIs ────────────────────────────────────────────────────────────
 
-def _build_overview(db, branch_id, d_from, d_to, ads_rows, use_native):
-    rev_key = "revenue_native" if use_native else "revenue_vnd"
-
-    # Paid Ads bookings/revenue still come from local ads_performance.
-    # Cost now comes from the Budget Planner's upstream feed (Ads Platform
-    # /api/export/budget/yearly-plan) so this view matches Budget Planner.
-    ads_bookings = sum(r["bookings"] for r in ads_rows)
-    ads_revenue = sum(r[rev_key] for r in ads_rows)
+def _build_overview(db, branch_id, d_from, d_to, use_native):
+    # Paid Ads bookings/revenue: ads_booking_matches (de-duped, matches the
+    # Ads Platform dashboard). Cost: Budget Planner's ActualsCache.
+    ads_bookings, ads_revenue = _fetch_paid_ads_totals(
+        db, branch_id, d_from, d_to, use_native,
+    )
 
     # KOL (from Cloudbeds) — excludes Blogger/House Use/Special Case
     rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
@@ -346,21 +313,22 @@ def _budget_actuals_costs(db, branch_id, year: int, month: int, use_native: bool
 
 # ── Monthly by Country ───────────────────────────────────────────────────────
 
-def _build_monthly_by_country(db, branch_id, d_from, d_to, ads_rows, use_native):
+def _build_monthly_by_country(db, branch_id, d_from, d_to, use_native):
     grid = defaultdict(lambda: {
         "paid_ads": {"bookings": 0, "revenue": 0, "cost": 0},
         "kol": {"bookings": 0, "revenue": 0},
         "crm": {"bookings": 0, "revenue": 0},
     })
 
-    cost_key = "cost_native" if use_native else "cost_vnd"
-    rev_key = "revenue_native" if use_native else "revenue_vnd"
-
-    for r in ads_rows:
-        country = r["country"] or "Unknown"
-        grid[country]["paid_ads"]["bookings"] += r["bookings"]
-        grid[country]["paid_ads"]["revenue"] += r[rev_key]
-        grid[country]["paid_ads"]["cost"] += r[cost_key]
+    # Paid Ads from ads_booking_matches × ads_performance(grain='ad').
+    # Cost stays 0 in this grid — daily-grain spend has no country, and
+    # allocating it would be a guess; the frontend renders 0 as "—".
+    paid_by_country = _fetch_paid_ads_by_country(
+        db, branch_id, d_from, d_to, use_native,
+    )
+    for country, data in paid_by_country.items():
+        grid[country]["paid_ads"]["bookings"] += data["bookings"]
+        grid[country]["paid_ads"]["revenue"] += data["revenue"]
 
     rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
 
@@ -408,7 +376,7 @@ def _build_monthly_by_country(db, branch_id, d_from, d_to, ads_rows, use_native)
     result = []
     for country, data in sorted(grid.items()):
         activities = []
-        if data["paid_ads"]["bookings"] > 0 or data["paid_ads"]["cost"] > 0:
+        if data["paid_ads"]["bookings"] > 0:
             activities.append("Paid Ads")
         if data["kol"]["bookings"] > 0:
             activities.append("KOL")
