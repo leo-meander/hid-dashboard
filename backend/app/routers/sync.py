@@ -129,12 +129,28 @@ def debug_cloudbeds(
                 if isinstance(body_json.get("datasets"), list):
                     datasets_list = body_json["datasets"]
 
+            # Extract periods + totals/subtotals (date range exposed by report)
+            periods = body_json.get("periods") if isinstance(body_json, dict) else None
+            totals = body_json.get("totals") if isinstance(body_json, dict) else None
+            subtotals = body_json.get("subtotals") if isinstance(body_json, dict) else None
+            headers_meta = body_json.get("headers") if isinstance(body_json, dict) else None
+            # First and last record date keys (so we can see the actual range)
+            record_dates = None
+            if body_json and isinstance(body_json.get("records"), dict):
+                ks = list(body_json["records"].keys())
+                record_dates = {"first": ks[0] if ks else None, "last": ks[-1] if ks else None, "count": len(ks)}
+
             return _envelope({
                 "url": str(resp.request.url),
                 "status_code": resp.status_code,
                 # Auth header scrubbed — bearer token is leak risk
                 "body_keys": list(body_json.keys()) if isinstance(body_json, dict) else None,
                 "records_count": len(body_json.get("records", {})) if isinstance(body_json, dict) and isinstance(body_json.get("records"), dict) else None,
+                "record_dates": record_dates,
+                "periods": periods,
+                "headers_meta": headers_meta,
+                "totals": totals,
+                "subtotals": subtotals,
                 "sample_records": sample,
                 "stock_reports": stock_reports_list,
                 "datasets": datasets_list,
