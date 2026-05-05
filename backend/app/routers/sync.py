@@ -165,6 +165,35 @@ def debug_cloudbeds(
                     })
                 except Exception as e:
                     return _envelope({"error_type": type(e).__name__, "error": str(e), "traceback": traceback.format_exc()[:2000]})
+            elif action == "list_sources":
+                # Group by reservation_source to see actual values + check if
+                # source exclusion filter (not_equals × 5) over-excludes due to
+                # NULL reservation_source rows.
+                if not from_date or not to_date:
+                    raise HTTPException(status_code=400, detail="from_date+to_date required")
+                payload = {
+                    "title": f"HiD-debug-src-{from_date}",
+                    "dataset_id": 7,
+                    "property_id": str(pid),
+                    "property_ids": [str(pid)],
+                    "columns": [
+                        {"cdf": {"type": "default", "column": "rooms_sold"}, "metrics": ["sum"]},
+                        {"cdf": {"type": "default", "column": "room_revenue"}, "metrics": ["sum"]},
+                    ],
+                    "group_rows": [{"cdf": {"type": "default", "column": "reservation_source"}}],
+                    "filters": {"and": [
+                        {"cdf": {"type": "default", "column": "stay_date"}, "operator": "greater_than_or_equal", "value": from_date},
+                        {"cdf": {"type": "default", "column": "stay_date"}, "operator": "less_than_or_equal", "value": to_date},
+                    ]},
+                }
+                resp_create = client.post(f"{INSIGHTS_BASE_URL}/reports", headers={**headers, "Content-Type": "application/json"}, json=payload)
+                if resp_create.status_code not in (200, 201):
+                    return _envelope({"step": "create", "status_code": resp_create.status_code, "raw_text_preview": resp_create.text[:500]})
+                rid = resp_create.json().get("id")
+                try:
+                    resp = client.get(f"{INSIGHTS_BASE_URL}/reports/{rid}/data", headers=headers, params={"property_ids": str(pid)})
+                finally:
+                    client.delete(f"{INSIGHTS_BASE_URL}/reports/{rid}", headers=headers)
             elif action == "list_room_types":
                 # Group by room_type to see actual values Cloudbeds has for the
                 # property — diagnoses why "contains Dorm" / "not_contains Dorm"
