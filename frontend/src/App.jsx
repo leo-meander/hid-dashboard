@@ -47,6 +47,9 @@ import HolidayIntel from "./pages/HolidayIntel";
 // Alert System
 import Alerts from "./pages/Alerts";
 
+// Rate Plan Quotas
+import RatePlanQuotas from "./pages/RatePlanQuotas";
+
 export default function App() {
   return (
     <AuthProvider>
@@ -118,6 +121,9 @@ function AppRoutes() {
 
             {/* Alert System */}
             <Route path="/alerts" element={<Alerts />} />
+
+            {/* Rate Plan Quotas */}
+            <Route path="/rate-plan-quotas" element={<RatePlanQuotas />} />
 
             {/* Settings & Admin */}
             <Route path="/settings" element={<Settings />} />

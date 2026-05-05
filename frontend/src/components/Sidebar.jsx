@@ -42,6 +42,7 @@ const NAV = [
     label: "Reports",
     items: [
       { to: "/alerts", label: "Alerts", icon: "▲", badge: true },
+      { to: "/rate-plan-quotas", label: "Rate Plan Quotas", icon: "◧" },
       { to: "/report", label: "Weekly Report", icon: "◻" },
     ],
   },

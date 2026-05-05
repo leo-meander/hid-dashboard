@@ -1,0 +1,37 @@
+name: Cron — Rate plan quota evaluation
+
+# Every 30 min. The endpoint runs Cloudbeds incremental sync (modified-only,
+# 2-day lookback) → recounts active vs canceled bookings per quota →
+# dispatches threshold emails (90/95/100% buckets, deduped).
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/rate-plan-quotas/evaluate-now
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          SYNC_TRIGGER_TOKEN: ${{ secrets.SYNC_TRIGGER_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt..."
+            http_code=$(curl -sS -o response.json -w "%{http_code}" \
+              -X POST "${BACKEND_URL}/api/rate-plan-quotas/evaluate-now" \
+              -H "X-Sync-Token: ${SYNC_TRIGGER_TOKEN}" \
+              --max-time 300) || true
+            cat response.json
+            echo
+            if [ "$http_code" = "200" ]; then
+              echo "OK"
+              exit 0
+            fi
+            echo "Got HTTP $http_code, retrying in 30s..."
+            sleep 30
+          done
+          echo "Failed after 3 attempts"
+          exit 1

@@ -20,6 +20,7 @@ from app.routers import gov_visitor
 from app.routers import holiday_intel
 from app.routers import api_keys, public_api
 from app.routers import alerts
+from app.routers import rate_plan_quota
 from app.scheduler import setup_scheduler
 from app.database import SessionLocal
 from app.models.branch import Branch
@@ -90,6 +91,9 @@ app.include_router(public_api.router, prefix="/api/public", tags=["Public API"])
 
 # Alert System
 app.include_router(alerts.router, prefix="/api/alerts", tags=["Alerts"])
+
+# Rate Plan Quota tracking — manual cap on bookings per CRM/event rate plan
+app.include_router(rate_plan_quota.router, prefix="/api/rate-plan-quotas", tags=["Rate Plan Quotas"])
 
 setup_scheduler(app)
 

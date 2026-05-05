@@ -29,6 +29,9 @@ from app.models.gov_visitor import GovVisitorData
 # Alert System
 from app.models.alert import AlertRule, AlertHistory, AlertNotificationLog
 
+# Rate Plan Quota tracking
+from app.models.rate_plan_quota import RatePlanQuota, RatePlanQuotaStatus
+
 __all__ = [
     "Branch", "KPITarget", "Reservation", "DailyMetrics", "Event",
     "WebsiteMetrics", "AdAngle", "AdsPerformance", "AdsBudget",
@@ -42,4 +45,5 @@ __all__ = [
     "EmailEvent", "EmailCampaignStats",
     "GovVisitorData",
     "AlertRule", "AlertHistory", "AlertNotificationLog",
+    "RatePlanQuota", "RatePlanQuotaStatus",
 ]
