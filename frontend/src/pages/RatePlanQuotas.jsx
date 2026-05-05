@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useBranch } from "../context/BranchContext";
 import {
   listQuotas,
   createQuota,
@@ -74,7 +75,11 @@ function QuotaCard({ quota, onEdit, onDelete }) {
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 mb-3">
         <span>Threshold: <strong>{threshold}%</strong></span>
         <span>Canceled (ref): <strong className="text-gray-500">{s.canceled_count ?? 0}</strong></span>
-        <span>Scope: <strong>{quota.branch_scope === "all_excl_oani" ? "All (excl Oani)" : "Specific"}</strong></span>
+        <span>Scope: <strong>{
+          quota.branch_scope === "all_excl_oani"
+            ? "All (excl Oani)"
+            : `${(quota.branch_ids || []).length} branch${(quota.branch_ids || []).length === 1 ? "" : "es"}`
+        }</strong></span>
         {s.last_alerted_at && (
           <span>Last email: <strong>{s.last_alert_bucket}% bucket</strong> @ {fmtTimestamp(s.last_alerted_at)}</span>
         )}
@@ -115,25 +120,67 @@ function QuotaCard({ quota, onEdit, onDelete }) {
 
 /* ── Form modal ─────────────────────────────────────────────────────────── */
 function QuotaForm({ initial, onSave, onCancel }) {
+  const { branches } = useBranch();
+  // Branches user can pick from. Oani stays selectable for the rare case
+  // someone wants to include it — we don't hard-hide it. Defaults below
+  // pre-uncheck Oani so the common case is one click away.
+  const selectable = (branches || []).filter(b => b.is_active !== false);
+  const oaniRe = /oani/i;
+  const defaultIds = selectable
+    .filter(b => !oaniRe.test(b.name || ""))
+    .map(b => b.id);
+
+  const initialIds = initial?.branch_ids && initial.branch_ids.length > 0
+    ? initial.branch_ids.map(String)
+    : (initial?.branch_scope === "all_excl_oani" || !initial)
+      ? defaultIds
+      : [];
+
   const [form, setForm] = useState(initial || {
     rate_plan_name: "",
     display_name: "",
     limit_count: 100,
     alert_threshold_pct: 90,
-    branch_scope: "all_excl_oani",
     notify_email: true,
     is_active: true,
   });
+  const [selectedIds, setSelectedIds] = useState(initialIds);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
   const set = (k, v) => setForm({ ...form, [k]: v });
 
+  const toggleBranch = (id) => {
+    setSelectedIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const selectAllExclOani = () => setSelectedIds(defaultIds);
+  const selectAll = () => setSelectedIds(selectable.map(b => b.id));
+  const clearAll = () => setSelectedIds([]);
+
   const submit = async () => {
+    if (selectedIds.length === 0) {
+      setError("Pick at least one branch");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      await onSave(form);
+      // Save scope vs. specific based on whether user's selection matches
+      // the default-excl-Oani set. This keeps the "all except Oani" intent
+      // stable when new branches are added later (the scope re-resolves
+      // dynamically server-side).
+      const sameSet =
+        selectedIds.length === defaultIds.length &&
+        selectedIds.every(id => defaultIds.includes(id));
+      const payload = {
+        ...form,
+        branch_scope: sameSet ? "all_excl_oani" : "specific",
+        branch_ids: sameSet ? null : selectedIds,
+      };
+      await onSave(payload);
     } catch (e) {
       setError(e?.response?.data?.detail || e.message || "Save failed");
     } finally {
@@ -193,15 +240,45 @@ function QuotaForm({ initial, onSave, onCancel }) {
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">
-              Branch Scope
-            </label>
-            <select value={form.branch_scope}
-                    onChange={e => set("branch_scope", e.target.value)}
-                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm">
-              <option value="all_excl_oani">All branches except Oani</option>
-              <option value="specific">Specific (advanced — set IDs via API)</option>
-            </select>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-medium text-gray-600">
+                Branches to count
+              </label>
+              <div className="flex gap-2 text-[11px]">
+                <button type="button" onClick={selectAllExclOani}
+                        className="text-indigo-600 hover:underline">
+                  All except Oani
+                </button>
+                <span className="text-gray-300">|</span>
+                <button type="button" onClick={selectAll}
+                        className="text-indigo-600 hover:underline">
+                  All
+                </button>
+                <span className="text-gray-300">|</span>
+                <button type="button" onClick={clearAll}
+                        className="text-gray-500 hover:underline">
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div className="border border-gray-300 rounded px-3 py-2 max-h-40 overflow-y-auto space-y-1">
+              {selectable.length === 0 ? (
+                <p className="text-xs text-gray-500">No branches loaded.</p>
+              ) : selectable.map(b => (
+                <label key={b.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 px-1 rounded">
+                  <input type="checkbox"
+                         checked={selectedIds.includes(b.id)}
+                         onChange={() => toggleBranch(b.id)} />
+                  <span className="text-gray-800">{b.name}</span>
+                  {oaniRe.test(b.name || "") && (
+                    <span className="text-[10px] text-gray-400 ml-auto">excluded by default</span>
+                  )}
+                </label>
+              ))}
+            </div>
+            <p className="text-[10px] text-gray-500 mt-1">
+              {selectedIds.length} of {selectable.length} branch{selectedIds.length === 1 ? "" : "es"} selected
+            </p>
           </div>
 
           <div className="flex items-center gap-4 pt-1">
@@ -229,7 +306,7 @@ function QuotaForm({ initial, onSave, onCancel }) {
                   className="px-4 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50">
             Cancel
           </button>
-          <button onClick={submit} disabled={saving || !form.rate_plan_name?.trim() || !form.limit_count}
+          <button onClick={submit} disabled={saving || !form.rate_plan_name?.trim() || !form.limit_count || selectedIds.length === 0}
                   className="px-4 py-2 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50">
             {saving ? "Saving…" : "Save"}
           </button>
