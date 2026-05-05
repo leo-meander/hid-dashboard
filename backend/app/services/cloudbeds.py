@@ -961,9 +961,15 @@ def ingest_reservations(
         if source is not None:
             payload["source"] = normalize_source(source)
             payload["source_category"] = map_source_category(source)
-        # guest_country: always set — map_country_code handles None → "Unknown"
-        payload["guest_country"] = map_country_code(guest_country)
-        payload["guest_country_code"] = map_country_code(guest_country)
+        # guest_country: only set if the API actually returned a value. The bulk
+        # /getReservations endpoint does NOT return guestCountry — it lives in
+        # /getReservation > guestList[*].guestCountry and is filled in later by
+        # backfill_guest_country. Setting it unconditionally here would clobber
+        # previously backfilled country back to "Unknown" on every modified-window
+        # sync, since the bulk payload always returns NULL for this field.
+        if guest_country is not None and str(guest_country).strip():
+            payload["guest_country"] = map_country_code(guest_country)
+            payload["guest_country_code"] = map_country_code(guest_country)
         if has_revenue:
             payload["grand_total_native"] = grand_total_native
             payload["grand_total_vnd"] = grand_total_vnd
