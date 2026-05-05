@@ -140,6 +140,33 @@ def debug_cloudbeds(
                     resp = client.get(f"{INSIGHTS_BASE_URL}/reports/{rid}/data", headers=headers, params={"property_ids": str(pid)})
                 finally:
                     client.delete(f"{INSIGHTS_BASE_URL}/reports/{rid}", headers=headers)
+            elif action == "run_occupancy":
+                # Directly invoke sync_cloudbeds_occupancy for this branch and capture
+                # any exception. Bypasses background-task swallowing so we can see why
+                # it fails for some properties (e.g. Taipei).
+                from app.services.cloudbeds import sync_cloudbeds_occupancy
+                from app.database import SessionLocal
+                from datetime import date as _d
+                df = _d.fromisoformat(from_date) if from_date else None
+                dt = _d.fromisoformat(to_date) if to_date else None
+                s = SessionLocal()
+                try:
+                    import traceback
+                    try:
+                        out = sync_cloudbeds_occupancy(
+                            s, str(branch.id), pid, branch.currency, api_key,
+                            date_from=df, date_to=dt,
+                        )
+                        return _envelope({"action": "run_occupancy", "result": out})
+                    except Exception as e:
+                        return _envelope({
+                            "action": "run_occupancy",
+                            "error_type": type(e).__name__,
+                            "error": str(e),
+                            "traceback": traceback.format_exc()[:3000],
+                        })
+                finally:
+                    s.close()
             else:
                 raise HTTPException(status_code=400, detail=f"unknown action: {action}")
 
