@@ -1801,9 +1801,17 @@ def _make_date_filters(date_from: str, date_to: str) -> list[dict]:
 
 def _make_source_exclude_filters() -> list[dict]:
     """Filters to exclude Blogger, House Use, KOL, Special case, Work Exchange from revenue.
-    Uses not_equals (exact match) to avoid partial-match over-exclusion."""
+    Uses not_equals (exact match) to avoid partial-match over-exclusion.
+
+    `multi_level_id: 4` is REQUIRED on the reservation_source CDF for dataset 7.
+    Without it Cloudbeds returns 400 'Cdf: reservation_source ...' which
+    `_fetch_custom_report_daily` swallows silently → all filtered calls return
+    empty → sync_cloudbeds_filtered guards skip writes → room/dorm ADR stay NULL.
+    Confirmed empirically 2026-05-05 via /api/sync/debug/cloudbeds: stock 110's
+    own config uses the same multi_level_id=4 on this column.
+    """
     return [
-        {"cdf": {"type": "default", "column": "reservation_source"},
+        {"cdf": {"type": "default", "column": "reservation_source", "multi_level_id": 4},
          "operator": "not_equals", "value": src}
         for src in _REVENUE_EXCLUDED_SOURCES
     ]
