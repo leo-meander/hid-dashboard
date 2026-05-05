@@ -483,12 +483,31 @@ export default function PerformanceCountry() {
                       <td className="px-4 py-2.5 text-right font-semibold">{fmtNum(c.total_reservations)}</td>
                       <td className="px-4 py-2.5 text-right">{fmtNum(c.total_nights)}</td>
                       <td className="px-4 py-2.5 text-right">{fmtNum(c.total_revenue)}</td>
-                      {periods.map((p) => {
+                      {periods.map((p, pIdx) => {
                         const val = (trend[p] || {})[c.country] || 0;
+                        const prevP = pIdx > 0 ? periods[pIdx - 1] : null;
+                        const prevVal = prevP ? ((trend[prevP] || {})[c.country] || 0) : null;
+                        const pct = (prevVal != null && prevVal > 0)
+                          ? ((val - prevVal) / prevVal) * 100
+                          : null;
                         return (
                           <td key={p} className="px-3 py-2.5 text-right text-xs">
-                            {val > 0 ? (
-                              <span className="font-medium">{val}</span>
+                            {val > 0 || (prevVal != null && prevVal > 0) ? (
+                              <div className="flex flex-col items-end leading-tight">
+                                <span className="font-medium">
+                                  {val > 0 ? val : <span className="text-gray-300">-</span>}
+                                </span>
+                                {pct != null && (
+                                  <span className={`text-[10px] mt-0.5 ${
+                                    pct > 0 ? "text-emerald-600"
+                                    : pct < 0 ? "text-red-500"
+                                    : "text-gray-400"
+                                  }`}>
+                                    {pct > 0 ? "▲" : pct < 0 ? "▼" : ""}
+                                    {Math.abs(pct).toFixed(1)}%
+                                  </span>
+                                )}
+                              </div>
                             ) : (
                               <span className="text-gray-300">-</span>
                             )}
