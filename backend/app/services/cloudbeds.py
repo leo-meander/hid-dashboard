@@ -1312,36 +1312,91 @@ def fetch_cloudbeds_occupancy(
     date_to: Optional[date] = None,
 ) -> dict[date, dict]:
     """
-    Fetch occupancy metrics directly from Cloudbeds Data Insights API.
+    Fetch per-day occupancy + revenue from Cloudbeds Data Insights API.
 
-    Uses stock report 110 "Rooms Sold, ADR, RevPar and Occupancy" which returns
-    the EXACT same numbers shown on the Cloudbeds OCC dashboard.
+    Uses POST /reports (a temporary custom report on dataset 7) — NOT stock
+    report 110. Stock 110's report config has a hardcoded date filter
+    (`stay_date >= start_last_month AND stay_date < months_later;2`) so it
+    only ever returns a ~95 day window around the current date and ignores
+    GET query date params (verified empirically 2026-05-05). Custom reports
+    accept explicit `stay_date` filters in the POST body, so this function
+    works for ANY date range including historical (2025+) which previously
+    came back as rev=0. The temp report is deleted right after fetching.
 
     Returns: { date: { rooms_sold, occupancy, mfd_occupancy, adr, revpar,
                         room_revenue, capacity_count, blocked, out_of_service } }
     """
-    headers = {
+    import calendar
+    if date_from is None:
+        today = date.today()
+        date_from = today.replace(day=1)
+    if date_to is None:
+        today = date.today()
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        date_to = today.replace(day=last_day)
+
+    headers_post = {
+        "Authorization": f"Bearer {api_key}",
+        "X-PROPERTY-ID": str(property_id),
+        "Content-Type": "application/json",
+    }
+    headers_get = {
         "Authorization": f"Bearer {api_key}",
         "X-PROPERTY-ID": str(property_id),
     }
 
-    url = f"{INSIGHTS_BASE_URL}/stock_reports/{OCCUPANCY_STOCK_REPORT_ID}/data"
-    params: dict = {"property_ids": str(property_id)}
-    # Pass explicit date range so Cloudbeds returns full per-day data (incl
-    # room_revenue) for the requested window. Without these params the API
-    # defaults to a small recent window and historical revenue comes back as 0.
-    if date_from:
-        params["from_date"] = date_from.isoformat()
-    if date_to:
-        params["to_date"] = date_to.isoformat()
+    payload = {
+        "title": f"HiD-occ-{date_from.isoformat()}-{date_to.isoformat()}",
+        "dataset_id": 7,
+        "property_id": str(property_id),
+        "property_ids": [str(property_id)],
+        "columns": [
+            {"cdf": {"type": "default", "column": "rooms_sold"}, "metrics": ["sum"]},
+            {"cdf": {"type": "default", "column": "room_revenue"}, "metrics": ["sum"]},
+            {"cdf": {"type": "default", "column": "adr"}},
+            {"cdf": {"type": "default", "column": "occupancy"}},
+            {"cdf": {"type": "default", "column": "mfd_occupancy"}},
+            {"cdf": {"type": "default", "column": "revpar"}},
+            {"cdf": {"type": "default", "column": "capacity_count"}, "metrics": ["sum"]},
+            {"cdf": {"type": "default", "column": "blocked_room_count"}, "metrics": ["sum"]},
+            {"cdf": {"type": "default", "column": "out_of_service_count"}, "metrics": ["sum"]},
+        ],
+        "group_rows": [{"cdf": {"type": "default", "column": "stay_date"}}],
+        "filters": {"and": [
+            {"cdf": {"type": "default", "column": "stay_date"}, "operator": "greater_than_or_equal", "value": date_from.isoformat()},
+            {"cdf": {"type": "default", "column": "stay_date"}, "operator": "less_than_or_equal", "value": date_to.isoformat()},
+        ]},
+    }
 
-    with httpx.Client(timeout=60) as client:
-        resp = client.get(url, headers=headers, params=params)
-        resp.raise_for_status()
+    result: dict[date, dict] = {}
+    with httpx.Client(timeout=120) as client:
+        resp_create = client.post(f"{INSIGHTS_BASE_URL}/reports", headers=headers_post, json=payload)
+        if resp_create.status_code not in (200, 201):
+            logger.warning(
+                "Occupancy report create failed property=%s status=%d: %s",
+                property_id, resp_create.status_code, resp_create.text[:200],
+            )
+            return result
+        report_id = resp_create.json().get("id")
+        try:
+            resp = client.get(
+                f"{INSIGHTS_BASE_URL}/reports/{report_id}/data",
+                headers=headers_get,
+                params={"property_ids": str(property_id)},
+            )
+        finally:
+            client.delete(f"{INSIGHTS_BASE_URL}/reports/{report_id}", headers=headers_get)
+
+        if resp.status_code != 200:
+            logger.warning(
+                "Occupancy report fetch failed property=%s status=%d: %s",
+                property_id, resp.status_code, resp.text[:200],
+            )
+            return result
+
         body = resp.json()
 
-    records = body.get("records", {})
-    result: dict[date, dict] = {}
+    records = body.get("records", {}) or {}
 
     for date_str, metrics in records.items():
         try:
@@ -1349,26 +1404,26 @@ def fetch_cloudbeds_occupancy(
         except (ValueError, TypeError):
             continue
 
-        # Filter to requested date range
+        # API filter already constrained range, but re-check defensively
         if date_from and d < date_from:
             continue
         if date_to and d > date_to:
             continue
 
         result[d] = {
-            "rooms_sold":       metrics.get("rooms_sold", {}).get("sum", 0),
-            "occupancy":        metrics.get("occupancy", {}).get("aggregated", 0),
-            "mfd_occupancy":    metrics.get("mfd_occupancy", {}).get("aggregated", 0),
-            "adr":              metrics.get("adr", {}).get("aggregated", 0),
-            "revpar":           metrics.get("revpar", {}).get("aggregated", 0),
-            "room_revenue":     metrics.get("room_revenue", {}).get("sum", 0),
-            "capacity_count":   metrics.get("capacity_count", {}).get("sum", 0),
-            "blocked":          metrics.get("blocked_room_count", {}).get("sum", 0),
-            "out_of_service":   metrics.get("out_of_service_count", {}).get("sum", 0),
+            "rooms_sold":       metrics.get("rooms_sold", {}).get("sum", 0) or 0,
+            "occupancy":        metrics.get("occupancy", {}).get("aggregated", 0) or 0,
+            "mfd_occupancy":    metrics.get("mfd_occupancy", {}).get("aggregated", 0) or 0,
+            "adr":              metrics.get("adr", {}).get("aggregated", 0) or 0,
+            "revpar":           metrics.get("revpar", {}).get("aggregated", 0) or 0,
+            "room_revenue":     metrics.get("room_revenue", {}).get("sum", 0) or 0,
+            "capacity_count":   metrics.get("capacity_count", {}).get("sum", 0) or 0,
+            "blocked":          metrics.get("blocked_room_count", {}).get("sum", 0) or 0,
+            "out_of_service":   metrics.get("out_of_service_count", {}).get("sum", 0) or 0,
         }
 
     logger.info(
-        "Fetched Cloudbeds occupancy for property %s: %d days [%s → %s]",
+        "Fetched Cloudbeds occupancy (custom report) for property %s: %d days [%s → %s]",
         property_id, len(result), date_from, date_to,
     )
     return result
