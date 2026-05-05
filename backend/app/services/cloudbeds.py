@@ -1373,9 +1373,48 @@ def fetch_cloudbeds_occupancy(
         resp_create = client.post(f"{INSIGHTS_BASE_URL}/reports", headers=headers_post, json=payload)
         if resp_create.status_code not in (200, 201):
             logger.warning(
-                "Occupancy report create failed property=%s status=%d: %s",
+                "Occupancy custom-report create failed property=%s status=%d: %s — "
+                "falling back to stock report 110 (current ~95 days only)",
                 property_id, resp_create.status_code, resp_create.text[:200],
             )
+            # Fallback: properties whose API key lacks "Insights: Create Reports"
+            # permission can still hit stock 110 (~95 day window). Historical data
+            # outside that window is not retrievable for these properties via
+            # Insights — would require a full Bookings API sync (full_ingest=true).
+            try:
+                fb_resp = client.get(
+                    f"{INSIGHTS_BASE_URL}/stock_reports/{OCCUPANCY_STOCK_REPORT_ID}/data",
+                    headers=headers_get,
+                    params={"property_ids": str(property_id)},
+                )
+                fb_resp.raise_for_status()
+                fb_records = fb_resp.json().get("records", {}) or {}
+                for ds, m in fb_records.items():
+                    try:
+                        d_ = date.fromisoformat(ds)
+                    except (ValueError, TypeError):
+                        continue
+                    if date_from and d_ < date_from:
+                        continue
+                    if date_to and d_ > date_to:
+                        continue
+                    result[d_] = {
+                        "rooms_sold":     m.get("rooms_sold", {}).get("sum", 0) or 0,
+                        "occupancy":      m.get("occupancy", {}).get("aggregated", 0) or 0,
+                        "mfd_occupancy":  m.get("mfd_occupancy", {}).get("aggregated", 0) or 0,
+                        "adr":            m.get("adr", {}).get("aggregated", 0) or 0,
+                        "revpar":         m.get("revpar", {}).get("aggregated", 0) or 0,
+                        "room_revenue":   m.get("room_revenue", {}).get("sum", 0) or 0,
+                        "capacity_count": m.get("capacity_count", {}).get("sum", 0) or 0,
+                        "blocked":        m.get("blocked_room_count", {}).get("sum", 0) or 0,
+                        "out_of_service": m.get("out_of_service_count", {}).get("sum", 0) or 0,
+                    }
+                logger.info(
+                    "Stock 110 fallback for property %s: %d days [%s → %s]",
+                    property_id, len(result), date_from, date_to,
+                )
+            except Exception as fb_err:
+                logger.warning("Stock 110 fallback also failed property=%s: %s", property_id, fb_err)
             return result
         report_id = resp_create.json().get("id")
         try:
