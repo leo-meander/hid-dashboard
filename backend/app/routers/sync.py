@@ -113,23 +113,34 @@ def debug_cloudbeds(
             except Exception:
                 body_json = None
 
-            # Truncate large records dict — keep first 5 + sample fields
+            # Truncate large records dict — keep first 5 + last 3 sample fields
             sample = None
+            stock_reports_list = None
+            datasets_list = None
             if body_json and isinstance(body_json, dict):
                 records = body_json.get("records", {})
                 if records and isinstance(records, dict):
                     keys = list(records.keys())
                     sample_keys = keys[:5] + (keys[-3:] if len(keys) > 8 else [])
                     sample = {k: records[k] for k in sample_keys}
+                # Surface the actual stock_reports / datasets arrays
+                if isinstance(body_json.get("stock_reports"), list):
+                    stock_reports_list = body_json["stock_reports"]
+                if isinstance(body_json.get("datasets"), list):
+                    datasets_list = body_json["datasets"]
 
             return _envelope({
                 "url": str(resp.request.url),
                 "status_code": resp.status_code,
-                "headers_sent": dict(resp.request.headers),
+                # Auth header scrubbed — bearer token is leak risk
                 "body_keys": list(body_json.keys()) if isinstance(body_json, dict) else None,
                 "records_count": len(body_json.get("records", {})) if isinstance(body_json, dict) and isinstance(body_json.get("records"), dict) else None,
                 "sample_records": sample,
-                "raw_text_preview": body_text[:2000] if not body_json else None,
+                "stock_reports": stock_reports_list,
+                "datasets": datasets_list,
+                # For stock_report_details, return the full report config
+                "report_config": body_json if action == "stock_report_details" else None,
+                "raw_text_preview": body_text[:3000] if not body_json else None,
             })
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"cloudbeds {e.response.status_code}: {e.response.text[:500]}")
