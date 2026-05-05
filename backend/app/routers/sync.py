@@ -37,6 +37,106 @@ CSV_DIR = Path(r"C:\Users\duyth\Downloads")
 router = APIRouter()
 
 
+# ── Debug: raw Cloudbeds Insights API explorer ────────────────────────────────
+# Temporary endpoint (UPD-211 investigation) to understand why stock report 110
+# returns rooms_sold for 2025 dates but room_revenue=0 even though Cloudbeds UI
+# Occupancy Report shows the revenue. Lets us inspect raw responses, list
+# available stock reports, and dataset metadata server-side without needing the
+# Cloudbeds API key locally.
+
+@router.get("/debug/cloudbeds", dependencies=[Depends(verify_sync_token)])
+def debug_cloudbeds(
+    branch_id: UUID = Query(..., description="branch UUID to use property_id+api_key from"),
+    action: str = Query("stock", description="stock|list_stock_reports|list_datasets|stock_report_details"),
+    report_id: str = Query("110", description="stock report ID for 'stock' or 'stock_report_details'"),
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    db: Session = Depends(get_db),
+):
+    """Raw Cloudbeds Insights API explorer. Returns truncated response for inspection."""
+    import httpx
+    import json
+    from app.services.cloudbeds import INSIGHTS_BASE_URL
+
+    branch = db.query(Branch).filter_by(id=branch_id, is_active=True).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="branch not found")
+    pid = branch.cloudbeds_property_id
+    if not pid:
+        raise HTTPException(status_code=400, detail="branch has no cloudbeds_property_id")
+    api_key = settings.get_api_key_for_property(str(pid))
+    if not api_key:
+        raise HTTPException(status_code=400, detail="no api_key for property")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "X-PROPERTY-ID": str(pid),
+    }
+
+    try:
+        with httpx.Client(timeout=60) as client:
+            if action == "list_stock_reports":
+                resp = client.get(
+                    f"{INSIGHTS_BASE_URL}/stock_reports",
+                    headers=headers,
+                    params={"property_ids": str(pid)},
+                )
+            elif action == "stock_report_details":
+                resp = client.get(
+                    f"{INSIGHTS_BASE_URL}/stock_reports/{report_id}",
+                    headers=headers,
+                    params={"property_ids": str(pid)},
+                )
+            elif action == "list_datasets":
+                resp = client.get(
+                    f"{INSIGHTS_BASE_URL}/datasets",
+                    headers=headers,
+                    params={"property_ids": str(pid)},
+                )
+            elif action == "stock":
+                params = {"property_ids": str(pid)}
+                if from_date:
+                    params["from_date"] = from_date
+                if to_date:
+                    params["to_date"] = to_date
+                resp = client.get(
+                    f"{INSIGHTS_BASE_URL}/stock_reports/{report_id}/data",
+                    headers=headers,
+                    params=params,
+                )
+            else:
+                raise HTTPException(status_code=400, detail=f"unknown action: {action}")
+
+            body_text = resp.text
+            try:
+                body_json = resp.json()
+            except Exception:
+                body_json = None
+
+            # Truncate large records dict — keep first 5 + sample fields
+            sample = None
+            if body_json and isinstance(body_json, dict):
+                records = body_json.get("records", {})
+                if records and isinstance(records, dict):
+                    keys = list(records.keys())
+                    sample_keys = keys[:5] + (keys[-3:] if len(keys) > 8 else [])
+                    sample = {k: records[k] for k in sample_keys}
+
+            return _envelope({
+                "url": str(resp.request.url),
+                "status_code": resp.status_code,
+                "headers_sent": dict(resp.request.headers),
+                "body_keys": list(body_json.keys()) if isinstance(body_json, dict) else None,
+                "records_count": len(body_json.get("records", {})) if isinstance(body_json, dict) and isinstance(body_json.get("records"), dict) else None,
+                "sample_records": sample,
+                "raw_text_preview": body_text[:2000] if not body_json else None,
+            })
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"cloudbeds {e.response.status_code}: {e.response.text[:500]}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
 class SyncRequest(BaseModel):
     branch_id: Optional[UUID] = None  # if omitted, sync all active branches
 
