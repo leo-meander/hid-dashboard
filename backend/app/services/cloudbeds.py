@@ -1320,7 +1320,14 @@ def fetch_cloudbeds_occupancy(
     }
 
     url = f"{INSIGHTS_BASE_URL}/stock_reports/{OCCUPANCY_STOCK_REPORT_ID}/data"
-    params = {"property_ids": str(property_id)}
+    params: dict = {"property_ids": str(property_id)}
+    # Pass explicit date range so Cloudbeds returns full per-day data (incl
+    # room_revenue) for the requested window. Without these params the API
+    # defaults to a small recent window and historical revenue comes back as 0.
+    if date_from:
+        params["from_date"] = date_from.isoformat()
+    if date_to:
+        params["to_date"] = date_to.isoformat()
 
     with httpx.Client(timeout=60) as client:
         resp = client.get(url, headers=headers, params=params)
