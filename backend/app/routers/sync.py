@@ -140,6 +140,35 @@ def debug_cloudbeds(
                     resp = client.get(f"{INSIGHTS_BASE_URL}/reports/{rid}/data", headers=headers, params={"property_ids": str(pid)})
                 finally:
                     client.delete(f"{INSIGHTS_BASE_URL}/reports/{rid}", headers=headers)
+            elif action == "list_room_types":
+                # Group by room_type to see actual values Cloudbeds has for the
+                # property — diagnoses why "contains Dorm" / "not_contains Dorm"
+                # filters might miss bookings (wrong column, different naming, etc.)
+                if not from_date or not to_date:
+                    raise HTTPException(status_code=400, detail="from_date+to_date required")
+                payload = {
+                    "title": f"HiD-debug-rt-{from_date}",
+                    "dataset_id": 7,
+                    "property_id": str(pid),
+                    "property_ids": [str(pid)],
+                    "columns": [
+                        {"cdf": {"type": "default", "column": "rooms_sold"}, "metrics": ["sum"]},
+                        {"cdf": {"type": "default", "column": "room_revenue"}, "metrics": ["sum"]},
+                    ],
+                    "group_rows": [{"cdf": {"type": "default", "column": "room_type"}}],
+                    "filters": {"and": [
+                        {"cdf": {"type": "default", "column": "stay_date"}, "operator": "greater_than_or_equal", "value": from_date},
+                        {"cdf": {"type": "default", "column": "stay_date"}, "operator": "less_than_or_equal", "value": to_date},
+                    ]},
+                }
+                resp_create = client.post(f"{INSIGHTS_BASE_URL}/reports", headers={**headers, "Content-Type": "application/json"}, json=payload)
+                if resp_create.status_code not in (200, 201):
+                    return _envelope({"step": "create", "status_code": resp_create.status_code, "raw_text_preview": resp_create.text[:500]})
+                rid = resp_create.json().get("id")
+                try:
+                    resp = client.get(f"{INSIGHTS_BASE_URL}/reports/{rid}/data", headers=headers, params={"property_ids": str(pid)})
+                finally:
+                    client.delete(f"{INSIGHTS_BASE_URL}/reports/{rid}", headers=headers)
             elif action == "run_occupancy":
                 # Directly invoke sync_cloudbeds_occupancy for this branch and capture
                 # any exception. Bypasses background-task swallowing so we can see why
