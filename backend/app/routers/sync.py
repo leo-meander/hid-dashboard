@@ -104,6 +104,42 @@ def debug_cloudbeds(
                     headers=headers,
                     params=params,
                 )
+            elif action == "custom_revenue":
+                # Mirror what fetch_filtered_daily does but WITHOUT source filters,
+                # so we get total revenue per day for the requested range. Used to
+                # verify custom reports return historical revenue (which stock 110
+                # cannot — its report config locks to last_month..months_later;2).
+                if not from_date or not to_date:
+                    raise HTTPException(status_code=400, detail="from_date+to_date required for custom_revenue")
+                payload = {
+                    "title": f"HiD-debug-rev-{from_date}",
+                    "dataset_id": 7,
+                    "property_id": str(pid),
+                    "property_ids": [str(pid)],
+                    "columns": [
+                        {"cdf": {"type": "default", "column": "rooms_sold"}, "metrics": ["sum"]},
+                        {"cdf": {"type": "default", "column": "room_revenue"}, "metrics": ["sum"]},
+                        {"cdf": {"type": "default", "column": "adr"}},
+                    ],
+                    "group_rows": [{"cdf": {"type": "default", "column": "stay_date"}}],
+                    "filters": {"and": [
+                        {"cdf": {"type": "default", "column": "stay_date"}, "operator": "greater_than_or_equal", "value": from_date},
+                        {"cdf": {"type": "default", "column": "stay_date"}, "operator": "less_than_or_equal", "value": to_date},
+                    ]},
+                }
+                # Create temp report → fetch data → delete
+                resp_create = client.post(f"{INSIGHTS_BASE_URL}/reports", headers={**headers, "Content-Type": "application/json"}, json=payload)
+                if resp_create.status_code not in (200, 201):
+                    return _envelope({
+                        "step": "create",
+                        "status_code": resp_create.status_code,
+                        "raw_text_preview": resp_create.text[:1000],
+                    })
+                rid = resp_create.json().get("id")
+                try:
+                    resp = client.get(f"{INSIGHTS_BASE_URL}/reports/{rid}/data", headers=headers, params={"property_ids": str(pid)})
+                finally:
+                    client.delete(f"{INSIGHTS_BASE_URL}/reports/{rid}", headers=headers)
             else:
                 raise HTTPException(status_code=400, detail=f"unknown action: {action}")
 
