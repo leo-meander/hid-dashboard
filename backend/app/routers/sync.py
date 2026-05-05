@@ -47,10 +47,13 @@ router = APIRouter()
 @router.get("/debug/cloudbeds", dependencies=[Depends(verify_sync_token)])
 def debug_cloudbeds(
     branch_id: UUID = Query(..., description="branch UUID to use property_id+api_key from"),
-    action: str = Query("stock", description="stock|list_stock_reports|list_datasets|stock_report_details"),
+    action: str = Query("stock", description="stock|list_stock_reports|list_datasets|stock_report_details|test_filter|..."),
     report_id: str = Query("110", description="stock report ID for 'stock' or 'stock_report_details'"),
     from_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
     to_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    filter_op: str = Query("not_equals", description="for test_filter: filter operator"),
+    filter_value: str = Query("Blogger", description="for test_filter: filter value (comma-list for in/not_in)"),
+    multi_level: int = Query(0, description="for test_filter: 1 to add multi_level_id=4"),
     db: Session = Depends(get_db),
 ):
     """Raw Cloudbeds Insights API explorer. Returns truncated response for inspection."""
@@ -165,6 +168,44 @@ def debug_cloudbeds(
                     })
                 except Exception as e:
                     return _envelope({"error_type": type(e).__name__, "error": str(e), "traceback": traceback.format_exc()[:2000]})
+            elif action == "test_filter":
+                # Run custom report with arbitrary source filter to find a working operator.
+                # filter_op: equals|not_equals|in|not_in|contains|not_contains
+                # filter_value: source name (or comma-list for in/not_in)
+                # multi_level: pass 1 to add multi_level_id=4 to source cdf
+                if not from_date or not to_date:
+                    raise HTTPException(status_code=400, detail="from_date+to_date required")
+                src_cdf = {"type": "default", "column": "reservation_source"}
+                if multi_level == 1:
+                    src_cdf["multi_level_id"] = 4
+                # Parse value: list operators take array
+                val: object = filter_value
+                if filter_op in ("in", "not_in"):
+                    val = [v.strip() for v in filter_value.split(",")]
+                payload = {
+                    "title": f"HiD-debug-tf-{filter_op}-{from_date}",
+                    "dataset_id": 7,
+                    "property_id": str(pid),
+                    "property_ids": [str(pid)],
+                    "columns": [
+                        {"cdf": {"type": "default", "column": "rooms_sold"}, "metrics": ["sum"]},
+                        {"cdf": {"type": "default", "column": "room_revenue"}, "metrics": ["sum"]},
+                    ],
+                    "group_rows": [{"cdf": {"type": "default", "column": "stay_date"}}],
+                    "filters": {"and": [
+                        {"cdf": {"type": "default", "column": "stay_date"}, "operator": "greater_than_or_equal", "value": from_date},
+                        {"cdf": {"type": "default", "column": "stay_date"}, "operator": "less_than_or_equal", "value": to_date},
+                        {"cdf": src_cdf, "operator": filter_op, "value": val},
+                    ]},
+                }
+                resp_create = client.post(f"{INSIGHTS_BASE_URL}/reports", headers={**headers, "Content-Type": "application/json"}, json=payload)
+                if resp_create.status_code not in (200, 201):
+                    return _envelope({"step": "create", "status_code": resp_create.status_code, "raw_text_preview": resp_create.text[:500], "filter_op": filter_op, "filter_value": filter_value, "multi_level": multi_level})
+                rid = resp_create.json().get("id")
+                try:
+                    resp = client.get(f"{INSIGHTS_BASE_URL}/reports/{rid}/data", headers=headers, params={"property_ids": str(pid)})
+                finally:
+                    client.delete(f"{INSIGHTS_BASE_URL}/reports/{rid}", headers=headers)
             elif action == "list_sources":
                 # Group by reservation_source to see actual values + check if
                 # source exclusion filter (not_equals × 5) over-excludes due to
