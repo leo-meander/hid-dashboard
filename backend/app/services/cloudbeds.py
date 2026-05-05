@@ -1345,6 +1345,17 @@ def fetch_cloudbeds_occupancy(
         "X-PROPERTY-ID": str(property_id),
     }
 
+    def _f(v) -> float:
+        # Cloudbeds responses are inconsistent: some properties return numeric
+        # metrics as float, others as string ("85.5"). Cast defensively to
+        # avoid 'unsupported operand for /: str/float' downstream.
+        if v is None or v == "":
+            return 0.0
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return 0.0
+
     payload = {
         "title": f"HiD-occ-{date_from.isoformat()}-{date_to.isoformat()}",
         "dataset_id": 7,
@@ -1399,15 +1410,15 @@ def fetch_cloudbeds_occupancy(
                     if date_to and d_ > date_to:
                         continue
                     result[d_] = {
-                        "rooms_sold":     m.get("rooms_sold", {}).get("sum", 0) or 0,
-                        "occupancy":      m.get("occupancy", {}).get("aggregated", 0) or 0,
-                        "mfd_occupancy":  m.get("mfd_occupancy", {}).get("aggregated", 0) or 0,
-                        "adr":            m.get("adr", {}).get("aggregated", 0) or 0,
-                        "revpar":         m.get("revpar", {}).get("aggregated", 0) or 0,
-                        "room_revenue":   m.get("room_revenue", {}).get("sum", 0) or 0,
-                        "capacity_count": m.get("capacity_count", {}).get("sum", 0) or 0,
-                        "blocked":        m.get("blocked_room_count", {}).get("sum", 0) or 0,
-                        "out_of_service": m.get("out_of_service_count", {}).get("sum", 0) or 0,
+                        "rooms_sold":     _f(m.get("rooms_sold", {}).get("sum")),
+                        "occupancy":      _f(m.get("occupancy", {}).get("aggregated")),
+                        "mfd_occupancy":  _f(m.get("mfd_occupancy", {}).get("aggregated")),
+                        "adr":            _f(m.get("adr", {}).get("aggregated")),
+                        "revpar":         _f(m.get("revpar", {}).get("aggregated")),
+                        "room_revenue":   _f(m.get("room_revenue", {}).get("sum")),
+                        "capacity_count": _f(m.get("capacity_count", {}).get("sum")),
+                        "blocked":        _f(m.get("blocked_room_count", {}).get("sum")),
+                        "out_of_service": _f(m.get("out_of_service_count", {}).get("sum")),
                     }
                 logger.info(
                     "Stock 110 fallback for property %s: %d days [%s → %s]",
@@ -1450,15 +1461,15 @@ def fetch_cloudbeds_occupancy(
             continue
 
         result[d] = {
-            "rooms_sold":       metrics.get("rooms_sold", {}).get("sum", 0) or 0,
-            "occupancy":        metrics.get("occupancy", {}).get("aggregated", 0) or 0,
-            "mfd_occupancy":    metrics.get("mfd_occupancy", {}).get("aggregated", 0) or 0,
-            "adr":              metrics.get("adr", {}).get("aggregated", 0) or 0,
-            "revpar":           metrics.get("revpar", {}).get("aggregated", 0) or 0,
-            "room_revenue":     metrics.get("room_revenue", {}).get("sum", 0) or 0,
-            "capacity_count":   metrics.get("capacity_count", {}).get("sum", 0) or 0,
-            "blocked":          metrics.get("blocked_room_count", {}).get("sum", 0) or 0,
-            "out_of_service":   metrics.get("out_of_service_count", {}).get("sum", 0) or 0,
+            "rooms_sold":       _f(metrics.get("rooms_sold", {}).get("sum")),
+            "occupancy":        _f(metrics.get("occupancy", {}).get("aggregated")),
+            "mfd_occupancy":    _f(metrics.get("mfd_occupancy", {}).get("aggregated")),
+            "adr":              _f(metrics.get("adr", {}).get("aggregated")),
+            "revpar":           _f(metrics.get("revpar", {}).get("aggregated")),
+            "room_revenue":     _f(metrics.get("room_revenue", {}).get("sum")),
+            "capacity_count":   _f(metrics.get("capacity_count", {}).get("sum")),
+            "blocked":          _f(metrics.get("blocked_room_count", {}).get("sum")),
+            "out_of_service":   _f(metrics.get("out_of_service_count", {}).get("sum")),
         }
 
     logger.info(
