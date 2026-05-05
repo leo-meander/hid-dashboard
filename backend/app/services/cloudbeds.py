@@ -762,6 +762,12 @@ def backfill_guest_country(
     logger.info("Guest country backfill: %d Unknown rows for branch %s (%s..%s)",
                 len(targets), branch_id, df, dt)
 
+    # Periodic progress flush: without this, if many consecutive rows return
+    # empty guestCountry from Cloudbeds (common for old check-outs), batch_buf
+    # never reaches BATCH_SIZE and the run looks stalled for tens of minutes
+    # until either the next country-bearing row hits or the loop ends.
+    PROGRESS_FLUSH_EVERY = 100
+
     with httpx.Client(timeout=30) as client:
         # (cb_id, guest_country_iso)
         batch_buf: list[tuple[str, str]] = []
@@ -783,8 +789,13 @@ def backfill_guest_country(
             except Exception as e:
                 logger.warning("Guest country backfill failed res %s: %s", r.cloudbeds_reservation_id, e)
 
-            # Flush batch
-            if len(batch_buf) >= BATCH_SIZE or (i == len(targets) - 1 and batch_buf):
+            # Flush batch when full, every PROGRESS_FLUSH_EVERY iterations, or at end
+            should_flush = (
+                len(batch_buf) >= BATCH_SIZE
+                or (i == len(targets) - 1 and batch_buf)
+                or ((i + 1) % PROGRESS_FLUSH_EVERY == 0 and batch_buf)
+            )
+            if should_flush:
                 _s = SessionLocal()
                 try:
                     for cb_id, gc in batch_buf:
