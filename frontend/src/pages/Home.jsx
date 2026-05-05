@@ -70,6 +70,8 @@ function forecastBreakdown(row, type) {
   const isNext = type === "next";
   const days = isNext ? row.next_month_total_days : row.total_days;
   const adr = isNext ? row.next_month_adr : row.avg_adr_native;
+  const roomAdr = isNext ? row.next_month_room_adr : row.room_adr_native;
+  const dormAdr = isNext ? row.next_month_dorm_adr : row.dorm_adr_native;
   const rOcc = isNext ? row.predicted_room_occ_next : row.predicted_room_occ_pct;
   const dOcc = isNext ? row.predicted_dorm_occ_next : row.predicted_dorm_occ_pct;
   const fbOcc = isNext ? row.predicted_occ_next : row.predicted_occ_pct;
@@ -78,6 +80,8 @@ function forecastBreakdown(row, type) {
   const roomCount = row.total_room_count || 0;
   const dormCount = row.total_dorm_count || 0;
   const hasSplit = roomCount > 0 && dormCount > 0 && rOcc != null && dOcc != null;
+  // Split ADR breakdown only when we have both per-segment ADRs from backend
+  const hasSplitAdr = hasSplit && roomAdr && dormAdr;
 
   if (!adr || (!hasSplit && (fbOcc == null || !totalRooms))) {
     return (
@@ -92,9 +96,11 @@ function forecastBreakdown(row, type) {
 
   let nightsBlock;
   let totalNights;
+  let roomNights = 0;
+  let dormNights = 0;
   if (hasSplit) {
-    const roomNights = Math.round(days * roomCount * rOcc);
-    const dormNights = Math.round(days * dormCount * dOcc);
+    roomNights = Math.round(days * roomCount * rOcc);
+    dormNights = Math.round(days * dormCount * dOcc);
     totalNights = roomNights + dormNights;
     nightsBlock = (
       <div className="space-y-0.5">
@@ -122,13 +128,28 @@ function forecastBreakdown(row, type) {
     );
   }
 
-  return (
-    <>
-      <div className="font-semibold text-white mb-1.5">
-        {isNext ? "Next-Month Forecast" : "Forecast (this month)"}
+  // Forecast block: split when both per-segment ADRs available, otherwise single ADR
+  let forecastBlock;
+  if (hasSplitAdr) {
+    const roomFc = roomAdr * roomNights;
+    const dormFc = dormAdr * dormNights;
+    forecastBlock = (
+      <div className="border-t border-gray-700 pt-1.5 space-y-0.5">
+        <div>Room ADR: <span className="font-mono">{fmt(roomAdr, cur)}</span></div>
+        <div>Dorm ADR: <span className="font-mono">{fmt(dormAdr, cur)}</span></div>
+        <div className="ml-2 text-gray-300 mt-1">
+          Room: {fmt(roomAdr, cur)} × <span className="font-mono">{fmtPlain(roomNights)}</span> = <span className="font-mono">{fmt(roomFc, cur)}</span>
+        </div>
+        <div className="ml-2 text-gray-300">
+          Dorm: {fmt(dormAdr, cur)} × <span className="font-mono">{fmtPlain(dormNights)}</span> = <span className="font-mono">{fmt(dormFc, cur)}</span>
+        </div>
+        <div className="text-white font-semibold mt-1">
+          = <span className="font-mono">{fmt(forecast, cur)}</span>
+        </div>
       </div>
-      <div className="text-gray-300 mb-1.5">Forecast = ADR × Predicted Nights</div>
-      <div className="border-t border-gray-700 pt-1.5 mb-1.5">{nightsBlock}</div>
+    );
+  } else {
+    forecastBlock = (
       <div className="border-t border-gray-700 pt-1.5 space-y-0.5">
         <div>ADR: <span className="font-mono">{fmt(adr, cur)}</span></div>
         <div>
@@ -138,6 +159,21 @@ function forecastBreakdown(row, type) {
           = <span className="font-mono">{fmt(forecast, cur)}</span>
         </div>
       </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="font-semibold text-white mb-1.5">
+        {isNext ? "Next-Month Forecast" : "Forecast (this month)"}
+      </div>
+      <div className="text-gray-300 mb-1.5">
+        {hasSplitAdr
+          ? "Forecast = Room ADR × Room Nights + Dorm ADR × Dorm Nights"
+          : "Forecast = ADR × Predicted Nights"}
+      </div>
+      <div className="border-t border-gray-700 pt-1.5 mb-1.5">{nightsBlock}</div>
+      {forecastBlock}
     </>
   );
 }

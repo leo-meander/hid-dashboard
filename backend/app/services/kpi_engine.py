@@ -435,14 +435,25 @@ def compute_next_month_forecast(
     next_month_target = float(target_row.target_revenue_native) if (target_row and target_row.target_revenue_native) else None
 
     # ── Forecast ──────────────────────────────────────────────────────────
-    # Forecast = avg_adr × total_pred_sold (using split OCC for pred_sold)
+    # Forecast (with split):  room_adr × pred_room_sold + dorm_adr × pred_dorm_sold
+    # Forecast (no split):    total_adr × pred_sold
     room_forecast = dorm_forecast = None
     forecast = None
 
     if (has_split
             and predicted_room_occ_next is not None
             and predicted_dorm_occ_next is not None
+            and room_adr and dorm_adr):
+        pred_room_sold = round(total_days * total_room_count * predicted_room_occ_next)
+        pred_dorm_sold = round(total_days * total_dorm_count * predicted_dorm_occ_next)
+        room_forecast = round(room_adr * pred_room_sold, 2)
+        dorm_forecast = round(dorm_adr * pred_dorm_sold, 2)
+        forecast = round(room_forecast + dorm_forecast, 2)
+    elif (has_split
+            and predicted_room_occ_next is not None
+            and predicted_dorm_occ_next is not None
             and total_adr):
+        # Fallback: split OCC available but split ADR missing
         pred_room_sold = round(total_days * total_room_count * predicted_room_occ_next)
         pred_dorm_sold = round(total_days * total_dorm_count * predicted_dorm_occ_next)
         pred_sold = pred_room_sold + pred_dorm_sold
@@ -547,17 +558,28 @@ def compute_kpi_summary(
         actual_dorm_occ = round(dorm_sold_total / (total_dorm_count * days_elapsed), 4) if total_dorm_count > 0 else None
 
     # ── Forecasts ─────────────────────────────────────────────────────────
-    # Forecast = avg_adr × total_pred_sold
-    # Use room/dorm split OCC for pred_sold, but apply single avg_adr.
-    # Split room/dorm ADR from daily_metrics is unreliable due to
-    # proportional revenue attribution — avg_adr is accurate from Insights API.
+    # Forecast (with split):  room_adr × pred_room_sold + dorm_adr × pred_dorm_sold
+    # Forecast (no split):    avg_adr × pred_sold
+    # After UPD-209/UPD-210, sync_cloudbeds_filtered writes room_adr / dorm_adr
+    # directly from Cloudbeds Insights custom reports per room type — they are
+    # reliable, so we use them here for an accurate split-based forecast.
     room_forecast = dorm_forecast = None
     occ_forecast = None
 
     if (has_split
             and predicted_room_occ is not None
             and predicted_dorm_occ is not None
+            and room_adr and dorm_adr):
+        pred_room_sold = round(total_days * total_room_count * predicted_room_occ)
+        pred_dorm_sold = round(total_days * total_dorm_count * predicted_dorm_occ)
+        room_forecast = round(room_adr * pred_room_sold, 2)
+        dorm_forecast = round(dorm_adr * pred_dorm_sold, 2)
+        occ_forecast = round(room_forecast + dorm_forecast, 2)
+    elif (has_split
+            and predicted_room_occ is not None
+            and predicted_dorm_occ is not None
             and avg_adr):
+        # Fallback: split OCC available but split ADR missing
         pred_room_sold = round(total_days * total_room_count * predicted_room_occ)
         pred_dorm_sold = round(total_days * total_dorm_count * predicted_dorm_occ)
         pred_sold = pred_room_sold + pred_dorm_sold
