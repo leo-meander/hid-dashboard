@@ -140,6 +140,31 @@ def debug_cloudbeds(
                     resp = client.get(f"{INSIGHTS_BASE_URL}/reports/{rid}/data", headers=headers, params={"property_ids": str(pid)})
                 finally:
                     client.delete(f"{INSIGHTS_BASE_URL}/reports/{rid}", headers=headers)
+            elif action == "run_filtered":
+                # Invoke fetch_filtered_daily directly and dump per-day result
+                from app.services.cloudbeds import fetch_filtered_daily
+                from datetime import date as _d
+                if not from_date:
+                    raise HTTPException(status_code=400, detail="from_date (YYYY-MM-01) required")
+                df = _d.fromisoformat(from_date)
+                import traceback
+                try:
+                    out = fetch_filtered_daily(str(pid), api_key, df.year, df.month)
+                    keys = sorted(out.keys())
+                    sample = {str(k): out[k] for k in keys[:3]} if keys else {}
+                    totals = {k: 0.0 for k in ['total_rev', 'room_rev', 'dorm_rev', 'total_sold_excl', 'total_sold_all', 'room_sold_excl', 'room_sold_all', 'dorm_sold_excl', 'dorm_sold_all']}
+                    for v in out.values():
+                        for k in totals:
+                            totals[k] += float(v.get(k, 0) or 0)
+                    return _envelope({
+                        "action": "run_filtered",
+                        "year_month": f"{df.year}-{df.month:02d}",
+                        "days_returned": len(keys),
+                        "month_totals": totals,
+                        "first_3_days": sample,
+                    })
+                except Exception as e:
+                    return _envelope({"error_type": type(e).__name__, "error": str(e), "traceback": traceback.format_exc()[:2000]})
             elif action == "list_room_types":
                 # Group by room_type to see actual values Cloudbeds has for the
                 # property — diagnoses why "contains Dorm" / "not_contains Dorm"
