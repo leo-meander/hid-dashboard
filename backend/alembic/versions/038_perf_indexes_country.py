@@ -17,6 +17,10 @@ composite indexes still serve the per-branch path.
 
 Same logic applies to the OTA Mix and Cancellation dashboards which run
 similar date-range scans without a branch filter.
+
+Also adds (updated_at) — _last_reservations_synced_at runs MAX(updated_at)
+on every metrics request to surface the freshness badge, which was a full
+table scan and contributed several seconds on every dashboard load.
 """
 from alembic import op
 
@@ -38,8 +42,15 @@ def upgrade():
         "CREATE INDEX IF NOT EXISTS idx_reservations_reservation_date "
         "ON reservations (reservation_date)"
     )
+    # updated_at index — _last_reservations_synced_at uses MAX(updated_at)
+    # on every metrics request; without an index this is a full table scan.
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reservations_updated_at "
+        "ON reservations (updated_at)"
+    )
 
 
 def downgrade():
     op.execute("DROP INDEX IF EXISTS idx_reservations_checkin")
     op.execute("DROP INDEX IF EXISTS idx_reservations_reservation_date")
+    op.execute("DROP INDEX IF EXISTS idx_reservations_updated_at")
