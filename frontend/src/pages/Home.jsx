@@ -323,11 +323,11 @@ function AllBranchesTable({ data, loading }) {
       <p className="text-xs text-gray-300 mt-2">Loading data…</p>
     </div>
   );
-  if (!data.length) return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No data \u2014 add branches and set KPI targets.</div>;
+  if (!data.length) return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No data — add branches and set KPI targets.</div>;
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="px-5 py-4 border-b border-gray-100">
-        <h2 className="font-semibold text-gray-800">Group Summary \u2014 {MONTH_NAME}</h2>
+        <h2 className="font-semibold text-gray-800">Group Summary — {MONTH_NAME}</h2>
         <p className="text-xs text-gray-400 mt-0.5">
           Native currency per branch
           <SyncBadge timestamp={data[0]?.data_synced_at} />
