@@ -633,22 +633,21 @@ def get_country_reservations(
         Reservation.reservation_date if date_type == "booked" else Reservation.check_in_date
     )
 
-    # 1) Find top N countries across the full range
-    top_countries = _query_top_countries(db, branch_id, overall_start, overall_end, limit, date_col)
-    country_names = [c["country"] for c in top_countries]
+    # Single-pass scan: group reservations by (period, country) and aggregate
+    # per-country totals in Python. Replaces the prior 2-query pattern (top
+    # countries + trend) which scanned the same date range twice — the table
+    # is large enough that the second scan dominated response time on the
+    # All-Branches view (~16s combined vs ~8s for one scan).
+    top_countries, trend = _query_country_breakdown(
+        db, branch_id, overall_start, overall_end, view, date_col, limit
+    )
 
-    if not country_names:
+    if not top_countries:
         return _envelope({
             "view": view, "periods": [], "countries": [], "trend": [],
             "currency": currency, "date_type": date_type,
             "data_synced_at": _last_reservations_synced_at(db, branch_id),
         })
-
-    # 2) Query per-period × per-country breakdown
-    if view == "monthly":
-        trend = _query_monthly_trend(db, branch_id, overall_start, overall_end, country_names, date_col)
-    else:
-        trend = _query_weekly_trend(db, branch_id, overall_start, overall_end, country_names, date_col)
 
     # 3) Build period labels
     period_labels = [p["label"] for p in periods]
@@ -698,6 +697,106 @@ def _build_weekly_periods(today, count):
         week_start -= timedelta(days=7)
     periods.reverse()
     return periods
+
+
+def _query_country_breakdown(db, branch_id, d_from, d_to, view, date_col, limit):
+    """Single-pass country breakdown. Returns (top_countries, trend) where:
+
+    - top_countries: list of {country_code, country, total_reservations,
+      total_nights, total_revenue} sorted by reservation count desc, sliced
+      to the top `limit`.
+    - trend: dict {period_label: {country: count}} for the chart/table.
+
+    Replaces the prior pattern of two separate scans
+    (_query_top_countries + _query_monthly_trend) — the date range typically
+    holds 25K+ reservations across all branches, and scanning twice doubled
+    the dashboard load time.
+
+    For monthly view, periods are grouped by (year, month) at SQL level.
+    For weekly view, we return raw dates and bucket into ISO weeks in Python
+    — postgres date_trunc('week') would also work but mixing extract() and
+    date_trunc() in the same code path made the earlier helper cluttered.
+    """
+    revenue_col = (
+        Reservation.grand_total_native if branch_id else Reservation.grand_total_vnd
+    )
+    code_expr = func.coalesce(Reservation.guest_country_code, "Unknown").label("code")
+    country_expr = func.coalesce(Reservation.guest_country, "Unknown").label("country")
+
+    if view == "monthly":
+        period_cols = [
+            extract("year", date_col).label("yr"),
+            extract("month", date_col).label("mo"),
+        ]
+    else:
+        # Group by raw date; bucket to ISO week in Python afterwards.
+        period_cols = [date_col.label("d")]
+
+    q = db.query(
+        *period_cols,
+        code_expr,
+        country_expr,
+        func.count(Reservation.id).label("cnt"),
+        func.coalesce(func.sum(revenue_col), 0).label("revenue"),
+        func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
+    ).filter(
+        date_col >= d_from,
+        date_col <= d_to,
+        _status_active_filter(),
+        ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES_REV)),
+    ).group_by(
+        *period_cols, code_expr, country_expr,
+    )
+
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+
+    rows = q.all()
+
+    # Aggregate per-country totals across all periods, and build trend dict.
+    totals = {}  # (code, country) -> {total, nights, revenue}
+    trend = defaultdict(lambda: defaultdict(int))
+
+    for row in rows:
+        code = row.code
+        country = row.country
+        cnt = int(row.cnt)
+        nights = int(row.nights or 0)
+        rev = float(row.revenue or 0)
+
+        key = (code, country)
+        if key not in totals:
+            totals[key] = {"total": 0, "nights": 0, "revenue": 0.0}
+        totals[key]["total"] += cnt
+        totals[key]["nights"] += nights
+        totals[key]["revenue"] += rev
+
+        if view == "monthly":
+            label = date(int(row.yr), int(row.mo), 1).strftime("%b %Y")
+        else:
+            d_val = row.d
+            if d_val is None:
+                continue
+            week_start = d_val - timedelta(days=d_val.weekday())
+            label = week_start.strftime("%d %b")
+        trend[label][country] += cnt
+
+    # Top countries sorted by total reservations desc, sliced.
+    top = sorted(
+        (
+            {
+                "country_code": code,
+                "country": country,
+                "total_reservations": v["total"],
+                "total_nights": v["nights"],
+                "total_revenue": v["revenue"],
+            }
+            for (code, country), v in totals.items()
+        ),
+        key=lambda x: -x["total_reservations"],
+    )[:limit]
+
+    return top, dict(trend)
 
 
 def _query_top_countries(db, branch_id, d_from, d_to, limit, date_col=None):

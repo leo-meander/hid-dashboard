@@ -1,0 +1,45 @@
+"""Perf indexes for Country Reservations endpoint.
+
+Revision ID: 037
+Revises: 036
+
+Reason
+------
+/api/metrics/country-reservations All Branches view scans 25K+ reservations
+in a 7-month range and was taking 12-32s in production. EXPLAIN ANALYZE
+showed Postgres using `idx_reservations_branch_checkin` (branch_id,
+check_in_date) in skip-scan mode when no branch_id was given — slow because
+it walks per-branch partitions instead of a clean date range.
+
+Adding plain (check_in_date) and (reservation_date) indexes lets the
+optimiser do a normal range scan for the All Branches view. The existing
+composite indexes still serve the per-branch path.
+
+Same logic applies to the OTA Mix and Cancellation dashboards which run
+similar date-range scans without a branch filter.
+"""
+from alembic import op
+
+
+revision = "037"
+down_revision = "036"
+branch_labels = None
+depends_on = None
+
+
+def upgrade():
+    # Plain check_in_date index — used by All Branches Country/OTA/Cancellation views.
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reservations_checkin "
+        "ON reservations (check_in_date)"
+    )
+    # Plain reservation_date index — used by All Branches "By Date Booked" views.
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reservations_reservation_date "
+        "ON reservations (reservation_date)"
+    )
+
+
+def downgrade():
+    op.execute("DROP INDEX IF EXISTS idx_reservations_checkin")
+    op.execute("DROP INDEX IF EXISTS idx_reservations_reservation_date")
