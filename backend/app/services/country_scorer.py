@@ -1,14 +1,30 @@
 """
-Country Scorer — v1.3
-Scores countries by booking trend signals → Hot / Warm / Cold tiers.
+Country Scorer — v1.4
+Scores countries by booking trend signals → Hot / Warm / Cold tiers,
+plus a plain-language trend label (Doubled / Surging / Growing / Stable
+/ Declining) that's easier to read than a raw score number.
 
-Scoring formula (score 0–100):
+Scoring formula (score 0–100, kept for sorting):
   WoW booking growth    40%  (this_week - last_week) / last_week
   MoM booking growth    30%  (this_month - last_month) / last_month
   Revenue/booking trend 20%  avg ADR this week vs 4-week average
   Booking recency       10%  days since last booking (inverted)
 
+Volume filter (v1.4): skip countries with <= MIN_WEEKLY_BOOKINGS this
+week. Without this, markets with 1–2 bookings get score-inflated by
+WoW growth (1 → 2 = +100%) and crowd out higher-volume markets that
+matter operationally.
+
 Tiers: Hot >= 70 | Warm 40–69 | Cold < 40
+
+Trend labels (driven by WoW growth, with first-appearance handling):
+  - last_week == 0           → "📍 New market"
+  - WoW >= +100%             → "🚀 Doubled+"
+  - WoW +50% to +99%         → "🔥 Surging"
+  - WoW +20% to +49%         → "📈 Growing"
+  - WoW -10% to +19%         → "➡️ Stable"
+  - WoW -50% to -11%         → "📉 Declining"
+  - WoW < -50%               → "🆘 Crashing"
 """
 from __future__ import annotations
 
@@ -28,6 +44,11 @@ logger = logging.getLogger(__name__)
 TIER_HOT  = 70
 TIER_WARM = 40
 
+# Volume filter — countries with this_week_count > MIN_WEEKLY_BOOKINGS get
+# scored. Below this, WoW % becomes statistical noise (going from 2 → 4
+# bookings is a +100% boost but operationally not worth a campaign shift).
+MIN_WEEKLY_BOOKINGS = 10
+
 
 def _get_tier(score: float) -> str:
     if score >= TIER_HOT:
@@ -35,6 +56,29 @@ def _get_tier(score: float) -> str:
     elif score >= TIER_WARM:
         return "Warm"
     return "Cold"
+
+
+def _trend_label(wow_growth: float, last_week_count: int) -> str:
+    """Convert raw WoW growth into a plain-language tag.
+
+    last_week_count is needed because the default growth=1.0 (assigned when
+    last_week=0) covers two distinct cases — "first time appearing" vs
+    "really doubled" — and they should read differently in the email.
+    """
+    if last_week_count == 0:
+        return "📍 New market"
+    pct = wow_growth * 100
+    if pct >= 100:
+        return "🚀 Doubled+"
+    if pct >= 50:
+        return "🔥 Surging"
+    if pct >= 20:
+        return "📈 Growing"
+    if pct >= -10:
+        return "➡️ Stable"
+    if pct >= -50:
+        return "📉 Declining"
+    return "🆘 Crashing"
 
 
 def _safe_div(a: float, b: float, default: float = 0.0) -> float:
@@ -171,6 +215,11 @@ def score_countries(
     for row in this_week:
         code = row.guest_country_code
         this_week_count  = row.count
+
+        # Volume filter — skip noise from tiny markets. See module docstring.
+        if this_week_count <= MIN_WEEKLY_BOOKINGS:
+            continue
+
         last_week_count  = last_week_dict.get(code, 0)
         this_month_count = this_month_dict.get(code, 0)
         last_month_count = last_month_dict.get(code, 0)
@@ -214,6 +263,7 @@ def score_countries(
             "country": row.guest_country or code,
             "score": score,
             "tier": _get_tier(score),
+            "trend_label": _trend_label(wow_growth, last_week_count),
             "booking_count_this_week": this_week_count,
             "booking_count_last_week": last_week_count,
             "wow_growth_pct": round(wow_growth * 100, 1) if last_week_count > 0 else None,

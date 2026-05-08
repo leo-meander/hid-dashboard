@@ -488,7 +488,7 @@ def _render_exec_summary(report: list, today: date) -> str:
         </table>
       </div>
       <p style="margin:10px 0 0;font-size:11px;color:#6b7280;">
-        Revenue / OCC / ADR = Cloudbeds Insights filtered (excl. Blogger / House Use / Special Case) — same source as the Group Summary dashboard.<br/>
+        Revenue / OCC / ADR = Cloudbeds Insights filtered (excl. Blogger / House Use / KOL / Special Case / Work Exchange) — same source as the Group Summary dashboard.<br/>
         Forecast = ADR × predicted-nights (set predicted OCC% in KPI Dashboard). Pacing color follows forecast vs target:
         <span style="color:#16a34a;">green ≥100%</span> ·
         <span style="color:#ca8a04;">yellow 90-99%</span> ·
@@ -1222,7 +1222,7 @@ def _render_crm(b: dict) -> str:
     Data source: reservations where room_type or rate_plan_name contains
     'CRM' / "MEANDER'S FRIEND" / 'Travel guide' / 'Grand Open'. Filtered
     on reservation_date (Date Booked) per the team rule. Excludes
-    Blogger / House Use / Special Case from revenue.
+    Blogger / House Use / KOL / Special Case / Work Exchange from revenue.
 
     Email-stats / workflow / bulk-send tables intentionally omitted —
     feedback (2026-05-03) wanted CRM down to a single revenue line.
@@ -1372,17 +1372,20 @@ def _build_html(report: list, today: date) -> str:
 
         for c in hot_countries[:3]:
             wow = f" (WoW {c['wow_growth_pct']:+.0f}%)" if c.get("wow_growth_pct") is not None else ""
+            label = c.get("trend_label", "Hot")
             actions.append(
-                f"🔥 {c['country']} — Hot (score {c['score']}){wow} — scale ad spend & prioritize OTA rates"
+                f"🔥 {c['country']} — {label}{wow} — scale ad spend & prioritize OTA rates"
             )
         for c in warm_countries[:2]:
+            label = c.get("trend_label", "Warm")
             actions.append(
-                f"📈 {c['country']} — Warm (score {c['score']}) — test new ad creatives & increase visibility"
+                f"📈 {c['country']} — {label} — test new ad creatives & increase visibility"
             )
         for c in cold_countries[:1]:
             if c.get("booking_count_this_week", 0) > 0:
+                label = c.get("trend_label", "Cold")
                 actions.append(
-                    f"❄️ {c['country']} — Cold (score {c['score']}) — review content relevance & consider pausing low-ROAS ads"
+                    f"❄️ {c['country']} — {label} — review content relevance & consider pausing low-ROAS ads"
                 )
 
         if not b["occ_forecast"]:
@@ -1438,11 +1441,13 @@ def _build_html(report: list, today: date) -> str:
             for g in b["growth_countries"][:3]
         ) or "—"
 
-        # Country Intel tier summary
+        # Country Intel tier summary — color by tier, label by trend.
+        # Score is intentionally hidden (see UPD log: "ghi score không biết
+        # sao"); the trend_label conveys the same info more naturally.
         tier_colors = {"Hot": "#dc2626", "Warm": "#f59e0b", "Cold": "#6b7280"}
         intel_c = " · ".join(
             f"<span style='color:{tier_colors.get(c['tier'], '#6b7280')};font-weight:600;'>"
-            f"{c['country']} ({c['tier']} {c['score']})</span>"
+            f"{c['country']}</span> <span style='color:#6b7280;'>({c.get('trend_label', c['tier'])})</span>"
             for c in intel[:5]
         ) or "—"
 
