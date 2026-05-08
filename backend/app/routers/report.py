@@ -1138,10 +1138,10 @@ def _render_paid_ads(b: dict) -> str:
           <p style="margin:0;font-size:12px;color:#9ca3af;">No ad spend last week or the week before.</p>
         </div>"""
 
-    # Channel rows — each metric paired with its WoW delta. Cost / Bookings /
-    # ROAS get explicit WoW columns; CTR / CVR / impressions stay as point-
-    # in-time signals to keep the table from getting unreadable.
-    def _ch_cell(value_html: str, wow_pct):
+    # Channel rows — each metric paired with its WoW delta. % deltas are
+    # used for absolute counts (cost / impressions / bookings); pp deltas
+    # for rates (CTR / CVR) since pct-changes-of-pcts read confusingly.
+    def _ch_cell_pct(value_html: str, wow_pct):
         if wow_pct is None:
             return f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{value_html}</td>"
         color = "#16a34a" if wow_pct >= 0 else "#dc2626"
@@ -1152,20 +1152,35 @@ def _render_paid_ads(b: dict) -> str:
             f"</td>"
         )
 
+    def _ch_cell_pp(value_html: str, pp_delta):
+        if pp_delta is None:
+            return f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{value_html}</td>"
+        color = "#16a34a" if pp_delta >= 0 else "#dc2626"
+        sign = "+" if pp_delta >= 0 else ""
+        return (
+            f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>"
+            f"<div>{value_html}</div>"
+            f"<div style='font-size:10px;color:{color};'>{sign}{pp_delta:.2f}pp</div>"
+            f"</td>"
+        )
+
     ch_rows_parts = []
     for c in pa["by_channel"]:
         roas_html = f"{c['roas']:.2f}x" if c["roas"] is not None else "—"
         cost_html = _fmt(c["cost"], cur)
         bk_html = f"{c['bookings']}"
+        impr_html = f"{c['impressions']:,}"
+        ctr_html = _pct(c["ctr_pct"])
+        cvr_html = _pct(c["cvr_pct"])
         ch_rows_parts.append(
             "<tr>"
             f"<td style='{_TABLE_TD};vertical-align:top;'>{c['channel']}</td>"
-            + _ch_cell(cost_html, c.get("wow_cost_pct"))
-            + f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{c['impressions']:,}</td>"
-            + f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{_pct(c['ctr_pct'])}</td>"
-            + f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{_pct(c['cvr_pct'])}</td>"
-            + _ch_cell(bk_html, c.get("wow_bookings_pct"))
-            + _ch_cell(f"<strong>{roas_html}</strong>", c.get("wow_roas_pct"))
+            + _ch_cell_pct(cost_html, c.get("wow_cost_pct"))
+            + _ch_cell_pct(impr_html, c.get("wow_impressions_pct"))
+            + _ch_cell_pp(ctr_html, c.get("ctr_pp_delta"))
+            + _ch_cell_pp(cvr_html, c.get("cvr_pp_delta"))
+            + _ch_cell_pct(bk_html, c.get("wow_bookings_pct"))
+            + _ch_cell_pct(f"<strong>{roas_html}</strong>", c.get("wow_roas_pct"))
             + "</tr>"
         )
     ch_rows = "".join(ch_rows_parts)
@@ -1234,19 +1249,38 @@ def _render_paid_ads(b: dict) -> str:
             "</p>"
         )
 
-    def _camp_row(cp, color="#374151"):
-        roas = f"{cp['roas']:.2f}x" if cp["roas"] is not None else "—"
-        return (
-            f"<tr><td style='{_TABLE_TD};color:{color};'>{cp['channel']}</td>"
-            f"<td style='{_TABLE_TD};color:{color};'>{(cp['ad_name'] or cp['adset'] or cp['campaign'] or '')[:55]}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(cp['cost'], cur)}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{cp['impressions']:,}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{cp['bookings']}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;font-weight:600;color:{color};'>{roas}</td></tr>"
+    # By Country rows — replaces the old Top/Bottom campaign tables.
+    # Each cell with a WoW delta uses the same _ch_cell_* helpers as
+    # By Channel above so colors / formatting stay consistent.
+    country_rows_parts = []
+    for cr in (pa.get("by_country") or []):
+        cost_html = _fmt(cr["cost"], cur)
+        rev_html = _fmt(cr["revenue"], cur)
+        roas_html = f"{cr['roas']:.2f}x" if cr["roas"] is not None else "—"
+        if cr["roas"] is not None and cr["roas"] >= 1.0:
+            roas_color = "#16a34a"
+        elif cr["roas"] is not None and cr["roas"] > 0:
+            roas_color = "#dc2626"
+        else:
+            roas_color = "#9ca3af"
+        bk_html = f"{cr['bookings']}"
+        ctr_html = _pct(cr["ctr_pct"])
+        cpa_html = _fmt(cr["cpa"], cur) if cr["cpa"] is not None else "—"
+        country_rows_parts.append(
+            "<tr>"
+            f"<td style='{_TABLE_TD};vertical-align:top;'>{cr['country']}</td>"
+            + _ch_cell_pct(cost_html, cr.get("wow_cost_pct"))
+            + _ch_cell_pct(rev_html, cr.get("wow_revenue_pct"))
+            + _ch_cell_pct(
+                f"<strong style='color:{roas_color};'>{roas_html}</strong>",
+                cr.get("wow_roas_pct"),
+            )
+            + _ch_cell_pp(ctr_html, cr.get("ctr_pp_delta"))
+            + f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{cpa_html}</td>"
+            + _ch_cell_pct(bk_html, cr.get("wow_bookings_pct"))
+            + "</tr>"
         )
-
-    top_html = "".join(_camp_row(c, "#16a34a") for c in pa["top_campaigns"])
-    bot_html = "".join(_camp_row(c, "#dc2626") for c in pa["bottom_campaigns"])
+    country_rows_html = "".join(country_rows_parts)
 
     roas_str = f"{lw['roas']:.2f}x" if lw["roas"] is not None else "—"
     return f"""
@@ -1276,19 +1310,17 @@ def _render_paid_ads(b: dict) -> str:
       {activity_html}
 
       <table style="width:100%;border-collapse:collapse;margin-top:12px;">
-        <tr><th style="{_TABLE_TH}" colspan="6">🏆 Top by ROAS (≥1K impressions)</th></tr>
-        <tr><th style="{_TABLE_TH}">Ch.</th><th style="{_TABLE_TH}">Name</th>
-            <th style="{_TABLE_TH};text-align:right;">Cost</th><th style="{_TABLE_TH};text-align:right;">Impr</th>
-            <th style="{_TABLE_TH};text-align:right;">Bk</th><th style="{_TABLE_TH};text-align:right;">ROAS</th></tr>
-        {top_html or '<tr><td colspan="6" style="'+_TABLE_TD+';color:#9ca3af;">No qualified campaigns</td></tr>'}
-      </table>
-
-      <table style="width:100%;border-collapse:collapse;margin-top:8px;">
-        <tr><th style="{_TABLE_TH}" colspan="6">⚠️ Underperformers (ROAS&lt;1, &lt;2 bookings, ≥5K impressions)</th></tr>
-        <tr><th style="{_TABLE_TH}">Ch.</th><th style="{_TABLE_TH}">Name</th>
-            <th style="{_TABLE_TH};text-align:right;">Cost</th><th style="{_TABLE_TH};text-align:right;">Impr</th>
-            <th style="{_TABLE_TH};text-align:right;">Bk</th><th style="{_TABLE_TH};text-align:right;">ROAS</th></tr>
-        {bot_html or '<tr><td colspan="6" style="'+_TABLE_TD+';color:#9ca3af;">None — clean week</td></tr>'}
+        <tr><th style="{_TABLE_TH}" colspan="7">🌏 By Country (last week, with WoW deltas)</th></tr>
+        <tr>
+          <th style="{_TABLE_TH}">Country</th>
+          <th style="{_TABLE_TH};text-align:right;">Spend</th>
+          <th style="{_TABLE_TH};text-align:right;">Revenue</th>
+          <th style="{_TABLE_TH};text-align:right;">ROAS</th>
+          <th style="{_TABLE_TH};text-align:right;">CTR</th>
+          <th style="{_TABLE_TH};text-align:right;">CPA</th>
+          <th style="{_TABLE_TH};text-align:right;">Conv.</th>
+        </tr>
+        {country_rows_html or '<tr><td colspan="7" style="'+_TABLE_TD+';color:#9ca3af;">No country-level data — verify Ads Platform sync populated target_country.</td></tr>'}
       </table>
     </div>"""
 

@@ -1129,6 +1129,101 @@ def _build_activity_log(db: Session, branch_id: UUID,
     }
 
 
+def _country_perf_aggregate(db: Session, branch_id: UUID,
+                            d_from: date, d_to: date) -> dict:
+    """Per-country ads aggregate over [d_from, d_to].
+
+    Uses grain='ad' rows with overlap predicate (ad's [date_from, date_to]
+    intersects the window) — same convention marketing_activity uses for
+    its By-Country tab. cost / impressions / etc. are per-ad cumulative
+    values from the Ads Platform; for ads spanning multiple weeks the
+    numbers over-count on this query, but the comparison is consistent
+    week-over-week so WoW deltas remain meaningful.
+
+    Returns {country: {cost, impressions, clicks, bookings, revenue}}.
+    """
+    rows = db.query(
+        AdsPerformance.target_country,
+        func.coalesce(func.sum(AdsPerformance.cost_native), 0),
+        func.coalesce(func.sum(AdsPerformance.impressions), 0),
+        func.coalesce(func.sum(AdsPerformance.clicks), 0),
+        func.coalesce(func.sum(AdsPerformance.bookings), 0),
+        func.coalesce(func.sum(AdsPerformance.revenue_native), 0),
+    ).filter(
+        AdsPerformance.branch_id == branch_id,
+        AdsPerformance.grain == "ad",
+        AdsPerformance.target_country.isnot(None),
+        AdsPerformance.target_country != "",
+        AdsPerformance.cost_native > 0,
+        or_(
+            AdsPerformance.date_from.is_(None),
+            AdsPerformance.date_from <= d_to,
+        ),
+        or_(
+            AdsPerformance.date_to.is_(None),
+            AdsPerformance.date_to >= d_from,
+        ),
+    ).group_by(AdsPerformance.target_country).all()
+    return {
+        r[0]: {
+            "cost": float(r[1] or 0),
+            "impressions": int(r[2] or 0),
+            "clicks": int(r[3] or 0),
+            "bookings": int(r[4] or 0),
+            "revenue": float(r[5] or 0),
+        }
+        for r in rows
+    }
+
+
+def _build_country_perf(db: Session, branch_id: UUID,
+                        week_start: date, week_end: date,
+                        prev_start: date, prev_end: date,
+                        top_n: int = 10) -> list[dict]:
+    """Per-country paid-ads performance with WoW deltas.
+
+    Replaces the old "Top by ROAS" / "Underperformers" campaign-level
+    tables — operators want a country-level view that mirrors the Ads
+    Platform UI. Sorted by current-week cost desc, capped at top_n.
+
+    Each row carries: cost, impressions, clicks, bookings, revenue, ROAS,
+    CTR, CPA, plus WoW deltas for cost / revenue / ROAS / bookings and
+    pp deltas for CTR.
+    """
+    this = _country_perf_aggregate(db, branch_id, week_start, week_end)
+    prev = _country_perf_aggregate(db, branch_id, prev_start, prev_end)
+
+    blank = {"cost": 0, "impressions": 0, "clicks": 0, "bookings": 0, "revenue": 0}
+    rows: list[dict] = []
+    for country in set(this.keys()) | set(prev.keys()):
+        t = this.get(country, blank)
+        p = prev.get(country, blank)
+        roas = round(t["revenue"] / t["cost"], 2) if t["cost"] > 0 else None
+        prev_roas = (p["revenue"] / p["cost"]) if p["cost"] > 0 else None
+        ctr = round(t["clicks"] / t["impressions"] * 100, 2) if t["impressions"] > 0 else None
+        prev_ctr = (p["clicks"] / p["impressions"] * 100) if p["impressions"] > 0 else None
+        cpa = round(t["cost"] / t["bookings"], 2) if t["bookings"] > 0 else None
+        rows.append({
+            "country": country,
+            "cost": round(t["cost"], 2),
+            "impressions": t["impressions"],
+            "clicks": t["clicks"],
+            "bookings": t["bookings"],
+            "revenue": round(t["revenue"], 2),
+            "ctr_pct": ctr,
+            "cpa": cpa,
+            "roas": roas,
+            "wow_cost_pct": _pct_change(t["cost"], p["cost"]),
+            "wow_revenue_pct": _pct_change(t["revenue"], p["revenue"]),
+            "wow_roas_pct": _pct_change(roas, prev_roas),
+            "wow_bookings_pct": _pct_change(t["bookings"], p["bookings"]),
+            "ctr_pp_delta": (round(ctr - prev_ctr, 2)
+                              if (ctr is not None and prev_ctr is not None) else None),
+        })
+    rows.sort(key=lambda x: -x["cost"])
+    return rows[:top_n]
+
+
 def paid_ads_section(db: Session, branch_id: UUID, today: date,
                      days: int = 7) -> dict:
     """Paid Ads snapshot — last calendar week vs the week before it
@@ -1179,6 +1274,10 @@ def paid_ads_section(db: Session, branch_id: UUID, today: date,
         p = ch_prev.get(channel, blank)
         roas = round(t["revenue"] / t["cost"], 2) if t["cost"] > 0 else None
         prev_roas = (p["revenue"] / p["cost"]) if p["cost"] > 0 else None
+        ctr = round(t["clicks"] / t["impressions"] * 100, 2) if t["impressions"] > 0 else None
+        prev_ctr = (p["clicks"] / p["impressions"] * 100) if p["impressions"] > 0 else None
+        cvr = round(t["bookings"] / t["clicks"] * 100, 2) if t["clicks"] > 0 else None
+        prev_cvr = (p["bookings"] / p["clicks"] * 100) if p["clicks"] > 0 else None
         by_channel.append({
             "channel": channel,
             "cost": round(t["cost"], 2),
@@ -1186,10 +1285,16 @@ def paid_ads_section(db: Session, branch_id: UUID, today: date,
             "clicks": t["clicks"],
             "bookings": t["bookings"],
             "revenue": round(t["revenue"], 2),
-            "ctr_pct": round(t["clicks"] / t["impressions"] * 100, 2) if t["impressions"] > 0 else None,
-            "cvr_pct": round(t["bookings"] / t["clicks"] * 100, 2) if t["clicks"] > 0 else None,
+            "ctr_pct": ctr,
+            "cvr_pct": cvr,
             "roas": roas,
             "wow_cost_pct": _pct_change(t["cost"], p["cost"]),
+            "wow_impressions_pct": _pct_change(t["impressions"], p["impressions"]),
+            # CTR / CVR are rates — pp deltas read more naturally than %
+            "ctr_pp_delta": (round(ctr - prev_ctr, 2)
+                              if (ctr is not None and prev_ctr is not None) else None),
+            "cvr_pp_delta": (round(cvr - prev_cvr, 2)
+                              if (cvr is not None and prev_cvr is not None) else None),
             "wow_bookings_pct": _pct_change(t["bookings"], p["bookings"]),
             "wow_roas_pct": _pct_change(roas, prev_roas),
         })
@@ -1204,62 +1309,12 @@ def paid_ads_section(db: Session, branch_id: UUID, today: date,
         db, branch_id, week_start, week_end, prev_start, prev_end,
     )
 
-    # Top / bottom campaigns by ROAS (need impressions ≥ 1000 to qualify)
-    camp_rows = db.query(
-        AdsPerformance.campaign_name,
-        AdsPerformance.adset_name,
-        AdsPerformance.ad_name,
-        AdsPerformance.channel,
-        func.coalesce(func.sum(AdsPerformance.cost_native), 0),
-        func.coalesce(func.sum(AdsPerformance.impressions), 0),
-        func.coalesce(func.sum(AdsPerformance.clicks), 0),
-        func.coalesce(func.sum(AdsPerformance.bookings), 0),
-        func.coalesce(func.sum(AdsPerformance.revenue_native), 0),
-    ).filter(
-        AdsPerformance.branch_id == branch_id,
-        AdsPerformance.grain == "ad",
-        AdsPerformance.cost_native > 0,
-        or_(
-            AdsPerformance.date_from.is_(None),
-            AdsPerformance.date_from <= week_end,
-        ),
-    ).group_by(
-        AdsPerformance.campaign_name, AdsPerformance.adset_name,
-        AdsPerformance.ad_name, AdsPerformance.channel,
-    ).all()
-
-    qualified = []
-    for r in camp_rows:
-        cost = float(r[4] or 0)
-        impr = int(r[5] or 0)
-        clicks = int(r[6] or 0)
-        bookings = int(r[7] or 0)
-        rev = float(r[8] or 0)
-        if impr < 1000 or cost < 1:
-            continue
-        qualified.append({
-            "campaign": r[0],
-            "adset": r[1],
-            "ad_name": r[2],
-            "channel": r[3] or "—",
-            "cost": round(cost, 2),
-            "impressions": impr,
-            "clicks": clicks,
-            "bookings": bookings,
-            "revenue": round(rev, 2),
-            "ctr_pct": round(clicks / impr * 100, 2) if impr > 0 else None,
-            "cvr_pct": round(bookings / clicks * 100, 2) if clicks > 0 else None,
-            "cpa": round(cost / bookings, 2) if bookings > 0 else None,
-            "roas": round(rev / cost, 2) if cost > 0 else 0,
-        })
-
-    top_campaigns = sorted(qualified, key=lambda x: -(x["roas"] or 0))[:5]
-    # Underperformers: ROAS < 1.0 AND bookings < 2 AND ≥ 5K impressions
-    bottom_campaigns = sorted(
-        [c for c in qualified if c["roas"] < 1.0 and c["bookings"] < 2
-         and c["impressions"] >= 5000],
-        key=lambda x: x["roas"],
-    )[:5]
+    # By Country — replaces the old Top by ROAS / Underperformers tables.
+    # Per feedback (2026-05-04): operators want a country-level slice that
+    # mirrors the Ads Platform "By Country" view, not campaign-grain rows.
+    by_country = _build_country_perf(
+        db, branch_id, week_start, week_end, prev_start, prev_end, top_n=10,
+    )
 
     return {
         "window_days": (week_end - week_start).days + 1,
@@ -1271,9 +1326,8 @@ def paid_ads_section(db: Session, branch_id: UUID, today: date,
         "wow_revenue_pct": _pct_change(last_week["revenue"], prev_week["revenue"]),
         "wow_roas_pct": _pct_change(last_week["roas"], prev_week["roas"]),
         "by_channel": by_channel,
+        "by_country": by_country,
         "activity_log": activity_log,
-        "top_campaigns": top_campaigns,
-        "bottom_campaigns": bottom_campaigns,
     }
 
 
