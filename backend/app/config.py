@@ -54,7 +54,12 @@ class Settings(BaseSettings):
     # KOL Media Engine
     KOL_ENGINE_URL: str = "https://kol-media-engine.zeabur.app"
     KOL_ENGINE_ORG_ID: str = "7c7b450e-ffa2-42fb-8742-f28916e811d8"
-    KOL_SYNC_API_KEY: str = ""
+    KOL_SYNC_API_KEY: str = ""               # X-Sync-API-Key header for /api/sync/kol-data
+    # Public targets API — Bearer-auth endpoint exposing monthly targets
+    # vs actuals (Invited Proactive / Collaborated / Posted). Different
+    # auth scheme + different endpoint than KOL_SYNC_API_KEY above.
+    KOL_TARGETS_ORG_SLUG: str = "meander"
+    KOL_PUBLIC_API_KEY: str = ""
     GHL_BASE_URL: str = "https://services.leadconnectorhq.com"
     # Legacy single-location (kept for backward compat)
     GHL_LOCATION_ID: str = ""

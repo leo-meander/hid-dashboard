@@ -1144,21 +1144,23 @@ def paid_ads_section(db: Session, branch_id: UUID, today: date,
 
 # ── 8. KOL — pipeline, ROI, expiring usage rights ───────────────────────────
 
-def kol_section(db: Session, branch_id: UUID, today: date,
-                days: int = 7) -> dict:
-    """KOL last-week snapshot (Mon–Sun previous calendar week).
+def kol_section(db: Session, branch_id: UUID, branch_name: str,
+                today: date, days: int = 7) -> dict:
+    """KOL monthly progress (Invited / Collaborated / Posted vs target).
 
-    "Total KOLs" replaced with `posts_this_week` — count of KOL records
-    whose `published_date` falls in last calendar week. One KOL record
-    represents one collaboration / case so it maps to one post.
+    The email previously showed pipeline counts, stuck deliverables,
+    expiring usage rights, ads-eligible KOLs, cost MTD, organic ROI etc.
+    Per feedback (2026-05-04) all of that was stripped out — operators
+    only want to see the monthly progress vs target from the KOL Engine
+    public API.
 
-    Still surfaces:
-      - Pipeline counts (across all KOLs for the branch — not windowed,
-        because deliverable_status is current state, not history)
-      - Stuck deliverables (>14d in In Progress, branch-wide)
-      - Expiring usage rights (next 60d, branch-wide)
-      - Ads-eligible KOLs available (branch-wide)
-      - Cost MTD + organic bookings/revenue/ROI from KOL_* room types
+    Targets fetched from KOL Engine: GET /api/public/kol-targets/{slug}
+    (Bearer auth via KOL_PUBLIC_API_KEY). Cached 10 minutes so the 5
+    per-branch passes within one report build hit the network once.
+
+    The legacy fields (pipeline / stuck / expiring / available_for_ads /
+    cost_mtd / organic_*) are still computed for backward compat with
+    any other consumer, but the email no longer renders them.
     """
     week_start, week_end = last_week_range(today)
     expiry_horizon = today + timedelta(days=60)
@@ -1256,6 +1258,42 @@ def kol_section(db: Session, branch_id: UUID, today: date,
     organic_revenue = float(res_rows[2] or 0)
     roi = round(organic_revenue / cost_mtd, 2) if cost_mtd > 0 else None
 
+    # ── Monthly targets from KOL Engine public API ──────────────────────
+    # Fetch the org-level payload (cached 10min) and pull out the row for
+    # this branch via hotel_id. month=today.month so we always show the
+    # current calendar month's progress.
+    from app.config import settings as _settings
+    from app.services.kol_engine import (
+        fetch_kol_targets, resolve_hotel_id_from_branch_name,
+    )
+    targets_payload = fetch_kol_targets(
+        base_url=_settings.KOL_ENGINE_URL,
+        org_slug=_settings.KOL_TARGETS_ORG_SLUG,
+        api_key=_settings.KOL_PUBLIC_API_KEY,
+        year=today.year,
+        month=today.month,
+    )
+    targets = None
+    if targets_payload:
+        hotel_id = resolve_hotel_id_from_branch_name(branch_name)
+        period = targets_payload.get("period") or {}
+        if hotel_id:
+            for br in (targets_payload.get("branches") or []):
+                if br.get("hotel_id") == hotel_id:
+                    targets = {
+                        "period_label": period.get("label"),
+                        "period_year": period.get("year") or today.year,
+                        "period_month": period.get("month") or today.month,
+                        "hotel_id": hotel_id,
+                        "hotel_name": br.get("hotel_name"),
+                        "invited_proactive": br.get("invited_proactive") or {},
+                        "collaborated": br.get("collaborated") or {},
+                        "posted": br.get("posted") or {},
+                    }
+                    break
+        # If hotel_id resolution failed, leave targets = None — the
+        # renderer will show a "branch not mapped" hint.
+
     return {
         "window_days": (week_end - week_start).days + 1,
         "window_start": week_start.isoformat(),
@@ -1272,6 +1310,13 @@ def kol_section(db: Session, branch_id: UUID, today: date,
         "organic_nights": organic_nights,
         "organic_revenue_native": round(organic_revenue, 2),
         "roi": roi,
+        # NEW (2026-05-04): monthly progress from KOL Engine public API
+        "targets": targets,
+        "targets_unavailable_reason": None if targets else (
+            "KOL Engine returned no targets for this branch — check "
+            "KOL_PUBLIC_API_KEY / KOL_TARGETS_ORG_SLUG, or that the branch "
+            "is mapped in KOL Engine."
+        ),
     }
 
 
@@ -1490,6 +1535,6 @@ def build_branch_analytics(db: Session, branch: Branch, today: date) -> dict:
         "countries": country_insights(db, branch.id, today, days=90, limit=8),
         "ad_optimizer": ad_budget_optimizer(db, branch.id, today, total_rooms),
         "paid_ads": paid_ads_section(db, branch.id, today, days=7),
-        "kol": kol_section(db, branch.id, today, days=7),
+        "kol": kol_section(db, branch.id, branch.name, today, days=7),
         "crm": crm_section(db, branch.id, branch.name, today, days=7),
     }

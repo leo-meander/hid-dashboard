@@ -1187,89 +1187,93 @@ def _render_paid_ads(b: dict) -> str:
 
 
 def _render_kol(b: dict) -> str:
-    k = b.get("analytics", {}).get("kol")
-    if not k:
+    """Render the KOL section as a monthly progress table (Invited /
+    Collaborated / Posted vs target).
+
+    Source = KOL Engine public API GET /api/public/kol-targets/{slug}.
+    All other KOL signals (pipeline, stuck, expiring, ads-available,
+    posts, cost MTD, organic ROI) were removed per feedback (2026-05-04)
+    to keep the section focused on monthly target progress.
+    """
+    k = b.get("analytics", {}).get("kol") or {}
+    targets = k.get("targets")
+
+    if not targets:
+        reason = k.get("targets_unavailable_reason") or (
+            "KOL Engine targets not configured. Set KOL_PUBLIC_API_KEY "
+            "and KOL_TARGETS_ORG_SLUG on Zeabur, then verify this branch "
+            "exists in KOL Engine."
+        )
         return f"""
         <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">🎥 KOL</p>
-          <p style="margin:0;font-size:12px;color:#9ca3af;">No KOL data available — analytics not computed.</p>
+          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">🎥 KOL — Monthly Progress</p>
+          <p style="margin:0;font-size:12px;color:#9ca3af;">{reason}</p>
         </div>"""
-    if k["total_kols"] == 0:
-        return f"""
-        <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-          <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">🎥 KOL (last week · {k.get('window_start','')} → {k.get('window_end','')})</p>
-          <p style="margin:0;font-size:12px;color:#9ca3af;">No KOL records for this branch yet — add via /kol page or CSV sync.</p>
-        </div>"""
-    cur = b["currency"]
-    p = k["pipeline"]
-    posts = k.get("posts_this_week", 0)
 
-    pipeline_html = (
-        f"<span style='color:#6b7280;font-size:12px;'>"
-        f"Not Started <strong>{p['Not Started']}</strong> · "
-        f"In Progress <strong>{p['In Progress']}</strong> · "
-        f"Editing <strong>{p['Editing']}</strong> · "
-        f"Done <strong>{p['Done']}</strong>"
-        f"</span>"
+    period_label = targets.get("period_label") or (
+        f"{MONTHS_EN[targets.get('period_month') or date.today().month]} "
+        f"{targets.get('period_year') or date.today().year}"
     )
 
-    stuck_html = (
-        "".join(
-            f"<li style='margin:2px 0;'>{s['kol_name']} · stuck {s['days_stuck']}d "
-            f"<span style='color:#9ca3af;'>(since {s['updated_at']})</span></li>"
-            for s in k["stuck"]
-        ) or "<li style='color:#9ca3af;'>No stuck deliverables</li>"
-    )
+    def _progress_row(label: str, metric: dict) -> str:
+        actual = int(metric.get("actual") or 0)
+        target = int(metric.get("target") or 0)
+        pct = metric.get("pct")  # may be None when target == 0
+        if pct is None:
+            pct_str = "<span style='color:#9ca3af;'>n/a</span>"
+            color = "#9ca3af"
+            bar_pct = 0.0
+        else:
+            pct_val = float(pct)
+            bar_pct = max(0.0, min(100.0, pct_val))
+            if pct_val >= 100:
+                color = "#16a34a"
+            elif pct_val >= 75:
+                color = "#ca8a04"
+            elif pct_val >= 50:
+                color = "#ea580c"
+            else:
+                color = "#dc2626"
+            pct_str = f"<span style='color:{color};font-weight:700;'>{pct_val:.1f}%</span>"
+        bar_html = (
+            f"<div style='background:#e5e7eb;border-radius:6px;height:6px;width:120px;display:inline-block;vertical-align:middle;'>"
+            f"<div style='background:{color};height:6px;border-radius:6px;width:{bar_pct:.1f}%;'></div>"
+            f"</div>"
+        )
+        return (
+            f"<tr>"
+            f"<td style='{_TABLE_TD};'><strong>{label}</strong></td>"
+            f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{actual:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;color:#6b7280;'>/ {target:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{pct_str}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{bar_html}</td>"
+            f"</tr>"
+        )
 
-    expiring_html = (
-        "".join(
-            f"<li style='margin:2px 0;'>{e['kol_name']} · {e['expiry_date']} "
-            f"<span style='color:{'#dc2626' if e['days_left']<=14 else '#ca8a04'};'>"
-            f"({e['days_left']}d left)</span>"
-            f"{' · '+e['channel'] if e['channel'] else ''}</li>"
-            for e in k["expiring"]
-        ) or "<li style='color:#9ca3af;'>No usage rights expiring soon</li>"
+    rows = (
+        _progress_row("📨 Invited (Proactive)", targets.get("invited_proactive") or {})
+        + _progress_row("🤝 Collaborated", targets.get("collaborated") or {})
+        + _progress_row("🎬 Posted", targets.get("posted") or {})
     )
-
-    available_html = (
-        "".join(
-            f"<li style='margin:2px 0;'>{a['kol_name']}"
-            f"{' · '+a['nationality'] if a['nationality'] else ''}"
-            f"{' · '+a['channel'] if a['channel'] else ''}"
-            f"{' · until '+a['expiry'] if a['expiry'] else ''}</li>"
-            for a in k["available_for_ads"]
-        ) or "<li style='color:#9ca3af;'>None available for ads usage</li>"
-    )
-
-    roi_str = f"{k['roi']:.2f}x" if k["roi"] is not None else "—"
 
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
       <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
-        🎥 KOL (last week · {k['window_start']} → {k['window_end']})
+        🎥 KOL — Monthly Progress · {period_label}
       </p>
-      <p style="margin:0 0 10px;font-size:12px;color:#6b7280;">
-        Posts published last week: <strong>{posts}</strong> · Open contracts (Draft/Negotiating): <strong>{k['contract_open']}</strong><br/>
-        Pipeline (all-time): {pipeline_html}<br/>
-        Cost MTD: <strong>{_fmt(k['cost_mtd_native'], cur)}</strong> ·
-        Organic bookings: <strong>{k['organic_bookings']}</strong> ({k['organic_nights']} nights) ·
-        Revenue: <strong>{_fmt(k['organic_revenue_native'], cur)}</strong> ·
-        ROI MTD: <strong>{roi_str}</strong>
+      <table style="width:100%;border-collapse:collapse;">
+        <tr>
+          <th style="{_TABLE_TH}">Metric</th>
+          <th style="{_TABLE_TH};text-align:right;">Actual</th>
+          <th style="{_TABLE_TH};text-align:right;">Target</th>
+          <th style="{_TABLE_TH};text-align:right;">Pacing</th>
+          <th style="{_TABLE_TH};text-align:right;">Progress</th>
+        </tr>
+        {rows}
+      </table>
+      <p style="margin:6px 0 0;font-size:11px;color:#9ca3af;">
+        Source: KOL Engine targets API. Pacing color: ≥100% green · 75-99% yellow · 50-74% orange · &lt;50% red.
       </p>
-      <div style="display:flex;gap:14px;flex-wrap:wrap;">
-        <div style="flex:1;min-width:240px;">
-          <p style="margin:6px 0 4px;font-size:12px;font-weight:600;color:#dc2626;">🚧 Stuck "In Progress" &gt;14d</p>
-          <ul style="margin:0;padding-left:18px;font-size:12px;color:#374151;">{stuck_html}</ul>
-        </div>
-        <div style="flex:1;min-width:240px;">
-          <p style="margin:6px 0 4px;font-size:12px;font-weight:600;color:#ca8a04;">⏰ Usage rights expiring (≤60d)</p>
-          <ul style="margin:0;padding-left:18px;font-size:12px;color:#374151;">{expiring_html}</ul>
-        </div>
-        <div style="flex:1;min-width:240px;">
-          <p style="margin:6px 0 4px;font-size:12px;font-weight:600;color:#16a34a;">✅ Ads-eligible & Available</p>
-          <ul style="margin:0;padding-left:18px;font-size:12px;color:#374151;">{available_html}</ul>
-        </div>
-      </div>
     </div>"""
 
 

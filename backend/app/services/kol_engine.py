@@ -100,3 +100,90 @@ def fetch_kol_data(base_url: str, org_id: str, api_key: str) -> list[dict]:
 
     log.info("KOL Engine: %d collaboration records parsed", len(results))
     return results
+
+
+# ── Public targets API ─────────────────────────────────────────────────────
+# Endpoint: GET {base}/api/public/kol-targets/{slug}?year=YYYY&month=M
+# Auth:     Authorization: Bearer <KOL_PUBLIC_API_KEY>
+# Response: envelope {success, data, error, timestamp} where data has
+#           {organization, period, totals, branches, monthly_targets}.
+# Targets and actuals come back per metric: invited_proactive,
+# collaborated, posted — each {actual, target, pct}.
+
+import time
+
+_KOL_TARGETS_TTL_SEC = 600  # 10 min — same response shared across the
+                            # 5 branch passes inside one report build,
+                            # plus survives a manual Re-run of the cron.
+_kol_targets_cache: dict[tuple, tuple[float, dict]] = {}
+
+
+def fetch_kol_targets(
+    base_url: str,
+    org_slug: str,
+    api_key: str,
+    year: int,
+    month: int,
+) -> Optional[dict]:
+    """Fetch monthly KOL targets + actuals from the public API.
+
+    Returns the inner `data` payload, or None on any failure (missing
+    creds, network error, non-success envelope). Caller should treat
+    None as "targets unavailable" and render a fallback in the email.
+    """
+    if not (base_url and org_slug and api_key):
+        log.info("fetch_kol_targets: missing config (base_url/slug/key)")
+        return None
+
+    cache_key = (org_slug, int(year), int(month))
+    cached = _kol_targets_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _KOL_TARGETS_TTL_SEC:
+        return cached[1]
+
+    url = f"{base_url}/api/public/kol-targets/{org_slug}?year={year}&month={month}"
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {api_key}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+    except Exception as e:
+        log.warning("fetch_kol_targets: HTTP error %s", e)
+        return None
+
+    if not body.get("success"):
+        log.warning("fetch_kol_targets: API returned error: %s", body.get("error"))
+        return None
+
+    data = body.get("data") or {}
+    _kol_targets_cache[cache_key] = (time.time(), data)
+    log.info(
+        "fetch_kol_targets OK: %s %s/%s — %d branches",
+        org_slug, year, month, len(data.get("branches") or []),
+    )
+    return data
+
+
+# Inverse of HOTEL_TO_BRANCH_KEY — short branch-key → KOL Engine hotel UUID.
+# Used by weekly_report_builder.kol_section() to look up the right branch
+# row in the targets API response.
+BRANCH_KEY_TO_HOTEL: dict[str, str] = {
+    v: k for k, v in HOTEL_TO_BRANCH_KEY.items()
+}
+
+
+def resolve_hotel_id_from_branch_name(branch_name: str) -> Optional[str]:
+    """Map HiD branch.name (e.g. 'MEANDER Saigon') → KOL Engine hotel UUID.
+
+    Substring match against the lowercase branch keys ('saigon', 'taipei',
+    '1948', 'oani', 'osaka'). Returns None if no key is found in the name.
+    """
+    if not branch_name:
+        return None
+    bn = branch_name.lower().strip()
+    for key, hotel_id in BRANCH_KEY_TO_HOTEL.items():
+        if key in bn:
+            return hotel_id
+    return None
