@@ -288,140 +288,234 @@ def _los_buckets(values: list[int]) -> dict:
 
 
 def booking_behavior(db: Session, branch_id: UUID, today: date, days: int = 7) -> dict:
-    """
-    Cancellation %, lead time distribution, LOS distribution — last
-    calendar week (Mon–Sun previous) based on check_in_date. The `days`
-    parameter is kept for backward compatibility but ignored when the
-    range falls naturally on last calendar week.
+    """Cancellation % / lead time / LOS — last calendar week vs prev week.
+
+    Filtered on **check_in_date** (i.e. cohort = "stays scheduled for
+    last week"). That's deliberate: a cancellation rate measured by
+    stay date tells operators how many of last week's beds actually got
+    occupied. If you want "what % of bookings made last week got later
+    cancelled" use the CRM/marketing-activity views instead — those
+    filter on reservation_date.
+
+    Returns this-week + prev-week buckets + their WoW deltas so the
+    renderer can show side-by-side comparisons.
     """
     cutoff, end_date = last_week_range(today)
+    prev_end = cutoff - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=6)
 
-    # ── Cancellation % by source_category (compute in Python) ─────────
-    all_rows = db.query(
-        Reservation.source_category, Reservation.status,
-    ).filter(
-        Reservation.branch_id == branch_id,
-        Reservation.check_in_date >= cutoff,
-        Reservation.check_in_date <= end_date,
-    ).all()
+    def _aggregate(d_from: date, d_to: date) -> dict:
+        # Cancellation % by source_category (compute in Python — small N)
+        all_rows = db.query(
+            Reservation.source_category, Reservation.status,
+        ).filter(
+            Reservation.branch_id == branch_id,
+            Reservation.check_in_date >= d_from,
+            Reservation.check_in_date <= d_to,
+        ).all()
 
-    by_source = {}
-    for r in all_rows:
-        sc = r.source_category or "Unknown"
-        d = by_source.setdefault(sc, {"total": 0, "cancelled": 0})
-        d["total"] += 1
-        if (r.status or "").strip().lower() in _EXCLUDED_STATUSES:
-            d["cancelled"] += 1
+        by_source: dict = {}
+        for r in all_rows:
+            sc = r.source_category or "Unknown"
+            d = by_source.setdefault(sc, {"total": 0, "cancelled": 0})
+            d["total"] += 1
+            if (r.status or "").strip().lower() in _EXCLUDED_STATUSES:
+                d["cancelled"] += 1
 
+        total_all = sum(d["total"] for d in by_source.values())
+        cxl_all = sum(d["cancelled"] for d in by_source.values())
+        overall_pct = round(cxl_all / total_all * 100, 2) if total_all > 0 else None
+
+        # Lead time / LOS (non-cancelled only)
+        rows = db.query(
+            Reservation.reservation_date,
+            Reservation.check_in_date,
+            Reservation.check_out_date,
+            Reservation.nights,
+        ).filter(
+            Reservation.branch_id == branch_id,
+            Reservation.check_in_date >= d_from,
+            Reservation.check_in_date <= d_to,
+            ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
+        ).all()
+
+        lead_times: list[int] = []
+        los_values: list[int] = []
+        for r in rows:
+            if r.reservation_date and r.check_in_date:
+                lt = (r.check_in_date - r.reservation_date).days
+                if lt >= 0:
+                    lead_times.append(lt)
+            if r.nights:
+                los_values.append(int(r.nights))
+            elif r.check_in_date and r.check_out_date:
+                los_values.append((r.check_out_date - r.check_in_date).days)
+
+        return {
+            "by_source": by_source,
+            "overall_cxl_pct": overall_pct,
+            "total_all": total_all,
+            "cxl_all": cxl_all,
+            "lead_times": lead_times,
+            "los_values": los_values,
+            "lead_time_avg": round(sum(lead_times) / len(lead_times), 1) if lead_times else None,
+            "los_avg": round(sum(los_values) / len(los_values), 2) if los_values else None,
+        }
+
+    this_w = _aggregate(cutoff, end_date)
+    prev_w = _aggregate(prev_start, prev_end)
+
+    # cancellation_by_source — emit one row per source with this+prev pcts
+    all_sources = sorted(
+        set(this_w["by_source"].keys()) | set(prev_w["by_source"].keys()),
+        key=lambda s: -(this_w["by_source"].get(s, {}).get("total", 0)),
+    )
     cancellation_by_source = []
-    total_all = sum(d["total"] for d in by_source.values())
-    cxl_all = sum(d["cancelled"] for d in by_source.values())
-    for sc, d in sorted(by_source.items(), key=lambda x: -x[1]["total"]):
-        pct = round(d["cancelled"] / d["total"] * 100, 2) if d["total"] > 0 else None
+    for sc in all_sources:
+        t = this_w["by_source"].get(sc, {"total": 0, "cancelled": 0})
+        p = prev_w["by_source"].get(sc, {"total": 0, "cancelled": 0})
+        t_pct = round(t["cancelled"] / t["total"] * 100, 2) if t["total"] > 0 else None
+        p_pct = round(p["cancelled"] / p["total"] * 100, 2) if p["total"] > 0 else None
         cancellation_by_source.append({
             "source_category": sc,
-            "total": d["total"],
-            "cancelled": d["cancelled"],
-            "pct": pct,
+            "total": t["total"],
+            "cancelled": t["cancelled"],
+            "pct": t_pct,
+            "prev_total": p["total"],
+            "prev_pct": p_pct,
+            # pp delta: e.g. 38.54% this week - 32.10% prev = +6.44pp
+            "pp_delta": (round(t_pct - p_pct, 2) if (t_pct is not None and p_pct is not None) else None),
         })
-    cancellation_overall_pct = round(cxl_all / total_all * 100, 2) if total_all > 0 else None
-
-    # ── Lead time & LOS (non-cancelled only) ──────────────────────────
-    rows = db.query(
-        Reservation.reservation_date,
-        Reservation.check_in_date,
-        Reservation.check_out_date,
-        Reservation.nights,
-    ).filter(
-        Reservation.branch_id == branch_id,
-        Reservation.check_in_date >= cutoff,
-        Reservation.check_in_date <= end_date,
-        ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
-    ).all()
-
-    lead_times = []
-    los_values = []
-    for r in rows:
-        if r.reservation_date and r.check_in_date:
-            lt = (r.check_in_date - r.reservation_date).days
-            if lt >= 0:
-                lead_times.append(lt)
-        if r.nights:
-            los_values.append(int(r.nights))
-        elif r.check_in_date and r.check_out_date:
-            los_values.append((r.check_out_date - r.check_in_date).days)
-
-    lead_time_avg = round(sum(lead_times) / len(lead_times), 1) if lead_times else None
-    los_avg = round(sum(los_values) / len(los_values), 2) if los_values else None
 
     return {
         "window_days": (end_date - cutoff).days + 1,
         "window_start": cutoff.isoformat(),
         "window_end": end_date.isoformat(),
-        "cancellation_overall_pct": cancellation_overall_pct,
+        "prev_window_start": prev_start.isoformat(),
+        "prev_window_end": prev_end.isoformat(),
+        "date_filter_col": "check_in_date",
+        "cancellation_overall_pct": this_w["overall_cxl_pct"],
+        "cancellation_overall_pct_prev": prev_w["overall_cxl_pct"],
+        "cancellation_overall_pp_delta": (
+            round(this_w["overall_cxl_pct"] - prev_w["overall_cxl_pct"], 2)
+            if (this_w["overall_cxl_pct"] is not None
+                and prev_w["overall_cxl_pct"] is not None) else None
+        ),
         "cancellation_by_source": cancellation_by_source,
-        "lead_time_avg_days": lead_time_avg,
-        "lead_time_buckets": _lead_time_buckets(lead_times),
-        "lead_time_samples": len(lead_times),
-        "los_avg_nights": los_avg,
-        "los_buckets": _los_buckets(los_values),
-        "los_samples": len(los_values),
+        "lead_time_avg_days": this_w["lead_time_avg"],
+        "lead_time_avg_days_prev": prev_w["lead_time_avg"],
+        "lead_time_wow_pct": _pct_change(this_w["lead_time_avg"], prev_w["lead_time_avg"]),
+        "lead_time_buckets": _lead_time_buckets(this_w["lead_times"]),
+        "lead_time_samples": len(this_w["lead_times"]),
+        "los_avg_nights": this_w["los_avg"],
+        "los_avg_nights_prev": prev_w["los_avg"],
+        "los_wow_pct": _pct_change(this_w["los_avg"], prev_w["los_avg"]),
+        "los_buckets": _los_buckets(this_w["los_values"]),
+        "los_samples": len(this_w["los_values"]),
     }
 
 
 # ── 4. Channel mix ──────────────────────────────────────────────────────────
 
 def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7) -> dict:
-    """
-    Room-nights and revenue share by source_category (OTA/Direct/LTA) and by
-    specific source — over last calendar week (Mon–Sun previous).
-    Revenue excludes the usual non-paying sources.
+    """Room-nights + revenue share by source_category and by specific
+    source — last calendar week vs prev calendar week.
+
+    Filtered on **check_in_date** (cohort = stays last week). Same date
+    column as booking_behavior to keep both views consistent. Revenue
+    excludes the usual non-paying sources (Blogger / House Use /
+    Special Case).
     """
     cutoff, end_date = last_week_range(today)
-    base = _reservations_base(db, branch_id).filter(
-        Reservation.check_in_date >= cutoff,
-        Reservation.check_in_date <= end_date,
-    )
+    prev_end = cutoff - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=6)
 
-    # By category
-    cat_rows = base.with_entities(
-        Reservation.source_category,
-        func.coalesce(func.sum(Reservation.nights), 0),
-        func.coalesce(func.sum(Reservation.grand_total_native), 0),
-    ).group_by(Reservation.source_category).all()
+    def _category_aggregate(d_from: date, d_to: date) -> dict:
+        rows = (
+            _reservations_base(db, branch_id)
+            .filter(
+                Reservation.check_in_date >= d_from,
+                Reservation.check_in_date <= d_to,
+            )
+            .with_entities(
+                Reservation.source_category,
+                func.coalesce(func.sum(Reservation.nights), 0),
+                func.coalesce(func.sum(Reservation.grand_total_native), 0),
+            )
+            .group_by(Reservation.source_category)
+            .all()
+        )
+        return {
+            (r[0] or "Unknown"): {
+                "nights": int(r[1] or 0),
+                "revenue": float(r[2] or 0),
+            }
+            for r in rows
+        }
 
-    total_nights = sum(int(r[1] or 0) for r in cat_rows)
-    total_rev = sum(float(r[2] or 0) for r in cat_rows)
+    def _source_aggregate(d_from: date, d_to: date) -> dict:
+        rows = (
+            _reservations_base(db, branch_id)
+            .filter(
+                Reservation.check_in_date >= d_from,
+                Reservation.check_in_date <= d_to,
+            )
+            .with_entities(
+                Reservation.source,
+                func.coalesce(func.sum(Reservation.nights), 0),
+                func.coalesce(func.sum(Reservation.grand_total_native), 0),
+            )
+            .group_by(Reservation.source)
+            .all()
+        )
+        return {
+            (r[0] or "Unknown"): {
+                "nights": int(r[1] or 0),
+                "revenue": float(r[2] or 0),
+            }
+            for r in rows
+        }
 
+    cat_this = _category_aggregate(cutoff, end_date)
+    cat_prev = _category_aggregate(prev_start, prev_end)
+    src_this = _source_aggregate(cutoff, end_date)
+    src_prev = _source_aggregate(prev_start, prev_end)
+
+    total_nights = sum(d["nights"] for d in cat_this.values())
+    total_rev = sum(d["revenue"] for d in cat_this.values())
+    prev_total_nights = sum(d["nights"] for d in cat_prev.values())
+    prev_total_rev = sum(d["revenue"] for d in cat_prev.values())
+
+    blank = {"nights": 0, "revenue": 0}
     categories = []
-    for r in cat_rows:
-        nights = int(r[1] or 0)
-        rev = float(r[2] or 0)
+    for cat in set(cat_this.keys()) | set(cat_prev.keys()):
+        t = cat_this.get(cat, blank)
+        p = cat_prev.get(cat, blank)
         categories.append({
-            "source_category": r[0] or "Unknown",
-            "room_nights": nights,
-            "revenue_native": round(rev, 2),
-            "nights_share_pct": round(nights / total_nights * 100, 2) if total_nights else None,
-            "revenue_share_pct": round(rev / total_rev * 100, 2) if total_rev else None,
+            "source_category": cat,
+            "room_nights": t["nights"],
+            "revenue_native": round(t["revenue"], 2),
+            "nights_share_pct": round(t["nights"] / total_nights * 100, 2) if total_nights else None,
+            "revenue_share_pct": round(t["revenue"] / total_rev * 100, 2) if total_rev else None,
+            "prev_room_nights": p["nights"],
+            "prev_revenue_native": round(p["revenue"], 2),
+            "wow_nights_pct": _pct_change(t["nights"], p["nights"]),
+            "wow_revenue_pct": _pct_change(t["revenue"], p["revenue"]),
         })
     categories.sort(key=lambda x: -x["room_nights"])
 
-    # Per-source breakdown (top 10)
-    src_rows = base.with_entities(
-        Reservation.source,
-        func.coalesce(func.sum(Reservation.nights), 0),
-        func.coalesce(func.sum(Reservation.grand_total_native), 0),
-    ).group_by(Reservation.source).order_by(func.sum(Reservation.nights).desc()).limit(10).all()
-
+    # Per-source breakdown (top 10 by current-week nights)
+    sources_top = sorted(src_this.items(), key=lambda x: -x[1]["nights"])[:10]
     sources = []
-    for r in src_rows:
-        nights = int(r[1] or 0)
-        rev = float(r[2] or 0)
+    for src, t in sources_top:
+        p = src_prev.get(src, blank)
         sources.append({
-            "source": r[0] or "Unknown",
-            "room_nights": nights,
-            "revenue_native": round(rev, 2),
-            "nights_share_pct": round(nights / total_nights * 100, 2) if total_nights else None,
+            "source": src,
+            "room_nights": t["nights"],
+            "revenue_native": round(t["revenue"], 2),
+            "nights_share_pct": round(t["nights"] / total_nights * 100, 2) if total_nights else None,
+            "prev_room_nights": p["nights"],
+            "wow_nights_pct": _pct_change(t["nights"], p["nights"]),
         })
 
     # Direct-booking trend — last 3 full months vs this month MTD
@@ -452,8 +546,15 @@ def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7) -> dic
         "window_days": (end_date - cutoff).days + 1,
         "window_start": cutoff.isoformat(),
         "window_end": end_date.isoformat(),
+        "prev_window_start": prev_start.isoformat(),
+        "prev_window_end": prev_end.isoformat(),
+        "date_filter_col": "check_in_date",
         "total_nights": total_nights,
         "total_revenue_native": round(total_rev, 2),
+        "prev_total_nights": prev_total_nights,
+        "prev_total_revenue_native": round(prev_total_rev, 2),
+        "wow_total_nights_pct": _pct_change(total_nights, prev_total_nights),
+        "wow_total_revenue_pct": _pct_change(total_rev, prev_total_rev),
         "categories": categories,
         "top_sources": sources,
         "direct_trend": direct_trend,

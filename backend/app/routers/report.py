@@ -519,6 +519,9 @@ def _render_outliers(b: dict) -> str:
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
       <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">⚡ Outliers (last week, vs 30d baseline σ)</p>
+      <p style="margin:0 0 4px;font-size:11px;color:#9ca3af;">
+        Source: daily_metrics (Cloudbeds Insights overlay) by stay date.
+      </p>
       <table style="width:100%;border-collapse:collapse;">
         <tr><th style="{_TABLE_TH}">Date</th><th style="{_TABLE_TH};text-align:right;">Type</th>
             <th style="{_TABLE_TH};text-align:right;">Revenue</th><th style="{_TABLE_TH};text-align:right;">OCC</th>
@@ -533,13 +536,31 @@ def _render_behavior(b: dict) -> str:
     if not beh:
         return ""
 
+    def _pp_delta_html(val):
+        if val is None:
+            return "<span style='color:#9ca3af;'>n/a</span>"
+        # Higher cancel rate is bad — flip the color convention
+        color = "#16a34a" if val < 0 else "#dc2626" if val > 0 else "#6b7280"
+        sign = "+" if val >= 0 else ""
+        return f"<span style='color:{color}'>{sign}{val:.2f}pp</span>"
+
+    def _wow_pct_html(val, lower_is_better=False):
+        if val is None:
+            return "<span style='color:#9ca3af;'>n/a</span>"
+        good = (val < 0) if lower_is_better else (val >= 0)
+        color = "#16a34a" if good else "#dc2626"
+        return f"<span style='color:{color}'>{_signed_pct(val)}</span>"
+
     cxl_rows = []
     for c in beh["cancellation_by_source"][:6]:
         cxl_rows.append(
             f"<tr><td style='{_TABLE_TD}'>{c['source_category']}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{c['total']:,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{c['cancelled']:,}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{_pct(c['pct'])}</td></tr>"
+            f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{_pct(c['pct'])}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;color:#9ca3af;font-size:10px;'>"
+            f"{_pct(c.get('prev_pct'))}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_pp_delta_html(c.get('pp_delta'))}</td></tr>"
         )
 
     def _bucket_row(label, val, total):
@@ -556,24 +577,53 @@ def _render_behavior(b: dict) -> str:
     los_total = sum(beh["los_buckets"].values())
     los_rows = "".join(_bucket_row(k, v, los_total) for k, v in beh["los_buckets"].items())
 
+    cxl_overall = beh.get("cancellation_overall_pct")
+    cxl_overall_pp = beh.get("cancellation_overall_pp_delta")
+    cxl_overall_html = (
+        f"{_pct(cxl_overall)} {_pp_delta_html(cxl_overall_pp)} WoW"
+        if cxl_overall is not None else "—"
+    )
+    lead_avg = beh.get("lead_time_avg_days")
+    lead_prev = beh.get("lead_time_avg_days_prev")
+    lead_wow_html = _wow_pct_html(beh.get("lead_time_wow_pct"))
+    lead_label = (
+        f"avg {lead_avg}d (prev {lead_prev or '—'}d, {lead_wow_html} WoW)"
+        if lead_avg is not None else "—"
+    )
+    los_avg = beh.get("los_avg_nights")
+    los_prev = beh.get("los_avg_nights_prev")
+    los_wow_html = _wow_pct_html(beh.get("los_wow_pct"))
+    los_label = (
+        f"avg {los_avg}n (prev {los_prev or '—'}n, {los_wow_html} WoW)"
+        if los_avg is not None else "—"
+    )
+
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
-        🧭 Booking Behavior (last week · {beh['window_start']} → {beh['window_end']} · cancel overall {_pct(beh['cancellation_overall_pct'])})
+      <p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#374151;">
+        🧭 Booking Behavior (last week · {beh['window_start']} → {beh['window_end']})
       </p>
-      <table style="width:32%;display:inline-table;border-collapse:collapse;margin-right:2%;vertical-align:top;">
-        <tr><th style="{_TABLE_TH}" colspan="4">Cancellation by source</th></tr>
-        <tr><th style="{_TABLE_TH}">Cat.</th><th style="{_TABLE_TH};text-align:right;">Total</th>
-            <th style="{_TABLE_TH};text-align:right;">Cxl</th><th style="{_TABLE_TH};text-align:right;">%</th></tr>
-        {''.join(cxl_rows) or '<tr><td style="'+_TABLE_TD+'" colspan="4">No data</td></tr>'}
+      <p style="margin:0 0 6px;font-size:11px;color:#9ca3af;">
+        Source: reservations by check-in date (last week's stays). Compared to prev week ({beh['prev_window_start']} → {beh['prev_window_end']}).
+        Overall cancel: <strong style="color:#374151;">{cxl_overall_html}</strong>.
+      </p>
+      <table style="width:48%;display:inline-table;border-collapse:collapse;margin-right:2%;vertical-align:top;">
+        <tr><th style="{_TABLE_TH}" colspan="6">Cancellation by source · vs prev week</th></tr>
+        <tr><th style="{_TABLE_TH}">Cat.</th>
+            <th style="{_TABLE_TH};text-align:right;">Total</th>
+            <th style="{_TABLE_TH};text-align:right;">Cxl</th>
+            <th style="{_TABLE_TH};text-align:right;">%</th>
+            <th style="{_TABLE_TH};text-align:right;">Prev %</th>
+            <th style="{_TABLE_TH};text-align:right;">Δ pp</th></tr>
+        {''.join(cxl_rows) or '<tr><td style="'+_TABLE_TD+'" colspan="6">No data</td></tr>'}
       </table>
-      <table style="width:32%;display:inline-table;border-collapse:collapse;margin-right:2%;vertical-align:top;">
-        <tr><th style="{_TABLE_TH}" colspan="3">Lead time (avg {beh['lead_time_avg_days'] or '—'}d, n={beh['lead_time_samples']})</th></tr>
+      <table style="width:24%;display:inline-table;border-collapse:collapse;margin-right:2%;vertical-align:top;">
+        <tr><th style="{_TABLE_TH}" colspan="3">Lead time · {lead_label}</th></tr>
         <tr><th style="{_TABLE_TH}">Bucket</th><th style="{_TABLE_TH};text-align:right;">Count</th><th style="{_TABLE_TH};text-align:right;">%</th></tr>
         {lt_rows}
       </table>
-      <table style="width:32%;display:inline-table;border-collapse:collapse;vertical-align:top;">
-        <tr><th style="{_TABLE_TH}" colspan="3">LOS (avg {beh['los_avg_nights'] or '—'}n, n={beh['los_samples']})</th></tr>
+      <table style="width:22%;display:inline-table;border-collapse:collapse;vertical-align:top;">
+        <tr><th style="{_TABLE_TH}" colspan="3">LOS · {los_label}</th></tr>
         <tr><th style="{_TABLE_TH}">Bucket</th><th style="{_TABLE_TH};text-align:right;">Count</th><th style="{_TABLE_TH};text-align:right;">%</th></tr>
         {los_rows}
       </table>
@@ -586,23 +636,37 @@ def _render_channel_mix(b: dict) -> str:
         return ""
     cur = b["currency"]
 
+    def _wow(val):
+        if val is None:
+            return "<span style='color:#9ca3af;'>n/a</span>"
+        color = "#16a34a" if val >= 0 else "#dc2626"
+        return f"<span style='color:{color}'>{_signed_pct(val)}</span>"
+
     cat_rows = []
     for c in mix["categories"]:
         cat_rows.append(
-            f"<tr><td style='{_TABLE_TD}'>{c['source_category']}</td>"
+            f"<tr>"
+            f"<td style='{_TABLE_TD}'>{c['source_category']}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{c['room_nights']:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;color:#9ca3af;font-size:10px;'>{c.get('prev_room_nights', 0):,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_wow(c.get('wow_nights_pct'))}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{_pct(c['nights_share_pct'])}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['revenue_native'], cur)}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{_pct(c['revenue_share_pct'])}</td></tr>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_wow(c.get('wow_revenue_pct'))}</td>"
+            f"</tr>"
         )
 
     src_rows = []
     for s in mix["top_sources"]:
         src_rows.append(
-            f"<tr><td style='{_TABLE_TD}'>{s['source']}</td>"
+            f"<tr>"
+            f"<td style='{_TABLE_TD}'>{s['source']}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{s['room_nights']:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;color:#9ca3af;font-size:10px;'>{s.get('prev_room_nights', 0):,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_wow(s.get('wow_nights_pct'))}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{_pct(s['nights_share_pct'])}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(s['revenue_native'], cur)}</td></tr>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(s['revenue_native'], cur)}</td>"
+            f"</tr>"
         )
 
     trend_rows = []
@@ -616,24 +680,41 @@ def _render_channel_mix(b: dict) -> str:
 
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
-        📡 Channel Mix (last week · {mix['window_start']} → {mix['window_end']} · {mix['total_nights']:,} nights · {_fmt(mix['total_revenue_native'], cur)})
+      <p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#374151;">
+        📡 Channel Mix (last week · {mix['window_start']} → {mix['window_end']})
       </p>
-      <table style="width:48%;display:inline-table;border-collapse:collapse;margin-right:2%;vertical-align:top;">
-        <tr><th style="{_TABLE_TH}" colspan="5">By Category</th></tr>
-        <tr><th style="{_TABLE_TH}">Category</th><th style="{_TABLE_TH};text-align:right;">Nights</th>
-            <th style="{_TABLE_TH};text-align:right;">N%</th><th style="{_TABLE_TH};text-align:right;">Revenue</th>
-            <th style="{_TABLE_TH};text-align:right;">R%</th></tr>
+      <p style="margin:0 0 6px;font-size:11px;color:#9ca3af;">
+        Source: reservations by check-in date · {mix['total_nights']:,} nights ({_wow(mix.get('wow_total_nights_pct'))} WoW) ·
+        {_fmt(mix['total_revenue_native'], cur)} revenue ({_wow(mix.get('wow_total_revenue_pct'))} WoW) ·
+        compared to prev week ({mix['prev_window_start']} → {mix['prev_window_end']})
+      </p>
+      <table style="width:100%;border-collapse:collapse;">
+        <tr><th style="{_TABLE_TH}" colspan="7">By Category · vs prev week</th></tr>
+        <tr>
+          <th style="{_TABLE_TH}">Category</th>
+          <th style="{_TABLE_TH};text-align:right;">Nights</th>
+          <th style="{_TABLE_TH};text-align:right;">Prev</th>
+          <th style="{_TABLE_TH};text-align:right;">WoW</th>
+          <th style="{_TABLE_TH};text-align:right;">Share</th>
+          <th style="{_TABLE_TH};text-align:right;">Revenue</th>
+          <th style="{_TABLE_TH};text-align:right;">Rev WoW</th>
+        </tr>
         {''.join(cat_rows)}
       </table>
-      <table style="width:48%;display:inline-table;border-collapse:collapse;vertical-align:top;">
-        <tr><th style="{_TABLE_TH}" colspan="4">Top Sources</th></tr>
-        <tr><th style="{_TABLE_TH}">Source</th><th style="{_TABLE_TH};text-align:right;">Nights</th>
-            <th style="{_TABLE_TH};text-align:right;">N%</th><th style="{_TABLE_TH};text-align:right;">Revenue</th></tr>
+      <table style="width:100%;border-collapse:collapse;margin-top:8px;">
+        <tr><th style="{_TABLE_TH}" colspan="6">Top Sources · vs prev week</th></tr>
+        <tr>
+          <th style="{_TABLE_TH}">Source</th>
+          <th style="{_TABLE_TH};text-align:right;">Nights</th>
+          <th style="{_TABLE_TH};text-align:right;">Prev</th>
+          <th style="{_TABLE_TH};text-align:right;">WoW</th>
+          <th style="{_TABLE_TH};text-align:right;">Share</th>
+          <th style="{_TABLE_TH};text-align:right;">Revenue</th>
+        </tr>
         {''.join(src_rows)}
       </table>
-      <table style="width:100%;border-collapse:collapse;margin-top:10px;">
-        <tr><th style="{_TABLE_TH}" colspan="4">Direct booking trend</th></tr>
+      <table style="width:100%;border-collapse:collapse;margin-top:8px;">
+        <tr><th style="{_TABLE_TH}" colspan="4">Direct booking trend (last 4 months)</th></tr>
         <tr><th style="{_TABLE_TH}">Month</th><th style="{_TABLE_TH};text-align:right;">Direct nights</th>
             <th style="{_TABLE_TH};text-align:right;">Total nights</th><th style="{_TABLE_TH};text-align:right;">Direct %</th></tr>
         {''.join(trend_rows)}
@@ -1170,7 +1251,10 @@ def _render_paid_ads(b: dict) -> str:
     roas_str = f"{lw['roas']:.2f}x" if lw["roas"] is not None else "—"
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">📣 Paid Ads (last week · {pa['window_start']} → {pa['window_end']})</p>
+      <p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#374151;">📣 Paid Ads (last week · {pa['window_start']} → {pa['window_end']})</p>
+      <p style="margin:0 0 6px;font-size:11px;color:#9ca3af;">
+        Source: ads_performance (Ads Platform sync) by ad's daily date_from. Bookings/revenue attributed by Ads Platform.
+      </p>
       <p style="margin:0 0 10px;font-size:12px;color:#6b7280;">
         Spend {_fmt(lw['cost'], cur)} · Bookings {lw['bookings']} · Revenue {_fmt(lw['revenue'], cur)} ·
         ROAS {roas_str} ({_wow(pa['wow_roas_pct'])} WoW) · CTR {_pct(lw['ctr_pct'])} · CVR {_pct(lw['cvr_pct'])} · CPA {_fmt(lw['cpa'], cur)}<br/>
@@ -1365,8 +1449,11 @@ def _render_crm(b: dict) -> str:
 
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
+      <p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#374151;">
         ✉️ CRM (last week · {c['window_start']} → {c['window_end']})
+      </p>
+      <p style="margin:0 0 6px;font-size:11px;color:#9ca3af;">
+        Source: CRM-tagged reservations (room_type/rate_plan contains CRM / MEANDER'S FRIEND / Travel guide / Grand Open) by reservation_date (Date Booked).
       </p>
       <p style="margin:0;font-size:12px;color:#374151;">
         Bookings: <strong>{rev_t['bookings']}</strong> ({rev_t['nights']} nights) ·
@@ -1374,9 +1461,6 @@ def _render_crm(b: dict) -> str:
         WoW {_wow(c['wow_revenue_pct'])}
       </p>
       {rp_table}
-      <p style="margin:6px 0 0;font-size:11px;color:#9ca3af;">
-        Source: CRM-tagged reservations (room_type/rate_plan contains CRM / MEANDER'S FRIEND / Travel guide / Grand Open). Filtered on Date Booked.
-      </p>
     </div>"""
 
 
