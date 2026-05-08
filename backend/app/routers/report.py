@@ -1249,35 +1249,22 @@ def _render_paid_ads(b: dict) -> str:
             "</p>"
         )
 
-    # By Country rows — replaces the old Top/Bottom campaign tables.
-    # Each cell with a WoW delta uses the same _ch_cell_* helpers as
-    # By Channel above so colors / formatting stay consistent.
+    # By Country rows — bookings + revenue per country with WoW deltas.
+    # Cost / ROAS / CTR / CPA per country aren't available from the local
+    # Ads Platform sync (per-country breakdown of spend would need a new
+    # upstream endpoint). The renderer documents this in the source line.
     country_rows_parts = []
     for cr in (pa.get("by_country") or []):
-        cost_html = _fmt(cr["cost"], cur)
         rev_html = _fmt(cr["revenue"], cur)
-        roas_html = f"{cr['roas']:.2f}x" if cr["roas"] is not None else "—"
-        if cr["roas"] is not None and cr["roas"] >= 1.0:
-            roas_color = "#16a34a"
-        elif cr["roas"] is not None and cr["roas"] > 0:
-            roas_color = "#dc2626"
-        else:
-            roas_color = "#9ca3af"
         bk_html = f"{cr['bookings']}"
-        ctr_html = _pct(cr["ctr_pct"])
-        cpa_html = _fmt(cr["cpa"], cur) if cr["cpa"] is not None else "—"
         country_rows_parts.append(
             "<tr>"
             f"<td style='{_TABLE_TD};vertical-align:top;'>{cr['country']}</td>"
-            + _ch_cell_pct(cost_html, cr.get("wow_cost_pct"))
-            + _ch_cell_pct(rev_html, cr.get("wow_revenue_pct"))
-            + _ch_cell_pct(
-                f"<strong style='color:{roas_color};'>{roas_html}</strong>",
-                cr.get("wow_roas_pct"),
-            )
-            + _ch_cell_pp(ctr_html, cr.get("ctr_pp_delta"))
-            + f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{cpa_html}</td>"
             + _ch_cell_pct(bk_html, cr.get("wow_bookings_pct"))
+            + _ch_cell_pct(f"<strong>{rev_html}</strong>", cr.get("wow_revenue_pct"))
+            + f"<td style='{_TABLE_TD};text-align:right;color:#9ca3af;font-size:10px;'>"
+              f"prev: {cr.get('prev_bookings', 0)} bk · {_fmt(cr.get('prev_revenue'), cur)}"
+              f"</td>"
             + "</tr>"
         )
     country_rows_html = "".join(country_rows_parts)
@@ -1310,18 +1297,18 @@ def _render_paid_ads(b: dict) -> str:
       {activity_html}
 
       <table style="width:100%;border-collapse:collapse;margin-top:12px;">
-        <tr><th style="{_TABLE_TH}" colspan="7">🌏 By Country (last week, with WoW deltas)</th></tr>
+        <tr><th style="{_TABLE_TH}" colspan="4">🌏 By Country — bookings + revenue (last week, with WoW)</th></tr>
         <tr>
           <th style="{_TABLE_TH}">Country</th>
-          <th style="{_TABLE_TH};text-align:right;">Spend</th>
+          <th style="{_TABLE_TH};text-align:right;">Bookings</th>
           <th style="{_TABLE_TH};text-align:right;">Revenue</th>
-          <th style="{_TABLE_TH};text-align:right;">ROAS</th>
-          <th style="{_TABLE_TH};text-align:right;">CTR</th>
-          <th style="{_TABLE_TH};text-align:right;">CPA</th>
-          <th style="{_TABLE_TH};text-align:right;">Conv.</th>
+          <th style="{_TABLE_TH};text-align:right;">Prev week</th>
         </tr>
-        {country_rows_html or '<tr><td colspan="7" style="'+_TABLE_TD+';color:#9ca3af;">No country-level data — verify Ads Platform sync populated target_country.</td></tr>'}
+        {country_rows_html or '<tr><td colspan="4" style="'+_TABLE_TD+';color:#9ca3af;">No matched bookings last week. Source = ads_booking_matches joined to ads_performance.target_country; verify Ads Platform booking-matches sync is running.</td></tr>'}
       </table>
+      <p style="margin:6px 0 0;font-size:10px;color:#9ca3af;">
+        Cost / ROAS / CTR / CPA per country aren't shown — Ads Platform's local sync stores spend at (channel × date) grain only. Use the Ads Platform UI for those.
+      </p>
     </div>"""
 
 
