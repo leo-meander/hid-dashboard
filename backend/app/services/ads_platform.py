@@ -178,6 +178,47 @@ class AdsPlatformClient:
             },
         ) or []
 
+    def get_spend_daily_by_country(
+        self,
+        date_from: str,
+        date_to: str,
+        *,
+        platform: Optional[str] = None,
+        branch: Optional[str] = None,
+        country: Optional[str] = None,
+    ) -> list[dict]:
+        """Per-country daily spend / impressions / clicks / conversions / revenue.
+
+        Source: ``ad_country_metrics`` on the Ads Platform side. Aggregated
+        at (date × platform × account_id × country) — server-side branch
+        resolution included in each row so HiD doesn't need a second
+        ``/accounts`` call to map account → branch.
+
+        Each row carries:
+          - date, platform, account_id, account_name, currency, branch
+          - country (ISO-2)
+          - spend, impressions, clicks, conversions, revenue  (native currency)
+
+        Note: spend here may differ slightly from ``get_spend_daily()``
+        totals — that one reads ``metrics_cache`` (overall spend), this
+        reads ``ad_country_metrics`` (post-allocation per-country spend
+        Meta reports). The deltas are usually <1% rounding; don't reconcile
+        cross-source 1:1.
+
+        revenue + conversions are website + offline summed. Use the raw
+        ``/api/export/countries`` endpoint if you need website-only.
+
+        No pagination — endpoint returns all rows for the window. Spec
+        target ~1.5k rows/week for 6 branches across all countries.
+        """
+        return self._get(
+            "/api/export/spend/daily-by-country",
+            params={
+                "date_from": date_from, "date_to": date_to,
+                "platform": platform, "branch": branch, "country": country,
+            },
+        ) or []
+
     def get_booking_matches(
         self,
         date_from: Optional[str] = None,

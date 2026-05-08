@@ -24,7 +24,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from app.models.ads import AdsPerformance
-from app.models.ads_booking_match import AdsBookingMatch
 from app.models.angle import AdAngle
 from app.models.branch import Branch
 from app.models.daily_metrics import DailyMetrics
@@ -1130,91 +1129,111 @@ def _build_activity_log(db: Session, branch_id: UUID,
     }
 
 
-def _build_country_perf(db: Session, branch_id: UUID,
+def _build_country_perf(db: Session, branch: Branch,
                         week_start: date, week_end: date,
                         prev_start: date, prev_end: date,
                         top_n: int = 10) -> list[dict]:
-    """Per-country bookings + revenue from ads, with WoW deltas.
+    """Per-country full ads performance with WoW deltas.
 
-    Data shape constraint:
-      - grain='ad' AdsPerformance rows are METADATA ONLY (campaign_name,
-        target_country, ad_body, …). cost / impressions / revenue /
-        date_from / date_to are NOT populated on these rows.
-      - grain='daily' rows carry the spend/impression numbers but
-        aggregate per (branch, channel, date, account) — no country.
-      - AdsBookingMatch is the only place we have per-ad attributed
-        revenue + booking_date with country reachable via JOIN.
+    Sourced from Ads Platform's ``/api/export/spend/daily-by-country``
+    endpoint (added 2026-05-08, mirrors ``/spend/daily`` pattern).
+    Server-side aggregation at (date × platform × account × country) so
+    a single HTTP call covers the whole week for the branch. We then
+    aggregate per-country in Python.
 
-    So: this view shows per-country **bookings + revenue** sourced from
-    AdsBookingMatch joined to AdsPerformance (grain='ad') for the country
-    tag. Cost / ROAS / CTR / CPA are NOT shown — Ads Platform's local
-    tables don't break those down by country, and adding that would
-    require a new upstream sync endpoint.
+    Each row carries: spend, impressions, clicks, conversions (= bookings),
+    revenue, plus computed ROAS / CTR / CPA, with WoW deltas for spend /
+    revenue / ROAS / bookings and pp delta for CTR.
 
-    Sorted by current-week revenue desc, capped at top_n.
+    Sorted by current-week spend desc, capped at top_n. Returns [] when
+    the upstream call fails so the email shows the empty-state message
+    rather than crashing.
     """
-    country_expr = func.coalesce(
-        func.nullif(func.trim(AdsPerformance.target_country), ""),
-        "Unknown",
-    ).label("country")
+    from app.services.ads_platform import (
+        AdsPlatformClient, AdsPlatformError, branch_slug_for,
+    )
+
+    slug = branch_slug_for(branch)
 
     def _aggregate(d_from: date, d_to: date) -> dict:
-        rows = (
-            db.query(
-                country_expr,
-                func.count(AdsBookingMatch.id).label("bookings"),
-                func.coalesce(func.sum(AdsBookingMatch.revenue_native), 0).label("revenue"),
+        try:
+            client = AdsPlatformClient()
+            rows = client.get_spend_daily_by_country(
+                date_from=d_from.isoformat(),
+                date_to=d_to.isoformat(),
+                branch=slug,
             )
-            .outerjoin(
-                AdsPerformance,
-                (AdsPerformance.external_ad_id == AdsBookingMatch.external_ad_id)
-                & (AdsPerformance.grain == "ad"),
+        except (AdsPlatformError, Exception) as e:
+            logger.warning(
+                "fetch country spend failed for branch=%s window=%s..%s: %s",
+                slug, d_from, d_to, e,
             )
-            .filter(
-                AdsBookingMatch.branch_id == branch_id,
-                AdsBookingMatch.booking_date >= d_from,
-                AdsBookingMatch.booking_date <= d_to,
-            )
-            .group_by("country")
-            .all()
-        )
-        return {
-            r.country: {
-                "bookings": int(r.bookings or 0),
-                "revenue": float(r.revenue or 0),
-            }
-            for r in rows
-        }
+            return {}
+
+        # Sum across (date, platform, account) per country
+        by_country: dict = {}
+        for r in rows or []:
+            country = (r.get("country") or "").strip().upper() or "UNKNOWN"
+            d = by_country.setdefault(country, {
+                "spend": 0.0, "impressions": 0, "clicks": 0,
+                "conversions": 0, "revenue": 0.0,
+            })
+            d["spend"] += float(r.get("spend") or 0)
+            d["impressions"] += int(r.get("impressions") or 0)
+            d["clicks"] += int(r.get("clicks") or 0)
+            d["conversions"] += int(r.get("conversions") or 0)
+            d["revenue"] += float(r.get("revenue") or 0)
+        return by_country
 
     this = _aggregate(week_start, week_end)
     prev = _aggregate(prev_start, prev_end)
 
-    blank = {"bookings": 0, "revenue": 0}
+    blank = {"spend": 0, "impressions": 0, "clicks": 0, "conversions": 0, "revenue": 0}
     rows: list[dict] = []
     for country in set(this.keys()) | set(prev.keys()):
         t = this.get(country, blank)
         p = prev.get(country, blank)
+
+        roas = round(t["revenue"] / t["spend"], 2) if t["spend"] > 0 else None
+        prev_roas = (p["revenue"] / p["spend"]) if p["spend"] > 0 else None
+        ctr = round(t["clicks"] / t["impressions"] * 100, 2) if t["impressions"] > 0 else None
+        prev_ctr = (p["clicks"] / p["impressions"] * 100) if p["impressions"] > 0 else None
+        cpa = round(t["spend"] / t["conversions"], 2) if t["conversions"] > 0 else None
+
         rows.append({
             "country": country,
-            "bookings": t["bookings"],
+            "spend": round(t["spend"], 2),
+            "impressions": t["impressions"],
+            "clicks": t["clicks"],
+            "bookings": t["conversions"],  # conversions = bookings in Ads Platform
             "revenue": round(t["revenue"], 2),
-            "prev_bookings": p["bookings"],
+            "roas": roas,
+            "ctr_pct": ctr,
+            "cpa": cpa,
+            "prev_spend": round(p["spend"], 2),
             "prev_revenue": round(p["revenue"], 2),
-            "wow_bookings_pct": _pct_change(t["bookings"], p["bookings"]),
+            "prev_bookings": p["conversions"],
+            "wow_spend_pct": _pct_change(t["spend"], p["spend"]),
             "wow_revenue_pct": _pct_change(t["revenue"], p["revenue"]),
+            "wow_roas_pct": _pct_change(roas, prev_roas),
+            "wow_bookings_pct": _pct_change(t["conversions"], p["conversions"]),
+            "ctr_pp_delta": (round(ctr - prev_ctr, 2)
+                              if (ctr is not None and prev_ctr is not None) else None),
         })
-    # Sort by current-week revenue desc, then bookings desc as tiebreaker
-    rows.sort(key=lambda x: (-x["revenue"], -x["bookings"]))
+    # Sort by current-week spend desc (matches Ads Platform UI default)
+    rows.sort(key=lambda x: -x["spend"])
     return rows[:top_n]
 
 
-def paid_ads_section(db: Session, branch_id: UUID, today: date,
+def paid_ads_section(db: Session, branch: Branch, today: date,
                      days: int = 7) -> dict:
     """Paid Ads snapshot — last calendar week vs the week before it
-    (apples-to-apples 7d vs 7d), plus channel / funnel / top + bottom
-    campaign breakdowns. Sourced from grain='daily' rows of
-    ads_performance (Ads Platform sync).
+    (apples-to-apples 7d vs 7d), plus channel breakdown, By Country
+    table, and activity log. Sourced from local ads_performance for
+    channel totals (grain='daily') and Ads Platform's
+    /api/export/spend/daily-by-country for the country breakdown.
     """
+    branch_id = branch.id
     week_start, week_end = last_week_range(today)
     prev_end = week_start - timedelta(days=1)
     prev_start = prev_end - timedelta(days=6)
@@ -1297,7 +1316,7 @@ def paid_ads_section(db: Session, branch_id: UUID, today: date,
     # Per feedback (2026-05-04): operators want a country-level slice that
     # mirrors the Ads Platform "By Country" view, not campaign-grain rows.
     by_country = _build_country_perf(
-        db, branch_id, week_start, week_end, prev_start, prev_end, top_n=10,
+        db, branch, week_start, week_end, prev_start, prev_end, top_n=10,
     )
 
     return {
@@ -1757,7 +1776,7 @@ def build_branch_analytics(db: Session, branch: Branch, today: date) -> dict:
         "channel_mix": channel_mix(db, branch.id, today, days=7),
         "countries": country_insights(db, branch.id, today, days=30, limit=10),
         "ad_optimizer": ad_budget_optimizer(db, branch.id, today, total_rooms),
-        "paid_ads": paid_ads_section(db, branch.id, today, days=7),
+        "paid_ads": paid_ads_section(db, branch, today, days=7),
         "kol": kol_section(db, branch.id, branch.name, today, days=7),
         "crm": crm_section(db, branch.id, branch.name, today, days=7),
     }
