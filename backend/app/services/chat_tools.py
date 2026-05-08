@@ -247,10 +247,14 @@ def tool_get_performance(db: Session, inp: dict, default_branch: Optional[str]) 
     bid_uuid = UUID(branch_id) if branch_id else None
     rows = get_daily_metrics(db, bid_uuid, d_from, d_to)
 
+    # Build branch_id → name map so the model never has to guess names.
+    name_map = {str(b.id): b.name for b in db.query(Branch).filter_by(is_active=True).all()}
+
     if period == "daily":
         out = [
             {
                 "branch_id": str(dm.branch_id),
+                "branch_name": name_map.get(str(dm.branch_id), "Unknown"),
                 "date": dm.date.isoformat(),
                 "occ_pct": float(dm.occ_pct or 0),
                 "adr_native": float(dm.adr_native or 0),
@@ -302,6 +306,7 @@ def tool_get_performance(db: Session, inp: dict, default_branch: Optional[str]) 
         n = v["n"] or 1
         adr = v["revenue_native"] / v["rooms_sold"] if v["rooms_sold"] > 0 else 0
         occ = v["occ_sum"] / n
+        v["branch_name"] = name_map.get(v["branch_id"], "Unknown")
         v["avg_occ_pct"] = round(occ, 4)
         v["avg_adr_native"] = round(adr, 2)
         v["avg_revpar_native"] = round(occ * adr, 2)
@@ -592,8 +597,9 @@ def tool_get_kol_performance(db: Session, inp: dict, default_branch: Optional[st
 
     expiring_rows = db.execute(text(f"""
         SELECT k.kol_name, k.usage_rights_expiry_date, k.paid_ads_channel,
-               k.kol_nationality, k.branch_id
+               k.kol_nationality, k.branch_id, b.name AS branch_name
         FROM kol_records k
+        LEFT JOIN branches b ON k.branch_id = b.id
         WHERE k.usage_rights_expiry_date IS NOT NULL
           AND k.usage_rights_expiry_date >= CURRENT_DATE
           AND k.usage_rights_expiry_date <= CURRENT_DATE + INTERVAL '30 days'
@@ -609,6 +615,7 @@ def tool_get_kol_performance(db: Session, inp: dict, default_branch: Optional[st
             "days_left": (r[1] - date.today()).days if r[1] else None,
             "paid_ads_channel": r[2],
             "nationality": r[3],
+            "branch_name": r[5],
         }
         for r in expiring_rows
     ]

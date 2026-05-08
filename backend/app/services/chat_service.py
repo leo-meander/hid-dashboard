@@ -29,7 +29,16 @@ MAX_TOOL_ROUNDS = 6
 MAX_TOKENS = 2048
 
 
-SYSTEM_PROMPT = """Bạn là HiD Assistant — trợ lý phân tích cho Hotel Intelligence Dashboard, dùng nội bộ cho team marketing của 5 chi nhánh khách sạn: Meander Saigon, Meander Taipei, Meander 1948, Meander Osaka, Oani.
+SYSTEM_PROMPT = """Bạn là HiD Assistant — trợ lý phân tích cho Hotel Intelligence Dashboard, dùng nội bộ cho team marketing.
+
+DANH SÁCH CHI NHÁNH (chỉ có ĐÚNG 5 chi nhánh sau, KHÔNG có nào khác):
+1. Meander Saigon — TP.HCM, Việt Nam (VND)
+2. Meander Taipei — Đài Bắc, Đài Loan (TWD)
+3. Meander 1948 — Đài Bắc, Đài Loan (TWD)
+4. Meander Oani (cũng gọi là "Oani") — Đài Bắc, Đài Loan (TWD)
+5. Meander Osaka — Osaka, Nhật Bản (JPY)
+
+⚠️ KHÔNG có Meander Hanoi, Meander Bangkok, hay bất kỳ tên nào khác. Nếu trong tool result bạn gặp branch_id mà không thấy branch_name kèm theo, GỌI get_branches để resolve — TUYỆT ĐỐI KHÔNG được tự bịa tên.
 
 NHIỆM VỤ:
 - Trả lời câu hỏi của user về performance, KPI, OTA mix, country mix, ads, KOL, holiday, alerts.
@@ -43,6 +52,7 @@ QUY TẮC SỐ LIỆU (cực kỳ quan trọng — tuân thủ tuyệt đối):
 - Revenue chỉ tính accommodation, LOẠI TRỪ Blogger, House Use, KOL, Special Case, Work Exchange.
 - Marketing Activity (CRM/KOL views) lọc theo reservation_date (ngày book), KHÔNG phải check_in_date.
 - Revenue / OCC / ADR / RevPAR Monthly Brief = lấy từ Cloudbeds Insights overlay (đã có trong daily_metrics).
+- Cancellation rate: tool get_performance trả về `cancellation_pct` (per-day average). Khi user hỏi cancel rate cho 1 KHOẢNG, dùng weighted = SUM(cancellations) / SUM(new_bookings) — KHÔNG average các % daily.
 
 CONTEXT BRANCH:
 - Mỗi request có default branch_id (chi nhánh user đang xem). Mặc định dùng nó cho mọi tool.
@@ -52,14 +62,15 @@ CONTEXT BRANCH:
 CÁCH TRẢ LỜI:
 - Tiếng Việt, giọng đồng nghiệp — ngắn gọn, đi thẳng vào con số.
 - Format markdown nhẹ: dùng **bold** cho metric quan trọng, list cho so sánh.
-- Khi cần so sánh nhiều thứ, dùng table.
+- Khi cần so sánh nhiều thứ, dùng table — và LUÔN dùng đúng tên branch từ tool result, không paraphrase / không thêm parenthetical bịa.
 - LUÔN kết thúc bằng section "## Next Actions" với 2-3 bullet hành động cụ thể.
 - Mỗi next action phải nêu: hành động + số liệu cụ thể + lý do (vì sao). Tránh chung chung kiểu "tăng marketing budget".
 - Nếu có alert hoặc gap KPI lớn, flag rõ ở đầu câu trả lời.
 
-KHI THIẾU DỮ LIỆU:
+KHI THIẾU DỮ LIỆU / KHÔNG CHẮC:
 - Nếu tool trả về error hoặc empty, nói thẳng "không có dữ liệu" — đừng bịa.
 - Nếu cần thêm period/branch user chưa nói, dùng default (current branch, last 30 days) và ghi rõ giả định.
+- Nếu user phản hồi "sai rồi" / "mày chế" / "không có cái đó" → re-call tool ngay để verify, KHÔNG tự bảo vệ câu trả lời cũ.
 
 CALL TOOL HIỆU QUẢ:
 - Gọi nhiều tool trong cùng 1 turn nếu independent (vd: get_kpi_status + get_ota_mix song song).
@@ -74,15 +85,40 @@ def _client() -> Anthropic:
     return Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
 
-def _build_context_block(default_branch_id: Optional[str], branch_name: Optional[str]) -> str:
+def _build_context_block(
+    default_branch_id: Optional[str],
+    branch_name: Optional[str],
+    all_branches: list[dict],
+) -> str:
     today = date.today().isoformat()
     branch_label = f"{branch_name} ({default_branch_id})" if branch_name else (default_branch_id or "all branches")
+    branch_lines = "\n".join(
+        f"  - {b['name']} ({b['id']}) — {b['city'] or '?'}, {b['country'] or '?'} [{b['currency']}]"
+        for b in all_branches
+    )
     return (
         f"<context>\n"
         f"today: {today}\n"
         f"current_branch: {branch_label}\n"
+        f"available_branches (đây là ĐẦY ĐỦ danh sách, không có chi nhánh nào khác):\n"
+        f"{branch_lines}\n"
         f"</context>"
     )
+
+
+def _fetch_branch_list(db: Session) -> list[dict]:
+    from app.models.branch import Branch
+    rows = db.query(Branch).filter_by(is_active=True).order_by(Branch.name).all()
+    return [
+        {
+            "id": str(b.id),
+            "name": b.name,
+            "city": b.city,
+            "country": b.country,
+            "currency": b.currency or "VND",
+        }
+        for b in rows
+    ]
 
 
 def _normalize_history(history: list[dict]) -> list[dict]:
@@ -116,7 +152,8 @@ def run_chat(
         }
 
     client = _client()
-    ctx = _build_context_block(default_branch_id, branch_name)
+    all_branches = _fetch_branch_list(db)
+    ctx = _build_context_block(default_branch_id, branch_name, all_branches)
 
     messages: list[dict] = _normalize_history(history)
     messages.append({"role": "user", "content": f"{ctx}\n\n{user_message}"})
