@@ -82,6 +82,26 @@ def _signed_pct(val):
     return f"{sign}{val:.2f}%"
 
 
+def _adjustment_formula_html(raw_forecast, deduct_pct, other_rev, currency):
+    """Sub-line under the Adjusted Forecast cell explaining the math.
+
+    Renders nothing when there's no adjustment (deduct=0 AND other_rev=0)
+    so the per-branch table doesn't get cluttered when the operator
+    hasn't set any inputs.
+    """
+    deduct = deduct_pct or 0
+    other = other_rev or 0
+    if deduct == 0 and other == 0:
+        return ""
+    deduct_str = f"−{deduct:g}%" if deduct > 0 else "−0%"
+    rev_str = f" + {_fmt(other, currency)}" if other > 0 else ""
+    return (
+        f"<div style='font-size:9px;font-weight:400;color:#9ca3af;line-height:1.3;margin-top:2px;'>"
+        f"= {_fmt(raw_forecast, currency)} × (1{deduct_str}){rev_str}"
+        f"</div>"
+    )
+
+
 def _top_countries(db: Session, branch_id, days: int = 90, limit: int = 5):
     cutoff = date.today() - timedelta(days=days)
     rows = (
@@ -321,6 +341,33 @@ def _build_report(db: Session):
         top = _top_countries(db, b.id)
         growth = _growth_countries(db, b.id)
 
+        # ── KPI Dashboard "Adjusted" inputs (Home page) ────────────────────
+        # Adjusted Forecast = Forecast × (1 − deduction%) + Other Revenue.
+        # Operators set deduction% + other_rev per month in /kpi to model
+        # known headwinds (commissions, comps) and add-ons (F&B, parking).
+        # Pull both for current month + next month so Exec Summary and
+        # Next-Month columns show the same numbers as the dashboard.
+        kt_cur = (db.query(KPITarget)
+                    .filter_by(branch_id=b.id, year=today.year, month=today.month)
+                    .first())
+        nxt_year = nxt.get("next_year") or today.year
+        nxt_month = nxt.get("next_month") or (today.month % 12 + 1)
+        kt_nxt = (db.query(KPITarget)
+                    .filter_by(branch_id=b.id, year=nxt_year, month=nxt_month)
+                    .first())
+        deduct_cur = float(kt_cur.deduction_pct or 0) if kt_cur else 0.0
+        other_rev_cur = float(kt_cur.other_revenue_native or 0) if kt_cur else 0.0
+        deduct_nxt = float(kt_nxt.deduction_pct or 0) if kt_nxt else 0.0
+        other_rev_nxt = float(kt_nxt.other_revenue_native or 0) if kt_nxt else 0.0
+
+        def _adjust(forecast, deduct_pct, other_rev):
+            if forecast is None:
+                return None
+            return max(0.0, float(forecast) * (1 - deduct_pct / 100) + other_rev)
+
+        adjusted_cur = _adjust(kpi["occ_forecast_native"], deduct_cur, other_rev_cur)
+        adjusted_nxt = _adjust(nxt["next_month_forecast_native"], deduct_nxt, other_rev_nxt)
+
         # Country Intel scores (Hot / Warm / Cold)
         country_intel = score_countries(db, branch_id=b.id, top_n=10)
 
@@ -364,6 +411,14 @@ def _build_report(db: Session):
             "occ_forecast": kpi["occ_forecast_native"],
             "occ_forecast_pct": round(kpi["occ_forecast_native"] / kpi["target_revenue_native"] * 100, 1)
                 if (kpi["occ_forecast_native"] and kpi["target_revenue_native"]) else None,
+            # KPI Dashboard "Adjusted" inputs + computed Adjusted Forecast
+            "deduction_pct": deduct_cur,
+            "other_revenue_native": other_rev_cur,
+            "adjusted_forecast": round(adjusted_cur, 2) if adjusted_cur is not None else None,
+            "adjusted_forecast_pct": (
+                round(adjusted_cur / kpi["target_revenue_native"] * 100, 1)
+                if (adjusted_cur is not None and kpi["target_revenue_native"]) else None
+            ),
             # Next month
             "next_month": nxt["next_month"],
             "next_year": nxt["next_year"],
@@ -371,6 +426,14 @@ def _build_report(db: Session):
             "next_target": nxt["next_month_target_native"],
             "next_forecast_pct": round(nxt["next_month_forecast_native"] / nxt["next_month_target_native"] * 100, 1)
                 if (nxt["next_month_forecast_native"] and nxt["next_month_target_native"]) else None,
+            # Next month adjustment fields
+            "next_deduction_pct": deduct_nxt,
+            "next_other_revenue_native": other_rev_nxt,
+            "next_adjusted_forecast": round(adjusted_nxt, 2) if adjusted_nxt is not None else None,
+            "next_adjusted_forecast_pct": (
+                round(adjusted_nxt / nxt["next_month_target_native"] * 100, 1)
+                if (adjusted_nxt is not None and nxt["next_month_target_native"]) else None
+            ),
             "next_adr": nxt["next_month_adr"],
             "next_booked_nights": nxt["next_month_booked_nights"],
             "next_booked_revenue": nxt.get("next_month_booked_revenue"),
@@ -423,31 +486,53 @@ def _render_exec_summary(report: list, today: date) -> str:
         occ_pct = b.get("avg_occ_pct") or 0  # 0..100 scale (already %)
         revpar = round(adr * occ_pct / 100, 2) if (adr and occ_pct) else None
 
-        # Forecast: ADR × predicted-room-nights (set in KPI Dashboard).
-        # Forecast % drives the color — pacing alone (actual MTD / target)
-        # is misleading early in the month.
-        fcst = b.get("occ_forecast")
-        fcst_pct = b.get("occ_forecast_pct")
-        if fcst_pct is not None:
+        # Forecast cell shows the ADJUSTED value from the KPI Dashboard
+        # (same as Group Summary's Adjusted column). Operators set
+        # deduction% + other_rev per month to model commissions / comps /
+        # ancillary on top of the raw ADR×predicted-nights forecast.
+        # The formula is shown as a sub-line so the math is auditable.
+        raw_fcst = b.get("occ_forecast")
+        adj_fcst = b.get("adjusted_forecast")
+        adj_fcst_pct = b.get("adjusted_forecast_pct")
+        deduct = b.get("deduction_pct") or 0
+        other_rev = b.get("other_revenue_native") or 0
+
+        if adj_fcst_pct is not None:
             fcst_color = (
-                "#16a34a" if fcst_pct >= 100 else
-                "#ca8a04" if fcst_pct >= 90 else
-                "#ea580c" if fcst_pct >= 75 else
+                "#16a34a" if adj_fcst_pct >= 100 else
+                "#ca8a04" if adj_fcst_pct >= 90 else
+                "#ea580c" if adj_fcst_pct >= 75 else
                 "#dc2626"
             )
+            # Formula sub-line — only show non-trivial adjustments
+            if deduct > 0 or other_rev > 0:
+                deduct_str = f"−{deduct:g}%" if deduct > 0 else "−0%"
+                rev_str = f" + {_fmt(other_rev, cur)}" if other_rev > 0 else ""
+                formula_line = (
+                    f"<div style='font-size:9px;color:#9ca3af;line-height:1.3;'>"
+                    f"= {_fmt(raw_fcst, cur)} × (1{deduct_str}){rev_str}"
+                    f"</div>"
+                )
+            else:
+                formula_line = (
+                    f"<div style='font-size:9px;color:#9ca3af;'>no adjustment</div>"
+                )
             fcst_html = (
-                f"<div style='font-weight:700;color:{fcst_color};'>{_fmt(fcst, cur)}</div>"
-                f"<div style='font-size:10px;color:{fcst_color};'>{_pct(fcst_pct)} of target</div>"
+                f"<div style='font-weight:700;color:{fcst_color};'>{_fmt(adj_fcst, cur)}</div>"
+                f"<div style='font-size:10px;color:{fcst_color};'>{_pct(adj_fcst_pct)} of target</div>"
+                f"{formula_line}"
             )
         else:
             fcst_html = "<span style='color:#9ca3af;'>not set</span>"
 
-        # Pacing color now follows forecast % (true risk signal), not actual MTD %
-        if fcst_pct is not None:
+        # Pacing color now follows ADJUSTED forecast % (matches dashboard
+        # color). MTD pacing is naturally low early in the month so we
+        # color by the forward-looking forecast instead.
+        if adj_fcst_pct is not None:
             ach_color = (
-                "#16a34a" if fcst_pct >= 100 else
-                "#ca8a04" if fcst_pct >= 90 else
-                "#ea580c" if fcst_pct >= 75 else
+                "#16a34a" if adj_fcst_pct >= 100 else
+                "#ca8a04" if adj_fcst_pct >= 90 else
+                "#ea580c" if adj_fcst_pct >= 75 else
                 "#dc2626"
             )
         else:
@@ -489,7 +574,8 @@ def _render_exec_summary(report: list, today: date) -> str:
       </div>
       <p style="margin:10px 0 0;font-size:11px;color:#6b7280;">
         Revenue / OCC / ADR = Cloudbeds Insights filtered (excl. Blogger / House Use / KOL / Special Case / Work Exchange) — same source as the Group Summary dashboard.<br/>
-        Forecast = ADR × predicted-nights (set predicted OCC% in KPI Dashboard). Pacing color follows forecast vs target:
+        Forecast = <strong>Adjusted</strong> column from Home: <code>Adjusted = Forecast × (1 − Deduction%) + Other Revenue</code>
+        (raw Forecast = ADR × predicted-nights; set Deduction% + Other Rev in KPI Dashboard). Pacing color follows Adjusted vs target:
         <span style="color:#16a34a;">green ≥100%</span> ·
         <span style="color:#ca8a04;">yellow 90-99%</span> ·
         <span style="color:#ea580c;">orange 75-89%</span> ·
@@ -958,12 +1044,13 @@ def _branch_narrative(b: dict) -> list[str]:
     lw = summary.get("last_week") or {}
     pa_lw = (a.get("paid_ads") or {}).get("last_week") or {}
 
-    # 1. Pacing — judged by FORECAST vs target (will the month hit KPI?),
-    #    not by actual MTD vs target. Early-month MTD is naturally low —
-    #    flagging "🔴 At risk" when MTD < 80% would fire on day 5 of every
-    #    month even if forecast is 110%. Forecast = ADR × (predicted OCC ×
-    #    rooms × days), set per branch in the KPI Dashboard.
-    fcst_pct = b.get("occ_forecast_pct")
+    # 1. Pacing — judged by ADJUSTED FORECAST vs target (will the month
+    #    hit KPI after deductions/other-rev?), not by actual MTD vs target.
+    #    Early-month MTD is naturally low — flagging "🔴 At risk" when
+    #    MTD < 80% would fire on day 5 of every month even if forecast is
+    #    110%. Using adjusted (not raw) so this matches the Group Summary
+    #    dashboard's "Adjusted" column color.
+    fcst_pct = b.get("adjusted_forecast_pct") or b.get("occ_forecast_pct")
     ach = b.get("achievement_pct")  # current actual/target — shown as context
     month_name = MONTHS_EN[date.today().month]
     if fcst_pct is not None:
@@ -1731,14 +1818,16 @@ def _build_html(report: list, today: date) -> str:
               <td style="padding:8px 12px;text-align:right;font-weight:600;color:#059669;">{_pct(b['predicted_occ_next'])}</td>
             </tr>
             <tr style="border-top:1px solid #f3f4f6;">
-              <td style="padding:8px 12px;color:#374151;font-weight:600;">Forecast</td>
+              <td style="padding:8px 12px;color:#374151;font-weight:600;">Forecast (Adjusted)</td>
               <td style="padding:8px 12px;text-align:right;font-weight:700;color:#4f46e5;">
-                {_fmt(b['occ_forecast'], cur)}
-                {f"<span style='font-weight:400;color:#6b7280;'> ({b['occ_forecast_pct']}%)</span>" if b['occ_forecast_pct'] else ""}
+                {_fmt(b.get('adjusted_forecast') or b['occ_forecast'], cur)}
+                {f"<span style='font-weight:400;color:#6b7280;'> ({b.get('adjusted_forecast_pct') or b['occ_forecast_pct']}%)</span>" if (b.get('adjusted_forecast_pct') or b['occ_forecast_pct']) else ""}
+                {_adjustment_formula_html(b.get('occ_forecast'), b.get('deduction_pct'), b.get('other_revenue_native'), cur)}
               </td>
               <td style="padding:8px 12px;text-align:right;font-weight:700;color:#059669;">
-                {_fmt(b['next_forecast'], cur)}
-                {f"<span style='font-weight:400;color:#6b7280;'> ({b['next_forecast_pct']}%)</span>" if b['next_forecast_pct'] else ""}
+                {_fmt(b.get('next_adjusted_forecast') or b['next_forecast'], cur)}
+                {f"<span style='font-weight:400;color:#6b7280;'> ({b.get('next_adjusted_forecast_pct') or b['next_forecast_pct']}%)</span>" if (b.get('next_adjusted_forecast_pct') or b['next_forecast_pct']) else ""}
+                {_adjustment_formula_html(b.get('next_forecast'), b.get('next_deduction_pct'), b.get('next_other_revenue_native'), cur)}
               </td>
             </tr>
           </table>
