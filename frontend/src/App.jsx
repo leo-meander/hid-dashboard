@@ -3,6 +3,7 @@ import { BranchProvider } from "./context/BranchContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import Sidebar from "./components/Sidebar";
 import BranchSelector from "./components/BranchSelector";
+import ChatWidget from "./components/ChatWidget";
 import Login from "./pages/Login";
 
 // Phase 1 pages
@@ -137,6 +138,7 @@ function AppRoutes() {
           </Routes>
         </main>
       </div>
+      <ChatWidget />
     </div>
   );
 }
