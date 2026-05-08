@@ -1361,6 +1361,53 @@ def _crm_revenue(db: Session, branch_id: UUID, d_from: date, d_to: date) -> dict
     }
 
 
+def _crm_revenue_by_rate_plan(
+    db: Session, branch_id: UUID, d_from: date, d_to: date,
+) -> list[dict]:
+    """Per-rate-plan breakdown of CRM bookings/revenue in window.
+
+    Groups by (rate_plan_name, room_type) so reservations with NULL
+    rate_plan_name (CRM signal lives on room_type instead) still get
+    bucketed correctly. The renderer prefers rate_plan_name for the
+    label, falling back to room_type.
+
+    Sorted by revenue desc — usually 1-3 rows per branch per week
+    because each branch has only a handful of CRM rate plans.
+    """
+    rows = db.query(
+        Reservation.rate_plan_name,
+        Reservation.room_type,
+        func.count(Reservation.id),
+        func.coalesce(func.sum(Reservation.nights), 0),
+        func.coalesce(func.sum(Reservation.grand_total_native), 0),
+    ).filter(
+        Reservation.branch_id == branch_id,
+        _crm_reservation_filter(),
+        Reservation.reservation_date >= d_from,
+        Reservation.reservation_date <= d_to,
+        ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
+        ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_NON_PAYING_SOURCES)),
+    ).group_by(
+        Reservation.rate_plan_name,
+        Reservation.room_type,
+    ).all()
+
+    out = []
+    for r in rows:
+        rate_plan = r[0]
+        room_type = r[1]
+        out.append({
+            "rate_plan_name": rate_plan,
+            "room_type": room_type,
+            "label": rate_plan or room_type or "—",
+            "bookings": int(r[2] or 0),
+            "nights": int(r[3] or 0),
+            "revenue": round(float(r[4] or 0), 2),
+        })
+    out.sort(key=lambda x: -x["revenue"])
+    return out
+
+
 # Branch UUID / name → GHL EmailCampaignStats.branch_name string
 _GHL_BRANCH_NAME_MAP = {
     "meander saigon": "Saigon",
@@ -1391,6 +1438,7 @@ def crm_section(db: Session, branch_id: UUID, branch_name: str,
     # CRM revenue from reservations (last week vs prev week)
     rev_this = _crm_revenue(db, branch_id, week_start, week_end)
     rev_prev = _crm_revenue(db, branch_id, prev_start, prev_end)
+    by_rate_plan = _crm_revenue_by_rate_plan(db, branch_id, week_start, week_end)
 
     # Email stats — by GHL branch name
     ghl_name = _resolve_ghl_branch_name(branch_name)
@@ -1410,6 +1458,7 @@ def crm_section(db: Session, branch_id: UUID, branch_name: str,
         "crm_revenue_this": rev_this,
         "crm_revenue_prev": rev_prev,
         "wow_revenue_pct": _pct_change(rev_this["revenue"], rev_prev["revenue"]),
+        "by_rate_plan": by_rate_plan,
     }
 
     if not ghl_name:

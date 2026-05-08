@@ -1314,6 +1314,32 @@ def _render_crm(b: dict) -> str:
           </p>
         </div>"""
 
+    # Per-rate-plan breakdown — operators want to know WHICH plan drove
+    # the CRM bookings, not just the aggregate. Sorted by revenue desc.
+    by_rate_plan = c.get("by_rate_plan") or []
+    if by_rate_plan:
+        rp_rows = "".join(
+            f"<tr>"
+            f"<td style='{_TABLE_TD}'>{rp['label']}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{rp['bookings']}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;color:#6b7280;'>{rp['nights']}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{_fmt(rp['revenue'], cur)}</td>"
+            f"</tr>"
+            for rp in by_rate_plan
+        )
+        rp_table = f"""
+      <table style="width:100%;border-collapse:collapse;margin-top:8px;">
+        <tr>
+          <th style="{_TABLE_TH}">Rate Plan / Room Type</th>
+          <th style="{_TABLE_TH};text-align:right;">Bookings</th>
+          <th style="{_TABLE_TH};text-align:right;">Nights</th>
+          <th style="{_TABLE_TH};text-align:right;">Revenue</th>
+        </tr>
+        {rp_rows}
+      </table>"""
+    else:
+        rp_table = ""
+
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
       <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
@@ -1324,7 +1350,8 @@ def _render_crm(b: dict) -> str:
         Revenue: <strong style="color:#111827;">{_fmt(rev_t['revenue'], cur)}</strong> ·
         WoW {_wow(c['wow_revenue_pct'])}
       </p>
-      <p style="margin:4px 0 0;font-size:11px;color:#9ca3af;">
+      {rp_table}
+      <p style="margin:6px 0 0;font-size:11px;color:#9ca3af;">
         Source: CRM-tagged reservations (room_type/rate_plan contains CRM / MEANDER'S FRIEND / Travel guide / Grand Open). Filtered on Date Booked.
       </p>
     </div>"""
