@@ -31,13 +31,14 @@ function saveHistory(messages) {
   } catch {}
 }
 
-// Tiny markdown renderer — bold, lists, headings, code spans. Keeps it light
-// so we don't drag in a markdown lib for a chat bubble.
+// Tiny markdown renderer — bold, lists, headings, tables, code spans. Keeps
+// it light so we don't drag in a markdown lib for a chat bubble.
 function renderMarkdown(text) {
   if (!text) return null;
   const lines = text.split("\n");
   const blocks = [];
   let listBuf = [];
+
   const flushList = () => {
     if (listBuf.length) {
       blocks.push(
@@ -50,13 +51,69 @@ function renderMarkdown(text) {
       listBuf = [];
     }
   };
-  lines.forEach((raw, i) => {
+
+  const isTableRow = (s) => /^\s*\|.*\|\s*$/.test(s);
+  const isTableSep = (s) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(s);
+  const splitRow = (s) => {
+    const trimmed = s.trim().replace(/^\|/, "").replace(/\|$/, "");
+    return trimmed.split("|").map(c => c.trim());
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const raw = lines[i];
     const line = raw.trimEnd();
+
+    // Markdown table: header row + separator + body rows
+    if (isTableRow(line) && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      flushList();
+      const headers = splitRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && isTableRow(lines[i])) {
+        rows.push(splitRow(lines[i]));
+        i++;
+      }
+      blocks.push(
+        <div key={`tbl-${blocks.length}`} className="my-2 overflow-x-auto -mx-1">
+          <table className="text-[11px] border-collapse w-full">
+            <thead>
+              <tr className="bg-gray-100">
+                {headers.map((h, j) => (
+                  <th
+                    key={j}
+                    className="border border-gray-200 px-1.5 py-1 text-left font-semibold whitespace-nowrap"
+                    dangerouslySetInnerHTML={{ __html: inlineMd(h) }}
+                  />
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, ri) => (
+                <tr key={ri} className={ri % 2 ? "bg-gray-50" : ""}>
+                  {r.map((c, ci) => (
+                    <td
+                      key={ci}
+                      className="border border-gray-200 px-1.5 py-1 whitespace-nowrap"
+                      dangerouslySetInnerHTML={{ __html: inlineMd(c) }}
+                    />
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+      continue;
+    }
+
     if (/^\s*[-*]\s+/.test(line)) {
       listBuf.push(line.replace(/^\s*[-*]\s+/, ""));
-      return;
+      i++;
+      continue;
     }
     flushList();
+
     if (/^##\s+/.test(line)) {
       blocks.push(
         <h4 key={i} className="font-semibold text-gray-900 mt-2 mb-1 text-sm">
@@ -76,7 +133,8 @@ function renderMarkdown(text) {
         <p key={i} className="leading-relaxed" dangerouslySetInnerHTML={{ __html: inlineMd(line) }} />
       );
     }
-  });
+    i++;
+  }
   flushList();
   return blocks;
 }
