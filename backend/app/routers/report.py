@@ -1034,41 +1034,101 @@ def _render_paid_ads(b: dict) -> str:
           <p style="margin:0;font-size:12px;color:#9ca3af;">No ad spend last week or the week before.</p>
         </div>"""
 
-    # Channel rows
-    ch_rows = "".join(
-        f"<tr><td style='{_TABLE_TD}'>{c['channel']}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['cost'], cur)}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{c['impressions']:,}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(c['ctr_pct'])}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(c['cvr_pct'])}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{c['bookings']}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{c['roas']:.2f}x</td></tr>"
-        if c["roas"] is not None else
-        f"<tr><td style='{_TABLE_TD}'>{c['channel']}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['cost'], cur)}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{c['impressions']:,}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(c['ctr_pct'])}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_pct(c['cvr_pct'])}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{c['bookings']}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>—</td></tr>"
-        for c in pa["by_channel"]
+    # Channel rows — each metric paired with its WoW delta. Cost / Bookings /
+    # ROAS get explicit WoW columns; CTR / CVR / impressions stay as point-
+    # in-time signals to keep the table from getting unreadable.
+    def _ch_cell(value_html: str, wow_pct):
+        if wow_pct is None:
+            return f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{value_html}</td>"
+        color = "#16a34a" if wow_pct >= 0 else "#dc2626"
+        return (
+            f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>"
+            f"<div>{value_html}</div>"
+            f"<div style='font-size:10px;color:{color};'>{_signed_pct(wow_pct)}</div>"
+            f"</td>"
+        )
+
+    ch_rows_parts = []
+    for c in pa["by_channel"]:
+        roas_html = f"{c['roas']:.2f}x" if c["roas"] is not None else "—"
+        cost_html = _fmt(c["cost"], cur)
+        bk_html = f"{c['bookings']}"
+        ch_rows_parts.append(
+            "<tr>"
+            f"<td style='{_TABLE_TD};vertical-align:top;'>{c['channel']}</td>"
+            + _ch_cell(cost_html, c.get("wow_cost_pct"))
+            + f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{c['impressions']:,}</td>"
+            + f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{_pct(c['ctr_pct'])}</td>"
+            + f"<td style='{_TABLE_TD};text-align:right;vertical-align:top;'>{_pct(c['cvr_pct'])}</td>"
+            + _ch_cell(bk_html, c.get("wow_bookings_pct"))
+            + _ch_cell(f"<strong>{roas_html}</strong>", c.get("wow_roas_pct"))
+            + "</tr>"
+        )
+    ch_rows = "".join(ch_rows_parts)
+
+    # Activity log — what changed vs prev week (NEW / ENDED / SCALED / CUT)
+    act = pa.get("activity_log") or {}
+
+    def _act_row(item, change_label=None):
+        ad_name = (item.get("name") or item.get("ad_name") or
+                   item.get("adset") or item.get("campaign") or "")[:60]
+        change_cell = (
+            f"<td style='{_TABLE_TD};text-align:right;'>{change_label}</td>"
+            if change_label else ""
+        )
+        return (
+            f"<tr><td style='{_TABLE_TD}'>{item.get('channel') or '—'}</td>"
+            f"<td style='{_TABLE_TD}'>{ad_name}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(item.get('cost'), cur)}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{item.get('bookings', 0)}</td>"
+            + change_cell
+            + "</tr>"
+        )
+
+    new_rows = "".join(_act_row(x) for x in act.get("new", []))
+    ended_rows = "".join(_act_row(x) for x in act.get("ended", []))
+    scaled_rows = "".join(
+        _act_row(x, f"<span style='color:#16a34a;'>{_signed_pct(x['change_pct'])}</span> "
+                    f"<span style='color:#9ca3af;font-size:10px;'>(was {_fmt(x['prev_cost'], cur)})</span>")
+        for x in act.get("scaled", [])
+    )
+    cut_rows = "".join(
+        _act_row(x, f"<span style='color:#dc2626;'>{_signed_pct(x['change_pct'])}</span> "
+                    f"<span style='color:#9ca3af;font-size:10px;'>(was {_fmt(x['prev_cost'], cur)})</span>")
+        for x in act.get("cut", [])
     )
 
-    # Funnel rows
-    fn_rows = "".join(
-        f"<tr><td style='{_TABLE_TD}'>{f['funnel']}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(f['cost'], cur)}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{f['bookings']}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(f['revenue'], cur)}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{f['roas']:.2f}x</td></tr>"
-        if f["roas"] is not None else
-        f"<tr><td style='{_TABLE_TD}'>{f['funnel']}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(f['cost'], cur)}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{f['bookings']}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(f['revenue'], cur)}</td>"
-        f"<td style='{_TABLE_TD};text-align:right;'>—</td></tr>"
-        for f in pa["by_funnel"]
-    )
+    has_activity = bool(new_rows or ended_rows or scaled_rows or cut_rows)
+    if has_activity:
+        def _act_table(title: str, rows_html: str, ncols: int, color: str):
+            if not rows_html:
+                return ""
+            hdr_change = "<th style='" + _TABLE_TH + ";text-align:right;'>WoW</th>" if ncols == 5 else ""
+            return (
+                f"<table style='width:100%;border-collapse:collapse;margin-top:8px;'>"
+                f"<tr><th style='{_TABLE_TH};color:{color};' colspan='{ncols}'>{title}</th></tr>"
+                f"<tr><th style='{_TABLE_TH}'>Ch.</th><th style='{_TABLE_TH}'>Ad / Adset</th>"
+                f"<th style='{_TABLE_TH};text-align:right;'>Cost</th>"
+                f"<th style='{_TABLE_TH};text-align:right;'>Bk</th>"
+                f"{hdr_change}</tr>"
+                f"{rows_html}</table>"
+            )
+
+        activity_html = (
+            "<div style='margin-top:12px;'>"
+            "<p style='margin:0 0 4px;font-size:12px;font-weight:600;color:#374151;'>📋 Activity Log (vs prev week)</p>"
+            + _act_table("🆕 New ads (started this week)", new_rows, 4, "#16a34a")
+            + _act_table("⏸ Ended ads (stopped this week)", ended_rows, 4, "#6b7280")
+            + _act_table("📈 Scaled (cost up ≥25%)", scaled_rows, 5, "#16a34a")
+            + _act_table("📉 Cut (cost down ≥25%)", cut_rows, 5, "#dc2626")
+            + "</div>"
+        )
+    else:
+        activity_html = (
+            "<p style='margin-top:10px;font-size:12px;color:#9ca3af;'>"
+            "📋 Activity Log: no significant ad-lineup changes vs prev week."
+            "</p>"
+        )
 
     def _camp_row(cp, color="#374151"):
         roas = f"{cp['roas']:.2f}x" if cp["roas"] is not None else "—"
@@ -1094,22 +1154,19 @@ def _render_paid_ads(b: dict) -> str:
         WoW: spend {_wow(pa['wow_cost_pct'])} · revenue {_wow(pa['wow_revenue_pct'])}
       </p>
 
-      <table style="width:48%;display:inline-table;border-collapse:collapse;margin-right:2%;vertical-align:top;">
-        <tr><th style="{_TABLE_TH}" colspan="7">By Channel</th></tr>
-        <tr><th style="{_TABLE_TH}">Channel</th><th style="{_TABLE_TH};text-align:right;">Cost</th>
-            <th style="{_TABLE_TH};text-align:right;">Impr</th><th style="{_TABLE_TH};text-align:right;">CTR</th>
-            <th style="{_TABLE_TH};text-align:right;">CVR</th><th style="{_TABLE_TH};text-align:right;">Bk</th>
+      <table style="width:100%;border-collapse:collapse;">
+        <tr><th style="{_TABLE_TH}" colspan="7">By Channel (last week, with WoW deltas)</th></tr>
+        <tr><th style="{_TABLE_TH}">Channel</th>
+            <th style="{_TABLE_TH};text-align:right;">Cost</th>
+            <th style="{_TABLE_TH};text-align:right;">Impr</th>
+            <th style="{_TABLE_TH};text-align:right;">CTR</th>
+            <th style="{_TABLE_TH};text-align:right;">CVR</th>
+            <th style="{_TABLE_TH};text-align:right;">Bk</th>
             <th style="{_TABLE_TH};text-align:right;">ROAS</th></tr>
         {ch_rows or '<tr><td colspan="7" style="'+_TABLE_TD+';color:#9ca3af;">No channel data</td></tr>'}
       </table>
 
-      <table style="width:48%;display:inline-table;border-collapse:collapse;vertical-align:top;">
-        <tr><th style="{_TABLE_TH}" colspan="5">By Funnel Stage</th></tr>
-        <tr><th style="{_TABLE_TH}">Stage</th><th style="{_TABLE_TH};text-align:right;">Cost</th>
-            <th style="{_TABLE_TH};text-align:right;">Bk</th><th style="{_TABLE_TH};text-align:right;">Revenue</th>
-            <th style="{_TABLE_TH};text-align:right;">ROAS</th></tr>
-        {fn_rows or '<tr><td colspan="5" style="'+_TABLE_TD+';color:#9ca3af;">No funnel data</td></tr>'}
-      </table>
+      {activity_html}
 
       <table style="width:100%;border-collapse:collapse;margin-top:12px;">
         <tr><th style="{_TABLE_TH}" colspan="6">🏆 Top by ROAS (≥1K impressions)</th></tr>

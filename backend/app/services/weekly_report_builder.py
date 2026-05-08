@@ -6,7 +6,7 @@ Each section is a pure function so sections can be unit-tested independently.
 
 Conventions (honor user memory rules):
 - OCC includes ALL sources (no source exclusions)
-- Revenue EXCLUDES Blogger, House Use, KOL, Special Case
+- Revenue EXCLUDES Blogger, House Use, KOL, Special Case, Work Exchange
 - Percentages rendered with 2 decimals; money rendered as full numbers (no K/M/B)
 """
 from __future__ import annotations
@@ -72,7 +72,7 @@ def _reservations_base(db: Session, branch_id: UUID):
 
 
 def _reservations_revenue_base(db: Session, branch_id: UUID):
-    """Non-cancelled reservations, excluding Blogger/House Use/KOL/Special Case."""
+    """Non-cancelled reservations, excluding Blogger/House Use/KOL/Special Case/Work Exchange."""
     return _reservations_base(db, branch_id).filter(
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES)),
     )
@@ -896,6 +896,104 @@ def _ads_window_aggregate(db: Session, branch_id: UUID,
     }
 
 
+def _build_activity_log(db: Session, branch_id: UUID,
+                        week_start: date, week_end: date,
+                        prev_start: date, prev_end: date,
+                        change_threshold_pct: float = 25.0,
+                        cost_min: float = 1.0,
+                        top_n: int = 5) -> dict:
+    """Diff last week's ad lineup against the prev week's, surface changes.
+
+    Buckets returned:
+      - "new":    ads with cost > cost_min last week, absent (or cost~0) prev week
+      - "ended":  ads with cost > cost_min prev week, absent (or cost~0) last week
+      - "scaled": ads in both weeks, cost up by >= change_threshold_pct
+      - "cut":    ads in both weeks, cost down by >= change_threshold_pct
+
+    Each row keeps the campaign / adset / ad name, channel, cost, bookings
+    and revenue so the email can render an actionable list rather than just
+    counts. Sorted by absolute cost change (or current cost for new/ended)
+    and capped at `top_n` per bucket.
+
+    Identity key = (campaign_name, adset_name, ad_name) — same triple that
+    Ads Platform uses upstream. We accept that two ads with identical names
+    in different accounts would collide; in practice ad names are unique
+    per branch.
+    """
+    def _ad_aggregate(d_from: date, d_to: date) -> dict:
+        rows = db.query(
+            AdsPerformance.campaign_name,
+            AdsPerformance.adset_name,
+            AdsPerformance.ad_name,
+            AdsPerformance.channel,
+            func.coalesce(func.sum(AdsPerformance.cost_native), 0).label("cost"),
+            func.coalesce(func.sum(AdsPerformance.bookings), 0).label("bookings"),
+            func.coalesce(func.sum(AdsPerformance.revenue_native), 0).label("rev"),
+        ).filter(
+            AdsPerformance.branch_id == branch_id,
+            AdsPerformance.grain == "ad",
+            or_(
+                AdsPerformance.date_from.is_(None),
+                AdsPerformance.date_from <= d_to,
+            ),
+            or_(
+                AdsPerformance.date_to.is_(None),
+                AdsPerformance.date_to >= d_from,
+            ),
+        ).group_by(
+            AdsPerformance.campaign_name,
+            AdsPerformance.adset_name,
+            AdsPerformance.ad_name,
+            AdsPerformance.channel,
+        ).all()
+        return {
+            (r.campaign_name, r.adset_name, r.ad_name): {
+                "channel": r.channel or "—",
+                "name": (r.ad_name or r.adset_name or r.campaign_name or ""),
+                "campaign": r.campaign_name,
+                "adset": r.adset_name,
+                "cost": float(r.cost or 0),
+                "bookings": int(r.bookings or 0),
+                "revenue": float(r.rev or 0),
+            }
+            for r in rows
+        }
+
+    this = _ad_aggregate(week_start, week_end)
+    prev = _ad_aggregate(prev_start, prev_end)
+
+    new_ads, ended_ads, scaled_ads, cut_ads = [], [], [], []
+
+    for key, t in this.items():
+        if t["cost"] < cost_min:
+            continue
+        p = prev.get(key)
+        if not p or p["cost"] < cost_min:
+            new_ads.append(t)
+            continue
+        change_pct = (t["cost"] - p["cost"]) / p["cost"] * 100
+        if change_pct >= change_threshold_pct:
+            scaled_ads.append({**t, "prev_cost": round(p["cost"], 2),
+                               "change_pct": round(change_pct, 1)})
+        elif change_pct <= -change_threshold_pct:
+            cut_ads.append({**t, "prev_cost": round(p["cost"], 2),
+                            "change_pct": round(change_pct, 1)})
+
+    for key, p in prev.items():
+        if p["cost"] < cost_min:
+            continue
+        t = this.get(key)
+        if not t or t["cost"] < cost_min:
+            ended_ads.append(p)
+
+    return {
+        "new": sorted(new_ads, key=lambda x: -x["cost"])[:top_n],
+        "ended": sorted(ended_ads, key=lambda x: -x["cost"])[:top_n],
+        "scaled": sorted(scaled_ads, key=lambda x: -x["change_pct"])[:top_n],
+        "cut": sorted(cut_ads, key=lambda x: x["change_pct"])[:top_n],
+    }
+
+
 def paid_ads_section(db: Session, branch_id: UUID, today: date,
                      days: int = 7) -> dict:
     """Paid Ads snapshot — last calendar week vs the week before it
@@ -910,67 +1008,66 @@ def paid_ads_section(db: Session, branch_id: UUID, today: date,
     last_week = _ads_window_aggregate(db, branch_id, week_start, week_end)
     prev_week = _ads_window_aggregate(db, branch_id, prev_start, prev_end)
 
-    # By channel (last week)
-    ch_rows = db.query(
-        AdsPerformance.channel,
-        func.coalesce(func.sum(AdsPerformance.cost_native), 0),
-        func.coalesce(func.sum(AdsPerformance.impressions), 0),
-        func.coalesce(func.sum(AdsPerformance.clicks), 0),
-        func.coalesce(func.sum(AdsPerformance.bookings), 0),
-        func.coalesce(func.sum(AdsPerformance.revenue_native), 0),
-    ).filter(
-        AdsPerformance.branch_id == branch_id,
-        AdsPerformance.grain == "daily",
-        AdsPerformance.date_from >= week_start,
-        AdsPerformance.date_from <= week_end,
-    ).group_by(AdsPerformance.channel).all()
+    # By channel — last week + prev week so we can show WoW deltas
+    def _channel_aggregate(d_from, d_to):
+        rows = db.query(
+            AdsPerformance.channel,
+            func.coalesce(func.sum(AdsPerformance.cost_native), 0),
+            func.coalesce(func.sum(AdsPerformance.impressions), 0),
+            func.coalesce(func.sum(AdsPerformance.clicks), 0),
+            func.coalesce(func.sum(AdsPerformance.bookings), 0),
+            func.coalesce(func.sum(AdsPerformance.revenue_native), 0),
+        ).filter(
+            AdsPerformance.branch_id == branch_id,
+            AdsPerformance.grain == "daily",
+            AdsPerformance.date_from >= d_from,
+            AdsPerformance.date_from <= d_to,
+        ).group_by(AdsPerformance.channel).all()
+        return {
+            (r[0] or "Unknown"): {
+                "cost": float(r[1] or 0),
+                "impressions": int(r[2] or 0),
+                "clicks": int(r[3] or 0),
+                "bookings": int(r[4] or 0),
+                "revenue": float(r[5] or 0),
+            }
+            for r in rows
+        }
+
+    ch_this = _channel_aggregate(week_start, week_end)
+    ch_prev = _channel_aggregate(prev_start, prev_end)
+    blank = {"cost": 0, "impressions": 0, "clicks": 0, "bookings": 0, "revenue": 0}
 
     by_channel = []
-    for r in ch_rows:
-        cost = float(r[1] or 0)
-        impr = int(r[2] or 0)
-        clicks = int(r[3] or 0)
-        bookings = int(r[4] or 0)
-        rev = float(r[5] or 0)
+    for channel in set(ch_this.keys()) | set(ch_prev.keys()):
+        t = ch_this.get(channel, blank)
+        p = ch_prev.get(channel, blank)
+        roas = round(t["revenue"] / t["cost"], 2) if t["cost"] > 0 else None
+        prev_roas = (p["revenue"] / p["cost"]) if p["cost"] > 0 else None
         by_channel.append({
-            "channel": r[0] or "Unknown",
-            "cost": round(cost, 2),
-            "impressions": impr,
-            "clicks": clicks,
-            "bookings": bookings,
-            "revenue": round(rev, 2),
-            "ctr_pct": round(clicks / impr * 100, 2) if impr > 0 else None,
-            "cvr_pct": round(bookings / clicks * 100, 2) if clicks > 0 else None,
-            "roas": round(rev / cost, 2) if cost > 0 else None,
+            "channel": channel,
+            "cost": round(t["cost"], 2),
+            "impressions": t["impressions"],
+            "clicks": t["clicks"],
+            "bookings": t["bookings"],
+            "revenue": round(t["revenue"], 2),
+            "ctr_pct": round(t["clicks"] / t["impressions"] * 100, 2) if t["impressions"] > 0 else None,
+            "cvr_pct": round(t["bookings"] / t["clicks"] * 100, 2) if t["clicks"] > 0 else None,
+            "roas": roas,
+            "wow_cost_pct": _pct_change(t["cost"], p["cost"]),
+            "wow_bookings_pct": _pct_change(t["bookings"], p["bookings"]),
+            "wow_roas_pct": _pct_change(roas, prev_roas),
         })
     by_channel.sort(key=lambda x: -x["cost"])
 
-    # By funnel stage
-    fn_rows = db.query(
-        AdsPerformance.funnel_stage,
-        func.coalesce(func.sum(AdsPerformance.cost_native), 0),
-        func.coalesce(func.sum(AdsPerformance.bookings), 0),
-        func.coalesce(func.sum(AdsPerformance.revenue_native), 0),
-    ).filter(
-        AdsPerformance.branch_id == branch_id,
-        AdsPerformance.grain == "daily",
-        AdsPerformance.date_from >= week_start,
-        AdsPerformance.date_from <= week_end,
-    ).group_by(AdsPerformance.funnel_stage).all()
+    # NOTE: by_funnel removed per feedback (2026-05-04) — funnel-stage
+    # breakdown wasn't driving decisions and added clutter to the per-branch
+    # card. Funnel data is still surfaced inside Ad Budget Optimizer.
 
-    by_funnel = []
-    for r in fn_rows:
-        cost = float(r[1] or 0)
-        bookings = int(r[2] or 0)
-        rev = float(r[3] or 0)
-        by_funnel.append({
-            "funnel": r[0] or "—",
-            "cost": round(cost, 2),
-            "bookings": bookings,
-            "revenue": round(rev, 2),
-            "roas": round(rev / cost, 2) if cost > 0 else None,
-        })
-    by_funnel.sort(key=lambda x: -x["cost"])
+    # ── Activity log: detect changes in last week's ad lineup ─────────────
+    activity_log = _build_activity_log(
+        db, branch_id, week_start, week_end, prev_start, prev_end,
+    )
 
     # Top / bottom campaigns by ROAS (need impressions ≥ 1000 to qualify)
     camp_rows = db.query(
@@ -1039,7 +1136,7 @@ def paid_ads_section(db: Session, branch_id: UUID, today: date,
         "wow_revenue_pct": _pct_change(last_week["revenue"], prev_week["revenue"]),
         "wow_roas_pct": _pct_change(last_week["roas"], prev_week["roas"]),
         "by_channel": by_channel,
-        "by_funnel": by_funnel,
+        "activity_log": activity_log,
         "top_campaigns": top_campaigns,
         "bottom_campaigns": bottom_campaigns,
     }
