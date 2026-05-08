@@ -6,12 +6,12 @@ const STORAGE_KEY = "hid_chat_history";
 const MAX_HISTORY = 30;
 
 const SUGGESTIONS = [
-  "OCC tuần này thế nào?",
-  "KPI tháng này có on track không?",
-  "Top 5 country tháng vừa rồi",
-  "Channel mix 30 ngày qua",
-  "Có alert gì đang active?",
-  "Holiday nào sắp tới cần chuẩn bị?",
+  "How is OCC this week?",
+  "Is this month's KPI on track?",
+  "Top 5 source countries last month",
+  "Channel mix for the past 30 days",
+  "Any active alerts right now?",
+  "What upcoming holidays should we prep for?",
 ];
 
 function loadHistory() {
@@ -147,7 +147,7 @@ export default function ChatWidget() {
         {
           role: "assistant",
           content:
-            "Lỗi gọi chat API: " +
+            "Chat API error: " +
             (e?.response?.data?.error || e?.message || "unknown"),
           ts: Date.now(),
           error: true,
@@ -166,7 +166,7 @@ export default function ChatWidget() {
   };
 
   const clear = () => {
-    if (!confirm("Xoá toàn bộ lịch sử chat?")) return;
+    if (!confirm("Clear all chat history?")) return;
     setMessages([]);
     localStorage.removeItem(STORAGE_KEY);
   };
@@ -200,7 +200,7 @@ export default function ChatWidget() {
             <div className="flex items-center gap-1">
               <button
                 onClick={clear}
-                title="Xoá lịch sử"
+                title="Clear history"
                 className="text-gray-400 hover:text-white p-1 rounded"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -211,7 +211,7 @@ export default function ChatWidget() {
               <button
                 onClick={() => setOpen(false)}
                 className="text-gray-400 hover:text-white p-1 rounded"
-                title="Đóng"
+                title="Close"
               >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -223,21 +223,21 @@ export default function ChatWidget() {
 
           {/* Phase 1 banner */}
           <div className="px-3 py-1.5 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-800">
-            Phase 1: chỉ <strong>đề xuất</strong> next actions. Phase 2 sẽ có thể <strong>execute</strong> theo suggest.
+            Phase 1: <strong>suggestions only</strong>. Phase 2 will be able to <strong>execute</strong> the suggested actions.
           </div>
 
           {/* Messages */}
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-3 bg-gray-50">
             {!configured && (
               <div className="text-xs bg-red-50 border border-red-200 text-red-700 rounded p-2">
-                ANTHROPIC_API_KEY chưa được cấu hình trên backend. Liên hệ admin.
+                ANTHROPIC_API_KEY is not configured on the backend. Please contact your admin.
               </div>
             )}
 
             {messages.length === 0 && (
               <div className="space-y-3">
                 <div className="text-xs text-gray-500">
-                  Chào! Tao là HiD Assistant. Hỏi gì về performance, KPI, ads, KOL, country, alerts đều được.
+                  Hi — I'm the HiD Assistant. Ask me anything about performance, KPI, ads, KOL, countries, or alerts.
                 </div>
                 <div className="space-y-1.5">
                   {SUGGESTIONS.map(s => (
@@ -290,7 +290,7 @@ export default function ChatWidget() {
                   <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-pulse" />
                   <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-pulse" style={{ animationDelay: "0.15s" }} />
                   <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-pulse" style={{ animationDelay: "0.3s" }} />
-                  <span className="text-xs ml-1">đang suy nghĩ...</span>
+                  <span className="text-xs ml-1">thinking...</span>
                 </div>
               </div>
             )}
@@ -304,7 +304,7 @@ export default function ChatWidget() {
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={onKeyDown}
-                placeholder="Hỏi về OCC, KPI, ads, KOL, alerts..."
+                placeholder="Ask about OCC, KPI, ads, KOL, alerts..."
                 rows={2}
                 className="flex-1 resize-none text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                 disabled={loading}
@@ -314,11 +314,11 @@ export default function ChatWidget() {
                 disabled={loading || !input.trim()}
                 className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white rounded-lg px-3 py-2 text-sm font-medium transition-colors h-fit"
               >
-                Gửi
+                Send
               </button>
             </div>
             <div className="text-[10px] text-gray-400 mt-1 px-1">
-              Enter để gửi · Shift+Enter xuống dòng
+              Enter to send · Shift+Enter for newline
             </div>
           </div>
         </div>
