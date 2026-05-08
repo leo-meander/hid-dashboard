@@ -553,7 +553,7 @@ def _render_exec_summary(report: list, today: date) -> str:
           </tr>""")
 
     return f"""
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+    <div id="exec-summary" class="hid-exec-summary" style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
       <h3 style="margin:0 0 12px;font-size:15px;font-weight:700;color:#111827;">📊 Executive Summary</h3>
       <div style="overflow-x:auto;">
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
@@ -1007,8 +1007,8 @@ def _render_ad_optimizer(b: dict) -> str:
         </div>""")
 
     return f"""
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
-      <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">🎯 Ad Budget Optimizer</h3>
+    <div id="ad-optimizer-{b['branch_id']}" data-branch-id="{b['branch_id']}" class="hid-ad-optimizer" style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+      <h3 style="margin:0 0 4px;font-size:15px;font-weight:700;color:#111827;">🎯 Ad Budget Optimizer — {b['branch_name']}</h3>
       <p style="margin:0 0 12px;font-size:12px;color:#6b7280;">
         6-step workflow per country running ads this month. Window OCC compared to predicted OCC
         drives BOOST / MAINTAIN / STABILIZE.
@@ -1788,7 +1788,7 @@ def _build_html(report: list, today: date) -> str:
         crm_block = _render_crm(b)
 
         sections.append(f"""
-        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+        <div id="branch-card-{b['branch_id']}" data-branch-id="{b['branch_id']}" data-branch-name="{b['branch_name']}" class="hid-branch-card" style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
             <div>
               <h3 style="margin:0;font-size:16px;font-weight:700;color:#111827;">{b['branch_name']}</h3>
@@ -1897,6 +1897,86 @@ def _build_html(report: list, today: date) -> str:
 </html>"""
 
 
+def _build_compact_email_html(report: list, today: date) -> str:
+    """Compact email = header + Executive Summary + CTA to full UI report.
+
+    Operators wanted the email to be a glance-able digest rather than a
+    multi-screen scroll. The full per-branch detail (KPI tables, outliers,
+    behavior, channel mix, country insights, paid ads, KOL, CRM, actions,
+    ad-budget optimizer) lives on the dashboard at FRONTEND_URL/report
+    instead. This function renders the compact version.
+    """
+    month_name = MONTHS_EN[today.month]
+    exec_summary_html = _render_exec_summary(report, today)
+
+    frontend_url = (settings.FRONTEND_URL or "").rstrip("/")
+    full_report_url = f"{frontend_url}/report?view=full" if frontend_url else "#"
+
+    # Branch quick-jump links — operators can deep-link to a specific
+    # branch tab in the UI via ?view=full&branch={id}.
+    branch_links_html = ""
+    if frontend_url and report:
+        chips = []
+        for b in report:
+            chips.append(
+                f"<a href='{frontend_url}/report?view=full&branch={b['branch_id']}' "
+                f"style='display:inline-block;background:#f3f4f6;color:#374151;"
+                f"padding:6px 12px;border-radius:16px;font-size:12px;margin:3px;"
+                f"text-decoration:none;border:1px solid #e5e7eb;'>"
+                f"{b['branch_name']}</a>"
+            )
+        branch_links_html = (
+            "<div style='margin-top:12px;text-align:center;'>"
+            "<p style='margin:0 0 8px;font-size:11px;color:#6b7280;'>"
+            "Or jump to a specific branch:</p>"
+            + "".join(chips) + "</div>"
+        )
+
+    cta_html = f"""
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:24px;margin-bottom:16px;text-align:center;">
+      <h3 style="margin:0 0 8px;font-size:16px;font-weight:700;color:#111827;">📋 Full Report on Dashboard</h3>
+      <p style="margin:0 0 16px;font-size:13px;color:#6b7280;line-height:1.5;">
+        Per-branch drill-downs, Paid Ads / KOL / CRM detail, Country Insights, Outliers,
+        Booking Behavior, Channel Mix, and Ad Budget Optimizer are all in the full report on the dashboard.
+      </p>
+      <a href="{full_report_url}"
+         style="display:inline-block;background:#4f46e5;color:#fff;padding:12px 28px;
+                border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">
+        View Full Report &rarr;
+      </a>
+      {branch_links_html}
+    </div>"""
+
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f3f4f6;margin:0;padding:24px;">
+  <div style="max-width:960px;margin:0 auto;">
+
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:12px;padding:24px;margin-bottom:20px;color:#fff;">
+      <h1 style="margin:0;font-size:22px;font-weight:700;">HiD Weekly Report</h1>
+      <p style="margin:6px 0 0;opacity:0.85;font-size:14px;">
+        {today.strftime('%A, %d %B %Y')} · {month_name} {today.year}
+      </p>
+    </div>
+
+    <!-- Executive Summary (the only data the email itself shows) -->
+    {exec_summary_html}
+
+    <!-- CTA — full report on dashboard -->
+    {cta_html}
+
+    <!-- Footer -->
+    <p style="text-align:center;font-size:11px;color:#9ca3af;margin-top:16px;">
+      Generated by HiD Dashboard · {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}<br/>
+      To stop receiving this, ask the marketing team to remove your address from <code>EMAIL_RECIPIENTS</code>.
+    </p>
+  </div>
+</body>
+</html>"""
+
+
 @router.get("/weekly")
 def weekly_report(db: Session = Depends(get_db)):
     """Return weekly report data as JSON."""
@@ -1947,7 +2027,9 @@ def send_weekly_email(
 
     today = date.today()
     report = _build_report(db)
-    html = _build_html(report, today)
+    # Email gets the compact version (Exec Summary + CTA → UI). Full
+    # per-branch detail lives on the dashboard.
+    html = _build_compact_email_html(report, today)
     subject = f"HiD Weekly Report — {today.strftime('%d %b %Y')}"
 
     if not send_email_html(subject, html, recipients):
@@ -2062,7 +2144,9 @@ def _send_weekly_email_to_default_recipients(db: Session) -> dict:
 
     today = date.today()
     report = _build_report(db)
-    html = _build_html(report, today)
+    # Email gets the compact version (Exec Summary + CTA → UI). Full
+    # per-branch detail lives on the dashboard.
+    html = _build_compact_email_html(report, today)
     subject = f"HiD Weekly Report — {today.strftime('%d %b %Y')}"
 
     if not send_email_html(subject, html, recipients):
@@ -2163,7 +2247,7 @@ def _apply_schedule_to_scheduler():
                 _schedule_logger.warning("Weekly email job: no recipients configured")
                 return
             report = _build_report(db)
-            html = _build_html(report, date.today())
+            html = _build_compact_email_html(report, date.today())
             subject = f"HiD Weekly Report — {date.today().strftime('%d %b %Y')}"
             if send_email_html(subject, html, recipients):
                 _schedule_logger.info("Weekly email sent to %s", recipients)
