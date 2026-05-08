@@ -642,74 +642,97 @@ def _render_channel_mix(b: dict) -> str:
 
 
 def _render_country_detail(b: dict) -> str:
-    ci = b.get("analytics", {}).get("countries")
-    if not ci or not ci["top"]:
-        return ""
-    cur = b["currency"]
+    """Country Insights — 2 tables (booking date / check-in date) × top 10
+    countries × 3 deltas (WoW / 30d / YoY).
 
-    top_rows = []
-    yoy_present_count = 0
-    for c in ci["top"]:
-        yoy = c["yoy_bookings_pct"]
-        if yoy is not None:
-            yoy_present_count += 1
-            yoy_html = (
-                f"<span style='color:{'#16a34a' if yoy >= 0 else '#dc2626'};font-weight:600;'>"
-                f"{_signed_pct(yoy)}</span>"
-            )
-        else:
-            yoy_html = "<span style='color:#9ca3af;' title='No data for same window in 2025'>n/a</span>"
-        top_rows.append(
-            f"<tr><td style='{_TABLE_TD}'>{c['country']}</td>"
+    Replaces the previous "Top markets / Growing / Country Intel" chip
+    line + "Growing / Shrinking / Emerging" chip lists. Per feedback
+    (2026-05-04) those duplicated each other; consolidating into one
+    block with explicit deltas is clearer.
+    """
+    ci = b.get("analytics", {}).get("countries")
+    if not ci:
+        return ""
+    by_book = ci.get("by_booking_date") or []
+    by_stay = ci.get("by_checkin_date") or []
+    if not by_book and not by_stay:
+        return ""
+
+    cur = b["currency"]
+    windows = ci.get("windows") or {}
+
+    def _delta(val, neutral_color="#9ca3af"):
+        if val is None:
+            return f"<span style='color:{neutral_color};'>n/a</span>"
+        color = "#16a34a" if val >= 0 else "#dc2626"
+        return f"<span style='color:{color};font-weight:600;'>{_signed_pct(val)}</span>"
+
+    def _build_rows(rows: list) -> str:
+        return "".join(
+            f"<tr>"
+            f"<td style='{_TABLE_TD}'>{c['country']}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{c['bookings']:,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{c['nights']:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['revenue_native'], cur)}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['adr_native'], cur)}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{c['avg_los']:.2f}n</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{yoy_html}</td></tr>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_delta(c.get('wow_pct'))}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_delta(c.get('d30_pct'))}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_delta(c.get('yoy_pct'))}</td>"
+            f"</tr>"
+            for c in rows
         )
 
-    def _chips(lst, color):
-        if not lst:
-            return "<span style='color:#9ca3af;font-size:12px;'>none</span>"
-        chips = []
-        for x in lst:
-            label = x.get("country", "")
-            detail = (f" {_signed_pct(x.get('change_pct'))}"
-                      if x.get("change_pct") is not None else
-                      f" ({x.get('bookings')} bookings)")
-            chips.append(
-                f"<span style='background:{color};color:#fff;padding:2px 8px;border-radius:12px;"
-                f"font-size:11px;margin-right:4px;display:inline-block;margin-bottom:3px;'>"
-                f"{label}{detail}</span>"
-            )
-        return "".join(chips)
+    book_rows = _build_rows(by_book) or (
+        f"<tr><td colspan='8' style='{_TABLE_TD};color:#9ca3af;'>No bookings in last 30d</td></tr>"
+    )
+    stay_rows = _build_rows(by_stay) or (
+        f"<tr><td colspan='8' style='{_TABLE_TD};color:#9ca3af;'>No stays in last 30d</td></tr>"
+    )
 
-    yoy_coverage_note = (
-        f" · YoY data: {yoy_present_count}/{len(ci['top'])} countries"
-        if yoy_present_count < len(ci["top"]) else ""
+    last_30 = windows.get("last_30") or ["", ""]
+    last_7 = windows.get("last_7") or ["", ""]
+
+    def _table(title: str, subtitle: str, rows_html: str) -> str:
+        return f"""
+      <p style="margin:10px 0 4px;font-size:12px;font-weight:600;color:#374151;">{title}</p>
+      <p style="margin:0 0 4px;font-size:11px;color:#9ca3af;">{subtitle}</p>
+      <table style="width:100%;border-collapse:collapse;">
+        <tr>
+          <th style="{_TABLE_TH}">Country</th>
+          <th style="{_TABLE_TH};text-align:right;">Bookings</th>
+          <th style="{_TABLE_TH};text-align:right;">Nights</th>
+          <th style="{_TABLE_TH};text-align:right;">Revenue</th>
+          <th style="{_TABLE_TH};text-align:right;">ADR</th>
+          <th style="{_TABLE_TH};text-align:right;" title="last 7d vs prev 7d">WoW</th>
+          <th style="{_TABLE_TH};text-align:right;" title="last 30d vs prior 30d">30d Δ</th>
+          <th style="{_TABLE_TH};text-align:right;" title="last 30d vs same window prior year">YoY</th>
+        </tr>
+        {rows_html}
+      </table>"""
+
+    booking_table = _table(
+        "📅 By Date Booked (campaign signal)",
+        f"Top {len(by_book)} countries by reservation_date — when the booking landed.",
+        book_rows,
+    )
+    checkin_table = _table(
+        "🏨 By Check-in Date (stays)",
+        f"Top {len(by_stay)} countries by check_in_date — when guests actually arrive.",
+        stay_rows,
     )
 
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
-        🌏 Country Insights (last {ci['window_days']}d){yoy_coverage_note}
+      <p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#374151;">
+        🌏 Country Insights — last 30d ({last_30[0]} → {last_30[1]})
       </p>
-      <table style="width:100%;border-collapse:collapse;">
-        <tr><th style="{_TABLE_TH}">Country</th><th style="{_TABLE_TH};text-align:right;">Bookings</th>
-            <th style="{_TABLE_TH};text-align:right;">Nights</th><th style="{_TABLE_TH};text-align:right;">ADR</th>
-            <th style="{_TABLE_TH};text-align:right;">Avg LOS</th>
-            <th style="{_TABLE_TH};text-align:right;" title="bookings this window vs same window in 2025">YoY</th></tr>
-        {''.join(top_rows)}
-      </table>
-      <p style="margin:6px 0 0;font-size:11px;color:#9ca3af;">
-        YoY = bookings (last {ci['window_days']}d) vs same window in {date.today().year - 1}.
-        "n/a" = no data for that country in 2025.
+      <p style="margin:0 0 4px;font-size:11px;color:#9ca3af;">
+        WoW = last 7d ({last_7[0]} → {last_7[1]}) vs prev 7d ·
+        30d Δ = last 30d vs prior 30d (60..30 days ago) ·
+        YoY = last 30d vs same window {date.today().year - 1}
       </p>
-      <div style="margin-top:10px;font-size:12px;color:#374151;">
-        <div style="margin-bottom:4px;"><strong>Growing (vs prior 90d):</strong> {_chips(ci['growing'], '#16a34a')}</div>
-        <div style="margin-bottom:4px;"><strong>Shrinking (vs prior 90d):</strong> {_chips(ci['shrinking'], '#dc2626')}</div>
-        <div><strong>Emerging (new countries):</strong> {_chips(ci['emerging'], '#6366f1')}</div>
-      </div>
+      {booking_table}
+      {checkin_table}
     </div>"""
 
 
@@ -1523,21 +1546,10 @@ def _build_html(report: list, today: date) -> str:
             "crm_actions": crm_actions,
         })
 
-        top_c = " · ".join(f"{c['country']} ({c['bookings']})" for c in b["top_countries"][:3])
-        growth_c = " · ".join(
-            f"{g['country']} <span style='color:#16a34a'>▲{g['growth_pct']}%</span>"
-            for g in b["growth_countries"][:3]
-        ) or "—"
-
-        # Country Intel tier summary — color by tier, label by trend.
-        # Score is intentionally hidden (see UPD log: "ghi score không biết
-        # sao"); the trend_label conveys the same info more naturally.
-        tier_colors = {"Hot": "#dc2626", "Warm": "#f59e0b", "Cold": "#6b7280"}
-        intel_c = " · ".join(
-            f"<span style='color:{tier_colors.get(c['tier'], '#6b7280')};font-weight:600;'>"
-            f"{c['country']}</span> <span style='color:#6b7280;'>({c.get('trend_label', c['tier'])})</span>"
-            for c in intel[:5]
-        ) or "—"
+        # Top markets / Growing / Country Intel chip lines were removed
+        # 2026-05-04 — overlapping with the Country Insights detail block.
+        # `intel` (from country_scorer) is still used by the Hot/Warm/Cold
+        # action bullets above.
 
         narrative_bullets = _branch_narrative(b)
         narrative_html = (
@@ -1628,11 +1640,6 @@ def _build_html(report: list, today: date) -> str:
             </tr>
           </table>
 
-          <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;font-size:12px;color:#6b7280;">
-            <strong style="color:#374151;">Top markets (90d):</strong> {top_c or '—'}<br/>
-            <strong style="color:#374151;">Growing markets:</strong> {growth_c}<br/>
-            <strong style="color:#374151;">Country Intel:</strong> {intel_c}
-          </div>
           {_render_outliers(b)}
           {_render_behavior(b)}
           {_render_channel_mix(b)}

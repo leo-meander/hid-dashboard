@@ -463,16 +463,46 @@ def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7) -> dic
 # ── 5. Country insights ──────────────────────────────────────────────────────
 
 def country_insights(db: Session, branch_id: UUID, today: date,
-                     days: int = 90, limit: int = 8) -> dict:
-    """
-    Top countries + YoY change + growing/shrinking/emerging + per-country ADR/LOS.
-    """
-    cutoff = today - timedelta(days=days)
-    prev_cutoff = cutoff - timedelta(days=days)
-    yoy_start = today.replace(year=today.year - 1) - timedelta(days=days)
-    yoy_end = today.replace(year=today.year - 1)
+                     days: int = 30, limit: int = 10) -> dict:
+    """Top-N countries with WoW / 30d / YoY deltas, in TWO views.
 
-    def _country_stats(date_from: date, date_to: date):
+    Per feedback (2026-05-04) the email previously had three overlapping
+    country sections (Top markets chip, Growing markets chip, Country
+    Intel chip + Country Insights detail with growing/shrinking/emerging).
+    They've been collapsed into a single block with two tables:
+
+      - by_booking_date: filtered on reservation_date (Date Booked)
+        — measures how marketing activity is converting RIGHT NOW
+      - by_checkin_date: filtered on check_in_date (Stay Date)
+        — measures actual stay volume coming in
+
+    Each row shows three deltas:
+      - wow_pct: last 7d vs prev 7d
+      - d30_pct: last 30d vs prior 30d (30..60 days ago)
+      - yoy_pct: last 30d vs same 30d window in prior year
+
+    Sorted by last-30d bookings (booking-date table) — same ranking is
+    used for the check-in table so the two read consistently.
+    """
+    last_7_end = today
+    last_7_start = today - timedelta(days=6)
+    prev_7_end = last_7_start - timedelta(days=1)
+    prev_7_start = prev_7_end - timedelta(days=6)
+
+    last_30_end = today
+    last_30_start = today - timedelta(days=29)
+    prev_30_end = last_30_start - timedelta(days=1)
+    prev_30_start = prev_30_end - timedelta(days=29)
+
+    # YoY: same 30-day window in the prior calendar year. replace(year=...)
+    # may raise on Feb 29 — fall through to a clamped date when that hits.
+    try:
+        yoy_end = today.replace(year=today.year - 1)
+    except ValueError:
+        yoy_end = today.replace(year=today.year - 1, day=28)
+    yoy_start = yoy_end - timedelta(days=29)
+
+    def _stats(date_col, d_from: date, d_to: date) -> dict:
         rows = db.query(
             Reservation.guest_country,
             func.count(Reservation.id).label("bookings"),
@@ -480,63 +510,67 @@ def country_insights(db: Session, branch_id: UUID, today: date,
             func.coalesce(func.sum(Reservation.grand_total_native), 0).label("rev"),
         ).filter(
             Reservation.branch_id == branch_id,
-            Reservation.check_in_date >= date_from,
-            Reservation.check_in_date <= date_to,
+            date_col >= d_from,
+            date_col <= d_to,
             Reservation.guest_country.isnot(None),
             ~func.lower(func.coalesce(Reservation.guest_country, "")).contains("unknown"),
             ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
         ).group_by(Reservation.guest_country).all()
-        return {r.guest_country: {"bookings": int(r.bookings or 0),
-                                  "nights": int(r.nights or 0),
-                                  "revenue": float(r.rev or 0)} for r in rows}
+        return {
+            r.guest_country: {
+                "bookings": int(r.bookings or 0),
+                "nights": int(r.nights or 0),
+                "revenue": float(r.rev or 0),
+            }
+            for r in rows
+        }
 
-    recent = _country_stats(cutoff, today)
-    prev = _country_stats(prev_cutoff, cutoff - timedelta(days=1))
-    yoy = _country_stats(yoy_start, yoy_end)
+    def _build_table(date_col):
+        # Six per-country dicts share `date_col` so booking-date and
+        # check-in-date tables stay 100% comparable apples-to-apples.
+        last_30 = _stats(date_col, last_30_start, last_30_end)
+        prev_30 = _stats(date_col, prev_30_start, prev_30_end)
+        last_7 = _stats(date_col, last_7_start, last_7_end)
+        prev_7 = _stats(date_col, prev_7_start, prev_7_end)
+        yoy = _stats(date_col, yoy_start, yoy_end)
 
-    # Top countries with YoY
-    top = []
-    for country, cur in sorted(recent.items(), key=lambda x: -x[1]["bookings"])[:limit]:
-        yoy_cur = yoy.get(country, {}).get("bookings", 0)
-        yoy_pct = _pct_change(cur["bookings"], yoy_cur) if yoy_cur > 0 else None
-        adr = round(cur["revenue"] / cur["nights"], 2) if cur["nights"] > 0 else None
-        los = round(cur["nights"] / cur["bookings"], 2) if cur["bookings"] > 0 else None
-        top.append({
-            "country": country,
-            "bookings": cur["bookings"],
-            "nights": cur["nights"],
-            "revenue_native": round(cur["revenue"], 2),
-            "adr_native": adr,
-            "avg_los": los,
-            "yoy_bookings_pct": yoy_pct,
-        })
-
-    # Growing / shrinking / emerging
-    growing, shrinking, emerging = [], [], []
-    for country, cur in recent.items():
-        if cur["bookings"] < 2:
-            continue
-        p = prev.get(country, {}).get("bookings", 0)
-        if p == 0:
-            emerging.append({"country": country, "bookings": cur["bookings"]})
-            continue
-        change = _pct_change(cur["bookings"], p)
-        entry = {"country": country, "bookings": cur["bookings"], "prev": p, "change_pct": change}
-        if change is not None and change >= 20:
-            growing.append(entry)
-        elif change is not None and change <= -20:
-            shrinking.append(entry)
-
-    growing.sort(key=lambda x: -(x["change_pct"] or 0))
-    shrinking.sort(key=lambda x: (x["change_pct"] or 0))
-    emerging.sort(key=lambda x: -x["bookings"])
+        out = []
+        ranked = sorted(last_30.items(), key=lambda x: -x[1]["bookings"])[:limit]
+        for country, cur in ranked:
+            wow_pct = _pct_change(
+                last_7.get(country, {}).get("bookings", 0),
+                prev_7.get(country, {}).get("bookings", 0),
+            )
+            d30_pct = _pct_change(
+                cur["bookings"],
+                prev_30.get(country, {}).get("bookings", 0),
+            )
+            yoy_cur = yoy.get(country, {}).get("bookings", 0)
+            yoy_pct = _pct_change(cur["bookings"], yoy_cur) if yoy_cur > 0 else None
+            adr = round(cur["revenue"] / cur["nights"], 2) if cur["nights"] > 0 else None
+            out.append({
+                "country": country,
+                "bookings": cur["bookings"],
+                "nights": cur["nights"],
+                "revenue_native": round(cur["revenue"], 2),
+                "adr_native": adr,
+                "wow_pct": wow_pct,
+                "d30_pct": d30_pct,
+                "yoy_pct": yoy_pct,
+            })
+        return out
 
     return {
-        "window_days": days,
-        "top": top,
-        "growing": growing[:5],
-        "shrinking": shrinking[:5],
-        "emerging": emerging[:5],
+        "window_days": (last_30_end - last_30_start).days + 1,
+        "windows": {
+            "last_7": [last_7_start.isoformat(), last_7_end.isoformat()],
+            "prev_7": [prev_7_start.isoformat(), prev_7_end.isoformat()],
+            "last_30": [last_30_start.isoformat(), last_30_end.isoformat()],
+            "prev_30": [prev_30_start.isoformat(), prev_30_end.isoformat()],
+            "yoy": [yoy_start.isoformat(), yoy_end.isoformat()],
+        },
+        "by_booking_date": _build_table(Reservation.reservation_date),
+        "by_checkin_date": _build_table(Reservation.check_in_date),
     }
 
 
@@ -1567,7 +1601,8 @@ def build_branch_analytics(db: Session, branch: Branch, today: date) -> dict:
       - outliers:    30-day baseline σ, only events in last calendar week
       - behavior:    last calendar week (cancel %, lead time, LOS)
       - channel_mix: last calendar week
-      - countries:   90 days for top + YoY comparison (need volume)
+      - countries:   top-10 by last-30d bookings, in two views (booking
+                      date / check-in date), each with WoW + 30d + YoY
       - paid_ads:    last calendar week vs prev calendar week
       - kol:         last calendar week (posts published; expiring is forward-looking 60d)
       - crm:         last calendar week (revenue only; from CRM-tagged reservations)
@@ -1581,7 +1616,7 @@ def build_branch_analytics(db: Session, branch: Branch, today: date) -> dict:
         "outliers": outliers(db, branch.id, today, baseline_days=30),
         "behavior": booking_behavior(db, branch.id, today, days=7),
         "channel_mix": channel_mix(db, branch.id, today, days=7),
-        "countries": country_insights(db, branch.id, today, days=90, limit=8),
+        "countries": country_insights(db, branch.id, today, days=30, limit=10),
         "ad_optimizer": ad_budget_optimizer(db, branch.id, today, total_rooms),
         "paid_ads": paid_ads_section(db, branch.id, today, days=7),
         "kol": kol_section(db, branch.id, branch.name, today, days=7),
