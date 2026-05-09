@@ -166,6 +166,79 @@ def fetch_kol_targets(
     return data
 
 
+# ── Public revenue API ─────────────────────────────────────────────────────
+# Endpoint: GET {base}/api/public/kol-revenue/{slug}?year=YYYY&month=M[&hotel_id=UUID]
+# Auth:     Authorization: Bearer <KOL_REVENUE_API_SECRET>
+# Response: envelope {success, data, error, timestamp} where data has
+#           {organization, period, totals, excluded, branches, months?}.
+#
+# `excluded` reports rows the KOL Engine pre-filtered as ads-attributed
+# (cutoff 2026-05-01); they are NOT in `totals`. Each branches[] row
+# carries both native (`revenue`, `cost`) and VND-equivalent
+# (`revenue_vnd`, `cost_vnd`), so callers don't need an FX layer for
+# cross-branch sums.
+
+_KOL_REVENUE_TTL_SEC = 600  # 10 min — same window as targets cache; the
+                            # endpoint is a heavy aggregation and the same
+                            # (slug, year, month) is queried repeatedly
+                            # by current+prev month MoM views.
+_kol_revenue_cache: dict[tuple, tuple[float, dict]] = {}
+
+
+def fetch_kol_revenue(
+    base_url: str,
+    org_slug: str,
+    api_key: str,
+    year: int,
+    month: int,
+    hotel_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Fetch KOL bookings/revenue from the public revenue API.
+
+    Returns the inner ``data`` payload (already de-duped against Ads
+    Platform attribution from 2026-05-01 onward), or ``None`` on any
+    failure (missing creds, network, non-success envelope). Callers
+    must treat ``None`` as "API unavailable" and fall back to local
+    Cloudbeds aggregation so the card never shows 0.
+    """
+    if not (base_url and org_slug and api_key):
+        log.info("fetch_kol_revenue: missing config (base_url/slug/key)")
+        return None
+
+    cache_key = (org_slug, int(year), int(month), hotel_id or "")
+    cached = _kol_revenue_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _KOL_REVENUE_TTL_SEC:
+        return cached[1]
+
+    qs = f"year={year}&month={month}"
+    if hotel_id:
+        qs += f"&hotel_id={hotel_id}"
+    url = f"{base_url}/api/public/kol-revenue/{org_slug}?{qs}"
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {api_key}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+    except Exception as e:
+        log.warning("fetch_kol_revenue: HTTP error %s", e)
+        return None
+
+    if not body.get("success"):
+        log.warning("fetch_kol_revenue: API returned error: %s", body.get("error"))
+        return None
+
+    data = body.get("data") or {}
+    _kol_revenue_cache[cache_key] = (time.time(), data)
+    log.info(
+        "fetch_kol_revenue OK: %s %s/%s — %d branches",
+        org_slug, year, month, len(data.get("branches") or []),
+    )
+    return data
+
+
 # Inverse of HOTEL_TO_BRANCH_KEY — short branch-key → KOL Engine hotel UUID.
 # Used by weekly_report_builder.kol_section() to look up the right branch
 # row in the targets API response.

@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # auth scheme + different endpoint than KOL_SYNC_API_KEY above.
     KOL_TARGETS_ORG_SLUG: str = "meander"
     KOL_PUBLIC_API_KEY: str = ""
+    # Public revenue API — Bearer-auth endpoint exposing monthly KOL
+    # bookings/revenue, de-duped against Ads Platform attribution from
+    # 2026-05-01 onwards. Distinct secret from KOL_PUBLIC_API_KEY because
+    # the two endpoints rotate independently.
+    KOL_REVENUE_API_SECRET: str = ""
     GHL_BASE_URL: str = "https://services.leadconnectorhq.com"
     # Legacy single-location (kept for backward compat)
     GHL_LOCATION_ID: str = ""

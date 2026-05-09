@@ -12,7 +12,7 @@ Data sources (post migration 028):
   - CRM:                       Cloudbeds reservations (CRM/MEANDER'S FRIEND/
                                Travel guide/Grand Open)
 
-Revenue exclusion: Blogger, House Use, Special Case (non-paying guests)
+Revenue exclusion: Blogger, House Use, Special Case, Work Exchange (non-paying guests)
 """
 import calendar
 import logging
@@ -34,6 +34,8 @@ from app.models.branch import Branch
 from app.models.reservation import Reservation
 from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
 from app.services.ads_platform import branch_slug_for, get_client as _get_ads_client
+from app.services.kol_engine import fetch_kol_revenue, resolve_hotel_id_from_branch_name
+from app.config import settings
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -42,7 +44,7 @@ _KOL_RE = re.compile(r"\(KOL_([^)]+)\)")
 _CANCELLED = {"canceled", "cancelled", "no_show", "no-show", "cancelled_by_guest"}
 
 # Revenue exclusion: non-paying guests
-_EXCLUDED_SOURCES = {"blogger", "house use", "houseuse", "special case"}
+_EXCLUDED_SOURCES = {"blogger", "house use", "houseuse", "special case", "work exchange"}
 
 
 def _envelope(data):
@@ -66,7 +68,7 @@ def _crm_filter():
 
 
 def _revenue_source_filter():
-    """Exclude Blogger/House Use/Special Case from revenue queries."""
+    """Exclude Blogger/House Use/Special Case/Work Exchange from revenue queries."""
     return ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES))
 
 
@@ -216,6 +218,84 @@ def get_marketing_activity_summary(
     })
 
 
+# ── KOL totals: KOL Engine API → Cloudbeds fallback ──────────────────────────
+
+
+def _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native):
+    """Local Cloudbeds aggregation — used as fallback when KOL Engine API
+    is unreachable. NOT de-duped against Ads Platform attribution, so the
+    card may inflate for May 2026+ data when the API returns None."""
+    rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
+    q = db.query(
+        func.count(Reservation.id).label("bookings"),
+        func.coalesce(func.sum(rev_col), 0).label("revenue"),
+    ).filter(
+        Reservation.room_type.ilike("%KOL_%"),
+        Reservation.reservation_date >= d_from,
+        Reservation.reservation_date <= d_to,
+        _status_filter(),
+        _revenue_source_filter(),
+    )
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+    row = q.one()
+    return int(row.bookings or 0), float(row.revenue or 0)
+
+
+def _fetch_kol_totals(db, branch_id, d_from, d_to, use_native):
+    """Pull KOL bookings/revenue from KOL Engine public API.
+
+    Single-branch view returns native currency from the matching branches[]
+    row; all-branches view sums revenue_vnd across the response. The API
+    pre-excludes Blogger/House Use/Special Case + bookings the Ads Platform
+    already attributes to ads (cutoff 2026-05-01) — single source of truth.
+
+    Falls back to local Cloudbeds aggregation on any API failure.
+    """
+    branch_obj = None
+    hotel_id = None
+    if branch_id:
+        branch_obj = db.query(Branch).filter(Branch.id == branch_id).first()
+        if branch_obj:
+            hotel_id = resolve_hotel_id_from_branch_name(branch_obj.name)
+
+    data = fetch_kol_revenue(
+        base_url=settings.KOL_ENGINE_URL,
+        org_slug=settings.KOL_TARGETS_ORG_SLUG,
+        api_key=settings.KOL_REVENUE_API_SECRET,
+        year=d_from.year,
+        month=d_from.month,
+        hotel_id=hotel_id,
+    )
+    if data is None:
+        log.warning(
+            "KOL revenue API unavailable for %s-%s — falling back to Cloudbeds",
+            d_from.year, d_from.month,
+        )
+        return _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native)
+
+    branches = data.get("branches") or []
+
+    if branch_id:
+        # Single-branch — match by hotel_id, return native revenue.
+        if not hotel_id:
+            log.warning(
+                "No KOL Engine hotel_id mapping for branch %s — falling back",
+                branch_obj.name if branch_obj else branch_id,
+            )
+            return _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native)
+        match = next((b for b in branches if b.get("hotel_id") == hotel_id), None)
+        if not match:
+            return 0, 0.0
+        return int(match.get("bookings") or 0), float(match.get("revenue") or 0)
+
+    # All branches — sum VND-equivalent.
+    totals = data.get("totals") or {}
+    bookings = int(totals.get("bookings") or 0)
+    revenue = sum(float(b.get("revenue_vnd") or 0) for b in branches)
+    return bookings, revenue
+
+
 # ── Overview KPIs ────────────────────────────────────────────────────────────
 
 def _build_overview(db, branch_id, d_from, d_to, use_native):
@@ -225,27 +305,17 @@ def _build_overview(db, branch_id, d_from, d_to, use_native):
         db, branch_id, d_from, d_to, use_native,
     )
 
-    # KOL (from Cloudbeds) — excludes Blogger/House Use/Special Case
-    rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
-    kol_q = db.query(
-        func.count(Reservation.id).label("bookings"),
-        func.coalesce(func.sum(rev_col), 0).label("revenue"),
-    ).filter(
-        Reservation.room_type.ilike("%KOL_%"),
-        Reservation.check_in_date >= d_from,
-        Reservation.check_in_date <= d_to,
-        _status_filter(),
-        _revenue_source_filter(),
+    # KOL bookings/revenue: KOL Engine /api/public/kol-revenue (de-duped vs
+    # Ads Platform from 2026-05-01 cutoff). Falls back to Cloudbeds query
+    # if the API is unreachable so the card never shows 0.
+    kol_bookings, kol_revenue = _fetch_kol_totals(
+        db, branch_id, d_from, d_to, use_native,
     )
-    if branch_id:
-        kol_q = kol_q.filter(Reservation.branch_id == branch_id)
-    kol_row = kol_q.one()
-    kol_bookings = int(kol_row.bookings)
-    kol_revenue = float(kol_row.revenue)
 
-    # CRM (from Cloudbeds) — excludes Blogger/House Use/Special Case
+    # CRM (from Cloudbeds) — excludes Blogger/House Use/Special Case/Work Exchange
     # Filter on reservation_date (Date Booked), not check_in_date (Stay Date) —
     # CRM activity is measured by when the booking landed, not when the guest stays.
+    rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
     crm_q = db.query(
         func.count(Reservation.id).label("bookings"),
         func.coalesce(func.sum(rev_col), 0).label("revenue"),
