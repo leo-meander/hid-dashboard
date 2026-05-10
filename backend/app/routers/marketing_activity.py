@@ -134,11 +134,15 @@ def _fetch_paid_ads_totals(
             continue
 
         for r in rows or []:
+            row_branch = (r.get("branch") or "").lower().strip()
+            # Skip rows from non-HiD branches (e.g. Bread Expresio leaks
+            # via shared Meta accounts when querying without branch filter).
+            if row_branch not in slug_to_currency:
+                continue
             bookings_total += int(r.get("conversions") or 0)
             revenue_native = float(r.get("revenue") or 0)
             if revenue_native == 0:
                 continue
-            row_branch = (r.get("branch") or "").lower().strip()
             row_currency = (
                 r.get("currency")
                 or slug_to_currency.get(row_branch)
@@ -768,6 +772,7 @@ def debug_paid_ads_sources(
             try:
                 totals = {"conversions": 0, "revenue": 0.0, "spend": 0.0}
                 per_platform: dict = {}
+                per_branch: dict = {}
                 fields_seen2: set = set()
                 first_rows = []
                 for platform in ("meta", "google", "tiktok"):
@@ -787,6 +792,15 @@ def debug_paid_ads_sources(
                         totals["conversions"] += c
                         totals["revenue"] += rv
                         totals["spend"] += sp
+                        b_key = r.get("branch") or "(unknown)"
+                        b_total = per_branch.setdefault(
+                            b_key,
+                            {"conversions": 0, "revenue": 0.0, "spend": 0.0, "row_count": 0},
+                        )
+                        b_total["conversions"] += c
+                        b_total["revenue"] += rv
+                        b_total["spend"] += sp
+                        b_total["row_count"] += 1
                     per_platform[platform] = p_total
                     if rows and len(first_rows) < 3:
                         first_rows.extend(rows[: max(0, 3 - len(first_rows))])
@@ -795,6 +809,7 @@ def debug_paid_ads_sources(
                     "branch_param": branch,
                     "totals": totals,
                     "per_platform": per_platform,
+                    "per_branch": per_branch,
                     "fields_seen": sorted(fields_seen2),
                     "first_3_rows": first_rows,
                 }
