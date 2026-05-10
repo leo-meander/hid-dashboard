@@ -76,13 +76,6 @@ def _status_filter():
     return ~Reservation.status.in_(["Cancelled", "Canceled", "No-Show", "No_Show"])
 
 
-_VALID_COUNTRY_RE = re.compile(r"^[A-Za-z]{2}$")
-
-
-def _is_valid_country(c) -> bool:
-    return bool(c) and bool(_VALID_COUNTRY_RE.match(str(c).strip()))
-
-
 # ── Ads data readers ─────────────────────────────────────────────────────────
 
 
@@ -93,20 +86,20 @@ def _fetch_paid_ads_totals(
     d_to: date,
     use_native: bool,
 ) -> tuple[int, float]:
-    """Paid Ads (bookings, revenue) for a month — interim Path A.
+    """Paid Ads (bookings, revenue) for a month — Path B, dashboard parity.
 
-    Live call to ``/export/spend/daily-by-country`` filtered to rows with
-    valid ISO-2 country code, mirroring the ADS Performance dashboard's
-    ``is_valid_country`` rule. Without the filter, Google PMax rows fall
-    through with country=Unknown and inflate totals ~76%.
+    Live call to ``/export/spend/daily?valid_country_only=true``. Server
+    applies the same ``_apply_common_filters`` as the ADS Performance
+    dashboard: drops ad-level rows (kept adset, plus campaign-level only
+    for PMax to avoid grain inflation), drops invalid country, dedups
+    conversions to ``omni_purchase``. Result matches dashboard's KPI
+    cards exactly.
 
-    Will swap to ``/export/spend/daily?valid_country_only=true`` once the
-    Ads Platform team ships that flag (Path B — single source of truth
-    for the rule).
-
-    Caveat: ``daily-by-country`` reads ``ad_country_metrics`` cache while
-    the dashboard reads ``metrics_cache``; team puts deltas at "<1%
-    rounding" — acceptable for interim parity.
+    Replaces interim Path A (``/spend/daily-by-country``) which read the
+    wrong cache (``ad_country_metrics``, built for booking-from-ads
+    matcher) and inflated bookings ~8x via raw additive event counts
+    (fb_pixel_purchase + offline_purchase) instead of pre-deduped
+    omni_purchase.
     """
     client = _get_ads_client()
     branch_obj = None
@@ -116,30 +109,44 @@ def _fetch_paid_ads_totals(
         if branch_obj:
             slug = branch_slug_for(branch_obj)
 
-    try:
-        rows = client.get_spend_daily_by_country(
-            d_from.isoformat(), d_to.isoformat(), branch=slug,
-        )
-    except Exception as exc:
-        log.warning(
-            "spend/daily-by-country failed (%s..%s, branch=%s): %s",
-            d_from, d_to, slug, exc,
-        )
-        return 0, 0.0
+    branches_q = db.query(Branch).filter(Branch.is_active.is_(True))
+    if branch_id is not None:
+        branches_q = branches_q.filter(Branch.id == branch_id)
+    slug_to_currency = {
+        branch_slug_for(b).lower(): (b.currency or "VND").upper()
+        for b in branches_q.all()
+    }
 
     bookings_total = 0
     revenue_vnd_total = 0.0
-    for r in rows or []:
-        if not _is_valid_country(r.get("country")):
+    for platform in ("meta", "google", "tiktok"):
+        try:
+            rows = client.get_spend_daily(
+                d_from.isoformat(), d_to.isoformat(),
+                platform=platform, branch=slug,
+                valid_country_only=True,
+            )
+        except Exception as exc:
+            log.warning(
+                "spend/daily failed (platform=%s, branch=%s): %s",
+                platform, slug, exc,
+            )
             continue
-        bookings_total += int(r.get("conversions") or 0)
-        revenue_native = float(r.get("revenue") or 0)
-        if revenue_native == 0:
-            continue
-        row_currency = (r.get("currency") or "VND").upper()
-        rate = _get_rate_to_vnd(row_currency)
-        if rate:
-            revenue_vnd_total += revenue_native * rate
+
+        for r in rows or []:
+            bookings_total += int(r.get("conversions") or 0)
+            revenue_native = float(r.get("revenue") or 0)
+            if revenue_native == 0:
+                continue
+            row_branch = (r.get("branch") or "").lower().strip()
+            row_currency = (
+                r.get("currency")
+                or slug_to_currency.get(row_branch)
+                or "VND"
+            ).upper()
+            rate = _get_rate_to_vnd(row_currency)
+            if rate:
+                revenue_vnd_total += revenue_native * rate
 
     if not use_native:
         return bookings_total, revenue_vnd_total

@@ -167,14 +167,27 @@ class AdsPlatformClient:
         *,
         platform: Optional[str] = None,
         branch: Optional[str] = None,
+        valid_country_only: Optional[bool] = None,
     ) -> list[dict]:
         """Daily aggregate: ``{date, platform, spend, impressions, clicks,
-        conversions, revenue}`` (one row per date × platform × branch)."""
+        conversions, revenue}`` (one row per date × platform × branch).
+
+        When ``valid_country_only=True`` the server applies dashboard's
+        ``_apply_common_filters``: drops ad-level rows (kept adset, plus
+        campaign-level only for PMax), drops invalid country, dedups
+        conversions to ``omni_purchase``. Result matches the ADS Performance
+        dashboard KPI cards. Default (None/False) keeps the legacy raw
+        behaviour for callers that need full picture (e.g. operational
+        Ads.jsx page).
+        """
         return self._get(
             "/api/export/spend/daily",
             params={
                 "date_from": date_from, "date_to": date_to,
                 "platform": platform, "branch": branch,
+                "valid_country_only": (
+                    "true" if valid_country_only else None
+                ),
             },
         ) or []
 
