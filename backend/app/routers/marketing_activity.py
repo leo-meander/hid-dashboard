@@ -759,34 +759,47 @@ def debug_paid_ads_sources(
         except Exception as e:
             api_results["booking_matches_paginated"] = {"error": repr(e)}
 
-        # 3. spend/daily summed across platforms (if branch supplied)
-        if branch:
+        # 3. spend/daily summed across platforms — both raw and with Path B flag
+        # (Path B applies dashboard's _apply_common_filters server-side)
+        for label, kwargs in (
+            ("spend_daily_summed_raw", {}),
+            ("spend_daily_summed_path_b", {"valid_country_only": True}),
+        ):
             try:
                 totals = {"conversions": 0, "revenue": 0.0, "spend": 0.0}
+                per_platform: dict = {}
                 fields_seen2: set = set()
                 first_rows = []
                 for platform in ("meta", "google", "tiktok"):
                     rows = client.get_spend_daily(
-                        date_from, date_to, platform=platform, branch=branch,
+                        date_from, date_to,
+                        platform=platform, branch=branch, **kwargs,
                     ) or []
+                    p_total = {"conversions": 0, "revenue": 0.0, "spend": 0.0, "row_count": len(rows)}
                     for r in rows:
                         fields_seen2.update(r.keys())
-                        totals["conversions"] += int(r.get("conversions") or 0)
-                        totals["revenue"] += float(r.get("revenue") or 0)
-                        totals["spend"] += float(r.get("spend") or 0)
+                        c = int(r.get("conversions") or 0)
+                        rv = float(r.get("revenue") or 0)
+                        sp = float(r.get("spend") or 0)
+                        p_total["conversions"] += c
+                        p_total["revenue"] += rv
+                        p_total["spend"] += sp
+                        totals["conversions"] += c
+                        totals["revenue"] += rv
+                        totals["spend"] += sp
+                    per_platform[platform] = p_total
                     if rows and len(first_rows) < 3:
                         first_rows.extend(rows[: max(0, 3 - len(first_rows))])
-                api_results["spend_daily_summed"] = {
+                api_results[label] = {
+                    "request_kwargs": kwargs,
+                    "branch_param": branch,
                     "totals": totals,
+                    "per_platform": per_platform,
                     "fields_seen": sorted(fields_seen2),
                     "first_3_rows": first_rows,
                 }
             except Exception as e:
-                api_results["spend_daily_summed"] = {"error": repr(e)}
-        else:
-            api_results["spend_daily_summed"] = {
-                "skipped": "spend/daily requires branch slug; pass ?branch=<slug>",
-            }
+                api_results[label] = {"error": repr(e), "request_kwargs": kwargs}
     except Exception as e:
         api_results["client_init_error"] = repr(e)
 
