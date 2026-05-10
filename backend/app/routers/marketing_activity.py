@@ -17,6 +17,7 @@ Revenue exclusion: Blogger, House Use, Special Case, Work Exchange (non-paying g
 import calendar
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import UUID
@@ -119,38 +120,48 @@ def _fetch_paid_ads_totals(
 
     bookings_total = 0
     revenue_vnd_total = 0.0
-    for platform in ("meta", "google", "tiktok"):
-        try:
-            rows = client.get_spend_daily(
-                d_from.isoformat(), d_to.isoformat(),
-                platform=platform, branch=slug,
-                valid_country_only=True,
-            )
-        except Exception as exc:
-            log.warning(
-                "spend/daily failed (platform=%s, branch=%s): %s",
-                platform, slug, exc,
-            )
-            continue
 
-        for r in rows or []:
-            row_branch = (r.get("branch") or "").lower().strip()
-            # Skip rows from non-HiD branches (e.g. Bread Expresio leaks
-            # via shared Meta accounts when querying without branch filter).
-            if row_branch not in slug_to_currency:
+    def _fetch_one(platform: str):
+        return client.get_spend_daily(
+            d_from.isoformat(), d_to.isoformat(),
+            platform=platform, branch=slug,
+            valid_country_only=True,
+        )
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_platform = {
+            executor.submit(_fetch_one, p): p
+            for p in ("meta", "google", "tiktok")
+        }
+        for future in as_completed(future_to_platform):
+            platform = future_to_platform[future]
+            try:
+                rows = future.result()
+            except Exception as exc:
+                log.warning(
+                    "spend/daily failed (platform=%s, branch=%s): %s",
+                    platform, slug, exc,
+                )
                 continue
-            bookings_total += int(r.get("conversions") or 0)
-            revenue_native = float(r.get("revenue") or 0)
-            if revenue_native == 0:
-                continue
-            row_currency = (
-                r.get("currency")
-                or slug_to_currency.get(row_branch)
-                or "VND"
-            ).upper()
-            rate = _get_rate_to_vnd(row_currency)
-            if rate:
-                revenue_vnd_total += revenue_native * rate
+
+            for r in rows or []:
+                row_branch = (r.get("branch") or "").lower().strip()
+                # Skip rows from non-HiD branches (e.g. Bread leaks via
+                # shared Meta accounts when querying without branch filter).
+                if row_branch not in slug_to_currency:
+                    continue
+                bookings_total += int(r.get("conversions") or 0)
+                revenue_native = float(r.get("revenue") or 0)
+                if revenue_native == 0:
+                    continue
+                row_currency = (
+                    r.get("currency")
+                    or slug_to_currency.get(row_branch)
+                    or "VND"
+                ).upper()
+                rate = _get_rate_to_vnd(row_currency)
+                if rate:
+                    revenue_vnd_total += revenue_native * rate
 
     if not use_native:
         return bookings_total, revenue_vnd_total
