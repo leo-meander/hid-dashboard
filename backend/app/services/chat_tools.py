@@ -163,6 +163,30 @@ TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "get_country_profile",
+        "description": (
+            "Detailed booking profile for one or many source countries: lead time "
+            "(avg + 0-7/8-30/31-60/60+ buckets), length of stay, pax distribution "
+            "(solo=1 adult, couple=2, friends=3-4, family=5+), room type split "
+            "(Dorm vs Room), and revenue. Use when the user asks about lead time, "
+            "pax/segment composition, room type by country, 'who books from X', "
+            "'what target should we run for X', or any booking-behavior question. "
+            "Pass `country` to drill into one country (also returns its top 5 "
+            "room_type names); omit to get top N countries. Excludes cancellations "
+            "and non-paying sources (KOL, Blogger, House Use, Special Case, Work "
+            "Exchange, Maintenance) so figures reflect real paying guests."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch_id": {"type": "string"},
+                "country": {"type": "string", "description": "Country name e.g. 'Canada' (case-insensitive). Omit to get top N."},
+                "days": {"type": "integer", "description": "Window size in days, default 90"},
+                "limit": {"type": "integer", "description": "Top N countries when no country filter, default 10"},
+            },
+        },
+    },
+    {
         "name": "get_marketing_activity",
         "description": (
             "Consolidated marketing activity for a date range: CRM bookings, "
@@ -622,6 +646,127 @@ def tool_get_kol_performance(db: Session, inp: dict, default_branch: Optional[st
     return {"counts": counts, "rights_expiring_soon": expiring}
 
 
+def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[str]) -> dict:
+    """Lead time, LOS, pax distribution, room type split per source country.
+    Used by chat to answer 'who books from X / what target / what room' questions.
+    Excludes cancellations and non-paying sources (KOL, Blogger, House Use,
+    Special Case, Work Exchange, Maintenance) — matches metrics_engine
+    EXCLUDED_SOURCES_REVENUE so figures reflect real paying guests."""
+    branch_id = _resolve_branch_id(inp.get("branch_id"), default_branch)
+    days = int(inp.get("days") or 90)
+    limit = int(inp.get("limit") or 10)
+    country_name = inp.get("country") or None
+
+    bf, params = _b_filter_clause(branch_id, "r")
+    params.update({"d": days, "limit": limit})
+
+    country_clause = ""
+    if country_name:
+        country_clause = "AND lower(r.guest_country) = lower(:country)"
+        params["country"] = country_name
+
+    excluded_sources = "('blogger','kol','house use','houseuse','special case','work exchange','maintain','maintenance')"
+
+    rows = db.execute(text(f"""
+        WITH base AS (
+            SELECT r.guest_country, r.guest_country_code, r.adults, r.nights,
+                   r.room_type_category, r.grand_total_vnd,
+                   CASE WHEN r.reservation_date IS NOT NULL AND r.check_in_date IS NOT NULL
+                        THEN (r.check_in_date - r.reservation_date) END AS lead_days
+            FROM reservations r
+            WHERE r.guest_country IS NOT NULL AND r.guest_country != '' AND r.guest_country != '0'
+              AND length(r.guest_country) > 1
+              AND r.status NOT IN ('canceled','cancelled','no_show','no-show','cancelled_by_guest')
+              AND lower(COALESCE(r.source, '')) NOT IN {excluded_sources}
+              AND r.check_in_date >= CURRENT_DATE - (:d || ' days')::interval
+              {bf}
+              {country_clause}
+        )
+        SELECT guest_country, guest_country_code,
+               COUNT(*) AS bookings,
+               COALESCE(SUM(grand_total_vnd), 0) AS revenue_vnd,
+               AVG(lead_days) FILTER (WHERE lead_days IS NOT NULL AND lead_days >= 0) AS lead_avg,
+               AVG(nights) AS los_avg,
+               COUNT(*) FILTER (WHERE adults = 1) AS p_solo,
+               COUNT(*) FILTER (WHERE adults = 2) AS p_couple,
+               COUNT(*) FILTER (WHERE adults BETWEEN 3 AND 4) AS p_group,
+               COUNT(*) FILTER (WHERE adults >= 5) AS p_family,
+               COUNT(*) FILTER (WHERE adults IS NULL OR adults = 0) AS p_unknown,
+               COUNT(*) FILTER (WHERE room_type_category = 'Dorm') AS rt_dorm,
+               COUNT(*) FILTER (WHERE room_type_category = 'Room') AS rt_room,
+               COUNT(*) FILTER (WHERE room_type_category IS NULL OR room_type_category = '') AS rt_unknown,
+               COUNT(*) FILTER (WHERE lead_days BETWEEN 0 AND 7) AS lt_0_7,
+               COUNT(*) FILTER (WHERE lead_days BETWEEN 8 AND 30) AS lt_8_30,
+               COUNT(*) FILTER (WHERE lead_days BETWEEN 31 AND 60) AS lt_31_60,
+               COUNT(*) FILTER (WHERE lead_days > 60) AS lt_60_plus,
+               COUNT(*) FILTER (WHERE lead_days IS NULL OR lead_days < 0) AS lt_unknown
+        FROM base
+        GROUP BY guest_country, guest_country_code
+        ORDER BY bookings DESC
+        LIMIT :limit
+    """), params).fetchall()
+
+    def pct(num: int, den: int) -> float:
+        return round(num / den * 100, 2) if den else 0.0
+
+    out: list[dict] = []
+    for r in rows:
+        total = int(r[2]) or 1
+        out.append({
+            "country": r[0],
+            "country_code": r[1],
+            "bookings": int(r[2]),
+            "revenue_vnd": float(r[3] or 0),
+            "lead_time_avg_days": round(float(r[4]), 1) if r[4] is not None else None,
+            "los_avg_nights": round(float(r[5]), 2) if r[5] is not None else None,
+            "pax_distribution_pct": {
+                "solo_1": pct(int(r[6]), total),
+                "couple_2": pct(int(r[7]), total),
+                "friends_3_4": pct(int(r[8]), total),
+                "family_5_plus": pct(int(r[9]), total),
+                "unknown": pct(int(r[10]), total),
+            },
+            "room_type_split_pct": {
+                "Dorm": pct(int(r[11]), total),
+                "Room": pct(int(r[12]), total),
+                "unknown": pct(int(r[13]), total),
+            },
+            "lead_time_distribution_pct": {
+                "0_7_days": pct(int(r[14]), total),
+                "8_30_days": pct(int(r[15]), total),
+                "31_60_days": pct(int(r[16]), total),
+                "60_plus_days": pct(int(r[17]), total),
+                "unknown": pct(int(r[18]), total),
+            },
+        })
+
+    if country_name and len(out) == 1:
+        rt_rows = db.execute(text(f"""
+            SELECT r.room_type, COUNT(*) AS cnt
+            FROM reservations r
+            WHERE r.guest_country IS NOT NULL
+              AND lower(r.guest_country) = lower(:country)
+              AND r.room_type IS NOT NULL AND r.room_type != ''
+              AND r.status NOT IN ('canceled','cancelled','no_show','no-show','cancelled_by_guest')
+              AND lower(COALESCE(r.source, '')) NOT IN {excluded_sources}
+              AND r.check_in_date >= CURRENT_DATE - (:d || ' days')::interval
+              {bf}
+            GROUP BY r.room_type
+            ORDER BY cnt DESC
+            LIMIT 5
+        """), params).fetchall()
+        out[0]["top_room_types"] = [
+            {"room_type": rr[0], "bookings": int(rr[1])} for rr in rt_rows
+        ]
+
+    return {
+        "window_days": days,
+        "country_filter": country_name,
+        "exclusions": "cancelled/no-show + KOL/Blogger/House Use/Special Case/Work Exchange/Maintenance",
+        "countries": out,
+    }
+
+
 def tool_get_marketing_activity(db: Session, inp: dict, default_branch: Optional[str]) -> dict:
     """Bookings + revenue grouped by source category (CRM, KOL, OTA, Direct)
     using reservation_date (when booked), per feedback memory."""
@@ -684,6 +829,7 @@ TOOL_HANDLERS = {
     "get_upcoming_holidays": tool_get_upcoming_holidays,
     "get_ads_performance": tool_get_ads_performance,
     "get_kol_performance": tool_get_kol_performance,
+    "get_country_profile": tool_get_country_profile,
     "get_marketing_activity": tool_get_marketing_activity,
 }
 
