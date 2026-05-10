@@ -76,6 +76,13 @@ def _status_filter():
     return ~Reservation.status.in_(["Cancelled", "Canceled", "No-Show", "No_Show"])
 
 
+_VALID_COUNTRY_RE = re.compile(r"^[A-Za-z]{2}$")
+
+
+def _is_valid_country(c) -> bool:
+    return bool(c) and bool(_VALID_COUNTRY_RE.match(str(c).strip()))
+
+
 # ── Ads data readers ─────────────────────────────────────────────────────────
 
 
@@ -86,33 +93,63 @@ def _fetch_paid_ads_totals(
     d_to: date,
     use_native: bool,
 ) -> tuple[int, float]:
-    """Paid Ads (bookings, revenue) for a month.
+    """Paid Ads (bookings, revenue) for a month — interim Path A.
 
-    Sums local ``ads_performance(grain='daily')`` rows. Known caveat: this
-    aggregate runs ~1.57x higher than the Ads Platform dashboard's totals
-    on April 2026 (423 vs 269 conversions, 2.55B vs 1.63B revenue). The
-    inflation source is still being investigated — see the
-    /api/marketing-activity/debug/paid-ads endpoint for raw API responses.
+    Live call to ``/export/spend/daily-by-country`` filtered to rows with
+    valid ISO-2 country code, mirroring the ADS Performance dashboard's
+    ``is_valid_country`` rule. Without the filter, Google PMax rows fall
+    through with country=Unknown and inflate totals ~76%.
 
-    Earlier attempts (ads_booking_matches table, live booking-matches API)
-    surfaced a different problem: matches sparse / revenue-null in upstream
-    data, leaving the page showing 0 revenue. Sticking with the daily
-    aggregate keeps numbers visible until the right authoritative source
-    is identified.
+    Will swap to ``/export/spend/daily?valid_country_only=true`` once the
+    Ads Platform team ships that flag (Path B — single source of truth
+    for the rule).
+
+    Caveat: ``daily-by-country`` reads ``ad_country_metrics`` cache while
+    the dashboard reads ``metrics_cache``; team puts deltas at "<1%
+    rounding" — acceptable for interim parity.
     """
-    rev_col = AdsPerformance.revenue_native if use_native else AdsPerformance.revenue_vnd
-    q = db.query(
-        func.coalesce(func.sum(AdsPerformance.bookings), 0).label("bookings"),
-        func.coalesce(func.sum(rev_col), 0).label("revenue"),
-    ).filter(
-        AdsPerformance.grain == "daily",
-        AdsPerformance.date_from >= d_from,
-        AdsPerformance.date_from <= d_to,
-    )
+    client = _get_ads_client()
+    branch_obj = None
+    slug = None
     if branch_id is not None:
-        q = q.filter(AdsPerformance.branch_id == branch_id)
-    row = q.one()
-    return int(row.bookings or 0), float(row.revenue or 0)
+        branch_obj = db.query(Branch).filter(Branch.id == branch_id).first()
+        if branch_obj:
+            slug = branch_slug_for(branch_obj)
+
+    try:
+        rows = client.get_spend_daily_by_country(
+            d_from.isoformat(), d_to.isoformat(), branch=slug,
+        )
+    except Exception as exc:
+        log.warning(
+            "spend/daily-by-country failed (%s..%s, branch=%s): %s",
+            d_from, d_to, slug, exc,
+        )
+        return 0, 0.0
+
+    bookings_total = 0
+    revenue_vnd_total = 0.0
+    for r in rows or []:
+        if not _is_valid_country(r.get("country")):
+            continue
+        bookings_total += int(r.get("conversions") or 0)
+        revenue_native = float(r.get("revenue") or 0)
+        if revenue_native == 0:
+            continue
+        row_currency = (r.get("currency") or "VND").upper()
+        rate = _get_rate_to_vnd(row_currency)
+        if rate:
+            revenue_vnd_total += revenue_native * rate
+
+    if not use_native:
+        return bookings_total, revenue_vnd_total
+
+    branch_currency = (branch_obj.currency or "VND").upper() if branch_obj else "VND"
+    if branch_currency == "VND":
+        return bookings_total, revenue_vnd_total
+    branch_rate = _get_rate_to_vnd(branch_currency)
+    revenue_total = _vnd_to_native(revenue_vnd_total, branch_currency, branch_rate)
+    return bookings_total, revenue_total
 
 
 def _fetch_paid_ads_by_country(
