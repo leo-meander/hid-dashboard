@@ -11,6 +11,17 @@ logger = logging.getLogger(__name__)
 # In-memory rate cache: {("TWD", "VND"): (rate, date)}
 _rate_cache: dict[tuple[str, str], tuple[float, date]] = {}
 
+# Hardcoded fallbacks used only when the in-memory cache is empty (e.g. before
+# the first successful FX API call after a fresh server boot). Without these,
+# any sync that runs before the cache warms up stamps grand_total_vnd = NULL
+# over previously-correct values, which then breaks all-branch revenue rollups.
+# Values match marketing_budget.FX_FALLBACK_TO_VND / ads_platform_sync.
+_FALLBACK_RATES: dict[tuple[str, str], float] = {
+    ("VND", "VND"): 1.0,
+    ("TWD", "VND"): 830.0,
+    ("JPY", "VND"): 165.0,
+}
+
 EXCHANGE_RATE_BASE_URL = "https://v6.exchangerate-api.com/v6"
 
 
@@ -59,12 +70,16 @@ async def fetch_rate(from_currency: str, to_currency: str = "VND") -> Optional[f
 
 
 def _get_fallback_rate(cache_key: tuple[str, str]) -> Optional[float]:
-    """Return last cached rate regardless of date, or None if never fetched."""
+    """Return last cached rate regardless of date, or hardcoded fallback."""
     if cache_key in _rate_cache:
         rate, cached_date = _rate_cache[cache_key]
         logger.warning("Using stale cached rate from %s", cached_date)
         return rate
-    return None
+    fallback = _FALLBACK_RATES.get(cache_key)
+    if fallback is not None:
+        logger.warning("Using hardcoded fallback rate %s → %s = %s",
+                       cache_key[0], cache_key[1], fallback)
+    return fallback
 
 
 async def convert_to_vnd(amount: Optional[float], from_currency: str) -> Optional[float]:
@@ -80,10 +95,19 @@ async def convert_to_vnd(amount: Optional[float], from_currency: str) -> Optiona
 
 
 def get_cached_rate(from_currency: str, to_currency: str = "VND") -> Optional[float]:
-    """Synchronous lookup of cached rate (for use in sync contexts)."""
+    """Synchronous lookup of cached rate (for use in sync contexts).
+
+    Falls back to a hardcoded rate when the in-memory cache hasn't been
+    populated yet — better to use a slightly stale rate than to stamp
+    grand_total_vnd = NULL over good values whenever the FX API is briefly
+    unreachable. Subsequent syncs overwrite with the live rate.
+    """
     from_currency = from_currency.upper()
     to_currency = to_currency.upper()
     if from_currency == to_currency:
         return 1.0
-    entry = _rate_cache.get((from_currency, to_currency))
-    return entry[0] if entry else None
+    key = (from_currency, to_currency)
+    entry = _rate_cache.get(key)
+    if entry:
+        return entry[0]
+    return _FALLBACK_RATES.get(key)

@@ -24,8 +24,14 @@ class TestGetCachedRate:
         assert get_cached_rate("VND", "VND") == 1.0
         assert get_cached_rate("vnd", "VND") == 1.0
 
-    def test_returns_none_when_not_cached(self):
-        assert get_cached_rate("TWD", "VND") is None
+    def test_falls_back_to_hardcoded_when_not_cached(self):
+        # Without a cached rate, known currencies return the hardcoded
+        # fallback so syncs never stamp grand_total_vnd = NULL.
+        assert get_cached_rate("TWD", "VND") == 830.0
+        assert get_cached_rate("JPY", "VND") == 165.0
+
+    def test_returns_none_for_unknown_currency(self):
+        assert get_cached_rate("XYZ", "VND") is None
 
     def test_returns_cached_value(self):
         _rate_cache[("TWD", "VND")] = (800.0, date.today())
@@ -50,11 +56,19 @@ class TestConvertToVnd:
         assert result == 80000.0
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_no_rate(self):
-        # No rate in cache, API call will fail in test env
+    async def test_uses_hardcoded_fallback_when_api_fails(self):
+        # No cached rate, API unreachable — must still convert using fallback
+        # so we never store NULL when native is set.
         with patch("app.services.currency.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(side_effect=Exception("network error"))
             result = await convert_to_vnd(100.0, "JPY")
+            assert result == 16500.0
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_unknown_currency_no_fallback(self):
+        with patch("app.services.currency.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__ = AsyncMock(side_effect=Exception("network error"))
+            result = await convert_to_vnd(100.0, "XYZ")
             assert result is None
 
 
