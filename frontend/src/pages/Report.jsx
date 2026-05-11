@@ -34,7 +34,13 @@ const HOURS = Array.from({ length: 24 }, (_, i) => i);
 // ── Metric label map ────────────────────────────────────────────────────────
 // Used as drawer header when a user clicks a cell — the data-metric-key
 // attribute is a stable id, the labels here are the human display strings.
+// `_general` is a synthetic metric_key used for page-level notes — not
+// tied to any specific data cell. Each page (All Branches summary +
+// each branch tab) has its own thread, scoped by branch_id.
+const GENERAL_KEY = "_general";
+
 const METRIC_LABELS = {
+  [GENERAL_KEY]: "General notes",
   revenue_mtd: "Revenue MTD",
   target: "Revenue Target",
   pacing: "Pacing %",
@@ -57,7 +63,31 @@ const METRIC_LABELS = {
   "branch.next_forecast": "Next Month Forecast (Adjusted)",
 };
 
-const metricLabel = (key, fallback) => METRIC_LABELS[key] || fallback || key;
+// Prefix → label-template for dynamic metric_keys emitted by the backend
+// (per-source / per-country / per-bucket rows). Static keys in
+// METRIC_LABELS still win; this only kicks in when there's no exact
+// match. Lets the All-Comments panel render readable thread titles even
+// for threads whose `data-metric-label` attribute is no longer in the DOM.
+const DYNAMIC_PREFIXES = [
+  ["channel.source.", "Top source — "],
+  ["channel.category.", "Channel category — "],
+  ["channel.direct_trend.", "Direct trend — "],
+  ["behavior.cancellation.", "Cancellation — "],
+  ["behavior.lead_time.", "Lead time — "],
+  ["behavior.los.", "LOS — "],
+  ["country.book.", "Country (booked) — "],
+  ["country.stay.", "Country (check-in) — "],
+  ["outlier.", "Outlier — "],
+];
+
+const metricLabel = (key, fallback) => {
+  if (METRIC_LABELS[key]) return METRIC_LABELS[key];
+  if (fallback) return fallback;
+  for (const [prefix, label] of DYNAMIC_PREFIXES) {
+    if (key.startsWith(prefix)) return label + key.slice(prefix.length);
+  }
+  return key;
+};
 
 // ── Week helpers ────────────────────────────────────────────────────────────
 function thisMonday() {
@@ -779,6 +809,196 @@ function CommentDrawer({ context, currentUser, initialComments = [], onClose, on
   );
 }
 
+// ── General Notes card ──────────────────────────────────────────────────────
+//
+// One thread per (week_start, branch_id) using metric_key=_general. Lives
+// at the top of each branch view + the All-Branches summary view. Shows
+// a 1-line preview of the most recent note + open count; clicking opens
+// the standard CommentDrawer.
+
+function GeneralNotesCard({ branchId, branchName, allComments, onOpen }) {
+  const notes = useMemo(() => allComments.filter(c =>
+    c.metric_key === GENERAL_KEY && (c.branch_id || null) === (branchId || null)
+  ), [allComments, branchId]);
+
+  const openCount = notes.filter(c => !c.is_resolved).length;
+  const actionCount = notes.filter(c => !c.is_resolved && c.is_action_item).length;
+  const latest = notes.length ? notes[notes.length - 1] : null;
+  const scope = branchName ? branchName : "All Branches Summary";
+
+  return (
+    <div
+      onClick={onOpen}
+      className="bg-white rounded-xl border border-gray-200 hover:border-indigo-400 hover:bg-indigo-50/30 p-4 cursor-pointer transition flex items-start gap-3"
+    >
+      <div className="text-xl leading-none mt-0.5">📌</div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <h4 className="font-semibold text-gray-800 text-sm">General notes · {scope}</h4>
+          {openCount > 0 && (
+            <span className="text-[10px] bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded font-semibold">
+              {openCount} open
+            </span>
+          )}
+          {actionCount > 0 && (
+            <span className="text-[10px] bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-semibold">
+              ⚡{actionCount} action
+            </span>
+          )}
+        </div>
+        {latest ? (
+          <p className="text-xs text-gray-600 mt-1 truncate">
+            <span className="text-gray-500">{latest.author_name || latest.author_email || "Unknown"}:</span>{" "}
+            {latest.body}
+          </p>
+        ) : (
+          <p className="text-xs text-gray-400 mt-1">No general notes yet — click to add one.</p>
+        )}
+      </div>
+      <span className="text-xs text-indigo-600 font-medium whitespace-nowrap">Open →</span>
+    </div>
+  );
+}
+
+// ── All-Comments panel ──────────────────────────────────────────────────────
+//
+// Side panel showing every thread in the active week. Each entry is a
+// row in the (branch_id, metric_key) group; clicking jumps to that cell
+// (switching branches + scrolling into view) and opens the standard
+// CommentDrawer. Mirrors the Google Sheets "Comments" UX.
+
+function AllCommentsPanel({ allComments, branches, onClose, onJump, weekStart }) {
+  const [filter, setFilter] = useState("open"); // open / action / resolved / all
+
+  // Group by (branch_id, metric_key). Newest thread (most recent comment) first.
+  const threads = useMemo(() => {
+    const map = new Map();
+    allComments.forEach(c => {
+      const key = `${c.branch_id || ""}::${c.metric_key}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          branchId: c.branch_id || null,
+          metricKey: c.metric_key,
+          metricLabel: metricLabel(c.metric_key),
+          comments: [],
+          lastAt: c.created_at,
+          openCount: 0,
+          hasAction: false,
+        });
+      }
+      const t = map.get(key);
+      t.comments.push(c);
+      if (c.created_at > t.lastAt) t.lastAt = c.created_at;
+      if (!c.is_resolved) t.openCount += 1;
+      if (!c.is_resolved && c.is_action_item) t.hasAction = true;
+    });
+    return Array.from(map.values()).sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1));
+  }, [allComments]);
+
+  const filtered = useMemo(() => threads.filter(t => {
+    if (filter === "all") return true;
+    if (filter === "resolved") return t.openCount === 0;
+    if (filter === "action") return t.hasAction;
+    return t.openCount > 0; // "open"
+  }), [threads, filter]);
+
+  const branchName = (bid) => {
+    if (!bid) return "All Branches";
+    const b = branches.find(x => x.id === bid);
+    return b?.name || "Unknown branch";
+  };
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} />
+      <div className="fixed top-0 right-0 bottom-0 w-full sm:w-[460px] bg-white shadow-2xl z-50 flex flex-col">
+        <div className="px-5 py-4 border-b border-gray-200 flex items-start justify-between">
+          <div>
+            <p className="text-[11px] text-gray-500 uppercase tracking-wide">All Comments</p>
+            <h3 className="text-base font-semibold text-gray-900">
+              Week of {fmtWeekLabel(weekStart)}
+            </h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {threads.length} thread{threads.length === 1 ? "" : "s"} · click to jump to the metric
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-2xl leading-none ml-3" aria-label="Close">&times;</button>
+        </div>
+
+        {/* Filter bar */}
+        <div className="px-5 py-2 border-b border-gray-100 flex gap-1.5 text-xs">
+          {[
+            { v: "open", label: "Open" },
+            { v: "action", label: "Action items" },
+            { v: "resolved", label: "Resolved" },
+            { v: "all", label: "All" },
+          ].map(opt => (
+            <button
+              key={opt.v}
+              onClick={() => setFilter(opt.v)}
+              className={`px-2.5 py-1 rounded-md font-medium ${
+                filter === opt.v ? "bg-indigo-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-3 space-y-2">
+          {filtered.length === 0 ? (
+            <p className="text-sm text-gray-400">No threads match this filter.</p>
+          ) : (
+            filtered.map(t => {
+              const latest = t.comments[t.comments.length - 1];
+              const resolved = t.openCount === 0;
+              return (
+                <div
+                  key={t.key}
+                  onClick={() => onJump(t)}
+                  className={`rounded-lg border p-3 cursor-pointer hover:border-indigo-400 hover:shadow-sm transition ${
+                    resolved ? "bg-gray-50 border-gray-200 opacity-70" : "bg-white border-gray-200"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[11px] text-gray-500 truncate">
+                        {branchName(t.branchId)}
+                      </p>
+                      <p className="text-sm font-semibold text-gray-800 truncate">
+                        {t.metricLabel}
+                      </p>
+                    </div>
+                    <div className="flex flex-col items-end gap-1 text-[10px]">
+                      {t.hasAction && (
+                        <span className="bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-semibold">⚡ACTION</span>
+                      )}
+                      {resolved && (
+                        <span className="bg-green-200 text-green-900 px-1.5 py-0.5 rounded font-semibold">RESOLVED</span>
+                      )}
+                      <span className="text-gray-400">{t.comments.length} msg</span>
+                    </div>
+                  </div>
+                  {latest && (
+                    <p className="text-xs text-gray-600 line-clamp-2">
+                      <span className="text-gray-500">{latest.author_name || latest.author_email || "?"}:</span>{" "}
+                      {latest.body}
+                    </p>
+                  )}
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    {latest?.created_at ? new Date(latest.created_at).toLocaleString() : ""}
+                  </p>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ── Weekly Report viewer tab ────────────────────────────────────────────────
 
 function WeeklyReportTab({ initialBranch, onBranchChange }) {
@@ -803,6 +1023,7 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
   // slow when clicking through cells.)
   const [allComments, setAllComments] = useState([]);
   const [drawer, setDrawer] = useState(null);
+  const [allCommentsOpen, setAllCommentsOpen] = useState(false);
   const reportContainerRef = useRef(null);
 
   const loadArchives = useCallback(async () => {
@@ -909,6 +1130,78 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
     });
   };
 
+  // Open the page-level "General notes" thread for the active view.
+  // branchId = null when viewing the All-Branches summary; otherwise the
+  // selected branch's id. Reuses the standard CommentDrawer.
+  const openGeneralNotes = () => {
+    const branchId = selectedBranch === "all" ? null : selectedBranch;
+    const branchName = branchId && parsed
+      ? parsed.branches.find(x => x.id === branchId)?.name
+      : null;
+    setDrawer({
+      weekStart: activeWeekStart,
+      branchId,
+      branchName: branchName || (branchId ? null : "All Branches Summary"),
+      metricKey: GENERAL_KEY,
+      metricLabelOverride: null,
+    });
+  };
+
+  // Called from AllCommentsPanel — navigates to the matching cell (switching
+  // branches if needed), highlights it briefly, then opens the drawer.
+  const jumpToThread = (thread) => {
+    setAllCommentsOpen(false);
+    // General-notes threads don't have a cell to scroll to — just open
+    // the drawer.
+    if (thread.metricKey === GENERAL_KEY) {
+      const branchName = thread.branchId && parsed
+        ? parsed.branches.find(x => x.id === thread.branchId)?.name
+        : null;
+      setDrawer({
+        weekStart: activeWeekStart,
+        branchId: thread.branchId,
+        branchName: branchName || (thread.branchId ? null : "All Branches Summary"),
+        metricKey: GENERAL_KEY,
+        metricLabelOverride: null,
+      });
+      // Also switch to the right view so general-notes context matches.
+      const wantBranch = thread.branchId || "all";
+      if (wantBranch !== selectedBranch) selectBranch(wantBranch);
+      return;
+    }
+    // Regular metric — switch branches if needed, then on next tick
+    // find the cell, scroll into view + flash a ring around it, then
+    // open the drawer.
+    const wantBranch = thread.branchId || "all";
+    if (wantBranch !== selectedBranch) {
+      selectBranch(wantBranch);
+    }
+    // Defer to after React has re-rendered the new branch view.
+    setTimeout(() => {
+      const root = reportContainerRef.current;
+      if (!root) return;
+      const sel = thread.branchId
+        ? `[data-metric-key="${CSS.escape(thread.metricKey)}"][data-branch-id="${thread.branchId}"]`
+        : `[data-metric-key="${CSS.escape(thread.metricKey)}"]`;
+      const cell = root.querySelector(sel);
+      if (cell) {
+        cell.scrollIntoView({ behavior: "smooth", block: "center" });
+        cell.classList.add("hid-flash");
+        setTimeout(() => cell.classList.remove("hid-flash"), 1800);
+      }
+      const branchName = thread.branchId && parsed
+        ? parsed.branches.find(x => x.id === thread.branchId)?.name
+        : null;
+      setDrawer({
+        weekStart: activeWeekStart,
+        branchId: thread.branchId,
+        branchName,
+        metricKey: thread.metricKey,
+        metricLabelOverride: thread.metricLabel,
+      });
+    }, 80);
+  };
+
   // After HTML renders or counts change, inject comment badges into each
   // [data-metric-key] cell so users can see at a glance which cells have
   // active discussion.
@@ -969,6 +1262,15 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
           vertical-align: middle;
           line-height: 1.3;
         }
+        @keyframes hid-flash-bg {
+          0%, 100% { background-color: transparent; }
+          50% { background-color: rgba(250, 204, 21, 0.5); }
+        }
+        .hid-report-body .hid-flash {
+          animation: hid-flash-bg 0.9s ease-in-out 2;
+          outline: 2px solid rgba(245, 158, 11, 0.8) !important;
+          outline-offset: -2px;
+        }
       `}</style>
 
       {/* Top bar: header info + week filter + refresh */}
@@ -995,6 +1297,18 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
               </option>
             ))}
           </select>
+          <button
+            onClick={() => setAllCommentsOpen(true)}
+            className="px-3 py-1.5 border border-gray-200 text-gray-700 text-sm rounded-lg hover:bg-gray-50 flex items-center gap-1.5"
+            title="View all comments for this week"
+          >
+            💬 All comments
+            {allComments.filter(c => !c.is_resolved).length > 0 && (
+              <span className="bg-indigo-600 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
+                {allComments.filter(c => !c.is_resolved).length}
+              </span>
+            )}
+          </button>
           <a
             href={selectedWeek === "current"
               ? "/api/report/preview"
@@ -1070,6 +1384,19 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
             </div>
           </div>
 
+          {/* General notes card — one thread per (week, branch) for
+              page-wide discussion that isn't tied to a specific metric. */}
+          <GeneralNotesCard
+            branchId={selectedBranch === "all" ? null : selectedBranch}
+            branchName={
+              selectedBranch === "all"
+                ? null
+                : parsed.branches.find(b => b.id === selectedBranch)?.name
+            }
+            allComments={allComments}
+            onOpen={openGeneralNotes}
+          />
+
           {/* Rendered HTML — wrapped in a container that strips email-specific
               body padding so it fits the dashboard layout. The HTML uses
               inline styles so it renders correctly without extra CSS. */}
@@ -1083,6 +1410,17 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
             />
           </div>
         </>
+      )}
+
+      {/* All-comments side panel */}
+      {allCommentsOpen && parsed && (
+        <AllCommentsPanel
+          allComments={allComments}
+          branches={parsed.branches}
+          weekStart={activeWeekStart}
+          onClose={() => setAllCommentsOpen(false)}
+          onJump={jumpToThread}
+        />
       )}
 
       {/* Discussion drawer — filter the prefetched list for this cell so
