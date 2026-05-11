@@ -60,14 +60,33 @@ def _week_start(today: date) -> date:
     return today - timedelta(days=today.weekday())
 
 
-def _cell_attrs(branch_id, metric_key: str) -> str:
+def _cell_attrs(branch_id, metric_key: str, label: Optional[str] = None) -> str:
     """Render the data-* attributes the frontend uses to detect a
-    clickable metric cell. Email clients ignore `class` and `data-*`
-    attributes that don't have inline styles backing them, so this is
-    safe to include in the same HTML the email send pipeline produces.
+    clickable metric cell or row. Email clients ignore `class` and
+    `data-*` attributes that don't have inline styles backing them, so
+    this is safe to include in the same HTML the email send pipeline
+    produces.
+
+    `label`, when provided, is read by the frontend as a human-readable
+    drawer title — useful for dynamic keys (per-country, per-source rows)
+    where the static frontend label map can't enumerate every variation.
     """
     bid = f' data-branch-id="{branch_id}"' if branch_id else ''
-    return f' class="hid-metric-cell" data-metric-key="{metric_key}"{bid}'
+    lbl = f' data-metric-label="{_attr_escape(label)}"' if label else ''
+    return f' class="hid-metric-cell" data-metric-key="{metric_key}"{bid}{lbl}'
+
+
+def _attr_escape(value: str) -> str:
+    """Escape HTML attribute special characters so values containing
+    quotes/ampersands don't break the rendered tag.
+    """
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
 def _safe_section(db: Session, label: str, fn, default):
@@ -734,13 +753,15 @@ def _render_outliers(b: dict) -> str:
     if not out:
         return ""
     cur = b["currency"]
+    bid = b["branch_id"]
     rows = []
     for o in out:
         arrow = "▲" if o["direction"] == "spike" else "▼"
         color = "#16a34a" if o["direction"] == "spike" else "#dc2626"
         reasons = " · ".join(o["reasons"]) if o["reasons"] else "no tagged cause"
+        attrs = _cell_attrs(bid, f"outlier.{o['date']}", f"Outlier — {o['date']} ({o['direction']})")
         rows.append(
-            f"<tr><td style='{_TABLE_TD}'>{o['date']}</td>"
+            f"<tr{attrs}><td style='{_TABLE_TD}'>{o['date']}</td>"
             f"<td style='{_TABLE_TD};text-align:right;color:{color};font-weight:600;'>{arrow} {o['direction']}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(o['revenue'], cur)}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{o['occ_pct']:.2f}%</td>"
@@ -765,6 +786,7 @@ def _render_behavior(b: dict) -> str:
     beh = b.get("analytics", {}).get("behavior")
     if not beh:
         return ""
+    bid = b["branch_id"]
 
     def _pp_delta_html(val):
         if val is None:
@@ -783,8 +805,10 @@ def _render_behavior(b: dict) -> str:
 
     cxl_rows = []
     for c in beh["cancellation_by_source"][:6]:
+        cat = c['source_category']
+        attrs = _cell_attrs(bid, f"behavior.cancellation.{cat}", f"Cancellation — {cat}")
         cxl_rows.append(
-            f"<tr><td style='{_TABLE_TD}'>{c['source_category']}</td>"
+            f"<tr{attrs}><td style='{_TABLE_TD}'>{cat}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{c['total']:,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{c['cancelled']:,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{_pct(c['pct'])}</td>"
@@ -793,19 +817,26 @@ def _render_behavior(b: dict) -> str:
             f"<td style='{_TABLE_TD};text-align:right;'>{_pp_delta_html(c.get('pp_delta'))}</td></tr>"
         )
 
-    def _bucket_row(label, val, total):
+    def _bucket_row(label, val, total, prefix: str, label_prefix: str):
         pct = f"{val/total*100:.2f}%" if total > 0 else "—"
+        attrs = _cell_attrs(bid, f"{prefix}.{label}", f"{label_prefix} — {label}")
         return (
-            f"<tr><td style='{_TABLE_TD}'>{label}</td>"
+            f"<tr{attrs}><td style='{_TABLE_TD}'>{label}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{val:,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;color:#6b7280;'>{pct}</td></tr>"
         )
 
     lt_total = sum(beh["lead_time_buckets"].values())
-    lt_rows = "".join(_bucket_row(k, v, lt_total) for k, v in beh["lead_time_buckets"].items())
+    lt_rows = "".join(
+        _bucket_row(k, v, lt_total, "behavior.lead_time", "Lead time")
+        for k, v in beh["lead_time_buckets"].items()
+    )
 
     los_total = sum(beh["los_buckets"].values())
-    los_rows = "".join(_bucket_row(k, v, los_total) for k, v in beh["los_buckets"].items())
+    los_rows = "".join(
+        _bucket_row(k, v, los_total, "behavior.los", "LOS")
+        for k, v in beh["los_buckets"].items()
+    )
 
     cxl_overall = beh.get("cancellation_overall_pct")
     cxl_overall_pp = beh.get("cancellation_overall_pp_delta")
@@ -865,6 +896,7 @@ def _render_channel_mix(b: dict) -> str:
     if not mix or mix["total_nights"] == 0:
         return ""
     cur = b["currency"]
+    bid = b["branch_id"]
 
     def _wow(val):
         if val is None:
@@ -874,9 +906,11 @@ def _render_channel_mix(b: dict) -> str:
 
     cat_rows = []
     for c in mix["categories"]:
+        cat = c['source_category']
+        attrs = _cell_attrs(bid, f"channel.category.{cat}", f"Channel category — {cat}")
         cat_rows.append(
-            f"<tr>"
-            f"<td style='{_TABLE_TD}'>{c['source_category']}</td>"
+            f"<tr{attrs}>"
+            f"<td style='{_TABLE_TD}'>{cat}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{c['room_nights']:,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;color:#9ca3af;font-size:10px;'>{c.get('prev_room_nights', 0):,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{_wow(c.get('wow_nights_pct'))}</td>"
@@ -888,9 +922,11 @@ def _render_channel_mix(b: dict) -> str:
 
     src_rows = []
     for s in mix["top_sources"]:
+        src = s['source']
+        attrs = _cell_attrs(bid, f"channel.source.{src}", f"Top source — {src}")
         src_rows.append(
-            f"<tr>"
-            f"<td style='{_TABLE_TD}'>{s['source']}</td>"
+            f"<tr{attrs}>"
+            f"<td style='{_TABLE_TD}'>{src}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{s['room_nights']:,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;color:#9ca3af;font-size:10px;'>{s.get('prev_room_nights', 0):,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{_wow(s.get('wow_nights_pct'))}</td>"
@@ -901,8 +937,9 @@ def _render_channel_mix(b: dict) -> str:
 
     trend_rows = []
     for t in mix["direct_trend"]:
+        attrs = _cell_attrs(bid, f"channel.direct_trend.{t['label']}", f"Direct trend — {t['label']}")
         trend_rows.append(
-            f"<tr><td style='{_TABLE_TD}'>{t['label']}</td>"
+            f"<tr{attrs}><td style='{_TABLE_TD}'>{t['label']}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{t['direct_nights']:,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{t['total_nights']:,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{_pct(t['direct_pct'])}</td></tr>"
@@ -970,6 +1007,7 @@ def _render_country_detail(b: dict) -> str:
         return ""
 
     cur = b["currency"]
+    bid = b["branch_id"]
     windows = ci.get("windows") or {}
 
     def _delta(val, neutral_color="#9ca3af"):
@@ -978,25 +1016,29 @@ def _render_country_detail(b: dict) -> str:
         color = "#16a34a" if val >= 0 else "#dc2626"
         return f"<span style='color:{color};font-weight:600;'>{_signed_pct(val)}</span>"
 
-    def _build_rows(rows: list) -> str:
-        return "".join(
-            f"<tr>"
-            f"<td style='{_TABLE_TD}'>{c['country']}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{c['bookings']:,}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{c['nights']:,}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['revenue_native'], cur)}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['adr_native'], cur)}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{_delta(c.get('wow_pct'))}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{_delta(c.get('d30_pct'))}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{_delta(c.get('yoy_pct'))}</td>"
-            f"</tr>"
-            for c in rows
-        )
+    def _build_rows(rows: list, prefix: str, label_prefix: str) -> str:
+        out = []
+        for c in rows:
+            country = c["country"]
+            attrs = _cell_attrs(bid, f"{prefix}.{country}", f"{label_prefix} — {country}")
+            out.append(
+                f"<tr{attrs}>"
+                f"<td style='{_TABLE_TD}'>{country}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;'>{c['bookings']:,}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;'>{c['nights']:,}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['revenue_native'], cur)}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(c['adr_native'], cur)}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;'>{_delta(c.get('wow_pct'))}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;'>{_delta(c.get('d30_pct'))}</td>"
+                f"<td style='{_TABLE_TD};text-align:right;'>{_delta(c.get('yoy_pct'))}</td>"
+                f"</tr>"
+            )
+        return "".join(out)
 
-    book_rows = _build_rows(by_book) or (
+    book_rows = _build_rows(by_book, "country.book", "Country (booked)") or (
         f"<tr><td colspan='8' style='{_TABLE_TD};color:#9ca3af;'>No bookings in last 30d</td></tr>"
     )
-    stay_rows = _build_rows(by_stay) or (
+    stay_rows = _build_rows(by_stay, "country.stay", "Country (check-in)") or (
         f"<tr><td colspan='8' style='{_TABLE_TD};color:#9ca3af;'>No stays in last 30d</td></tr>"
     )
 

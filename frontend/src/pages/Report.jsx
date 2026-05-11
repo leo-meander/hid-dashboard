@@ -57,7 +57,7 @@ const METRIC_LABELS = {
   "branch.next_forecast": "Next Month Forecast (Adjusted)",
 };
 
-const metricLabel = (key) => METRIC_LABELS[key] || key;
+const metricLabel = (key, fallback) => METRIC_LABELS[key] || fallback || key;
 
 // ── Week helpers ────────────────────────────────────────────────────────────
 function thisMonday() {
@@ -663,7 +663,7 @@ function CommentDrawer({ context, currentUser, onClose, onChanged }) {
           <div className="min-w-0">
             <p className="text-[11px] text-gray-500 uppercase tracking-wide">Discussion</p>
             <h3 className="text-base font-semibold text-gray-900 truncate">
-              {metricLabel(context.metricKey)}
+              {metricLabel(context.metricKey, context.metricLabelOverride)}
             </h3>
             <p className="text-xs text-gray-500 mt-0.5 truncate">
               {context.branchName ? `${context.branchName} · ` : ""}Week of {fmtWeekLabel(context.weekStart)}
@@ -906,6 +906,7 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
     if (!cell || !reportContainerRef.current?.contains(cell)) return;
     const metricKey = cell.dataset.metricKey;
     const branchId = cell.dataset.branchId || null;
+    const metricLabelOverride = cell.dataset.metricLabel || null;
     // Branch name lookup — for the drawer header
     let branchName = null;
     if (branchId && parsed) {
@@ -917,6 +918,7 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
       branchId,
       branchName,
       metricKey,
+      metricLabelOverride,
     });
   };
 
@@ -941,7 +943,14 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
       badge.title = info.actionItems > 0
         ? `${info.count} open comment(s), ${info.actionItems} action item(s)`
         : `${info.count} open comment(s)`;
-      cell.appendChild(badge);
+      // <tr> can't directly hold a <span>; append to the row's last <td>
+      // instead so the badge sits at the visual end of the row.
+      if (cell.tagName === "TR") {
+        const lastCell = cell.querySelector("td:last-child");
+        (lastCell || cell).appendChild(badge);
+      } else {
+        cell.appendChild(badge);
+      }
     });
   }, [renderedHtml, commentCounts]);
 
