@@ -394,12 +394,25 @@ def _build_report(db: Session):
 
     for b in branches:
         total_rooms = b.total_rooms or 0
+        # Pass split room/dorm counts so compute_kpi_summary uses the
+        # split-based forecast (room_adr × pred_room + dorm_adr × pred_dorm)
+        # — same path the Group Summary dashboard uses. Without these the
+        # function silently falls back to a single-OCC × total_rooms × ADR
+        # estimate and the email's Adjusted Forecast diverges from the
+        # dashboard's Adjusted column (caught for Taipei: cache showed
+        # NT$5.18M, dashboard NT$5.50M, same KPI inputs).
+        total_room_count = b.total_room_count or 0
+        total_dorm_count = b.total_dorm_count or 0
         # Each section wrapped in _safe_section so a Postgres statement_timeout
         # on a country GROUP BY (the usual culprit) downgrades that section to
         # empty defaults instead of crashing the entire weekly email.
         kpi = _safe_section(
             db, f"kpi[{b.name}]",
-            lambda: compute_kpi_summary(db, b.id, today.year, today.month, total_rooms),
+            lambda: compute_kpi_summary(
+                db, b.id, today.year, today.month, total_rooms,
+                total_room_count=total_room_count,
+                total_dorm_count=total_dorm_count,
+            ),
             {"actual_revenue_native": None, "target_revenue_native": None,
              "achievement_pct": None, "avg_adr_native": None,
              "predicted_occ_pct": None, "days_elapsed": None,
@@ -407,7 +420,11 @@ def _build_report(db: Session):
         )
         nxt = _safe_section(
             db, f"next_forecast[{b.name}]",
-            lambda: compute_next_month_forecast(db, b.id, total_rooms, today.year, today.month),
+            lambda: compute_next_month_forecast(
+                db, b.id, total_rooms, today.year, today.month,
+                total_room_count=total_room_count,
+                total_dorm_count=total_dorm_count,
+            ),
             {"next_month": None, "next_year": None,
              "next_month_forecast_native": None, "next_month_target_native": None,
              "next_month_adr": None, "next_month_booked_nights": None,
