@@ -30,7 +30,6 @@ from app.models.kpi import KPITarget
 from app.models.reservation import Reservation
 from app.models.user import User
 from app.models.weekly_report_cache import WeeklyReportCache
-from app.services.cloudbeds import sync_cloudbeds_occupancy
 from app.services.country_scorer import score_countries
 from app.services.email_sender import send_email_html
 from app.services.kpi_engine import (
@@ -369,43 +368,16 @@ def _actual_occ_pct(db: Session, branch_id, year: int, month: int, total_rooms: 
     return sold_int / (total_rooms * days)
 
 
-def _sync_fresh_insights(db: Session, branches):
-    """Pull latest Cloudbeds Insights data into daily_metrics before report.
-
-    Always syncs the FULL current month (1st → last day) to ensure
-    revenue_native in daily_metrics matches the Cloudbeds dashboard exactly.
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-    today = date.today()
-    month_start = today.replace(day=1)
-    month_end = today.replace(day=calendar.monthrange(today.year, today.month)[1])
-
-    for b in branches:
-        pid = b.cloudbeds_property_id
-        if not pid:
-            continue
-        api_key = settings.get_api_key_for_property(str(pid))
-        if not api_key:
-            continue
-        try:
-            sync_cloudbeds_occupancy(
-                db, str(b.id), pid, b.currency, api_key,
-                date_from=month_start, date_to=month_end,
-            )
-            db.flush()  # ensure fresh data is visible to subsequent queries
-            logger.info("Report pre-sync OK branch=%s [%s..%s]", b.name, month_start, month_end)
-        except Exception as e:
-            logger.warning("Report pre-sync FAIL branch=%s: %s", b.name, e)
-
-
 def _build_report(db: Session):
     today = date.today()
     branches = db.query(Branch).filter_by(is_active=True).all()
     report = []
 
-    # Sync fresh Cloudbeds Insights before building report
-    _sync_fresh_insights(db, branches)
+    # No Cloudbeds pre-sync here — daily_metrics is already refreshed twice
+    # daily (09:00 + 14:00 ICT) by cron-insights.yml, so the data this
+    # report reads is at most ~7h stale. The previous in-line pre-sync
+    # added 30-60s per build and was the main reason the report page took
+    # 30-90s to load.
 
     for b in branches:
         total_rooms = b.total_rooms or 0
