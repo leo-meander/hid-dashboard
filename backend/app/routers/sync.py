@@ -492,10 +492,14 @@ def _run_rate_plan_backfill_bg(branch_configs: list, df, dt):
         try:
             result = backfill_room_type_and_rate_plan(
                 cfg["branch_id"], cfg["property_id"],
-                api_key=cfg["api_key"], checkin_from=df, checkin_to=dt, limit=cfg.get("limit")
+                api_key=cfg["api_key"], currency=cfg.get("currency") or "VND",
+                checkin_from=df, checkin_to=dt, limit=cfg.get("limit"),
             )
-            log.info("Rate plan backfill %s: fetched=%s rate_plans=%s room_types=%s",
-                     cfg["name"], result.get("fetched"), result.get("rate_plans_filled"), result.get("room_types_filled"))
+            log.info(
+                "Rate plan backfill %s: fetched=%s rate_plans=%s room_types=%s revenue=%s",
+                cfg["name"], result.get("fetched"), result.get("rate_plans_filled"),
+                result.get("room_types_filled"), result.get("revenue_filled"),
+            )
         except Exception as exc:
             log.error("Rate plan backfill failed for %s: %s", cfg["name"], exc)
 

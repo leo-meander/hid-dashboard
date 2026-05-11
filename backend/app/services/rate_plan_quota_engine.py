@@ -305,7 +305,7 @@ def _send_alert_email(
 # ── Sync helper ──────────────────────────────────────────────────────────────
 
 def _refresh_branches_from_cloudbeds(branches: Iterable[Branch]) -> None:
-    """Pull modified-only reservations + backfill rate_plan_name/room_type.
+    """Pull modified-only reservations + backfill per-reservation fields.
 
     Two-step refresh per branch:
 
@@ -314,11 +314,12 @@ def _refresh_branches_from_cloudbeds(branches: Iterable[Branch]) -> None:
        bookings, cancellations, modifications.
 
     2. `backfill_room_type_and_rate_plan` — bulk /getReservations does NOT
-       return ratePlanNamePublic/Private OR roomTypeName, so step 1 leaves
-       brand-new rows with NULL on both fields. The quota engine matches
-       `rate_plan_name OR room_type ILIKE %pattern%` — without this backfill
-       step the count silently undercounts every newly-ingested booking
-       until someone manually triggers /api/sync/refresh-revenue-insights.
+       return ratePlanNamePublic/Private, roomTypeName, OR balanceDetailed,
+       so step 1 leaves brand-new rows with NULL on those fields plus NULL
+       grand_total_native. The quota engine matches `rate_plan_name OR
+       room_type ILIKE %pattern%` — without this backfill the count silently
+       undercounts. The CRM Reservations view also relies on grand_total
+       being populated; this is the only cron that fills it for new bookings.
        Bounded by a -14d→+365d check-in window and a per-branch row limit
        so a backlog of historical NULLs doesn't blow past the cron's 5-min
        curl timeout. The backfill prioritises rows touched in the last 2
@@ -351,6 +352,7 @@ def _refresh_branches_from_cloudbeds(branches: Iterable[Branch]) -> None:
         try:
             backfill_room_type_and_rate_plan(
                 str(b.id), pid, api_key=api_key,
+                currency=b.currency or "VND",
                 checkin_from=bf_from, checkin_to=bf_to,
                 limit=150,
             )

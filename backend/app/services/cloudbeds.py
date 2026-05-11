@@ -607,27 +607,54 @@ def backfill_room_type_and_rate_plan(
     branch_id: str,
     property_id: str,
     api_key: str,
+    currency: str = "VND",
     checkin_from: Optional[date] = None,
     checkin_to: Optional[date] = None,
     limit: Optional[int] = None,
 ) -> dict:
     """
-    Backfill room_type (and rate_plan_name if available) by calling
-    getReservation individually for each reservation with NULL room_type.
-    The Cloudbeds roomTypeName includes the rate plan name in parentheses,
-    e.g. 'Female Dorm* (CRM_April 2026)'. This is the primary field for CRM filtering.
+    Per-reservation backfill via getReservation. Targets rows where
+    bulk /getReservations left fields blank:
+      - room_type / rate_plan_name (bulk endpoint returns lite payload)
+      - grand_total_native / grand_total_vnd (bulk endpoint omits balance;
+        future-dated bookings also have no Accommodation transactions yet,
+        so sync_branch_revenue can't fill them either)
+
+    Cloudbeds roomTypeName embeds the rate plan in parentheses, e.g.
+    'Female Dorm* (CRM_April 2026)'. grand_total_native = balanceDetailed
+    subTotal − additionalItems (accommodation only, per CLAUDE.md rules).
+
+    Filter: room_type IS NULL  OR  (revenue NULL/0 AND status not cancelled).
+    The cancelled-status guard on the revenue branch is required — without
+    it cancelled bookings (legitimately grand_total=0) would be re-fetched
+    on every cron tick forever.
 
     Two-pass strategy: rows updated within the last 2 hours run uncapped
     (so newly-synced bookings always get filled in the same cron tick),
     older backlog rows are capped by `limit` and processed newest-first.
-    Without this, backlog of old NULL rows starved new bookings out of the
-    150-slot budget and quota counts undercounted for hours.
     """
     import time
+    from sqlalchemy import or_, and_
 
     today = date.today()
     df = checkin_from or (today - timedelta(days=30))
     dt = checkin_to or today
+
+    # Filter: missing room_type OR (missing revenue AND not cancelled).
+    # The cancelled guard prevents infinite re-fetch of bookings whose
+    # grand_total is correctly 0 because they were refunded.
+    target_filter = or_(
+        Reservation.room_type == None,  # noqa: E711
+        and_(
+            or_(
+                Reservation.grand_total_native == None,  # noqa: E711
+                Reservation.grand_total_native == 0,
+            ),
+            Reservation.status.notin_(
+                ["cancelled", "canceled", "no_show", "noshow", "Cancelled", "Canceled", "No-Show", "No_Show"]
+            ),
+        ),
+    )
 
     # Two-pass query: row vừa được bulk-synced trong 2h qua được fill TRƯỚC và
     # không bị `limit` cắt, đảm bảo booking mới (rate_plan_name/room_type NULL
@@ -639,7 +666,7 @@ def backfill_room_type_and_rate_plan(
         Reservation.branch_id == branch_id,
         Reservation.check_in_date >= df,
         Reservation.check_in_date <= dt,
-        Reservation.room_type == None,  # noqa: E711  — target NULL room_type
+        target_filter,
         Reservation.cloudbeds_reservation_id != None,  # noqa: E711
     )
     recent = base.filter(Reservation.updated_at >= cutoff).all()
@@ -653,15 +680,17 @@ def backfill_room_type_and_rate_plan(
     null_res = recent + backlog
     db.close()
 
-    total_fetched = room_type_filled = rate_plan_filled = 0
+    total_fetched = room_type_filled = rate_plan_filled = revenue_filled = 0
     now = datetime.now(timezone.utc)
     BATCH_SIZE = 20
+    # Cache the exchange rate once so we don't hit the rate service per row.
+    rate = get_cached_rate(currency, "VND")
 
-    logger.info("Room type backfill: %d reservations for branch %s", len(null_res), branch_id)
+    logger.info("Per-reservation backfill: %d reservations for branch %s", len(null_res), branch_id)
 
     with httpx.Client(timeout=30) as client:
-        # (cb_id, room_type, rate_plan, guest_country_iso)
-        batch_buf: list[tuple[str, Optional[str], Optional[str], Optional[str]]] = []
+        # (cb_id, room_type, rate_plan, guest_country_iso, accom_native)
+        batch_buf: list[tuple[str, Optional[str], Optional[str], Optional[str], Optional[float]]] = []
         for i, r in enumerate(null_res):
             try:
                 resp = client.get(
@@ -690,20 +719,31 @@ def backfill_room_type_and_rate_plan(
                 if not rate_plan:
                     rate_plan = extract_rate_plan_from_room_type(room_type_name)
 
+                # Accommodation revenue: balanceDetailed.subTotal − additionalItems
+                # (same formula backfill_accommodation_total uses). Only > 0
+                # values flow to the UPDATE so cancelled refunds don't clobber.
+                bd = data.get("balanceDetailed") or {}
+                sub = float(_safe_decimal(bd.get("subTotal")) or 0)
+                extra = float(_safe_decimal(bd.get("additionalItems")) or 0)
+                accom_native = sub - extra
+                accom_to_write = accom_native if accom_native > 0 else None
+
                 # Country lives in guestList, only in detail responses — capture
                 # opportunistically when current row is missing it.
                 gc_iso = _extract_guest_country_from_detail(data) if r.guest_country in (None, "Unknown") else None
 
-                batch_buf.append((r.cloudbeds_reservation_id, room_type_name, rate_plan, gc_iso))
+                batch_buf.append(
+                    (r.cloudbeds_reservation_id, room_type_name, rate_plan, gc_iso, accom_to_write)
+                )
                 total_fetched += 1
             except Exception as e:
-                logger.warning("Room type backfill fetch failed res %s: %s", r.cloudbeds_reservation_id, e)
+                logger.warning("Per-reservation backfill fetch failed res %s: %s", r.cloudbeds_reservation_id, e)
 
             # Flush batch
             if len(batch_buf) >= BATCH_SIZE or (i == len(null_res) - 1 and batch_buf):
                 _s = SessionLocal()
                 try:
-                    for cb_id, rt, rp, gc in batch_buf:
+                    for cb_id, rt, rp, gc, accom in batch_buf:
                         updates = ["updated_at=:t"]
                         params = {"t": now, "cid": cb_id}
                         if rt:
@@ -720,37 +760,56 @@ def backfill_room_type_and_rate_plan(
                             updates.append("guest_country_code=:gcc")
                             params["gc"] = mapped
                             params["gcc"] = mapped
+                        if accom is not None:
+                            native = round(accom, 2)
+                            vnd = round(accom * rate, 2) if rate else None
+                            updates.append("grand_total_native=:n")
+                            updates.append("grand_total_vnd=:v")
+                            params["n"] = native
+                            params["v"] = vnd
                         if len(updates) > 1:  # more than just updated_at
+                            # Drop the old `AND room_type IS NULL` guard — Cloudbeds
+                            # is authoritative; if we just fetched fresh data we
+                            # want to write it even if room_type already exists
+                            # (the row may have been picked up for revenue only).
                             result = _s.execute(_text(
                                 f"UPDATE reservations SET {', '.join(updates)} "
-                                "WHERE cloudbeds_reservation_id=:cid AND room_type IS NULL"
+                                "WHERE cloudbeds_reservation_id=:cid"
                             ), params)
                             if result.rowcount:
-                                room_type_filled += 1
+                                if rt:
+                                    room_type_filled += 1
                                 if rp:
                                     rate_plan_filled += 1
+                                if accom is not None:
+                                    revenue_filled += 1
                     _s.commit()
                 except Exception as e:
                     _s.rollback()
-                    logger.warning("Room type backfill batch write failed: %s", e)
+                    logger.warning("Per-reservation backfill batch write failed: %s", e)
                 finally:
                     _s.close()
                 batch_buf.clear()
 
             if (i + 1) % 50 == 0:
-                logger.info("Room type backfill progress: %d/%d fetched, %d room types filled",
-                            i + 1, len(null_res), room_type_filled)
+                logger.info(
+                    "Per-reservation backfill progress: %d/%d fetched, %d room types, %d revenue",
+                    i + 1, len(null_res), room_type_filled, revenue_filled,
+                )
 
             # Rate limit: 0.2s between API calls
             time.sleep(0.2)
 
-    logger.info("Room type backfill complete branch %s: %d fetched, %d room types, %d rate plans",
-                branch_id, total_fetched, room_type_filled, rate_plan_filled)
+    logger.info(
+        "Per-reservation backfill complete branch %s: %d fetched, %d room types, %d rate plans, %d revenue",
+        branch_id, total_fetched, room_type_filled, rate_plan_filled, revenue_filled,
+    )
     return {
         "branch_id": branch_id,
         "fetched": total_fetched,
         "room_types_filled": room_type_filled,
         "rate_plans_filled": rate_plan_filled,
+        "revenue_filled": revenue_filled,
     }
 
 
