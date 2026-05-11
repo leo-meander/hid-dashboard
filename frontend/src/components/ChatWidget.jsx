@@ -3,6 +3,7 @@ import { useBranch } from "../context/BranchContext";
 import { sendChatMessage, getChatHealth } from "../api/chat";
 
 const STORAGE_KEY = "hid_chat_history";
+const DISMISSED_KEY = "hid_chat_launcher_dismissed";
 const MAX_HISTORY = 30;
 
 const SUGGESTIONS = [
@@ -153,12 +154,33 @@ function inlineMd(s) {
 export default function ChatWidget() {
   const { selected, currentBranch } = useBranch();
   const [open, setOpen] = useState(false);
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(DISMISSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [messages, setMessages] = useState(loadHistory);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [configured, setConfigured] = useState(true);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
+
+  const dismissLauncher = () => {
+    setDismissed(true);
+    try {
+      localStorage.setItem(DISMISSED_KEY, "1");
+    } catch {}
+  };
+
+  const restoreLauncher = () => {
+    setDismissed(false);
+    try {
+      localStorage.removeItem(DISMISSED_KEY);
+    } catch {}
+  };
 
   useEffect(() => {
     saveHistory(messages);
@@ -232,16 +254,38 @@ export default function ChatWidget() {
   return (
     <>
       {/* Floating launcher */}
-      {!open && (
+      {!open && !dismissed && (
+        <div className="fixed bottom-5 right-5 z-50 group">
+          <button
+            onClick={() => setOpen(true)}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-full w-14 h-14 shadow-lg flex items-center justify-center transition-all hover:scale-105"
+            title="HiD Assistant"
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+          </button>
+          <button
+            onClick={dismissLauncher}
+            title="Hide chat button"
+            className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-gray-800 hover:bg-gray-900 text-white shadow flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {/* Tiny restore dot — appears when launcher is dismissed */}
+      {!open && dismissed && (
         <button
-          onClick={() => setOpen(true)}
-          className="fixed bottom-5 right-5 z-50 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full w-14 h-14 shadow-lg flex items-center justify-center transition-all hover:scale-105"
-          title="HiD Assistant"
-        >
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-          </svg>
-        </button>
+          onClick={restoreLauncher}
+          title="Show HiD Assistant"
+          className="fixed bottom-2 right-2 z-50 w-4 h-4 rounded-full bg-indigo-600/40 hover:bg-indigo-600 hover:scale-150 shadow transition-all"
+          aria-label="Show HiD Assistant"
+        />
       )}
 
       {/* Panel */}
