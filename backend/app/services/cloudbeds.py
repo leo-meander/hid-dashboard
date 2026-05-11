@@ -599,6 +599,12 @@ def backfill_room_type_and_rate_plan(
     getReservation individually for each reservation with NULL room_type.
     The Cloudbeds roomTypeName includes the rate plan name in parentheses,
     e.g. 'Female Dorm* (CRM_April 2026)'. This is the primary field for CRM filtering.
+
+    Two-pass strategy: rows updated within the last 2 hours run uncapped
+    (so newly-synced bookings always get filled in the same cron tick),
+    older backlog rows are capped by `limit` and processed newest-first.
+    Without this, backlog of old NULL rows starved new bookings out of the
+    150-slot budget and quota counts undercounted for hours.
     """
     import time
 
@@ -606,17 +612,28 @@ def backfill_room_type_and_rate_plan(
     df = checkin_from or (today - timedelta(days=30))
     dt = checkin_to or today
 
+    # Two-pass query: row vừa được bulk-synced trong 2h qua được fill TRƯỚC và
+    # không bị `limit` cắt, đảm bảo booking mới (rate_plan_name/room_type NULL
+    # do bulk /getReservations không trả về) luôn lọt trong cùng cron tick.
+    # Pass 2 mới xử lý backlog cũ và áp dụng `limit` để bảo vệ timeout cron.
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
     db = SessionLocal()
-    query = db.query(Reservation).filter(
+    base = db.query(Reservation).filter(
         Reservation.branch_id == branch_id,
         Reservation.check_in_date >= df,
         Reservation.check_in_date <= dt,
         Reservation.room_type == None,  # noqa: E711  — target NULL room_type
         Reservation.cloudbeds_reservation_id != None,  # noqa: E711
     )
+    recent = base.filter(Reservation.updated_at >= cutoff).all()
+    backlog_q = (
+        base.filter(Reservation.updated_at < cutoff)
+            .order_by(Reservation.updated_at.desc())
+    )
     if limit:
-        query = query.limit(limit)
-    null_res = query.all()
+        backlog_q = backlog_q.limit(limit)
+    backlog = backlog_q.all()
+    null_res = recent + backlog
     db.close()
 
     total_fetched = room_type_filled = rate_plan_filled = 0

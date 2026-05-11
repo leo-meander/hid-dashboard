@@ -21,7 +21,7 @@ Cron runs every 30 min and calls `evaluate_quotas`:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 
 from sqlalchemy import or_, func
@@ -31,7 +31,7 @@ from app.config import settings
 from app.models.branch import Branch
 from app.models.rate_plan_quota import RatePlanQuota, RatePlanQuotaStatus
 from app.models.reservation import Reservation
-from app.services.cloudbeds import sync_branch
+from app.services.cloudbeds import backfill_room_type_and_rate_plan, sync_branch
 from app.services.email_sender import send_email_html
 
 logger = logging.getLogger(__name__)
@@ -305,13 +305,33 @@ def _send_alert_email(
 # ── Sync helper ──────────────────────────────────────────────────────────────
 
 def _refresh_branches_from_cloudbeds(branches: Iterable[Branch]) -> None:
-    """Pull modified-only reservations (last 2 days) for each branch.
+    """Pull modified-only reservations + backfill rate_plan_name/room_type.
 
-    Reuses sync_branch with incremental=True — same pattern the daily
-    GitHub Actions cron uses, just with a tighter lookback window for speed.
+    Two-step refresh per branch:
+
+    1. `sync_branch(incremental=True, lookback_days=2)` — bulk
+       /getReservations for rows modified in the last 2 days. Catches new
+       bookings, cancellations, modifications.
+
+    2. `backfill_room_type_and_rate_plan` — bulk /getReservations does NOT
+       return ratePlanNamePublic/Private OR roomTypeName, so step 1 leaves
+       brand-new rows with NULL on both fields. The quota engine matches
+       `rate_plan_name OR room_type ILIKE %pattern%` — without this backfill
+       step the count silently undercounts every newly-ingested booking
+       until someone manually triggers /api/sync/refresh-revenue-insights.
+       Bounded by a -14d→+365d check-in window and a per-branch row limit
+       so a backlog of historical NULLs doesn't blow past the cron's 5-min
+       curl timeout. The backfill prioritises rows touched in the last 2
+       hours (uncapped) so booking thứ N+1 just synced in this tick still
+       gets filled even when older NULL rows would fill the 150-slot budget.
+
     Errors per branch are logged but don't abort the run; we still want
     other branches' counts to refresh.
     """
+    today = date.today()
+    bf_from = today - timedelta(days=14)
+    bf_to = today + timedelta(days=365)
+
     for b in branches:
         pid = b.cloudbeds_property_id
         if not pid:
@@ -326,6 +346,18 @@ def _refresh_branches_from_cloudbeds(branches: Iterable[Branch]) -> None:
             )
         except Exception:
             logger.exception("Quota sync — branch %s failed", b.name)
+            continue
+
+        try:
+            backfill_room_type_and_rate_plan(
+                str(b.id), pid, api_key=api_key,
+                checkin_from=bf_from, checkin_to=bf_to,
+                limit=150,
+            )
+        except Exception:
+            logger.exception(
+                "Quota room_type/rate_plan backfill — branch %s failed", b.name,
+            )
 
 
 # ── Main entry point ─────────────────────────────────────────────────────────
