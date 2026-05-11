@@ -43,8 +43,28 @@ from app.models.gov_visitor import GovVisitorData
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
+
 MONTHS_EN = ["", "January", "February", "March", "April", "May", "June",
              "July", "August", "September", "October", "November", "December"]
+
+
+def _safe_section(db: Session, label: str, fn, default):
+    """Run `fn()` and degrade to `default` on failure so one slow query
+    can't kill the whole weekly report. After a Postgres statement_timeout
+    the session is in an aborted-transaction state and every subsequent
+    query would fail — rollback() here clears it so the next section can
+    keep querying.
+    """
+    try:
+        return fn()
+    except Exception as e:
+        logger.warning("Report section '%s' failed: %s: %s", label, type(e).__name__, e)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return default
 
 
 def _envelope(data):
@@ -336,10 +356,29 @@ def _build_report(db: Session):
 
     for b in branches:
         total_rooms = b.total_rooms or 0
-        kpi = compute_kpi_summary(db, b.id, today.year, today.month, total_rooms)
-        nxt = compute_next_month_forecast(db, b.id, total_rooms, today.year, today.month)
-        top = _top_countries(db, b.id)
-        growth = _growth_countries(db, b.id)
+        # Each section wrapped in _safe_section so a Postgres statement_timeout
+        # on a country GROUP BY (the usual culprit) downgrades that section to
+        # empty defaults instead of crashing the entire weekly email.
+        kpi = _safe_section(
+            db, f"kpi[{b.name}]",
+            lambda: compute_kpi_summary(db, b.id, today.year, today.month, total_rooms),
+            {"actual_revenue_native": None, "target_revenue_native": None,
+             "achievement_pct": None, "avg_adr_native": None,
+             "predicted_occ_pct": None, "days_elapsed": None,
+             "total_days": None, "occ_forecast_native": None},
+        )
+        nxt = _safe_section(
+            db, f"next_forecast[{b.name}]",
+            lambda: compute_next_month_forecast(db, b.id, total_rooms, today.year, today.month),
+            {"next_month": None, "next_year": None,
+             "next_month_forecast_native": None, "next_month_target_native": None,
+             "next_month_adr": None, "next_month_booked_nights": None,
+             "next_month_booked_revenue": None, "predicted_occ_next": None},
+        )
+        top = _safe_section(db, f"top_countries[{b.name}]",
+                            lambda: _top_countries(db, b.id), [])
+        growth = _safe_section(db, f"growth_countries[{b.name}]",
+                               lambda: _growth_countries(db, b.id), [])
 
         # ── KPI Dashboard "Adjusted" inputs (Home page) ────────────────────
         # Adjusted Forecast = Forecast × (1 − deduction%) + Other Revenue.
@@ -369,10 +408,18 @@ def _build_report(db: Session):
         adjusted_nxt = _adjust(nxt["next_month_forecast_native"], deduct_nxt, other_rev_nxt)
 
         # Country Intel scores (Hot / Warm / Cold)
-        country_intel = score_countries(db, branch_id=b.id, top_n=10)
+        country_intel = _safe_section(
+            db, f"country_intel[{b.name}]",
+            lambda: score_countries(db, branch_id=b.id, top_n=10),
+            [],
+        )
 
         # Actual OCC from daily_metrics
-        actual_occ = _actual_occ_pct(db, b.id, today.year, today.month, total_rooms)
+        actual_occ = _safe_section(
+            db, f"actual_occ[{b.name}]",
+            lambda: _actual_occ_pct(db, b.id, today.year, today.month, total_rooms),
+            None,
+        )
 
         # Predicted/forecast OCC from KPI targets
         predicted_occ_current = kpi.get("predicted_occ_pct")
@@ -385,13 +432,32 @@ def _build_report(db: Session):
         ads_month = today.month % 12 + 1           # next month
         kol_month = (today.month + 1) % 12 + 1     # month after next
         ads_prior = today.month                      # current month (for growth calc)
-        gov_ads_top = _gov_top_countries(db, dest, ads_month, limit=5) if dest else []
-        gov_ads_growth = _gov_growth_countries(db, dest, ads_month, ads_prior, limit=5) if dest else []
-        gov_kol_top = _gov_top_countries(db, dest, kol_month, limit=5) if dest else []
+        gov_ads_top = _safe_section(
+            db, f"gov_ads_top[{b.name}]",
+            lambda: _gov_top_countries(db, dest, ads_month, limit=5) if dest else [],
+            [],
+        )
+        gov_ads_growth = _safe_section(
+            db, f"gov_ads_growth[{b.name}]",
+            lambda: _gov_growth_countries(db, dest, ads_month, ads_prior, limit=5) if dest else [],
+            [],
+        )
+        gov_kol_top = _safe_section(
+            db, f"gov_kol_top[{b.name}]",
+            lambda: _gov_top_countries(db, dest, kol_month, limit=5) if dest else [],
+            [],
+        )
 
         # Analytical sections (summary, outliers, behavior, channel mix,
-        # country insights, ad budget optimizer)
-        analytics = build_branch_analytics(db, b, today)
+        # country insights, ad budget optimizer). This is the heaviest call
+        # — runs ~10 country GROUP BYs per branch — most likely to hit
+        # statement_timeout. Wrap so failure degrades to empty analytics
+        # block instead of killing the email.
+        analytics = _safe_section(
+            db, f"analytics[{b.name}]",
+            lambda: build_branch_analytics(db, b, today),
+            {},
+        )
 
         report.append({
             "branch_id": str(b.id),
