@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
@@ -93,6 +94,22 @@ def map_room_type_category(room_type: Optional[str]) -> str:
     if room_type and "dorm" in room_type.lower():
         return "Dorm"
     return "Room"
+
+
+# Cloudbeds frequently returns NULL for `ratePlanNamePublic` / `ratePlanNamePrivate`
+# even in /getReservation detail responses (e.g. CRM event rate plans). However
+# the rate plan label is also embedded as the trailing parenthesised segment of
+# `roomTypeName`, e.g. "8 Beds Mixed Dormitory Shared Bathroom (CRM_June 2026 Events)".
+# We treat that as the canonical fallback so the quota engine's ILIKE match still works.
+_RATE_PLAN_PARENS_RE = re.compile(r"\(([^()]+)\)\s*$")
+
+
+def extract_rate_plan_from_room_type(room_type: Optional[str]) -> Optional[str]:
+    """Return the trailing parenthesised segment of room_type, or None."""
+    if not room_type:
+        return None
+    m = _RATE_PLAN_PARENS_RE.search(room_type)
+    return m.group(1).strip() if m else None
 
 
 def _extract_guest_country_from_detail(data: dict) -> Optional[str]:
@@ -667,6 +684,11 @@ def backfill_room_type_and_rate_plan(
                             rate_plan = room.get("ratePlanNamePublic") or room.get("ratePlanNamePrivate")
                         if not room_type_name:
                             room_type_name = room.get("roomTypeName")
+                # Cloudbeds returns NULL on both ratePlanName fields for many
+                # bookings (esp. CRM event rates) — fall back to the trailing
+                # parens segment of roomTypeName, which Cloudbeds always embeds.
+                if not rate_plan:
+                    rate_plan = extract_rate_plan_from_room_type(room_type_name)
 
                 # Country lives in guestList, only in detail responses — capture
                 # opportunistically when current row is missing it.
@@ -977,8 +999,15 @@ def ingest_reservations(
             reservation_date=_parse_date(raw.get("dateCreated")),
         )
 
-        # Rate plan name (present in getReservation detail, not in bulk getReservations)
-        rate_plan = raw.get("ratePlanNamePublic") or raw.get("ratePlanNamePrivate")
+        # Rate plan name — Cloudbeds returns NULL for both ratePlanNamePublic
+        # and ratePlanNamePrivate on many bookings (esp. CRM/event rates), so we
+        # fall back to the trailing parens of room_type, which Cloudbeds always
+        # embeds. See extract_rate_plan_from_room_type().
+        rate_plan = (
+            raw.get("ratePlanNamePublic")
+            or raw.get("ratePlanNamePrivate")
+            or extract_rate_plan_from_room_type(room_type)
+        )
         if rate_plan is not None:
             payload["rate_plan_name"] = rate_plan
 
