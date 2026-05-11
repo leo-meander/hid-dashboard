@@ -604,8 +604,16 @@ def country_insights(db: Session, branch_id: UUID, today: date,
     yoy_start = yoy_end - timedelta(days=29)
 
     def _stats(date_col, d_from: date, d_to: date) -> dict:
+        # GROUP BY guest_country_code (indexed via idx_reservations_country_code)
+        # so each of the 10 windows below can use an index scan instead of a
+        # sort on raw guest_country. MIN(guest_country) supplies a display
+        # name in the same row. "Unknown" rows are filtered in Python since
+        # N is small post-aggregation — keeping that filter in SQL via
+        # LOWER(...) LIKE '%unknown%' on raw text defeated every index and
+        # was the main statement_timeout culprit.
         rows = db.query(
-            Reservation.guest_country,
+            func.min(Reservation.guest_country).label("country"),
+            Reservation.guest_country_code,
             func.count(Reservation.id).label("bookings"),
             func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
             func.coalesce(func.sum(Reservation.grand_total_native), 0).label("rev"),
@@ -613,22 +621,28 @@ def country_insights(db: Session, branch_id: UUID, today: date,
             Reservation.branch_id == branch_id,
             date_col >= d_from,
             date_col <= d_to,
-            Reservation.guest_country.isnot(None),
-            ~func.lower(func.coalesce(Reservation.guest_country, "")).contains("unknown"),
+            Reservation.guest_country_code.isnot(None),
             ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
-        ).group_by(Reservation.guest_country).all()
-        return {
-            r.guest_country: {
+        ).group_by(Reservation.guest_country_code).all()
+        out = {}
+        for r in rows:
+            name = r.country or ""
+            if "unknown" in name.lower():
+                continue
+            out[r.guest_country_code] = {
+                "display": name,
                 "bookings": int(r.bookings or 0),
                 "nights": int(r.nights or 0),
                 "revenue": float(r.rev or 0),
             }
-            for r in rows
-        }
+        return out
 
     def _build_table(date_col):
         # Six per-country dicts share `date_col` so booking-date and
         # check-in-date tables stay 100% comparable apples-to-apples.
+        # Lookups key on guest_country_code (stable across windows); the
+        # display name comes from whichever window first surfaced this code
+        # in the last_30 ranking.
         last_30 = _stats(date_col, last_30_start, last_30_end)
         prev_30 = _stats(date_col, prev_30_start, prev_30_end)
         last_7 = _stats(date_col, last_7_start, last_7_end)
@@ -637,20 +651,20 @@ def country_insights(db: Session, branch_id: UUID, today: date,
 
         out = []
         ranked = sorted(last_30.items(), key=lambda x: -x[1]["bookings"])[:limit]
-        for country, cur in ranked:
+        for code, cur in ranked:
             wow_pct = _pct_change(
-                last_7.get(country, {}).get("bookings", 0),
-                prev_7.get(country, {}).get("bookings", 0),
+                last_7.get(code, {}).get("bookings", 0),
+                prev_7.get(code, {}).get("bookings", 0),
             )
             d30_pct = _pct_change(
                 cur["bookings"],
-                prev_30.get(country, {}).get("bookings", 0),
+                prev_30.get(code, {}).get("bookings", 0),
             )
-            yoy_cur = yoy.get(country, {}).get("bookings", 0)
+            yoy_cur = yoy.get(code, {}).get("bookings", 0)
             yoy_pct = _pct_change(cur["bookings"], yoy_cur) if yoy_cur > 0 else None
             adr = round(cur["revenue"] / cur["nights"], 2) if cur["nights"] > 0 else None
             out.append({
-                "country": country,
+                "country": cur["display"],
                 "bookings": cur["bookings"],
                 "nights": cur["nights"],
                 "revenue_native": round(cur["revenue"], 2),

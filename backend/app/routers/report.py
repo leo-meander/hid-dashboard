@@ -175,77 +175,90 @@ def _adjustment_formula_html(raw_forecast, deduct_pct, other_rev, currency):
 
 
 def _top_countries(db: Session, branch_id, days: int = 90, limit: int = 5):
+    # GROUP BY guest_country_code (indexed via idx_reservations_country_code)
+    # — the previous GROUP BY on raw guest_country plus a LOWER(...) LIKE
+    # '%unknown%' filter defeated every index and hit statement_timeout on
+    # busier branches. MIN(guest_country) gives us a display name without
+    # losing index-only scan on the GROUP BY column. "Unknown" rows are
+    # filtered in Python since N is small post-aggregation.
     cutoff = date.today() - timedelta(days=days)
     rows = (
         db.query(
-            Reservation.guest_country,
+            func.min(Reservation.guest_country).label("country"),
+            Reservation.guest_country_code,
             func.count(Reservation.id).label("cnt"),
         )
         .filter(
             Reservation.branch_id == branch_id,
             Reservation.check_in_date >= cutoff,
-            Reservation.guest_country.isnot(None),
-            ~func.lower(func.coalesce(Reservation.guest_country, "")).contains("unknown"),
+            Reservation.guest_country_code.isnot(None),
             or_(
                 Reservation.status == None,
                 Reservation.status.notin_(list(_EXCLUDED_STATUSES)),
             ),
         )
-        .group_by(Reservation.guest_country)
+        .group_by(Reservation.guest_country_code)
         .order_by(func.count(Reservation.id).desc())
-        .limit(limit)
         .all()
     )
-    return [{"country": r.guest_country, "bookings": r.cnt} for r in rows]
+    out = []
+    for r in rows:
+        name = r.country or ""
+        if "unknown" in name.lower():
+            continue
+        out.append({"country": name, "bookings": r.cnt})
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _growth_countries(db: Session, branch_id, limit: int = 3):
-    """Top countries with biggest booking growth (90d vs prior 90d)."""
+    """Top countries with biggest booking growth (90d vs prior 90d).
+
+    GROUPs by indexed guest_country_code and pulls MIN(guest_country) for a
+    display name in one row. Both windows must key on the same value so
+    countries match across periods — using the code (stable) is safer than
+    the raw string (which may have spelling variations).
+    """
     today = date.today()
     recent_start = today - timedelta(days=90)
     prev_start = today - timedelta(days=180)
 
-    recent = {
-        r.guest_country: r.cnt
-        for r in db.query(
-            Reservation.guest_country,
-            func.count(Reservation.id).label("cnt"),
-        ).filter(
+    def _by_code(d_from, d_to=None):
+        # d_to is exclusive; None preserves the original "no upper bound"
+        # semantics for the recent window (includes future check-ins).
+        filters = [
             Reservation.branch_id == branch_id,
-            Reservation.check_in_date >= recent_start,
-            Reservation.guest_country.isnot(None),
-            ~func.lower(func.coalesce(Reservation.guest_country, "")).contains("unknown"),
+            Reservation.check_in_date >= d_from,
+            Reservation.guest_country_code.isnot(None),
             or_(Reservation.status == None,
                 Reservation.status.notin_(list(_EXCLUDED_STATUSES))),
-        ).group_by(Reservation.guest_country).all()
-    }
+        ]
+        if d_to is not None:
+            filters.append(Reservation.check_in_date < d_to)
+        q = db.query(
+            func.min(Reservation.guest_country).label("country"),
+            Reservation.guest_country_code,
+            func.count(Reservation.id).label("cnt"),
+        ).filter(*filters).group_by(Reservation.guest_country_code).all()
+        return {r.guest_country_code: (r.country, r.cnt) for r in q}
 
-    prev = {
-        r.guest_country: r.cnt
-        for r in db.query(
-            Reservation.guest_country,
-            func.count(Reservation.id).label("cnt"),
-        ).filter(
-            Reservation.branch_id == branch_id,
-            Reservation.check_in_date >= prev_start,
-            Reservation.check_in_date < recent_start,
-            Reservation.guest_country.isnot(None),
-            ~func.lower(func.coalesce(Reservation.guest_country, "")).contains("unknown"),
-            or_(Reservation.status == None,
-                Reservation.status.notin_(list(_EXCLUDED_STATUSES))),
-        ).group_by(Reservation.guest_country).all()
-    }
+    recent = _by_code(recent_start)
+    prev = _by_code(prev_start, recent_start)
 
     results = []
-    for country, rec_cnt in recent.items():
+    for code, (name, rec_cnt) in recent.items():
         if rec_cnt < 2:
             continue
-        prv_cnt = prev.get(country, 0)
+        prv_name, prv_cnt = prev.get(code, (name, 0))
         if prv_cnt == 0:
+            continue
+        display = name or prv_name or ""
+        if "unknown" in display.lower():
             continue
         growth = round((rec_cnt - prv_cnt) / prv_cnt * 100, 1)
         if growth > 0:
-            results.append({"country": country, "recent": rec_cnt,
+            results.append({"country": display, "recent": rec_cnt,
                             "prev": prv_cnt, "growth_pct": growth})
 
     results.sort(key=lambda x: x["growth_pct"], reverse=True)
