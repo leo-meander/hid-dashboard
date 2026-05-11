@@ -543,7 +543,7 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
         <div>
           <h3 className="font-semibold text-gray-800 text-sm">📊 Weekly Report</h3>
           <p className="text-[11px] text-gray-500 mt-0.5">
-            Same content as the email&apos;s full version. Loaded once per session — generation is slow (~20-40s) so we cache.
+            Same content as the email&apos;s full version. Served from cache (refreshed Mon 03:00 ICT) for instant load.
             {loadedAt && (
               <span> Loaded at {loadedAt.toLocaleTimeString()}.</span>
             )}

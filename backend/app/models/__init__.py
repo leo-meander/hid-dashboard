@@ -32,6 +32,9 @@ from app.models.alert import AlertRule, AlertHistory, AlertNotificationLog
 # Rate Plan Quota tracking
 from app.models.rate_plan_quota import RatePlanQuota, RatePlanQuotaStatus
 
+# Weekly Report JSON cache (refreshed Mon 03:00 ICT)
+from app.models.weekly_report_cache import WeeklyReportCache
+
 __all__ = [
     "Branch", "KPITarget", "Reservation", "DailyMetrics", "Event",
     "WebsiteMetrics", "AdAngle", "AdsPerformance", "AdsBudget",
@@ -46,4 +49,5 @@ __all__ = [
     "GovVisitorData",
     "AlertRule", "AlertHistory", "AlertNotificationLog",
     "RatePlanQuota", "RatePlanQuotaStatus",
+    "WeeklyReportCache",
 ]

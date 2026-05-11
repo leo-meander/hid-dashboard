@@ -29,6 +29,7 @@ from app.models.daily_metrics import DailyMetrics
 from app.models.kpi import KPITarget
 from app.models.reservation import Reservation
 from app.models.user import User
+from app.models.weekly_report_cache import WeeklyReportCache
 from app.services.cloudbeds import sync_cloudbeds_occupancy
 from app.services.country_scorer import score_countries
 from app.services.email_sender import send_email_html
@@ -70,6 +71,58 @@ def _safe_section(db: Session, label: str, fn, default):
 def _envelope(data):
     return {"success": True, "data": data, "error": None,
             "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+# ── Report cache (refreshed weekly Mon 03:00 ICT) ─────────────────────────────
+
+
+def _load_cached_report(db: Session) -> Optional[tuple[list, datetime]]:
+    """Return (payload, computed_at) from cache, or None if no cache yet."""
+    row = db.query(WeeklyReportCache).filter_by(
+        id=WeeklyReportCache.SINGLETON_ID
+    ).first()
+    if not row:
+        return None
+    return row.payload, row.computed_at
+
+
+def _save_cached_report(db: Session, payload: list) -> datetime:
+    """Upsert the singleton cache row. Returns the new computed_at."""
+    now = datetime.now(timezone.utc)
+    row = db.query(WeeklyReportCache).filter_by(
+        id=WeeklyReportCache.SINGLETON_ID
+    ).first()
+    if row:
+        row.payload = payload
+        row.computed_at = now
+    else:
+        db.add(WeeklyReportCache(
+            id=WeeklyReportCache.SINGLETON_ID,
+            payload=payload,
+            computed_at=now,
+        ))
+    db.commit()
+    return now
+
+
+def _get_report_with_cache(db: Session, force_fresh: bool = False) -> tuple[list, Optional[datetime]]:
+    """Return (report payload, computed_at).
+
+    Default path: serve the cached payload (refreshed Mon 03:00 ICT). The
+    cache is single-row and never expires automatically — if it's empty
+    (first deploy, or table was truncated) we build fresh and save.
+
+    `force_fresh=True` rebuilds and overwrites the cache — used by the
+    refresh-cache endpoint the cron hits, and the optional `?fresh=1`
+    query param for admin debugging.
+    """
+    if not force_fresh:
+        cached = _load_cached_report(db)
+        if cached is not None:
+            return cached
+    payload = _build_report(db)
+    computed_at = _save_cached_report(db, payload)
+    return payload, computed_at
 
 
 def _fmt(val, currency=""):
@@ -2044,12 +2097,19 @@ def _build_compact_email_html(report: list, today: date) -> str:
 
 
 @router.get("/weekly")
-def weekly_report(db: Session = Depends(get_db)):
-    """Return weekly report data as JSON."""
+def weekly_report(
+    fresh: int = 0,
+    db: Session = Depends(get_db),
+):
+    """Return weekly report data as JSON. Reads from cache (Mon 03:00 ICT
+    refresh) by default — pass ?fresh=1 to force rebuild + cache overwrite.
+    """
     today = date.today()
-    report = _build_report(db)
+    report, computed_at = _get_report_with_cache(db, force_fresh=bool(fresh))
     return _envelope({
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": (computed_at or datetime.now(timezone.utc)).isoformat(),
+        "cache_computed_at": computed_at.isoformat() if computed_at else None,
+        "from_cache": not bool(fresh),
         "month": today.month,
         "year": today.year,
         "branches": report,
@@ -2199,6 +2259,10 @@ def _send_weekly_email_to_default_recipients(db: Session) -> dict:
     """Shared internal: render report and send to env EMAIL_RECIPIENTS.
     Used by the cron-triggered endpoint. Frontend still uses /send-weekly
     which allows ad-hoc recipients via ?to= or ?user_ids=.
+
+    Reads from the report cache (refreshed Mon 03:00 ICT, ~4h before this
+    Mon 07:00 send). If the cache is missing (first deploy / table empty)
+    `_get_report_with_cache` builds fresh and populates it.
     """
     recipients_raw = getattr(settings, "EMAIL_RECIPIENTS", "") or ""
 
@@ -2209,7 +2273,7 @@ def _send_weekly_email_to_default_recipients(db: Session) -> dict:
         raise HTTPException(400, "EMAIL_RECIPIENTS env var is empty — set it on Zeabur")
 
     today = date.today()
-    report = _build_report(db)
+    report, _ = _get_report_with_cache(db)
     # Email gets the compact version (Exec Summary + CTA → UI). Full
     # per-branch detail lives on the dashboard.
     html = _build_compact_email_html(report, today)
@@ -2238,13 +2302,34 @@ def send_weekly_cron(db: Session = Depends(get_db)):
     return _envelope(_send_weekly_email_to_default_recipients(db))
 
 
+@router.post("/refresh-cache", dependencies=[Depends(verify_sync_token)])
+def refresh_cache(db: Session = Depends(get_db)):
+    """Cron-triggered cache rebuild. Auth: X-Sync-Token header.
+
+    Hit by GitHub Actions every Monday 03:00 ICT — pre-warms the report
+    cache so the Weekly Report page loads instantly all week and the
+    Mon 07:00 email send doesn't have to rebuild.
+    """
+    payload, computed_at = _get_report_with_cache(db, force_fresh=True)
+    return _envelope({
+        "computed_at": computed_at.isoformat() if computed_at else None,
+        "branches_included": len(payload),
+    })
+
+
 # ── Email preview ─────────────────────────────────────────────────────────────
 
 @router.get("/preview", response_class=HTMLResponse)
-def preview_email(db: Session = Depends(get_db)):
-    """Return rendered HTML email for iframe preview (no sending)."""
+def preview_email(
+    fresh: int = 0,
+    db: Session = Depends(get_db),
+):
+    """Return rendered HTML email for iframe preview (no sending). Reads
+    from cache (Mon 03:00 ICT refresh) by default — pass ?fresh=1 to
+    force rebuild + cache overwrite.
+    """
     today = date.today()
-    report = _build_report(db)
+    report, _ = _get_report_with_cache(db, force_fresh=bool(fresh))
     html = _build_html(report, today)
     return HTMLResponse(content=html)
 

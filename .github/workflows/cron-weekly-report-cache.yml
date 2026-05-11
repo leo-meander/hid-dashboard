@@ -1,0 +1,47 @@
+name: Cron — Weekly Report Cache Refresh (Mon 03:00 ICT)
+
+# 03:00 ICT (UTC+7) = 20:00 UTC every Sunday.
+# Pre-builds the weekly report JSON ~4h before the Mon 07:00 ICT email send,
+# so the dashboard's Weekly Report page loads instantly all week instead of
+# triggering a 30-90s rebuild on every open.
+#
+# Triggers POST /api/report/refresh-cache which:
+#   - Runs the full _build_report (Cloudbeds Insights pre-sync + all KPI,
+#     country, paid-ads, KOL, CRM, ad-budget sections)
+#   - Upserts the weekly_report_cache singleton row
+#   - Returns { computed_at, branches_included }
+#
+# Auth: standard HiD cron pattern — `X-Sync-Token: $SYNC_TRIGGER_TOKEN`.
+# Set SYNC_TRIGGER_TOKEN and BACKEND_URL as repo secrets in GitHub.
+on:
+  schedule:
+    - cron: "0 20 * * 0"
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/report/refresh-cache
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          SYNC_TRIGGER_TOKEN: ${{ secrets.SYNC_TRIGGER_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt..."
+            http_code=$(curl -sS -o response.json -w "%{http_code}" \
+              -X POST "${BACKEND_URL}/api/report/refresh-cache" \
+              -H "X-Sync-Token: ${SYNC_TRIGGER_TOKEN}" \
+              --max-time 600) || true
+            cat response.json
+            echo
+            if [ "$http_code" = "200" ]; then
+              echo "OK — weekly report cache refreshed"
+              exit 0
+            fi
+            echo "Got HTTP $http_code, retrying in 30s..."
+            sleep 30
+          done
+          echo "Failed after 3 attempts"
+          exit 1
