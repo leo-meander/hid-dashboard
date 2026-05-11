@@ -546,35 +546,17 @@ function SettingsTab({ toast, setToast }) {
 // — same key the backend uses — so the same drawer can show the past
 // week's discussion when the user filters to an archived week.
 
-function CommentDrawer({ context, currentUser, onClose, onChanged }) {
-  const [comments, setComments] = useState([]);
-  const [loading, setLoading] = useState(false);
+function CommentDrawer({ context, currentUser, initialComments = [], onClose, onChanged }) {
+  // Render synchronously from the parent's prefetched list. Mutations
+  // (post / patch / delete) call onChanged() so the parent refetches
+  // the whole-week list, and the new initialComments prop flows back in.
   const [submitting, setSubmitting] = useState(false);
   const [draft, setDraft] = useState("");
   const [markAction, setMarkAction] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState("");
 
-  const load = useCallback(async () => {
-    if (!context) return;
-    setLoading(true);
-    try {
-      const r = await axios.get("/api/report/comments", {
-        params: {
-          week_start: context.weekStart,
-          branch_id: context.branchId || undefined,
-          metric_key: context.metricKey,
-        },
-      });
-      setComments(r.data.data || []);
-    } catch (e) {
-      console.error("Failed to load comments", e);
-    } finally {
-      setLoading(false);
-    }
-  }, [context]);
-
-  useEffect(() => { load(); }, [load]);
+  const comments = initialComments;
 
   // POST schema doesn't accept is_action_item — patch right after if checked
   const submitWithActionFlag = async () => {
@@ -593,7 +575,6 @@ function CommentDrawer({ context, currentUser, onClose, onChanged }) {
       }
       setDraft("");
       setMarkAction(false);
-      await load();
       onChanged?.();
     } catch (e) {
       alert(e.response?.data?.detail || "Failed to post comment");
@@ -605,7 +586,6 @@ function CommentDrawer({ context, currentUser, onClose, onChanged }) {
   const toggleAction = async (c) => {
     try {
       await axios.patch(`/api/report/comments/${c.id}`, { is_action_item: !c.is_action_item });
-      await load();
       onChanged?.();
     } catch (e) {
       alert(e.response?.data?.detail || "Failed to update comment");
@@ -615,7 +595,6 @@ function CommentDrawer({ context, currentUser, onClose, onChanged }) {
   const toggleResolved = async (c) => {
     try {
       await axios.patch(`/api/report/comments/${c.id}`, { is_resolved: !c.is_resolved });
-      await load();
       onChanged?.();
     } catch (e) {
       alert(e.response?.data?.detail || "Failed to update comment");
@@ -629,7 +608,6 @@ function CommentDrawer({ context, currentUser, onClose, onChanged }) {
       await axios.patch(`/api/report/comments/${c.id}`, { body: text });
       setEditingId(null);
       setEditingText("");
-      await load();
       onChanged?.();
     } catch (e) {
       alert(e.response?.data?.detail || "Failed to save edit");
@@ -640,7 +618,6 @@ function CommentDrawer({ context, currentUser, onClose, onChanged }) {
     if (!confirm("Delete this comment? This cannot be undone.")) return;
     try {
       await axios.delete(`/api/report/comments/${c.id}`);
-      await load();
       onChanged?.();
     } catch (e) {
       alert(e.response?.data?.detail || "Failed to delete comment");
@@ -680,9 +657,7 @@ function CommentDrawer({ context, currentUser, onClose, onChanged }) {
 
         {/* Comment list */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
-          {loading ? (
-            <p className="text-sm text-gray-400 animate-pulse">Loading…</p>
-          ) : comments.length === 0 ? (
+          {comments.length === 0 ? (
             <p className="text-sm text-gray-400">No discussion yet. Start the thread below.</p>
           ) : (
             comments.map(c => (
@@ -822,8 +797,11 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
   // resolved to this Monday).
   const activeWeekStart = selectedWeek === "current" ? fmtIsoDate(thisMonday()) : selectedWeek;
 
-  // Comment counts for badge overlay
-  const [commentCounts, setCommentCounts] = useState({});
+  // Preloaded comments for the whole week — single fetch, then drawer
+  // reads from this in-memory cache so opening a thread is instant.
+  // (Previous design hit /comments on every drawer open — perceptibly
+  // slow when clicking through cells.)
+  const [allComments, setAllComments] = useState([]);
   const [drawer, setDrawer] = useState(null);
   const reportContainerRef = useRef(null);
 
@@ -836,19 +814,28 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
     }
   }, []);
 
-  const loadCommentCounts = useCallback(async (weekStart) => {
+  const loadAllComments = useCallback(async (weekStart) => {
     try {
-      const r = await axios.get("/api/report/comments/counts", { params: { week_start: weekStart } });
-      const map = {};
-      (r.data.data || []).forEach(row => {
-        const k = `${row.branch_id || ""}::${row.metric_key}`;
-        map[k] = { count: row.count, actionItems: row.action_items };
-      });
-      setCommentCounts(map);
+      const r = await axios.get("/api/report/comments", { params: { week_start: weekStart } });
+      setAllComments(r.data.data || []);
     } catch (e) {
-      console.error("Failed to load comment counts", e);
+      console.error("Failed to load comments", e);
     }
   }, []);
+
+  // Counts derived from allComments (open threads + action-item flag per cell).
+  // Recomputed cheaply on any change — no extra API call.
+  const commentCounts = useMemo(() => {
+    const map = {};
+    allComments.forEach(c => {
+      if (c.is_resolved) return;
+      const k = `${c.branch_id || ""}::${c.metric_key}`;
+      if (!map[k]) map[k] = { count: 0, actionItems: 0 };
+      map[k].count += 1;
+      if (c.is_action_item) map[k].actionItems += 1;
+    });
+    return map;
+  }, [allComments]);
 
   const loadReport = useCallback(async () => {
     setReportLoading(true);
@@ -882,7 +869,7 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
   // Initial load
   useEffect(() => { loadArchives(); }, [loadArchives]);
   useEffect(() => { loadReport(); }, [loadReport]);
-  useEffect(() => { loadCommentCounts(activeWeekStart); }, [activeWeekStart, loadCommentCounts]);
+  useEffect(() => { loadAllComments(activeWeekStart); }, [activeWeekStart, loadAllComments]);
 
   const selectBranch = (id) => {
     setSelectedBranch(id);
@@ -1098,13 +1085,18 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
         </>
       )}
 
-      {/* Discussion drawer */}
+      {/* Discussion drawer — filter the prefetched list for this cell so
+          the drawer can render synchronously (no spinner on open). */}
       {drawer && (
         <CommentDrawer
           context={drawer}
           currentUser={currentUser}
+          initialComments={allComments.filter(c =>
+            c.metric_key === drawer.metricKey &&
+            (c.branch_id || null) === (drawer.branchId || null)
+          )}
           onClose={() => setDrawer(null)}
-          onChanged={() => loadCommentCounts(activeWeekStart)}
+          onChanged={() => loadAllComments(activeWeekStart)}
         />
       )}
     </div>
