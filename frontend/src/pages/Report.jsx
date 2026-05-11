@@ -15,8 +15,9 @@
  * the per-branch drill-down. Deep-link via /report?view=full[&branch=ID]
  * — used by the email's "Branch quick-jump" chips.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
+import { useAuth } from "../context/AuthContext";
 
 const DAYS = [
   { value: "mon", label: "Mon" },
@@ -29,6 +30,61 @@ const DAYS = [
 ];
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
+
+// ── Metric label map ────────────────────────────────────────────────────────
+// Used as drawer header when a user clicks a cell — the data-metric-key
+// attribute is a stable id, the labels here are the human display strings.
+const METRIC_LABELS = {
+  revenue_mtd: "Revenue MTD",
+  target: "Revenue Target",
+  pacing: "Pacing %",
+  forecast: "Forecast (Adjusted)",
+  occ: "Occupancy %",
+  adr: "ADR",
+  revpar: "RevPAR",
+  wow_revenue: "Week-over-week Revenue",
+  yoy_revenue: "Year-over-year Revenue",
+  "branch.revenue": "Branch Revenue (MTD)",
+  "branch.target": "Branch Target",
+  "branch.adr": "Branch ADR",
+  "branch.occ_actual": "Branch Actual OCC%",
+  "branch.occ_forecast": "Branch Forecast OCC%",
+  "branch.forecast": "Branch Forecast (Adjusted)",
+  "branch.next_revenue": "Next Month Revenue (booked)",
+  "branch.next_target": "Next Month Target",
+  "branch.next_adr": "Next Month ADR",
+  "branch.next_occ_forecast": "Next Month Forecast OCC%",
+  "branch.next_forecast": "Next Month Forecast (Adjusted)",
+};
+
+const metricLabel = (key) => METRIC_LABELS[key] || key;
+
+// ── Week helpers ────────────────────────────────────────────────────────────
+function thisMonday() {
+  const d = new Date();
+  const day = d.getDay(); // 0 = Sun, 1 = Mon ...
+  const offset = (day + 6) % 7; // days since Monday
+  d.setDate(d.getDate() - offset);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function fmtIsoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function fmtWeekLabel(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-").map(Number);
+  const start = new Date(y, m - 1, d);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  const opts = { month: "short", day: "numeric" };
+  return `${start.toLocaleDateString(undefined, opts)} – ${end.toLocaleDateString(undefined, opts)}, ${start.getFullYear()}`;
+}
 
 function Toast({ message, type, onClose }) {
   useEffect(() => {
@@ -483,28 +539,335 @@ function SettingsTab({ toast, setToast }) {
   );
 }
 
+// ── Comment drawer (slide-in side panel) ───────────────────────────────────
+//
+// Opens when a user clicks any [data-metric-key] cell in the rendered
+// report HTML. Threads are scoped by (week_start, branch_id, metric_key)
+// — same key the backend uses — so the same drawer can show the past
+// week's discussion when the user filters to an archived week.
+
+function CommentDrawer({ context, currentUser, onClose, onChanged }) {
+  const [comments, setComments] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [markAction, setMarkAction] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editingText, setEditingText] = useState("");
+
+  const load = useCallback(async () => {
+    if (!context) return;
+    setLoading(true);
+    try {
+      const r = await axios.get("/api/report/comments", {
+        params: {
+          week_start: context.weekStart,
+          branch_id: context.branchId || undefined,
+          metric_key: context.metricKey,
+        },
+      });
+      setComments(r.data.data || []);
+    } catch (e) {
+      console.error("Failed to load comments", e);
+    } finally {
+      setLoading(false);
+    }
+  }, [context]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // POST schema doesn't accept is_action_item — patch right after if checked
+  const submitWithActionFlag = async () => {
+    const text = draft.trim();
+    if (!text) return;
+    setSubmitting(true);
+    try {
+      const r = await axios.post("/api/report/comments", {
+        week_start: context.weekStart,
+        branch_id: context.branchId || null,
+        metric_key: context.metricKey,
+        body: text,
+      });
+      if (markAction) {
+        await axios.patch(`/api/report/comments/${r.data.data.id}`, { is_action_item: true });
+      }
+      setDraft("");
+      setMarkAction(false);
+      await load();
+      onChanged?.();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Failed to post comment");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const toggleAction = async (c) => {
+    try {
+      await axios.patch(`/api/report/comments/${c.id}`, { is_action_item: !c.is_action_item });
+      await load();
+      onChanged?.();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Failed to update comment");
+    }
+  };
+
+  const toggleResolved = async (c) => {
+    try {
+      await axios.patch(`/api/report/comments/${c.id}`, { is_resolved: !c.is_resolved });
+      await load();
+      onChanged?.();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Failed to update comment");
+    }
+  };
+
+  const saveEdit = async (c) => {
+    const text = editingText.trim();
+    if (!text) return;
+    try {
+      await axios.patch(`/api/report/comments/${c.id}`, { body: text });
+      setEditingId(null);
+      setEditingText("");
+      await load();
+      onChanged?.();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Failed to save edit");
+    }
+  };
+
+  const remove = async (c) => {
+    if (!confirm("Delete this comment? This cannot be undone.")) return;
+    try {
+      await axios.delete(`/api/report/comments/${c.id}`);
+      await load();
+      onChanged?.();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Failed to delete comment");
+    }
+  };
+
+  const canEdit = (c) => currentUser && (c.author_id === currentUser.id || currentUser.role === "admin");
+
+  if (!context) return null;
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 bg-black/30 z-40"
+        onClick={onClose}
+      />
+      <div className="fixed top-0 right-0 bottom-0 w-full sm:w-[440px] bg-white shadow-2xl z-50 flex flex-col">
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-gray-200 flex items-start justify-between">
+          <div className="min-w-0">
+            <p className="text-[11px] text-gray-500 uppercase tracking-wide">Discussion</p>
+            <h3 className="text-base font-semibold text-gray-900 truncate">
+              {metricLabel(context.metricKey)}
+            </h3>
+            <p className="text-xs text-gray-500 mt-0.5 truncate">
+              {context.branchName ? `${context.branchName} · ` : ""}Week of {fmtWeekLabel(context.weekStart)}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="ml-3 text-gray-400 hover:text-gray-700 text-2xl leading-none"
+            aria-label="Close"
+          >
+            &times;
+          </button>
+        </div>
+
+        {/* Comment list */}
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+          {loading ? (
+            <p className="text-sm text-gray-400 animate-pulse">Loading…</p>
+          ) : comments.length === 0 ? (
+            <p className="text-sm text-gray-400">No discussion yet. Start the thread below.</p>
+          ) : (
+            comments.map(c => (
+              <div
+                key={c.id}
+                className={`rounded-lg border p-3 ${
+                  c.is_resolved
+                    ? "bg-gray-50 border-gray-200 opacity-70"
+                    : c.is_action_item
+                    ? "bg-amber-50 border-amber-200"
+                    : "bg-white border-gray-200"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-gray-800 truncate">
+                      {c.author_name || c.author_email || "Unknown"}
+                      <span className="ml-1 text-[10px] text-gray-400 font-normal uppercase">{c.author_role}</span>
+                    </p>
+                    <p className="text-[10px] text-gray-400">
+                      {c.created_at ? new Date(c.created_at).toLocaleString() : ""}
+                      {c.updated_at && c.updated_at !== c.created_at && " · edited"}
+                    </p>
+                  </div>
+                  <div className="flex gap-1 text-[10px]">
+                    {c.is_action_item && (
+                      <span className="bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-semibold">ACTION</span>
+                    )}
+                    {c.is_resolved && (
+                      <span className="bg-green-200 text-green-900 px-1.5 py-0.5 rounded font-semibold">RESOLVED</span>
+                    )}
+                  </div>
+                </div>
+                {editingId === c.id ? (
+                  <div>
+                    <textarea
+                      value={editingText}
+                      onChange={e => setEditingText(e.target.value)}
+                      rows={3}
+                      className="w-full text-sm px-2 py-1.5 border border-gray-200 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <div className="flex gap-2 mt-2 text-xs">
+                      <button onClick={() => saveEdit(c)} className="px-2 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700">Save</button>
+                      <button onClick={() => { setEditingId(null); setEditingText(""); }} className="px-2 py-1 bg-gray-100 text-gray-600 rounded hover:bg-gray-200">Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap break-words">{c.body}</p>
+                )}
+                <div className="flex flex-wrap gap-2 mt-2 text-[11px]">
+                  <button
+                    onClick={() => toggleAction(c)}
+                    className="text-gray-500 hover:text-amber-700"
+                    title={c.is_action_item ? "Unmark action item" : "Mark as action item"}
+                  >
+                    {c.is_action_item ? "✓ Action item" : "Mark action"}
+                  </button>
+                  <span className="text-gray-300">·</span>
+                  <button
+                    onClick={() => toggleResolved(c)}
+                    className="text-gray-500 hover:text-green-700"
+                  >
+                    {c.is_resolved ? "Reopen" : "Resolve"}
+                  </button>
+                  {canEdit(c) && editingId !== c.id && (
+                    <>
+                      <span className="text-gray-300">·</span>
+                      <button
+                        onClick={() => { setEditingId(c.id); setEditingText(c.body); }}
+                        className="text-gray-500 hover:text-indigo-700"
+                      >
+                        Edit
+                      </button>
+                      <span className="text-gray-300">·</span>
+                      <button
+                        onClick={() => remove(c)}
+                        className="text-gray-500 hover:text-red-600"
+                      >
+                        Delete
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Composer */}
+        <div className="border-t border-gray-200 px-5 py-3 bg-gray-50">
+          <textarea
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            placeholder="Add a comment or question…"
+            rows={3}
+            className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+          />
+          <div className="flex items-center justify-between mt-2">
+            <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={markAction}
+                onChange={e => setMarkAction(e.target.checked)}
+                className="h-3.5 w-3.5 text-indigo-600 rounded"
+              />
+              Mark as action item
+            </label>
+            <button
+              onClick={submitWithActionFlag}
+              disabled={submitting || !draft.trim()}
+              className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {submitting ? "Posting…" : "Post"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ── Weekly Report viewer tab ────────────────────────────────────────────────
 
 function WeeklyReportTab({ initialBranch, onBranchChange }) {
+  const { user: currentUser } = useAuth();
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState(null);
   const [parsed, setParsed] = useState(null);
   const [loadedAt, setLoadedAt] = useState(null);
   const [selectedBranch, setSelectedBranch] = useState(initialBranch || "all");
 
-  const loadReport = async () => {
+  // Week filter: "current" means live cache; YYYY-MM-DD means archive snapshot.
+  const [selectedWeek, setSelectedWeek] = useState("current");
+  const [archives, setArchives] = useState([]);
+
+  // Active week_start for comment scope (always a real date — `current` is
+  // resolved to this Monday).
+  const activeWeekStart = selectedWeek === "current" ? fmtIsoDate(thisMonday()) : selectedWeek;
+
+  // Comment counts for badge overlay
+  const [commentCounts, setCommentCounts] = useState({});
+  const [drawer, setDrawer] = useState(null);
+  const reportContainerRef = useRef(null);
+
+  const loadArchives = useCallback(async () => {
+    try {
+      const r = await axios.get("/api/report/archives");
+      setArchives(r.data.data || []);
+    } catch (e) {
+      console.error("Failed to load archives", e);
+    }
+  }, []);
+
+  const loadCommentCounts = useCallback(async (weekStart) => {
+    try {
+      const r = await axios.get("/api/report/comments/counts", { params: { week_start: weekStart } });
+      const map = {};
+      (r.data.data || []).forEach(row => {
+        const k = `${row.branch_id || ""}::${row.metric_key}`;
+        map[k] = { count: row.count, actionItems: row.action_items };
+      });
+      setCommentCounts(map);
+    } catch (e) {
+      console.error("Failed to load comment counts", e);
+    }
+  }, []);
+
+  const loadReport = useCallback(async () => {
     setReportLoading(true);
     setReportError(null);
     try {
-      const r = await fetch("/api/report/preview");
+      const url = selectedWeek === "current"
+        ? "/api/report/preview"
+        : `/api/report/archives/${selectedWeek}/preview`;
+      const r = await fetch(url);
       if (!r.ok) {
+        if (r.status === 404 && selectedWeek !== "current") {
+          throw new Error(`No archive saved for the week of ${fmtWeekLabel(selectedWeek)}.`);
+        }
         throw new Error(`Failed to load report (HTTP ${r.status})`);
       }
       const text = await r.text();
       const p = parseReportHtml(text);
       setParsed(p);
       setLoadedAt(new Date());
-      // If URL specified a branch but it's not in the data, fallback to "all"
       if (selectedBranch !== "all" && !p.branches.find(b => b.id === selectedBranch)) {
         setSelectedBranch("all");
         onBranchChange?.("all");
@@ -514,12 +877,12 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
     } finally {
       setReportLoading(false);
     }
-  };
+  }, [selectedWeek, selectedBranch, onBranchChange]);
 
-  // Auto-load on first mount
-  useEffect(() => {
-    loadReport();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Initial load
+  useEffect(() => { loadArchives(); }, [loadArchives]);
+  useEffect(() => { loadReport(); }, [loadReport]);
+  useEffect(() => { loadCommentCounts(activeWeekStart); }, [activeWeekStart, loadCommentCounts]);
 
   const selectBranch = (id) => {
     setSelectedBranch(id);
@@ -536,22 +899,110 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
     return b.html + b.optimizerHtml;
   }, [parsed, selectedBranch]);
 
+  // Click delegation: capture clicks anywhere inside the rendered HTML
+  // and resolve them to the closest [data-metric-key] cell.
+  const onReportClick = (e) => {
+    const cell = e.target.closest("[data-metric-key]");
+    if (!cell || !reportContainerRef.current?.contains(cell)) return;
+    const metricKey = cell.dataset.metricKey;
+    const branchId = cell.dataset.branchId || null;
+    // Branch name lookup — for the drawer header
+    let branchName = null;
+    if (branchId && parsed) {
+      const b = parsed.branches.find(x => x.id === branchId);
+      branchName = b?.name || null;
+    }
+    setDrawer({
+      weekStart: activeWeekStart,
+      branchId,
+      branchName,
+      metricKey,
+    });
+  };
+
+  // After HTML renders or counts change, inject comment badges into each
+  // [data-metric-key] cell so users can see at a glance which cells have
+  // active discussion.
+  useEffect(() => {
+    const root = reportContainerRef.current;
+    if (!root) return;
+    root.querySelectorAll(".hid-comment-badge").forEach(el => el.remove());
+    root.querySelectorAll("[data-metric-key]").forEach(cell => {
+      const branchId = cell.dataset.branchId || "";
+      const metricKey = cell.dataset.metricKey;
+      const k = `${branchId}::${metricKey}`;
+      const info = commentCounts[k];
+      if (!info || !info.count) return;
+      const badge = document.createElement("span");
+      badge.className = "hid-comment-badge";
+      badge.textContent = info.actionItems > 0
+        ? `⚡${info.count}`
+        : `💬${info.count}`;
+      badge.title = info.actionItems > 0
+        ? `${info.count} open comment(s), ${info.actionItems} action item(s)`
+        : `${info.count} open comment(s)`;
+      cell.appendChild(badge);
+    });
+  }, [renderedHtml, commentCounts]);
+
   return (
     <div className="space-y-4">
-      {/* Top bar: header info + refresh */}
+      {/* Inline styles: hover effect + badge appearance. Scoped under
+          .hid-report-body so they don't leak into the email render. */}
+      <style>{`
+        .hid-report-body .hid-metric-cell {
+          cursor: pointer;
+          position: relative;
+          transition: background-color 0.15s ease;
+        }
+        .hid-report-body .hid-metric-cell:hover {
+          background-color: rgba(99, 102, 241, 0.10) !important;
+          outline: 1px dashed rgba(99, 102, 241, 0.6);
+          outline-offset: -2px;
+        }
+        .hid-comment-badge {
+          display: inline-block;
+          margin-left: 6px;
+          padding: 1px 6px;
+          font-size: 10px;
+          font-weight: 600;
+          color: #4338ca;
+          background: #eef2ff;
+          border: 1px solid #c7d2fe;
+          border-radius: 999px;
+          vertical-align: middle;
+          line-height: 1.3;
+        }
+      `}</style>
+
+      {/* Top bar: header info + week filter + refresh */}
       <div className="bg-white rounded-xl border border-gray-200 p-4 flex items-center justify-between flex-wrap gap-3">
         <div>
           <h3 className="font-semibold text-gray-800 text-sm">📊 Weekly Report</h3>
           <p className="text-[11px] text-gray-500 mt-0.5">
-            Same content as the email&apos;s full version. Served from cache (refreshed Mon 03:00 ICT) for instant load.
-            {loadedAt && (
-              <span> Loaded at {loadedAt.toLocaleTimeString()}.</span>
-            )}
+            Click any KPI cell to start or join a discussion. Switch weeks below to review past reports.
+            {loadedAt && <span> Loaded at {loadedAt.toLocaleTimeString()}.</span>}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          <select
+            value={selectedWeek}
+            onChange={e => setSelectedWeek(e.target.value)}
+            className="px-3 py-1.5 border border-gray-200 text-sm rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            title="Filter by week"
+          >
+            <option value="current">This week (live)</option>
+            {archives.map(a => (
+              <option key={a.week_start} value={a.week_start}>
+                {fmtWeekLabel(a.week_start)}
+                {a.open_comment_count > 0 ? ` · 💬${a.open_comment_count}` : ""}
+              </option>
+            ))}
+          </select>
           <a
-            href="/api/report/preview"
+            href={selectedWeek === "current"
+              ? "/api/report/preview"
+              : `/api/report/archives/${selectedWeek}/preview`}
             target="_blank"
             rel="noopener noreferrer"
             className="px-3 py-1.5 border border-gray-200 text-gray-600 text-sm rounded-lg hover:bg-gray-50"
@@ -628,12 +1079,24 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
               inline styles so it renders correctly without extra CSS. */}
           <div className="bg-gray-50 rounded-xl p-1 border border-gray-200">
             <div
+              ref={reportContainerRef}
+              onClick={onReportClick}
               className="hid-report-body"
               style={{ background: "#f3f4f6", padding: "16px", borderRadius: "12px" }}
               dangerouslySetInnerHTML={{ __html: renderedHtml }}
             />
           </div>
         </>
+      )}
+
+      {/* Discussion drawer */}
+      {drawer && (
+        <CommentDrawer
+          context={drawer}
+          currentUser={currentUser}
+          onClose={() => setDrawer(null)}
+          onChanged={() => loadCommentCounts(activeWeekStart)}
+        />
       )}
     </div>
   );

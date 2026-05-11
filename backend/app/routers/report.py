@@ -18,18 +18,21 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
+from app.routers.auth import get_current_user
 from app.routers.sync import verify_sync_token
 from app.models.branch import Branch
 from app.models.daily_metrics import DailyMetrics
 from app.models.kpi import KPITarget
 from app.models.reservation import Reservation
 from app.models.user import User
+from app.models.weekly_report_archive import WeeklyReportArchive
 from app.models.weekly_report_cache import WeeklyReportCache
+from app.models.weekly_report_comment import WeeklyReportComment
 from app.services.country_scorer import score_countries
 from app.services.email_sender import send_email_html
 from app.services.kpi_engine import (
@@ -47,6 +50,24 @@ logger = logging.getLogger(__name__)
 
 MONTHS_EN = ["", "January", "February", "March", "April", "May", "June",
              "July", "August", "September", "October", "November", "December"]
+
+
+def _week_start(today: date) -> date:
+    """Monday of the week `today` falls in. Used as the discussion-thread
+    scope key — every comment on the Weekly Report page is tagged with
+    this date so threads stay anchored to the week the user was viewing.
+    """
+    return today - timedelta(days=today.weekday())
+
+
+def _cell_attrs(branch_id, metric_key: str) -> str:
+    """Render the data-* attributes the frontend uses to detect a
+    clickable metric cell. Email clients ignore `class` and `data-*`
+    attributes that don't have inline styles backing them, so this is
+    safe to include in the same HTML the email send pipeline produces.
+    """
+    bid = f' data-branch-id="{branch_id}"' if branch_id else ''
+    return f' class="hid-metric-cell" data-metric-key="{metric_key}"{bid}'
 
 
 def _safe_section(db: Session, label: str, fn, default):
@@ -659,22 +680,24 @@ def _render_exec_summary(report: list, today: date) -> str:
         else:
             ach_color = "#6b7280"
 
+        bid = b['branch_id']
         rows_html.append(f"""
           <tr>
             <td style="{_TABLE_TD}"><strong>{b['branch_name']}</strong></td>
-            <td style="{_TABLE_TD};text-align:right;">{_fmt(b.get('actual_revenue'), cur)}</td>
-            <td style="{_TABLE_TD};text-align:right;">{_fmt(b.get('target_revenue'), cur)}</td>
-            <td style="{_TABLE_TD};text-align:right;color:{ach_color};font-weight:700;">{_pct(ach)}</td>
-            <td style="{_TABLE_TD};text-align:right;vertical-align:top;">{fcst_html}</td>
-            <td style="{_TABLE_TD};text-align:right;">{_pct(b.get('avg_occ_pct'))}</td>
-            <td style="{_TABLE_TD};text-align:right;">{_fmt(b.get('avg_adr'), cur)}</td>
-            <td style="{_TABLE_TD};text-align:right;">{_fmt(revpar, cur)}</td>
-            <td style="{_TABLE_TD};text-align:right;">{wow_html}</td>
-            <td style="{_TABLE_TD};text-align:right;">{yoy_html}</td>
+            <td style="{_TABLE_TD};text-align:right;"{_cell_attrs(bid, 'revenue_mtd')}>{_fmt(b.get('actual_revenue'), cur)}</td>
+            <td style="{_TABLE_TD};text-align:right;"{_cell_attrs(bid, 'target')}>{_fmt(b.get('target_revenue'), cur)}</td>
+            <td style="{_TABLE_TD};text-align:right;color:{ach_color};font-weight:700;"{_cell_attrs(bid, 'pacing')}>{_pct(ach)}</td>
+            <td style="{_TABLE_TD};text-align:right;vertical-align:top;"{_cell_attrs(bid, 'forecast')}>{fcst_html}</td>
+            <td style="{_TABLE_TD};text-align:right;"{_cell_attrs(bid, 'occ')}>{_pct(b.get('avg_occ_pct'))}</td>
+            <td style="{_TABLE_TD};text-align:right;"{_cell_attrs(bid, 'adr')}>{_fmt(b.get('avg_adr'), cur)}</td>
+            <td style="{_TABLE_TD};text-align:right;"{_cell_attrs(bid, 'revpar')}>{_fmt(revpar, cur)}</td>
+            <td style="{_TABLE_TD};text-align:right;"{_cell_attrs(bid, 'wow_revenue')}>{wow_html}</td>
+            <td style="{_TABLE_TD};text-align:right;"{_cell_attrs(bid, 'yoy_revenue')}>{yoy_html}</td>
           </tr>""")
 
+    ws_iso = _week_start(today).isoformat()
     return f"""
-    <div id="exec-summary" class="hid-exec-summary" style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+    <div id="exec-summary" class="hid-exec-summary" data-week-start="{ws_iso}" style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
       <h3 style="margin:0 0 12px;font-size:15px;font-weight:700;color:#111827;">📊 Executive Summary</h3>
       <div style="overflow-x:auto;">
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
@@ -1908,8 +1931,10 @@ def _build_html(report: list, today: date) -> str:
         kol_block = _render_kol(b)
         crm_block = _render_crm(b)
 
+        bid = b['branch_id']
+        ws_iso = _week_start(today).isoformat()
         sections.append(f"""
-        <div id="branch-card-{b['branch_id']}" data-branch-id="{b['branch_id']}" data-branch-name="{b['branch_name']}" class="hid-branch-card" style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
+        <div id="branch-card-{b['branch_id']}" data-branch-id="{b['branch_id']}" data-branch-name="{b['branch_name']}" data-week-start="{ws_iso}" class="hid-branch-card" style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
             <div>
               <h3 style="margin:0;font-size:16px;font-weight:700;color:#111827;">{b['branch_name']}</h3>
@@ -1930,40 +1955,40 @@ def _build_html(report: list, today: date) -> str:
             </tr>
             <tr style="border-top:1px solid #f3f4f6;">
               <td style="padding:8px 12px;color:#374151;">Revenue</td>
-              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;">{_fmt(b['actual_revenue'], cur)}</td>
-              <td style="padding:8px 12px;text-align:right;color:#111827;font-weight:600;">
+              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;"{_cell_attrs(bid, 'branch.revenue')}>{_fmt(b['actual_revenue'], cur)}</td>
+              <td style="padding:8px 12px;text-align:right;color:#111827;font-weight:600;"{_cell_attrs(bid, 'branch.next_revenue')}>
                 {_fmt(b.get('next_booked_revenue'), cur)}
                 <span style="font-weight:400;color:#6b7280;font-size:11px;display:block;">on-the-books · {_num(b.get('next_booked_nights'))} nights</span>
               </td>
             </tr>
             <tr style="border-top:1px solid #f3f4f6;background:#f9fafb;">
               <td style="padding:8px 12px;color:#374151;">Target</td>
-              <td style="padding:8px 12px;text-align:right;color:#6b7280;">{_fmt(b['target_revenue'], cur)}</td>
-              <td style="padding:8px 12px;text-align:right;color:#6b7280;">{_fmt(b['next_target'], cur)}</td>
+              <td style="padding:8px 12px;text-align:right;color:#6b7280;"{_cell_attrs(bid, 'branch.target')}>{_fmt(b['target_revenue'], cur)}</td>
+              <td style="padding:8px 12px;text-align:right;color:#6b7280;"{_cell_attrs(bid, 'branch.next_target')}>{_fmt(b['next_target'], cur)}</td>
             </tr>
             <tr style="border-top:1px solid #f3f4f6;">
               <td style="padding:8px 12px;color:#374151;">ADR</td>
-              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;">{_fmt(b['avg_adr'], cur)}</td>
-              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;">{_fmt(b['next_adr'], cur)}</td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;"{_cell_attrs(bid, 'branch.adr')}>{_fmt(b['avg_adr'], cur)}</td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;"{_cell_attrs(bid, 'branch.next_adr')}>{_fmt(b['next_adr'], cur)}</td>
             </tr>
             <tr style="border-top:1px solid #f3f4f6;background:#f9fafb;">
               <td style="padding:8px 12px;color:#374151;">OCC% (actual)</td>
-              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;">{_pct(b['avg_occ_pct'])}</td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;"{_cell_attrs(bid, 'branch.occ_actual')}>{_pct(b['avg_occ_pct'])}</td>
               <td style="padding:8px 12px;text-align:right;color:#6b7280;">—</td>
             </tr>
             <tr style="border-top:1px solid #f3f4f6;">
               <td style="padding:8px 12px;color:#374151;">OCC% (forecast)</td>
-              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#4f46e5;">{_pct(b['predicted_occ_pct'])}</td>
-              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#059669;">{_pct(b['predicted_occ_next'])}</td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#4f46e5;"{_cell_attrs(bid, 'branch.occ_forecast')}>{_pct(b['predicted_occ_pct'])}</td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#059669;"{_cell_attrs(bid, 'branch.next_occ_forecast')}>{_pct(b['predicted_occ_next'])}</td>
             </tr>
             <tr style="border-top:1px solid #f3f4f6;">
               <td style="padding:8px 12px;color:#374151;font-weight:600;">Forecast (Adjusted)</td>
-              <td style="padding:8px 12px;text-align:right;font-weight:700;color:#4f46e5;">
+              <td style="padding:8px 12px;text-align:right;font-weight:700;color:#4f46e5;"{_cell_attrs(bid, 'branch.forecast')}>
                 {_fmt(b.get('adjusted_forecast') or b['occ_forecast'], cur)}
                 {f"<span style='font-weight:400;color:#6b7280;'> ({b.get('adjusted_forecast_pct') or b['occ_forecast_pct']}%)</span>" if (b.get('adjusted_forecast_pct') or b['occ_forecast_pct']) else ""}
                 {_adjustment_formula_html(b.get('occ_forecast'), b.get('deduction_pct'), b.get('other_revenue_native'), cur)}
               </td>
-              <td style="padding:8px 12px;text-align:right;font-weight:700;color:#059669;">
+              <td style="padding:8px 12px;text-align:right;font-weight:700;color:#059669;"{_cell_attrs(bid, 'branch.next_forecast')}>
                 {_fmt(b.get('next_adjusted_forecast') or b['next_forecast'], cur)}
                 {f"<span style='font-weight:400;color:#6b7280;'> ({b.get('next_adjusted_forecast_pct') or b['next_forecast_pct']}%)</span>" if (b.get('next_adjusted_forecast_pct') or b['next_forecast_pct']) else ""}
                 {_adjustment_formula_html(b.get('next_forecast'), b.get('next_deduction_pct'), b.get('next_other_revenue_native'), cur)}
@@ -2304,18 +2329,55 @@ def send_weekly_cron(db: Session = Depends(get_db)):
     return _envelope(_send_weekly_email_to_default_recipients(db))
 
 
+def _upsert_weekly_archive(
+    db: Session,
+    payload: list,
+    week_start_date: date,
+    *,
+    source: str = "cron",
+    archived_by: Optional[UUID] = None,
+) -> WeeklyReportArchive:
+    """Save (or refresh) the snapshot for `week_start_date`. Used by the
+    Monday cron refresh and by the manual archive endpoint. Same-week
+    re-runs overwrite the row so the most recent build wins.
+    """
+    row = db.query(WeeklyReportArchive).filter_by(week_start=week_start_date).first()
+    if row:
+        row.payload = payload
+        row.archived_at = datetime.now(timezone.utc)
+        row.source = source
+        if archived_by is not None:
+            row.archived_by = archived_by
+    else:
+        row = WeeklyReportArchive(
+            week_start=week_start_date,
+            payload=payload,
+            source=source,
+            archived_by=archived_by,
+        )
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 @router.post("/refresh-cache", dependencies=[Depends(verify_sync_token)])
 def refresh_cache(db: Session = Depends(get_db)):
     """Cron-triggered cache rebuild. Auth: X-Sync-Token header.
 
     Hit by GitHub Actions every Monday 03:00 ICT — pre-warms the report
     cache so the Weekly Report page loads instantly all week and the
-    Mon 07:00 email send doesn't have to rebuild.
+    Mon 07:00 email send doesn't have to rebuild. Also snapshots the
+    payload into `weekly_report_archives` keyed by the Monday of the
+    current week so users can filter past weeks from the UI.
     """
     payload, computed_at = _get_report_with_cache(db, force_fresh=True)
+    today = date.today()
+    archive_row = _upsert_weekly_archive(db, payload, _week_start(today), source="cron")
     return _envelope({
         "computed_at": computed_at.isoformat() if computed_at else None,
         "branches_included": len(payload),
+        "archived_week_start": archive_row.week_start.isoformat(),
     })
 
 
@@ -2459,3 +2521,338 @@ def update_schedule(body: ScheduleUpdate):
     _apply_schedule_to_scheduler()
 
     return _envelope(_email_schedule)
+
+
+# ── Per-metric discussion threads + weekly archives ──────────────────────────
+#
+# Two collaboration features layered on top of the Weekly Report page:
+#   - Click any KPI cell → comment thread scoped to (week_start, branch_id,
+#     metric_key). Any logged-in user can post; authors / admins can edit
+#     or delete. Soft-delete keeps reply context intact.
+#   - Week selector — comments are queried by week_start so threads stay
+#     attached to the data point they were about, even when viewing past
+#     weeks. The report payload itself is snapshotted into
+#     `weekly_report_archives` on every Monday cron refresh.
+
+
+class CommentCreateIn(BaseModel):
+    week_start: date
+    branch_id: Optional[UUID] = None
+    metric_key: str
+    body: str
+    parent_comment_id: Optional[UUID] = None
+
+
+class CommentPatchIn(BaseModel):
+    body: Optional[str] = None
+    is_action_item: Optional[bool] = None
+    is_resolved: Optional[bool] = None
+
+
+def _comment_out(c: WeeklyReportComment, author: Optional[User]) -> dict:
+    return {
+        "id": str(c.id),
+        "week_start": c.week_start.isoformat() if c.week_start else None,
+        "branch_id": str(c.branch_id) if c.branch_id else None,
+        "metric_key": c.metric_key,
+        "parent_comment_id": str(c.parent_comment_id) if c.parent_comment_id else None,
+        "author_id": str(c.author_id) if c.author_id else None,
+        "author_name": (author.name or author.email) if author else None,
+        "author_email": author.email if author else None,
+        "author_role": author.role if author else None,
+        "body": c.body,
+        "is_action_item": bool(c.is_action_item),
+        "is_resolved": bool(c.is_resolved),
+        "resolved_by": str(c.resolved_by) if c.resolved_by else None,
+        "resolved_at": c.resolved_at.isoformat() if c.resolved_at else None,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+    }
+
+
+def _hydrate_comments(db: Session, comments: list[WeeklyReportComment]) -> list[dict]:
+    """Bulk-load authors so the list response includes display names
+    without N+1 queries.
+    """
+    author_ids = {c.author_id for c in comments if c.author_id}
+    authors: dict = {}
+    if author_ids:
+        rows = db.query(User).filter(User.id.in_(author_ids)).all()
+        authors = {u.id: u for u in rows}
+    return [_comment_out(c, authors.get(c.author_id)) for c in comments]
+
+
+@router.get("/comments")
+def list_comments(
+    week_start: date,
+    branch_id: Optional[UUID] = None,
+    metric_key: Optional[str] = None,
+    include_resolved: bool = True,
+    _current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List discussion threads for a given week. Optionally narrow to a
+    branch + metric for the side-drawer view, or fetch all for badge
+    counts.
+    """
+    q = db.query(WeeklyReportComment).filter(
+        WeeklyReportComment.week_start == week_start,
+        WeeklyReportComment.is_deleted == False,  # noqa: E712
+    )
+    if branch_id is not None:
+        q = q.filter(WeeklyReportComment.branch_id == branch_id)
+    if metric_key is not None:
+        q = q.filter(WeeklyReportComment.metric_key == metric_key)
+    if not include_resolved:
+        q = q.filter(WeeklyReportComment.is_resolved == False)  # noqa: E712
+    comments = q.order_by(WeeklyReportComment.created_at.asc()).all()
+    return _envelope(_hydrate_comments(db, comments))
+
+
+@router.get("/comments/counts")
+def comment_counts(
+    week_start: date,
+    _current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return active-thread counts grouped by (branch_id, metric_key) for
+    badge rendering on the report page. Skips resolved + deleted threads
+    so the UI badge only highlights what's still open.
+    """
+    action_item_int = case((WeeklyReportComment.is_action_item == True, 1), else_=0)  # noqa: E712
+    rows = (
+        db.query(
+            WeeklyReportComment.branch_id,
+            WeeklyReportComment.metric_key,
+            func.count(WeeklyReportComment.id).label("count"),
+            func.sum(action_item_int).label("action_items"),
+        )
+        .filter(
+            WeeklyReportComment.week_start == week_start,
+            WeeklyReportComment.is_deleted == False,  # noqa: E712
+            WeeklyReportComment.is_resolved == False,  # noqa: E712
+        )
+        .group_by(WeeklyReportComment.branch_id, WeeklyReportComment.metric_key)
+        .all()
+    )
+    out = []
+    for r in rows:
+        out.append({
+            "branch_id": str(r.branch_id) if r.branch_id else None,
+            "metric_key": r.metric_key,
+            "count": int(r.count or 0),
+            "action_items": int(r.action_items or 0),
+        })
+    return _envelope(out)
+
+
+@router.post("/comments", status_code=201)
+def create_comment(
+    body: CommentCreateIn,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a comment. Any authenticated user can post — admin / editor
+    / viewer alike. Replies pass `parent_comment_id`.
+    """
+    text = (body.body or "").strip()
+    if not text:
+        raise HTTPException(400, "Comment body cannot be empty")
+    if len(text) > 5000:
+        raise HTTPException(400, "Comment body too long (max 5000 chars)")
+    if not body.metric_key:
+        raise HTTPException(400, "metric_key is required")
+    if body.parent_comment_id is not None:
+        parent = db.query(WeeklyReportComment).filter_by(
+            id=body.parent_comment_id, is_deleted=False,
+        ).first()
+        if not parent:
+            raise HTTPException(404, "Parent comment not found")
+    c = WeeklyReportComment(
+        week_start=body.week_start,
+        branch_id=body.branch_id,
+        metric_key=body.metric_key,
+        parent_comment_id=body.parent_comment_id,
+        author_id=current.id,
+        body=text,
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return _envelope(_comment_out(c, current))
+
+
+@router.patch("/comments/{comment_id}")
+def update_comment(
+    comment_id: UUID,
+    body: CommentPatchIn,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Edit a comment. Author can change body / mark action item / resolve.
+    Resolving is open to any user (a thread reaching consensus is a team
+    decision, not just the author's). Admins can edit anyone's body.
+    """
+    c = db.query(WeeklyReportComment).filter_by(id=comment_id, is_deleted=False).first()
+    if not c:
+        raise HTTPException(404, "Comment not found")
+
+    is_author = c.author_id == current.id
+    is_admin = current.role == "admin"
+
+    if body.body is not None:
+        if not (is_author or is_admin):
+            raise HTTPException(403, "Only the author or an admin can edit the body")
+        text = body.body.strip()
+        if not text:
+            raise HTTPException(400, "Comment body cannot be empty")
+        if len(text) > 5000:
+            raise HTTPException(400, "Comment body too long (max 5000 chars)")
+        c.body = text
+    if body.is_action_item is not None:
+        c.is_action_item = bool(body.is_action_item)
+    if body.is_resolved is not None:
+        c.is_resolved = bool(body.is_resolved)
+        if c.is_resolved:
+            c.resolved_by = current.id
+            c.resolved_at = datetime.now(timezone.utc)
+        else:
+            c.resolved_by = None
+            c.resolved_at = None
+
+    db.commit()
+    db.refresh(c)
+    author = db.query(User).filter_by(id=c.author_id).first() if c.author_id else None
+    return _envelope(_comment_out(c, author))
+
+
+@router.delete("/comments/{comment_id}")
+def delete_comment(
+    comment_id: UUID,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Soft-delete a comment. Author or admin only. Replies stay visible
+    with a placeholder so the thread context isn't lost.
+    """
+    c = db.query(WeeklyReportComment).filter_by(id=comment_id, is_deleted=False).first()
+    if not c:
+        raise HTTPException(404, "Comment not found")
+    if not (c.author_id == current.id or current.role == "admin"):
+        raise HTTPException(403, "Only the author or an admin can delete")
+    c.is_deleted = True
+    db.commit()
+    return _envelope({"deleted": str(comment_id)})
+
+
+# ── Weekly Report archives (snapshots per Monday) ────────────────────────────
+
+
+@router.get("/archives")
+def list_archives(
+    _current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List archived weeks with metadata for the UI week selector.
+    Returns one row per stored snapshot, newest first, with the comment
+    count for that week so the selector can flag weeks with discussion.
+    """
+    archives = (
+        db.query(WeeklyReportArchive)
+        .order_by(WeeklyReportArchive.week_start.desc())
+        .all()
+    )
+    # Comment counts per week (open + total)
+    open_int = case((WeeklyReportComment.is_resolved == False, 1), else_=0)  # noqa: E712
+    counts_rows = (
+        db.query(
+            WeeklyReportComment.week_start,
+            func.count(WeeklyReportComment.id).label("total"),
+            func.sum(open_int).label("open"),
+        )
+        .filter(WeeklyReportComment.is_deleted == False)  # noqa: E712
+        .group_by(WeeklyReportComment.week_start)
+        .all()
+    )
+    counts = {r.week_start: (int(r.total or 0), int(r.open or 0)) for r in counts_rows}
+
+    out = []
+    for a in archives:
+        total, open_ = counts.get(a.week_start, (0, 0))
+        out.append({
+            "week_start": a.week_start.isoformat(),
+            "archived_at": a.archived_at.isoformat() if a.archived_at else None,
+            "source": a.source,
+            "branches_included": len(a.payload or []),
+            "comment_count": total,
+            "open_comment_count": open_,
+        })
+    return _envelope(out)
+
+
+@router.get("/archives/{week_start}")
+def get_archive(
+    week_start: date,
+    _current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the snapshot payload for a specific week. Same shape as
+    /api/report/weekly so the UI can render it with the same components.
+    """
+    a = db.query(WeeklyReportArchive).filter_by(week_start=week_start).first()
+    if not a:
+        raise HTTPException(404, f"No archive found for week_start={week_start.isoformat()}")
+    return _envelope({
+        "week_start": a.week_start.isoformat(),
+        "archived_at": a.archived_at.isoformat() if a.archived_at else None,
+        "source": a.source,
+        "branches": a.payload,
+    })
+
+
+@router.get("/archives/{week_start}/preview", response_class=HTMLResponse)
+def preview_archive(
+    week_start: date,
+    db: Session = Depends(get_db),
+):
+    """Render the archived snapshot as the same HTML email format the
+    live `/preview` endpoint returns, so the frontend can re-use its
+    existing parser/renderer for past weeks.
+
+    Note: this endpoint intentionally has no auth wrapper so the
+    rendered HTML can be embedded directly via `fetch()` from the
+    dashboard (which is itself behind login). Update if exposing this
+    publicly becomes a concern.
+    """
+    a = db.query(WeeklyReportArchive).filter_by(week_start=week_start).first()
+    if not a:
+        raise HTTPException(404, f"No archive found for week_start={week_start.isoformat()}")
+    # Rebuild HTML using the archived payload. We pass `week_start` as
+    # the `today` arg so all the date-derived labels (Monday header,
+    # week_start data attributes) reflect the archived week, not now.
+    html = _build_html(a.payload, a.week_start)
+    return HTMLResponse(content=html)
+
+
+@router.post("/archives", status_code=201)
+def create_archive(
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Manually snapshot the current cached report into the archive
+    table. Useful for forcing a snapshot mid-week (e.g. after a fresh
+    rebuild) without waiting for the Monday cron. Admin-only since this
+    overwrites the current week's archive.
+    """
+    if current.role != "admin":
+        raise HTTPException(403, "Admin only")
+    payload, _ = _get_report_with_cache(db)
+    row = _upsert_weekly_archive(
+        db, payload, _week_start(date.today()),
+        source="manual", archived_by=current.id,
+    )
+    return _envelope({
+        "week_start": row.week_start.isoformat(),
+        "archived_at": row.archived_at.isoformat(),
+        "branches_included": len(payload),
+    })

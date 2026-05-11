@@ -34,6 +34,8 @@ from app.models.rate_plan_quota import RatePlanQuota, RatePlanQuotaStatus
 
 # Weekly Report JSON cache (refreshed Mon 03:00 ICT)
 from app.models.weekly_report_cache import WeeklyReportCache
+from app.models.weekly_report_comment import WeeklyReportComment
+from app.models.weekly_report_archive import WeeklyReportArchive
 
 __all__ = [
     "Branch", "KPITarget", "Reservation", "DailyMetrics", "Event",
@@ -50,4 +52,5 @@ __all__ = [
     "AlertRule", "AlertHistory", "AlertNotificationLog",
     "RatePlanQuota", "RatePlanQuotaStatus",
     "WeeklyReportCache",
+    "WeeklyReportComment", "WeeklyReportArchive",
 ]
