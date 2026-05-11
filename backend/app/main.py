@@ -112,7 +112,15 @@ _BRANCH_CURRENCIES = {
 }
 
 def _patch_branch_currencies():
-    db = SessionLocal()
+    # Tolerant of connection errors so the container can finish booting
+    # even when Supabase pool is temporarily saturated (e.g., rolling
+    # deploy overlap). The next /health check passes once the pool frees,
+    # and the patch is idempotent — it'll get applied on next restart.
+    try:
+        db = SessionLocal()
+    except Exception as e:
+        logger.warning("Currency patch skipped — DB session unavailable: %s", e)
+        return
     try:
         for bid, cur in _BRANCH_CURRENCIES.items():
             b = db.query(Branch).filter_by(id=bid).first()
@@ -120,6 +128,12 @@ def _patch_branch_currencies():
                 b.currency = cur
                 logger.info("Patched branch %s currency → %s", b.name, cur)
         db.commit()
+    except Exception as e:
+        logger.warning("Currency patch failed (non-fatal): %s", e)
+        try:
+            db.rollback()
+        except Exception:
+            pass
     finally:
         db.close()
 
