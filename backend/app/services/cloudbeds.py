@@ -1418,7 +1418,6 @@ def populate_reservation_daily(
 # ── Cloudbeds Data Insights — Occupancy (v2.1) ────────────────────────────────
 
 INSIGHTS_BASE_URL = "https://api.cloudbeds.com/datainsights/v1.1"
-OCCUPANCY_STOCK_REPORT_ID = "110"  # "Rooms Sold, ADR, RevPar and Occupancy"
 
 
 def fetch_cloudbeds_occupancy(
@@ -1436,8 +1435,9 @@ def fetch_cloudbeds_occupancy(
     only ever returns a ~95 day window around the current date and ignores
     GET query date params (verified empirically 2026-05-05). Custom reports
     accept explicit `stay_date` filters in the POST body, so this function
-    works for ANY date range including historical (2025+) which previously
-    came back as rev=0. The temp report is deleted right after fetching.
+    works for ANY date range including historical (2025+). The temp report
+    is deleted right after fetching. All 5 properties have Insights:Create
+    Reports permission as of 2026-05-12 — Oani's add-on was the last to land.
 
     Returns: { date: { rooms_sold, occupancy, mfd_occupancy, adr, revpar,
                         room_revenue, capacity_count, blocked, out_of_service } }
@@ -1500,48 +1500,9 @@ def fetch_cloudbeds_occupancy(
         resp_create = client.post(f"{INSIGHTS_BASE_URL}/reports", headers=headers_post, json=payload)
         if resp_create.status_code not in (200, 201):
             logger.warning(
-                "Occupancy custom-report create failed property=%s status=%d: %s — "
-                "falling back to stock report 110 (current ~95 days only)",
+                "Occupancy custom-report create failed property=%s status=%d: %s",
                 property_id, resp_create.status_code, resp_create.text[:200],
             )
-            # Fallback: properties whose API key lacks "Insights: Create Reports"
-            # permission can still hit stock 110 (~95 day window). Historical data
-            # outside that window is not retrievable for these properties via
-            # Insights — would require a full Bookings API sync (full_ingest=true).
-            try:
-                fb_resp = client.get(
-                    f"{INSIGHTS_BASE_URL}/stock_reports/{OCCUPANCY_STOCK_REPORT_ID}/data",
-                    headers=headers_get,
-                    params={"property_ids": str(property_id)},
-                )
-                fb_resp.raise_for_status()
-                fb_records = fb_resp.json().get("records", {}) or {}
-                for ds, m in fb_records.items():
-                    try:
-                        d_ = date.fromisoformat(ds)
-                    except (ValueError, TypeError):
-                        continue
-                    if date_from and d_ < date_from:
-                        continue
-                    if date_to and d_ > date_to:
-                        continue
-                    result[d_] = {
-                        "rooms_sold":     _f(m.get("rooms_sold", {}).get("sum")),
-                        "occupancy":      _f(m.get("occupancy", {}).get("aggregated")),
-                        "mfd_occupancy":  _f(m.get("mfd_occupancy", {}).get("aggregated")),
-                        "adr":            _f(m.get("adr", {}).get("aggregated")),
-                        "revpar":         _f(m.get("revpar", {}).get("aggregated")),
-                        "room_revenue":   _f(m.get("room_revenue", {}).get("sum")),
-                        "capacity_count": _f(m.get("capacity_count", {}).get("sum")),
-                        "blocked":        _f(m.get("blocked_room_count", {}).get("sum")),
-                        "out_of_service": _f(m.get("out_of_service_count", {}).get("sum")),
-                    }
-                logger.info(
-                    "Stock 110 fallback for property %s: %d days [%s → %s]",
-                    property_id, len(result), date_from, date_to,
-                )
-            except Exception as fb_err:
-                logger.warning("Stock 110 fallback also failed property=%s: %s", property_id, fb_err)
             return result
         report_id = resp_create.json().get("id")
         try:
@@ -1923,8 +1884,8 @@ def _make_source_exclude_filters() -> list[dict]:
     Without it Cloudbeds returns 400 'Cdf: reservation_source ...' which
     `_fetch_custom_report_daily` swallows silently → all filtered calls return
     empty → sync_cloudbeds_filtered guards skip writes → room/dorm ADR stay NULL.
-    Confirmed empirically 2026-05-05 via /api/sync/debug/cloudbeds: stock 110's
-    own config uses the same multi_level_id=4 on this column.
+    Confirmed empirically 2026-05-05: stock 110's own config uses the same
+    multi_level_id=4 on this column.
     """
     return [
         {"cdf": {"type": "default", "column": "reservation_source", "multi_level_id": 4},
