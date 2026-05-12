@@ -637,6 +637,63 @@ function ChannelMonthlyCard({ c, cur, rate, branchId, year, month, onSaved }) {
   );
 }
 
+/* ── YTD Pace Bar ─────────────────────────────────────────────────────────────
+ * Compares cumulative actual vs allocate from Jan through the current month
+ * (or Dec for past years). Lets the team see whether YTD spend is pacing
+ * ahead or behind the planned budget at this point in the year.
+ */
+function YtdPaceBar({ months, year, currency }) {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+
+  if (year > currentYear) return null;
+  const cutoff = year < currentYear ? 12 : currentMonth;
+
+  const ytd = (months || [])
+    .filter((m) => m.month <= cutoff)
+    .reduce(
+      (acc, m) => {
+        acc.allocated += m.allocated_native || 0;
+        acc.actual += m.actual_native || 0;
+        return acc;
+      },
+      { allocated: 0, actual: 0 }
+    );
+  const remaining = ytd.allocated - ytd.actual;
+  const pct = ytd.allocated > 0 ? (ytd.actual / ytd.allocated) * 100 : 0;
+  const badgeCls =
+    pct > 100
+      ? "bg-red-50 text-red-700"
+      : pct >= 80
+      ? "bg-yellow-50 text-yellow-700"
+      : "bg-green-50 text-green-700";
+
+  const rangeLabel = `Jan–${MONTH_LABELS[cutoff - 1]}`;
+
+  return (
+    <div className="border rounded-lg p-3 bg-gray-50">
+      <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900">
+            YTD pace ({rangeLabel})
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {fmtDot(ytd.actual)} / {fmtDot(ytd.allocated)} {currency}
+            <span className={"ml-1 " + (remaining < 0 ? "text-red-600 font-medium" : "text-gray-500")}>
+              · {remaining < 0 ? "over by" : "remaining"} {fmtDot(Math.abs(remaining))}
+            </span>
+          </p>
+        </div>
+        <span className={"px-2 py-0.5 rounded text-xs font-medium " + badgeCls}>
+          {pct.toFixed(1)}%
+        </span>
+      </div>
+      <ProgressBar pct={pct} />
+    </div>
+  );
+}
+
 /* ── Yearly Tab ───────────────────────────────────────────────────────────── */
 function YearlyTab({ branchId, year }) {
   const [data, setData] = useState(null);
@@ -670,6 +727,8 @@ function YearlyTab({ branchId, year }) {
         </span>
       </div>
       <ProgressBar pct={data.pct} />
+
+      <YtdPaceBar months={data.months} year={year} currency={cur} />
 
       <table className="w-full text-sm">
         <thead className="bg-gray-50 text-gray-600">
