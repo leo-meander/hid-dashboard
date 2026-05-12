@@ -44,6 +44,9 @@ log = logging.getLogger(__name__)
 _KOL_RE = re.compile(r"\(KOL_([^)]+)\)")
 _CANCELLED = {"canceled", "cancelled", "no_show", "no-show", "cancelled_by_guest"}
 
+# Status exclusion: cancelled / no-show (lowercase canonical, matches Cloudbeds sync normalization)
+_EXCLUDED_STATUSES = {"cancelled", "canceled", "no_show", "noshow", "no show", "no-show", "cancelled_by_guest"}
+
 # Revenue exclusion: non-paying guests
 _EXCLUDED_SOURCES = {"blogger", "house use", "houseuse", "special case", "work exchange"}
 
@@ -74,7 +77,9 @@ def _revenue_source_filter():
 
 
 def _status_filter():
-    return ~Reservation.status.in_(["Cancelled", "Canceled", "No-Show", "No_Show"])
+    # Cloudbeds sync stores status lowercased + trimmed (services/cloudbeds.py),
+    # so compare case-insensitively against the canonical excluded set.
+    return ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES))
 
 
 # ── Ads data readers ─────────────────────────────────────────────────────────
