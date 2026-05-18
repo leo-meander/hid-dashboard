@@ -16,19 +16,16 @@ Revenue exclusion: Blogger, House Use, Special Case, Work Exchange (non-paying g
 """
 import calendar
 import logging
-import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import UUID
-from collections import defaultdict
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, or_, literal_column
 from sqlalchemy.orm import Session
-from sqlalchemy import text
 
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models.ads import AdsPerformance
 from app.models.ads_booking_match import AdsBookingMatch
 from app.models.branch import Branch
@@ -40,9 +37,6 @@ from app.config import settings
 
 router = APIRouter()
 log = logging.getLogger(__name__)
-
-_KOL_RE = re.compile(r"\(KOL_([^)]+)\)")
-_CANCELLED = {"canceled", "cancelled", "no_show", "no-show", "cancelled_by_guest"}
 
 # Status exclusion: cancelled / no-show (lowercase canonical, matches Cloudbeds sync normalization)
 _EXCLUDED_STATUSES = {"cancelled", "canceled", "no_show", "noshow", "no show", "no-show", "cancelled_by_guest"}
@@ -179,52 +173,6 @@ def _fetch_paid_ads_totals(
     return bookings_total, revenue_total
 
 
-def _fetch_paid_ads_by_country(
-    db: Session,
-    branch_id: Optional[UUID],
-    d_from: date,
-    d_to: date,
-    use_native: bool,
-) -> dict[str, dict]:
-    """Per-country Paid Ads bookings + revenue.
-
-    Joins ``ads_booking_matches`` (booking_date in window) to
-    ``ads_performance(grain='ad')`` on ``external_ad_id`` to pick up
-    ``target_country``. Bookings without a matching ad row land under
-    'Unknown'.
-    """
-    rev_col = AdsBookingMatch.revenue_native if use_native else AdsBookingMatch.revenue_vnd
-    country_expr = func.coalesce(
-        func.nullif(func.trim(AdsPerformance.target_country), ""),
-        "Unknown",
-    ).label("country")
-
-    q = (
-        db.query(
-            country_expr,
-            func.count(AdsBookingMatch.id).label("bookings"),
-            func.coalesce(func.sum(rev_col), 0).label("revenue"),
-        )
-        .outerjoin(
-            AdsPerformance,
-            (AdsPerformance.external_ad_id == AdsBookingMatch.external_ad_id)
-            & (AdsPerformance.grain == "ad"),
-        )
-        .filter(
-            AdsBookingMatch.booking_date >= d_from,
-            AdsBookingMatch.booking_date <= d_to,
-        )
-        .group_by("country")
-    )
-    if branch_id is not None:
-        q = q.filter(AdsBookingMatch.branch_id == branch_id)
-
-    return {
-        r.country: {"bookings": int(r.bookings or 0), "revenue": float(r.revenue or 0)}
-        for r in q.all()
-    }
-
-
 def _month_range(month_str: str):
     """Given 'YYYY-MM', return (first_day, last_day) as date objects."""
     yr, mo = int(month_str[:4]), int(month_str[5:7])
@@ -258,11 +206,24 @@ def get_marketing_activity_summary(
 
     use_native = branch_id is not None
 
-    overview_cur = _build_overview(db, branch_id, d_from, d_to, use_native)
-    overview_prev = _build_overview(db, branch_id, p_from, p_to, use_native)
-    monthly = _build_monthly_by_country(db, branch_id, d_from, d_to, use_native)
-    suggestions = _build_kol_suggestions(db, branch_id, d_from, d_to)
-    crm_rate_plans = _build_crm_by_rate_plan(db, branch_id, d_from, d_to, use_native)
+    # Run the three independent blocks in parallel — each opens its own
+    # DB session so SQLAlchemy stays thread-safe. _build_overview is
+    # HTTP-heavy (3 Ads Platform + 1 KOL Engine call each), so wallclock
+    # collapses to roughly the slowest task instead of summing.
+    def _with_session(fn):
+        session = SessionLocal()
+        try:
+            return fn(session)
+        finally:
+            session.close()
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_cur = ex.submit(_with_session, lambda s: _build_overview(s, branch_id, d_from, d_to, use_native))
+        f_prev = ex.submit(_with_session, lambda s: _build_overview(s, branch_id, p_from, p_to, use_native))
+        f_crm = ex.submit(_with_session, lambda s: _build_crm_by_rate_plan(s, branch_id, d_from, d_to, use_native))
+        overview_cur = f_cur.result()
+        overview_prev = f_prev.result()
+        crm_rate_plans = f_crm.result()
 
     currency = "VND"
     if use_native and branch_id is not None:
@@ -273,8 +234,6 @@ def get_marketing_activity_summary(
     return _envelope({
         "overview": overview_cur,
         "prev_overview": overview_prev,
-        "monthly_by_country": monthly,
-        "kol_suggestions": suggestions,
         "crm_by_rate_plan": crm_rate_plans,
         "currency": currency,
         "month": current_month,
@@ -453,98 +412,6 @@ def _budget_actuals_costs(db, branch_id, year: int, month: int, use_native: bool
     return ads_total, kol_total, crm_total
 
 
-# ── Monthly by Country ───────────────────────────────────────────────────────
-
-def _build_monthly_by_country(db, branch_id, d_from, d_to, use_native):
-    grid = defaultdict(lambda: {
-        "paid_ads": {"bookings": 0, "revenue": 0, "cost": 0},
-        "kol": {"bookings": 0, "revenue": 0},
-        "crm": {"bookings": 0, "revenue": 0},
-    })
-
-    # Paid Ads from ads_booking_matches × ads_performance(grain='ad').
-    # Cost stays 0 in this grid — daily-grain spend has no country, and
-    # allocating it would be a guess; the frontend renders 0 as "—".
-    paid_by_country = _fetch_paid_ads_by_country(
-        db, branch_id, d_from, d_to, use_native,
-    )
-    for country, data in paid_by_country.items():
-        grid[country]["paid_ads"]["bookings"] += data["bookings"]
-        grid[country]["paid_ads"]["revenue"] += data["revenue"]
-
-    rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
-
-    # KOL — excludes non-paying
-    kol_q = db.query(
-        Reservation.guest_country_code,
-        func.count(Reservation.id),
-        func.coalesce(func.sum(rev_col), 0),
-    ).filter(
-        Reservation.room_type.ilike("%KOL_%"),
-        Reservation.check_in_date >= d_from,
-        Reservation.check_in_date <= d_to,
-        _status_filter(),
-        _revenue_source_filter(),
-    ).group_by(Reservation.guest_country_code)
-    if branch_id:
-        kol_q = kol_q.filter(Reservation.branch_id == branch_id)
-
-    for country, bookings, rev in kol_q.all():
-        c = country or "Unknown"
-        grid[c]["kol"]["bookings"] += int(bookings)
-        grid[c]["kol"]["revenue"] += float(rev)
-
-    # CRM — excludes non-paying. Filter on reservation_date (Date Booked).
-    crm_q = db.query(
-        Reservation.guest_country_code,
-        func.count(Reservation.id),
-        func.coalesce(func.sum(rev_col), 0),
-    ).filter(
-        _crm_filter(),
-        Reservation.reservation_date >= d_from,
-        Reservation.reservation_date <= d_to,
-        _status_filter(),
-        _revenue_source_filter(),
-    ).group_by(Reservation.guest_country_code)
-    if branch_id:
-        crm_q = crm_q.filter(Reservation.branch_id == branch_id)
-
-    for country, bookings, rev in crm_q.all():
-        c = country or "Unknown"
-        grid[c]["crm"]["bookings"] += int(bookings)
-        grid[c]["crm"]["revenue"] += float(rev)
-
-    # Flatten — now grouped by country only (single month)
-    result = []
-    for country, data in sorted(grid.items()):
-        activities = []
-        if data["paid_ads"]["bookings"] > 0:
-            activities.append("Paid Ads")
-        if data["kol"]["bookings"] > 0:
-            activities.append("KOL")
-        if data["crm"]["bookings"] > 0:
-            activities.append("CRM")
-
-        total_rev = data["paid_ads"]["revenue"] + data["kol"]["revenue"] + data["crm"]["revenue"]
-        total_cost = data["paid_ads"]["cost"]
-        total_bookings = data["paid_ads"]["bookings"] + data["kol"]["bookings"] + data["crm"]["bookings"]
-
-        result.append({
-            "country": country,
-            "paid_ads": data["paid_ads"],
-            "kol": data["kol"],
-            "crm": data["crm"],
-            "activities": activities,
-            "total_bookings": total_bookings,
-            "total_revenue": total_rev,
-            "total_cost": total_cost,
-            "roas": round(total_rev / total_cost, 2) if total_cost > 0 else None,
-        })
-
-    result.sort(key=lambda x: -x["total_revenue"])
-    return result
-
-
 # ── CRM Reservations by Rate Plan ────────────────────────────────────────────
 
 def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date, d_to: date, use_native: bool):
@@ -599,90 +466,6 @@ def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date
         })
 
     result.sort(key=lambda x: -x["revenue"])
-    return result
-
-
-# ── KOL Suggestions for Paid Ads ─────────────────────────────────────────────
-
-def _build_kol_suggestions(db: Session, branch_id: Optional[UUID], d_from: date, d_to: date):
-    bid_filter = "AND r.branch_id = :bid" if branch_id else ""
-
-    rows = db.execute(text(f"""
-        SELECT r.room_type,
-               r.guest_country_code,
-               r.grand_total_vnd,
-               r.status,
-               r.source,
-               b.id   AS branch_id,
-               b.name AS branch_name
-        FROM   reservations r
-        JOIN   branches b ON r.branch_id = b.id
-        WHERE  r.room_type ILIKE '%KOL_%%'
-          AND  r.reservation_date >= :d_from
-          AND  r.reservation_date <= :d_to
-          {bid_filter}
-    """), {
-        "d_from": d_from,
-        "d_to": d_to,
-        **({"bid": str(branch_id)} if branch_id else {}),
-    }).fetchall()
-
-    agg = defaultdict(lambda: {"organic_bookings": 0, "organic_revenue_vnd": 0.0})
-
-    for room_type, country, total_vnd, status, source, bid, branch_name in rows:
-        m = _KOL_RE.search(room_type or "")
-        if not m:
-            continue
-        kol_name = "KOL_" + m.group(1).strip()
-        if (status or "").lower() in _CANCELLED:
-            continue
-        # Exclude non-paying sources from revenue
-        if (source or "").lower().strip() in _EXCLUDED_SOURCES:
-            continue
-        country = country or "Unknown"
-        key = (kol_name, country, str(bid), branch_name)
-        agg[key]["organic_bookings"] += 1
-        agg[key]["organic_revenue_vnd"] += float(total_vnd or 0)
-
-    if not agg:
-        return []
-
-    kol_rows = db.execute(text("""
-        SELECT kol_name, kol_nationality, usage_rights_expiry_date,
-               paid_ads_eligible, paid_ads_channel, ads_usage_status
-        FROM   kol_records
-    """)).fetchall()
-
-    kol_map = {}
-    for kr in kol_rows:
-        kol_map[kr[0]] = {
-            "kol_nationality": kr[1],
-            "usage_rights_until": kr[2].isoformat() if kr[2] else None,
-            "paid_ads_eligible": kr[3],
-            "paid_ads_channel": kr[4],
-            "ads_usage_status": kr[5],
-        }
-
-    result = []
-    for (kol_name, country, bid, branch_name), data in agg.items():
-        if data["organic_bookings"] <= 0:
-            continue
-        mgmt = kol_map.get(kol_name, {})
-        if mgmt.get("paid_ads_channel") or mgmt.get("ads_usage_status") == "In Use":
-            continue
-        result.append({
-            "kol_name": kol_name,
-            "country": country,
-            "organic_bookings": data["organic_bookings"],
-            "organic_revenue_vnd": data["organic_revenue_vnd"],
-            "branch_id": bid,
-            "branch": branch_name,
-            "kol_nationality": mgmt.get("kol_nationality"),
-            "usage_rights_until": mgmt.get("usage_rights_until"),
-            "paid_ads_eligible": mgmt.get("paid_ads_eligible", False),
-        })
-
-    result.sort(key=lambda x: (x["country"], -x["organic_revenue_vnd"]))
     return result
 
 
