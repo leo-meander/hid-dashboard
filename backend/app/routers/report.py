@@ -14,6 +14,17 @@ import textwrap
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo
+
+_ICT_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+
+def _ict_today() -> date:
+    # Weekly cache cron fires 20:00 UTC Sunday = 03:00 ICT Monday. The server
+    # is UTC, so date.today() there returns Sunday and last_week_range rolls
+    # two weeks back. Always resolve "today" in ICT so the report tracks the
+    # team's calendar week.
+    return datetime.now(_ICT_TZ).date()
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
@@ -221,7 +232,7 @@ def _top_countries(db: Session, branch_id, days: int = 90, limit: int = 5):
     # busier branches. MIN(guest_country) gives us a display name without
     # losing index-only scan on the GROUP BY column. "Unknown" rows are
     # filtered in Python since N is small post-aggregation.
-    cutoff = date.today() - timedelta(days=days)
+    cutoff = _ict_today() - timedelta(days=days)
     rows = (
         db.query(
             func.min(Reservation.guest_country).label("country"),
@@ -260,7 +271,7 @@ def _growth_countries(db: Session, branch_id, limit: int = 3):
     countries match across periods — using the code (stable) is safer than
     the raw string (which may have spelling variations).
     """
-    today = date.today()
+    today = _ict_today()
     recent_start = today - timedelta(days=90)
     prev_start = today - timedelta(days=180)
 
@@ -403,7 +414,7 @@ def _actual_occ_pct(db: Session, branch_id, year: int, month: int, total_rooms: 
     if total_rooms <= 0:
         return None
     first_day = date(year, month, 1)
-    today = date.today()
+    today = _ict_today()
     last_day = min(today, date(year, month, calendar.monthrange(year, month)[1]))
     days = (last_day - first_day).days + 1
     if days <= 0:
@@ -422,7 +433,7 @@ def _actual_occ_pct(db: Session, branch_id, year: int, month: int, total_rooms: 
 
 
 def _build_report(db: Session):
-    today = date.today()
+    today = _ict_today()
     branches = db.query(Branch).filter_by(is_active=True).all()
     report = []
 
@@ -1082,7 +1093,7 @@ def _render_country_detail(b: dict) -> str:
       <p style="margin:0 0 4px;font-size:11px;color:#9ca3af;">
         WoW = last 7d ({last_7[0]} → {last_7[1]}) vs prev 7d ·
         30d Δ = last 30d vs prior 30d (60..30 days ago) ·
-        YoY = last 30d vs same window {date.today().year - 1}
+        YoY = last 30d vs same window {_ict_today().year - 1}
       </p>
       {booking_table}
       {checkin_table}
@@ -1238,7 +1249,7 @@ def _branch_narrative(b: dict) -> list[str]:
     #    dashboard's "Adjusted" column color.
     fcst_pct = b.get("adjusted_forecast_pct") or b.get("occ_forecast_pct")
     ach = b.get("achievement_pct")  # current actual/target — shown as context
-    month_name = MONTHS_EN[date.today().month]
+    month_name = MONTHS_EN[_ict_today().month]
     if fcst_pct is not None:
         ach_str = f"{ach:.1f}% MTD" if ach is not None else "MTD n/a"
         if fcst_pct >= 100:
@@ -1362,8 +1373,10 @@ def _render_branch_actions(
         )
     if ads_actions:
         sections.append(("📣 Paid Ads — channel signals", "#4f46e5", ads_actions))
-    if kol_actions:
-        sections.append(("🎥 KOL — channel signals", "#7c3aed", kol_actions))
+    # KOL — channel signals temporarily hidden from weekly report (2026-05-18, user request).
+    # Re-enable by uncommenting the block below; kol_actions is still computed upstream.
+    # if kol_actions:
+    #     sections.append(("🎥 KOL — channel signals", "#7c3aed", kol_actions))
     if crm_actions:
         sections.append(("✉️ CRM — channel signals", "#059669", crm_actions))
 
@@ -1628,8 +1641,8 @@ def _render_kol(b: dict) -> str:
         </div>"""
 
     period_label = targets.get("period_label") or (
-        f"{MONTHS_EN[targets.get('period_month') or date.today().month]} "
-        f"{targets.get('period_year') or date.today().year}"
+        f"{MONTHS_EN[targets.get('period_month') or _ict_today().month]} "
+        f"{targets.get('period_year') or _ict_today().year}"
     )
 
     def _progress_row(label: str, metric: dict) -> str:
@@ -2173,7 +2186,7 @@ def weekly_report(
     """Return weekly report data as JSON. Reads from cache (Mon 03:00 ICT
     refresh) by default — pass ?fresh=1 to force rebuild + cache overwrite.
     """
-    today = date.today()
+    today = _ict_today()
     report, computed_at = _get_report_with_cache(db, force_fresh=bool(fresh))
     return _envelope({
         "generated_at": (computed_at or datetime.now(timezone.utc)).isoformat(),
@@ -2220,7 +2233,7 @@ def send_weekly_email(
             detail="No recipients — pass ?user_ids=… or ?to=… or set EMAIL_RECIPIENTS"
         )
 
-    today = date.today()
+    today = _ict_today()
     report = _build_report(db)
     # Email gets the compact version (Exec Summary + CTA → UI). Full
     # per-branch detail lives on the dashboard.
@@ -2341,7 +2354,7 @@ def _send_weekly_email_to_default_recipients(db: Session) -> dict:
     if not recipients:
         raise HTTPException(400, "EMAIL_RECIPIENTS env var is empty — set it on Zeabur")
 
-    today = date.today()
+    today = _ict_today()
     report, _ = _get_report_with_cache(db)
     # Email gets the compact version (Exec Summary + CTA → UI). Full
     # per-branch detail lives on the dashboard.
@@ -2414,7 +2427,7 @@ def refresh_cache(db: Session = Depends(get_db)):
     current week so users can filter past weeks from the UI.
     """
     payload, computed_at = _get_report_with_cache(db, force_fresh=True)
-    today = date.today()
+    today = _ict_today()
     archive_row = _upsert_weekly_archive(db, payload, _week_start(today), source="cron")
     return _envelope({
         "computed_at": computed_at.isoformat() if computed_at else None,
@@ -2434,7 +2447,7 @@ def preview_email(
     from cache (Mon 03:00 ICT refresh) by default — pass ?fresh=1 to
     force rebuild + cache overwrite.
     """
-    today = date.today()
+    today = _ict_today()
     report, _ = _get_report_with_cache(db, force_fresh=bool(fresh))
     html = _build_html(report, today)
     return HTMLResponse(content=html)
@@ -2504,8 +2517,9 @@ def _apply_schedule_to_scheduler():
                 _schedule_logger.warning("Weekly email job: no recipients configured")
                 return
             report = _build_report(db)
-            html = _build_compact_email_html(report, date.today())
-            subject = f"HiD Weekly Report — {date.today().strftime('%d %b %Y')}"
+            today = _ict_today()
+            html = _build_compact_email_html(report, today)
+            subject = f"HiD Weekly Report — {today.strftime('%d %b %Y')}"
             if send_email_html(subject, html, recipients):
                 _schedule_logger.info("Weekly email sent to %s", recipients)
             else:
@@ -2890,7 +2904,7 @@ def create_archive(
         raise HTTPException(403, "Admin only")
     payload, _ = _get_report_with_cache(db)
     row = _upsert_weekly_archive(
-        db, payload, _week_start(date.today()),
+        db, payload, _week_start(_ict_today()),
         source="manual", archived_by=current.id,
     )
     return _envelope({
