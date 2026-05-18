@@ -1411,6 +1411,7 @@ def _render_paid_ads(b: dict) -> str:
     if not pa:
         return ""
     cur = b["currency"]
+    bid = b["branch_id"]
     lw = pa["last_week"]
     pw = pa["prev_week"]
 
@@ -1461,8 +1462,9 @@ def _render_paid_ads(b: dict) -> str:
         impr_html = f"{c['impressions']:,}"
         ctr_html = _pct(c["ctr_pct"])
         cvr_html = _pct(c["cvr_pct"])
+        attrs = _cell_attrs(bid, f"paid_ads.channel.{c['channel']}", f"Paid Ads — {c['channel']}")
         ch_rows_parts.append(
-            "<tr>"
+            f"<tr{attrs}>"
             f"<td style='{_TABLE_TD};vertical-align:top;'>{c['channel']}</td>"
             + _ch_cell_pct(cost_html, c.get("wow_cost_pct"))
             + _ch_cell_pct(impr_html, c.get("wow_impressions_pct"))
@@ -1492,8 +1494,9 @@ def _render_paid_ads(b: dict) -> str:
         bk_html = f"{cr['bookings']}"
         ctr_html = _pct(cr["ctr_pct"])
         cpa_html = _fmt(cr["cpa"], cur) if cr["cpa"] is not None else "—"
+        country_attrs = _cell_attrs(bid, f"paid_ads.country.{cr['country']}", f"Paid Ads country — {cr['country']}")
         country_rows_parts.append(
-            "<tr>"
+            f"<tr{country_attrs}>"
             f"<td style='{_TABLE_TD};vertical-align:top;'>{cr['country']}</td>"
             + _ch_cell_pct(spend_html, cr.get("wow_spend_pct"))
             + _ch_cell_pct(rev_html, cr.get("wow_revenue_pct"))
@@ -1509,9 +1512,10 @@ def _render_paid_ads(b: dict) -> str:
     country_rows_html = "".join(country_rows_parts)
 
     roas_str = f"{lw['roas']:.2f}x" if lw["roas"] is not None else "—"
+    summary_attrs = _cell_attrs(bid, "paid_ads.summary", "Paid Ads — summary")
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
-      <p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#374151;">📣 Paid Ads (last week · {pa['window_start']} → {pa['window_end']})</p>
+      <p{summary_attrs} style="margin:0 0 4px;font-size:12px;font-weight:600;color:#374151;">📣 Paid Ads (last week · {pa['window_start']} → {pa['window_end']})</p>
       <p style="margin:0 0 6px;font-size:11px;color:#9ca3af;">
         Source: ads_performance (Ads Platform sync) by ad's daily date_from. Bookings/revenue attributed by Ads Platform.
       </p>
@@ -1566,6 +1570,7 @@ def _render_kol(b: dict) -> str:
     """
     k = b.get("analytics", {}).get("kol") or {}
     targets = k.get("targets")
+    bid = b["branch_id"]
 
     if not targets:
         reason = k.get("targets_unavailable_reason") or (
@@ -1611,12 +1616,13 @@ def _render_kol(b: dict) -> str:
             f"</div>"
         )
 
-    def _progress_row(label: str, metric: dict) -> str:
+    def _progress_row(label: str, metric: dict, metric_key: str) -> str:
         actual = int(metric.get("actual") or 0)
         target = int(metric.get("target") or 0)
         pct = metric.get("pct")
+        attrs = _cell_attrs(bid, metric_key, f"KOL — {label}")
         return (
-            f"<tr>"
+            f"<tr{attrs}>"
             f"<td style='{_TABLE_TD};'><strong>{label}</strong></td>"
             f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{actual:,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;color:#6b7280;'>/ {target:,}</td>"
@@ -1627,8 +1633,8 @@ def _render_kol(b: dict) -> str:
 
     # Branch-level Collaborated + Posted
     branch_rows = (
-        _progress_row("🤝 Collaborated", targets.get("collaborated") or {})
-        + _progress_row("🎬 Posted", targets.get("posted") or {})
+        _progress_row("🤝 Collaborated", targets.get("collaborated") or {}, "kol.collaborated")
+        + _progress_row("🎬 Posted", targets.get("posted") or {}, "kol.posted")
     )
 
     # Org-wide Invited (Proactive) headline
@@ -1636,11 +1642,14 @@ def _render_kol(b: dict) -> str:
     invited_actual = int(org_invited.get("actual") or 0)
     invited_target = int(org_invited.get("target") or 0)
     invited_pct = org_invited.get("pct")
+    # Org-wide thread — no branch_id so every branch's email shares
+    # the same comment thread for Invited.
+    invited_header_attrs = _cell_attrs(None, "kol.invited.org", "KOL — Invited (Org-wide)")
     invited_header = (
-        f"📨 Invited (Proactive) — Org-wide: "
+        f"<span{invited_header_attrs}>📨 Invited (Proactive) — Org-wide: "
         f"<strong style='color:#111827;'>{invited_actual:,}</strong>"
         f"<span style='color:#6b7280;'> / {invited_target:,}</span> · "
-        f"{_pct_cell(invited_pct)}"
+        f"{_pct_cell(invited_pct)}</span>"
     )
 
     # Country breakdown table
@@ -1649,13 +1658,21 @@ def _render_kol(b: dict) -> str:
         country = row.get("country") or ""
         if country == "__unknown__":
             country_label = "<em style='color:#9ca3af;'>Unknown country</em>"
+            country_key = "unknown"
+            country_label_plain = "Unknown"
         else:
             country_label = country
+            country_key = country
+            country_label_plain = country
         actual = int(row.get("actual") or 0)
         target = int(row.get("target") or 0)
         pct = row.get("pct")
+        # Invited-by-country thread is org-wide (same data shown on every
+        # branch's email), so we omit branch_id from the cell attrs to
+        # ensure all branches share one thread per country.
+        country_attrs = _cell_attrs(None, f"kol.invited.country.{country_key}", f"KOL invited — {country_label_plain}")
         country_rows_html += (
-            f"<tr>"
+            f"<tr{country_attrs}>"
             f"<td style='{_TABLE_TD};'>{country_label}</td>"
             f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{actual:,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;color:#6b7280;'>/ {target:,}</td>"

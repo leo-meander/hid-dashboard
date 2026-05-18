@@ -270,8 +270,17 @@ def _sync_spend_daily(
         slug = branch_slug_for(branch)
         for platform in ("meta", "google", "tiktok"):
             try:
+                # valid_country_only=True asks the server to apply
+                # dashboard's _apply_common_filters: drop ad-level rows
+                # (kept adset, plus campaign-level only for PMax) to avoid
+                # grain inflation, drop invalid country, dedup conversions
+                # to omni_purchase. Without it the response inflates Meta /
+                # Google Search 2-3x because the same booking is counted at
+                # ad + adset + campaign grain. See memory
+                # `project_ads_metrics_three_sources.md` for the full story.
                 rows = client.get_spend_daily(
-                    df_iso, dt_iso, platform=platform, branch=slug
+                    df_iso, dt_iso, platform=platform, branch=slug,
+                    valid_country_only=True,
                 )
             except Exception as exc:
                 logger.warning(
