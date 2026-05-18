@@ -1617,13 +1617,15 @@ def _render_paid_ads(b: dict) -> str:
 
 
 def _render_kol(b: dict) -> str:
-    """Render the KOL section as a monthly progress table (Invited /
-    Collaborated / Posted vs target).
+    """Render the KOL section as a monthly progress table.
+
+    Layout (per feedback 2026-05-18, after KOL Engine migrated Invited
+    targets from per-branch to per-country):
+      - Invited (Proactive): org-wide total + per-country breakdown table
+        (same on every branch email — Invited is no longer a per-branch concept)
+      - Collaborated / Posted: per-branch values
 
     Source = KOL Engine public API GET /api/public/kol-targets/{slug}.
-    All other KOL signals (pipeline, stuck, expiring, ads-available,
-    posts, cost MTD, organic ROI) were removed per feedback (2026-05-04)
-    to keep the section focused on monthly target progress.
     """
     k = b.get("analytics", {}).get("kol") or {}
     targets = k.get("targets")
@@ -1645,52 +1647,107 @@ def _render_kol(b: dict) -> str:
         f"{targets.get('period_year') or _ict_today().year}"
     )
 
-    def _progress_row(label: str, metric: dict) -> str:
-        actual = int(metric.get("actual") or 0)
-        target = int(metric.get("target") or 0)
-        pct = metric.get("pct")  # may be None when target == 0
-        if pct is None:
-            pct_str = "<span style='color:#9ca3af;'>n/a</span>"
-            color = "#9ca3af"
-            bar_pct = 0.0
-        else:
-            pct_val = float(pct)
-            bar_pct = max(0.0, min(100.0, pct_val))
-            if pct_val >= 100:
-                color = "#16a34a"
-            elif pct_val >= 75:
-                color = "#ca8a04"
-            elif pct_val >= 50:
-                color = "#ea580c"
-            else:
-                color = "#dc2626"
-            pct_str = f"<span style='color:{color};font-weight:700;'>{pct_val:.1f}%</span>"
-        bar_html = (
+    def _pct_color(pct_val):
+        if pct_val is None:
+            return ("#9ca3af", 0.0)
+        v = float(pct_val)
+        bar = max(0.0, min(100.0, v))
+        if v >= 100:
+            return ("#16a34a", bar)
+        if v >= 75:
+            return ("#ca8a04", bar)
+        if v >= 50:
+            return ("#ea580c", bar)
+        return ("#dc2626", bar)
+
+    def _pct_cell(pct_val) -> str:
+        color, _ = _pct_color(pct_val)
+        if pct_val is None:
+            return f"<span style='color:{color};'>n/a</span>"
+        return f"<span style='color:{color};font-weight:700;'>{float(pct_val):.1f}%</span>"
+
+    def _bar(pct_val) -> str:
+        color, bar_pct = _pct_color(pct_val)
+        return (
             f"<div style='background:#e5e7eb;border-radius:6px;height:6px;width:120px;display:inline-block;vertical-align:middle;'>"
             f"<div style='background:{color};height:6px;border-radius:6px;width:{bar_pct:.1f}%;'></div>"
             f"</div>"
         )
+
+    def _progress_row(label: str, metric: dict) -> str:
+        actual = int(metric.get("actual") or 0)
+        target = int(metric.get("target") or 0)
+        pct = metric.get("pct")
         return (
             f"<tr>"
             f"<td style='{_TABLE_TD};'><strong>{label}</strong></td>"
             f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{actual:,}</td>"
             f"<td style='{_TABLE_TD};text-align:right;color:#6b7280;'>/ {target:,}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{pct_str}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{bar_html}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_pct_cell(pct)}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_bar(pct)}</td>"
             f"</tr>"
         )
 
-    rows = (
-        _progress_row("📨 Invited (Proactive)", targets.get("invited_proactive") or {})
-        + _progress_row("🤝 Collaborated", targets.get("collaborated") or {})
+    # Branch-level Collaborated + Posted
+    branch_rows = (
+        _progress_row("🤝 Collaborated", targets.get("collaborated") or {})
         + _progress_row("🎬 Posted", targets.get("posted") or {})
     )
+
+    # Org-wide Invited (Proactive) headline
+    org_invited = targets.get("org_invited") or {}
+    invited_actual = int(org_invited.get("actual") or 0)
+    invited_target = int(org_invited.get("target") or 0)
+    invited_pct = org_invited.get("pct")
+    invited_header = (
+        f"📨 Invited (Proactive) — Org-wide: "
+        f"<strong style='color:#111827;'>{invited_actual:,}</strong>"
+        f"<span style='color:#6b7280;'> / {invited_target:,}</span> · "
+        f"{_pct_cell(invited_pct)}"
+    )
+
+    # Country breakdown table
+    country_rows_html = ""
+    for row in (targets.get("invite_by_country") or []):
+        country = row.get("country") or ""
+        if country == "__unknown__":
+            country_label = "<em style='color:#9ca3af;'>Unknown country</em>"
+        else:
+            country_label = country
+        actual = int(row.get("actual") or 0)
+        target = int(row.get("target") or 0)
+        pct = row.get("pct")
+        country_rows_html += (
+            f"<tr>"
+            f"<td style='{_TABLE_TD};'>{country_label}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{actual:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;color:#6b7280;'>/ {target:,}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_pct_cell(pct)}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_bar(pct)}</td>"
+            f"</tr>"
+        )
+
+    country_table_html = ""
+    if country_rows_html:
+        country_table_html = f"""
+      <p style="margin:10px 0 4px;font-size:11px;font-weight:600;color:#6b7280;">Invited breakdown by KOL nationality</p>
+      <table style="width:100%;border-collapse:collapse;">
+        <tr>
+          <th style="{_TABLE_TH}">Country</th>
+          <th style="{_TABLE_TH};text-align:right;">Actual</th>
+          <th style="{_TABLE_TH};text-align:right;">Target</th>
+          <th style="{_TABLE_TH};text-align:right;">Pacing</th>
+          <th style="{_TABLE_TH};text-align:right;">Progress</th>
+        </tr>
+        {country_rows_html}
+      </table>"""
 
     return f"""
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
       <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">
         🎥 KOL — Monthly Progress · {period_label}
       </p>
+      <p style="margin:0 0 8px;font-size:12px;color:#374151;">{invited_header}</p>
       <table style="width:100%;border-collapse:collapse;">
         <tr>
           <th style="{_TABLE_TH}">Metric</th>
@@ -1699,10 +1756,11 @@ def _render_kol(b: dict) -> str:
           <th style="{_TABLE_TH};text-align:right;">Pacing</th>
           <th style="{_TABLE_TH};text-align:right;">Progress</th>
         </tr>
-        {rows}
+        {branch_rows}
       </table>
+      {country_table_html}
       <p style="margin:6px 0 0;font-size:11px;color:#9ca3af;">
-        Source: KOL Engine targets API. Pacing color: ≥100% green · 75-99% yellow · 50-74% orange · &lt;50% red.
+        Source: KOL Engine targets API. Invited (Proactive) is org-wide (bucketed by KOL nationality); Collaborated/Posted are per-branch. Pacing color: ≥100% green · 75-99% yellow · 50-74% orange · &lt;50% red.
       </p>
     </div>"""
 

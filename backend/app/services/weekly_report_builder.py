@@ -1483,6 +1483,17 @@ def kol_section(db: Session, branch_id: UUID, branch_name: str,
     if targets_payload:
         hotel_id = resolve_hotel_id_from_branch_name(branch_name)
         period = targets_payload.get("period") or {}
+        # Invited (Proactive) is org-wide (bucketed by KOL nationality), not
+        # per-branch — pulled from invite_by_country. totals.invited_proactive
+        # is the org total (also matches invite_by_country[country=null]).
+        org_totals = targets_payload.get("totals") or {}
+        invite_rows = targets_payload.get("invite_by_country") or []
+        org_invited = org_totals.get("invited_proactive") or {}
+        # Country breakdown rows = invite_by_country minus the org-total row
+        # (country=null) since we surface that separately as org_invited.
+        invite_by_country = [
+            r for r in invite_rows if r.get("country") is not None
+        ]
         if hotel_id:
             for br in (targets_payload.get("branches") or []):
                 if br.get("hotel_id") == hotel_id:
@@ -1492,7 +1503,11 @@ def kol_section(db: Session, branch_id: UUID, branch_name: str,
                         "period_month": period.get("month") or today.month,
                         "hotel_id": hotel_id,
                         "hotel_name": br.get("hotel_name"),
-                        "invited_proactive": br.get("invited_proactive") or {},
+                        # Invited (Proactive) — org-wide, same on every branch
+                        # email; per-branch invited from the API is stale and
+                        # double-counts so we don't render it.
+                        "org_invited": org_invited,
+                        "invite_by_country": invite_by_country,
                         "collaborated": br.get("collaborated") or {},
                         "posted": br.get("posted") or {},
                     }
