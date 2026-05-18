@@ -137,18 +137,20 @@ function Toast({ message, type, onClose }) {
 function readUrlState() {
   const p = new URLSearchParams(window.location.search);
   return {
-    tab: p.get("view") === "full" ? "report" : (p.get("tab") === "report" ? "report" : "settings"),
+    tab: p.get("tab") === "settings" ? "settings" : "report",
     branch: p.get("branch") || "all",
   };
 }
 
 function writeUrlState(tab, branch) {
   const p = new URLSearchParams(window.location.search);
-  if (tab === "report") {
-    p.set("view", "full");
-  } else {
+  if (tab === "settings") {
+    p.set("tab", "settings");
     p.delete("view");
     p.delete("branch");
+  } else {
+    p.delete("tab");
+    p.delete("view");
   }
   if (tab === "report" && branch && branch !== "all") {
     p.set("branch", branch);
