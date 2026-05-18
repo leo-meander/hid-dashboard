@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, undefer
 
 from app.database import get_db
 from app.models.reservation import Reservation
+from app.services.crm_filters import crm_reservation_filter
 
 router = APIRouter()
 
@@ -34,24 +35,9 @@ def _last_reservations_synced_at(db: Session, branch_id: Optional[UUID]) -> Opti
     return ts.isoformat() if ts else None
 
 
-def _crm_filter():
-    """Filter for CRM-related room types/rate plans: CRM, MEANDER'S FRIEND, Travel guide, Grand Open, Extension Promotion."""
-    return or_(
-        Reservation.room_type.ilike("%CRM%"),
-        Reservation.rate_plan_name.ilike("%CRM%"),
-        Reservation.room_type.ilike("%MEANDER'S FRIEND%"),
-        Reservation.rate_plan_name.ilike("%MEANDER'S FRIEND%"),
-        Reservation.room_type.ilike("%Travel guide%"),
-        Reservation.rate_plan_name.ilike("%Travel guide%"),
-        Reservation.room_type.ilike("%Grand Open%"),
-        Reservation.rate_plan_name.ilike("%Grand Open%"),
-        Reservation.rate_plan_name.ilike("%Extension Promotion%"),
-    )
-
-
 def _crm_base_query(db: Session, branch_id: Optional[UUID] = None):
     """Base query: reservations with CRM-related room types."""
-    q = db.query(Reservation).filter(_crm_filter())
+    q = db.query(Reservation).filter(crm_reservation_filter())
     if branch_id:
         q = q.filter(Reservation.branch_id == branch_id)
     return q
@@ -83,7 +69,7 @@ def crm_summary(
             func.sum(Reservation.adults).label("total_guests"),
             func.sum(case((Reservation.status == "Cancelled", 1), else_=0)).label("cancellations"),
         ).filter(
-            _crm_filter(),
+            crm_reservation_filter(),
             Reservation.check_in_date >= date_from,
             Reservation.check_in_date <= date_to,
         )
@@ -143,7 +129,7 @@ def crm_daily(
                 func.sum(Reservation.adults).label("guests"),
             )
             .filter(
-                _crm_filter(),
+                crm_reservation_filter(),
                 Reservation.check_in_date >= date_from,
                 Reservation.check_in_date <= date_to,
                 Reservation.status != "Cancelled",
@@ -203,7 +189,7 @@ def crm_monthly(
                 func.sum(case((Reservation.status == "Cancelled", 1), else_=0)).label("cancellations"),
             )
             .filter(
-                _crm_filter(),
+                crm_reservation_filter(),
                 Reservation.check_in_date >= date_from,
                 Reservation.check_in_date <= date_to,
             )
@@ -267,7 +253,7 @@ def crm_by_branch(
                 func.sum(case((Reservation.status == "Cancelled", 1), else_=0)).label("cancellations"),
             )
             .filter(
-                _crm_filter(),
+                crm_reservation_filter(),
                 Reservation.check_in_date >= date_from,
                 Reservation.check_in_date <= date_to,
             )
@@ -329,7 +315,7 @@ def crm_by_source(
                 func.sum(Reservation.nights).label("nights"),
             )
             .filter(
-                _crm_filter(),
+                crm_reservation_filter(),
                 Reservation.check_in_date >= date_from,
                 Reservation.check_in_date <= date_to,
                 Reservation.status != "Cancelled",
@@ -447,7 +433,7 @@ def crm_room_types(
                 func.sum(Reservation.nights).label("nights"),
             )
             .filter(
-                _crm_filter(),
+                crm_reservation_filter(),
                 Reservation.check_in_date >= date_from,
                 Reservation.check_in_date <= date_to,
                 Reservation.status != "Cancelled",
@@ -508,7 +494,7 @@ def crm_reservation_contacts(
                 Reservation.room_type.ilike(like),
             )
         else:
-            base_filter = _crm_filter()
+            base_filter = crm_reservation_filter()
 
         q = db.query(Reservation).options(undefer(Reservation.raw_data)).filter(
             base_filter,

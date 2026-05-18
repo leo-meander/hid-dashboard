@@ -22,7 +22,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, or_, literal_column
+from sqlalchemy import func, literal_column
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, get_db
@@ -32,6 +32,7 @@ from app.models.branch import Branch
 from app.models.reservation import Reservation
 from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
 from app.services.ads_platform import branch_slug_for, get_client as _get_ads_client
+from app.services.crm_filters import crm_reservation_filter
 from app.services.kol_engine import fetch_kol_revenue, resolve_hotel_id_from_branch_name
 from app.config import settings
 
@@ -50,20 +51,6 @@ def _envelope(data):
         "success": True, "data": data, "error": None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-
-
-def _crm_filter():
-    return or_(
-        Reservation.room_type.ilike("%CRM%"),
-        Reservation.rate_plan_name.ilike("%CRM%"),
-        Reservation.room_type.ilike("%MEANDER'S FRIEND%"),
-        Reservation.rate_plan_name.ilike("%MEANDER'S FRIEND%"),
-        Reservation.room_type.ilike("%Travel guide%"),
-        Reservation.rate_plan_name.ilike("%Travel guide%"),
-        Reservation.room_type.ilike("%Grand Open%"),
-        Reservation.rate_plan_name.ilike("%Grand Open%"),
-        Reservation.rate_plan_name.ilike("%Extension Promotion%"),
-    )
 
 
 def _revenue_source_filter():
@@ -344,7 +331,7 @@ def _build_overview(db, branch_id, d_from, d_to, use_native):
         func.count(Reservation.id).label("bookings"),
         func.coalesce(func.sum(rev_col), 0).label("revenue"),
     ).filter(
-        _crm_filter(),
+        crm_reservation_filter(),
         Reservation.reservation_date >= d_from,
         Reservation.reservation_date <= d_to,
         _status_filter(),
@@ -442,7 +429,7 @@ def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date
         func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
         func.coalesce(func.sum(rev_col), 0).label("revenue"),
     ).filter(
-        _crm_filter(),
+        crm_reservation_filter(),
         Reservation.reservation_date >= d_from,
         Reservation.reservation_date <= d_to,
         _status_filter(),

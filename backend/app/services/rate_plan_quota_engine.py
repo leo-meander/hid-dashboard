@@ -69,8 +69,8 @@ def _count_for_quota(
 ) -> tuple[int, int, list[dict]]:
     """Return (total_active, total_canceled, per_branch_breakdown).
 
-    Match rule mirrors marketing_activity._crm_filter — rate_plan_name OR
-    room_type ILIKE %pattern%. Each breakdown row carries its own limit
+    Match rule mirrors crm_filters.crm_reservation_filter — rate_plan_name
+    OR room_type ILIKE %pattern%. Each breakdown row carries its own limit
     and consumed_pct so the dashboard and email don't have to re-derive.
     """
     pattern = f"%{quota.rate_plan_name}%"

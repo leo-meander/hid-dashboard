@@ -21,8 +21,6 @@ from uuid import UUID
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from sqlalchemy import or_
-
 from app.models.ads import AdsPerformance
 from app.models.angle import AdAngle
 from app.models.branch import Branch
@@ -32,6 +30,7 @@ from app.models.holiday_intel import HolidayCalendar
 from app.models.kol import KOLRecord
 from app.models.kpi import KPITarget
 from app.models.reservation import Reservation
+from app.services.crm_filters import crm_reservation_filter
 from app.services.kpi_engine import _EXCLUDED_SOURCES, _EXCLUDED_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -1444,21 +1443,6 @@ def kol_section(db: Session, branch_id: UUID, branch_name: str,
 
 # ── 9. CRM (Email Marketing) — workflows + bulk + revenue attribution ───────
 
-def _crm_reservation_filter():
-    """Match same set the CRM router uses."""
-    return or_(
-        Reservation.room_type.ilike("%CRM%"),
-        Reservation.rate_plan_name.ilike("%CRM%"),
-        Reservation.room_type.ilike("%MEANDER'S FRIEND%"),
-        Reservation.rate_plan_name.ilike("%MEANDER'S FRIEND%"),
-        Reservation.room_type.ilike("%Travel guide%"),
-        Reservation.rate_plan_name.ilike("%Travel guide%"),
-        Reservation.room_type.ilike("%Grand Open%"),
-        Reservation.rate_plan_name.ilike("%Grand Open%"),
-        Reservation.rate_plan_name.ilike("%Extension Promotion%"),
-    )
-
-
 def _crm_revenue(db: Session, branch_id: UUID, d_from: date, d_to: date) -> dict:
     """Aggregate CRM bookings/revenue from reservations.
 
@@ -1471,7 +1455,7 @@ def _crm_revenue(db: Session, branch_id: UUID, d_from: date, d_to: date) -> dict
         func.coalesce(func.sum(Reservation.grand_total_native), 0),
     ).filter(
         Reservation.branch_id == branch_id,
-        _crm_reservation_filter(),
+        crm_reservation_filter(),
         Reservation.reservation_date >= d_from,
         Reservation.reservation_date <= d_to,
         ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
@@ -1505,7 +1489,7 @@ def _crm_revenue_by_rate_plan(
         func.coalesce(func.sum(Reservation.grand_total_native), 0),
     ).filter(
         Reservation.branch_id == branch_id,
-        _crm_reservation_filter(),
+        crm_reservation_filter(),
         Reservation.reservation_date >= d_from,
         Reservation.reservation_date <= d_to,
         ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
