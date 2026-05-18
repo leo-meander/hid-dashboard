@@ -1,7 +1,7 @@
 """Re-anchor weekly_report_archives + comments to the DATA week's Monday.
 
-Revision ID: 042
-Revises: 041
+Revision ID: 043
+Revises: 042
 
 Why
 ----
@@ -24,8 +24,8 @@ reversible.
 from alembic import op
 
 
-revision = "042"
-down_revision = "041"
+revision = "043"
+down_revision = "042"
 branch_labels = None
 depends_on = None
 
