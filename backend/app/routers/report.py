@@ -1471,70 +1471,6 @@ def _render_paid_ads(b: dict) -> str:
         )
     ch_rows = "".join(ch_rows_parts)
 
-    # Activity log — what changed vs prev week (NEW / ENDED / SCALED / CUT)
-    act = pa.get("activity_log") or {}
-
-    def _act_row(item, change_label=None):
-        ad_name = (item.get("name") or item.get("ad_name") or
-                   item.get("adset") or item.get("campaign") or "")[:60]
-        change_cell = (
-            f"<td style='{_TABLE_TD};text-align:right;'>{change_label}</td>"
-            if change_label else ""
-        )
-        return (
-            f"<tr><td style='{_TABLE_TD}'>{item.get('channel') or '—'}</td>"
-            f"<td style='{_TABLE_TD}'>{ad_name}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(item.get('cost'), cur)}</td>"
-            f"<td style='{_TABLE_TD};text-align:right;'>{item.get('bookings', 0)}</td>"
-            + change_cell
-            + "</tr>"
-        )
-
-    new_rows = "".join(_act_row(x) for x in act.get("new", []))
-    ended_rows = "".join(_act_row(x) for x in act.get("ended", []))
-    scaled_rows = "".join(
-        _act_row(x, f"<span style='color:#16a34a;'>{_signed_pct(x['change_pct'])}</span> "
-                    f"<span style='color:#9ca3af;font-size:10px;'>(was {_fmt(x['prev_cost'], cur)})</span>")
-        for x in act.get("scaled", [])
-    )
-    cut_rows = "".join(
-        _act_row(x, f"<span style='color:#dc2626;'>{_signed_pct(x['change_pct'])}</span> "
-                    f"<span style='color:#9ca3af;font-size:10px;'>(was {_fmt(x['prev_cost'], cur)})</span>")
-        for x in act.get("cut", [])
-    )
-
-    has_activity = bool(new_rows or ended_rows or scaled_rows or cut_rows)
-    if has_activity:
-        def _act_table(title: str, rows_html: str, ncols: int, color: str):
-            if not rows_html:
-                return ""
-            hdr_change = "<th style='" + _TABLE_TH + ";text-align:right;'>WoW</th>" if ncols == 5 else ""
-            return (
-                f"<table style='width:100%;border-collapse:collapse;margin-top:8px;'>"
-                f"<tr><th style='{_TABLE_TH};color:{color};' colspan='{ncols}'>{title}</th></tr>"
-                f"<tr><th style='{_TABLE_TH}'>Ch.</th><th style='{_TABLE_TH}'>Ad / Adset</th>"
-                f"<th style='{_TABLE_TH};text-align:right;'>Cost</th>"
-                f"<th style='{_TABLE_TH};text-align:right;'>Bk</th>"
-                f"{hdr_change}</tr>"
-                f"{rows_html}</table>"
-            )
-
-        activity_html = (
-            "<div style='margin-top:12px;'>"
-            "<p style='margin:0 0 4px;font-size:12px;font-weight:600;color:#374151;'>📋 Activity Log (vs prev week)</p>"
-            + _act_table("🆕 New ads (started this week)", new_rows, 4, "#16a34a")
-            + _act_table("⏸ Ended ads (stopped this week)", ended_rows, 4, "#6b7280")
-            + _act_table("📈 Scaled (cost up ≥25%)", scaled_rows, 5, "#16a34a")
-            + _act_table("📉 Cut (cost down ≥25%)", cut_rows, 5, "#dc2626")
-            + "</div>"
-        )
-    else:
-        activity_html = (
-            "<p style='margin-top:10px;font-size:12px;color:#9ca3af;'>"
-            "📋 Activity Log: no significant ad-lineup changes vs prev week."
-            "</p>"
-        )
-
     # By Country rows — full ads metrics from Ads Platform's
     # /api/export/spend/daily-by-country endpoint. Same _ch_cell_*
     # helpers as the By Channel table so the visual treatment is
@@ -1593,8 +1529,6 @@ def _render_paid_ads(b: dict) -> str:
             <th style="{_TABLE_TH};text-align:right;">ROAS</th></tr>
         {ch_rows or '<tr><td colspan="7" style="'+_TABLE_TD+';color:#9ca3af;">No channel data</td></tr>'}
       </table>
-
-      {activity_html}
 
       <table style="width:100%;border-collapse:collapse;margin-top:12px;">
         <tr><th style="{_TABLE_TH}" colspan="7">🌏 By Country — last week, with WoW deltas</th></tr>

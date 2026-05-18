@@ -1045,104 +1045,6 @@ def _ads_window_aggregate(db: Session, branch_id: UUID,
     }
 
 
-def _build_activity_log(db: Session, branch_id: UUID,
-                        week_start: date, week_end: date,
-                        prev_start: date, prev_end: date,
-                        change_threshold_pct: float = 25.0,
-                        cost_min: float = 1.0,
-                        top_n: int = 5) -> dict:
-    """Diff last week's ad lineup against the prev week's, surface changes.
-
-    Buckets returned:
-      - "new":    ads with cost > cost_min last week, absent (or cost~0) prev week
-      - "ended":  ads with cost > cost_min prev week, absent (or cost~0) last week
-      - "scaled": ads in both weeks, cost up by >= change_threshold_pct
-      - "cut":    ads in both weeks, cost down by >= change_threshold_pct
-
-    Each row keeps the campaign / adset / ad name, channel, cost, bookings
-    and revenue so the email can render an actionable list rather than just
-    counts. Sorted by absolute cost change (or current cost for new/ended)
-    and capped at `top_n` per bucket.
-
-    Identity key = (campaign_name, adset_name, ad_name) — same triple that
-    Ads Platform uses upstream. We accept that two ads with identical names
-    in different accounts would collide; in practice ad names are unique
-    per branch.
-    """
-    def _ad_aggregate(d_from: date, d_to: date) -> dict:
-        rows = db.query(
-            AdsPerformance.campaign_name,
-            AdsPerformance.adset_name,
-            AdsPerformance.ad_name,
-            AdsPerformance.channel,
-            func.coalesce(func.sum(AdsPerformance.cost_native), 0).label("cost"),
-            func.coalesce(func.sum(AdsPerformance.bookings), 0).label("bookings"),
-            func.coalesce(func.sum(AdsPerformance.revenue_native), 0).label("rev"),
-        ).filter(
-            AdsPerformance.branch_id == branch_id,
-            AdsPerformance.grain == "ad",
-            or_(
-                AdsPerformance.date_from.is_(None),
-                AdsPerformance.date_from <= d_to,
-            ),
-            or_(
-                AdsPerformance.date_to.is_(None),
-                AdsPerformance.date_to >= d_from,
-            ),
-        ).group_by(
-            AdsPerformance.campaign_name,
-            AdsPerformance.adset_name,
-            AdsPerformance.ad_name,
-            AdsPerformance.channel,
-        ).all()
-        return {
-            (r.campaign_name, r.adset_name, r.ad_name): {
-                "channel": r.channel or "—",
-                "name": (r.ad_name or r.adset_name or r.campaign_name or ""),
-                "campaign": r.campaign_name,
-                "adset": r.adset_name,
-                "cost": float(r.cost or 0),
-                "bookings": int(r.bookings or 0),
-                "revenue": float(r.rev or 0),
-            }
-            for r in rows
-        }
-
-    this = _ad_aggregate(week_start, week_end)
-    prev = _ad_aggregate(prev_start, prev_end)
-
-    new_ads, ended_ads, scaled_ads, cut_ads = [], [], [], []
-
-    for key, t in this.items():
-        if t["cost"] < cost_min:
-            continue
-        p = prev.get(key)
-        if not p or p["cost"] < cost_min:
-            new_ads.append(t)
-            continue
-        change_pct = (t["cost"] - p["cost"]) / p["cost"] * 100
-        if change_pct >= change_threshold_pct:
-            scaled_ads.append({**t, "prev_cost": round(p["cost"], 2),
-                               "change_pct": round(change_pct, 1)})
-        elif change_pct <= -change_threshold_pct:
-            cut_ads.append({**t, "prev_cost": round(p["cost"], 2),
-                            "change_pct": round(change_pct, 1)})
-
-    for key, p in prev.items():
-        if p["cost"] < cost_min:
-            continue
-        t = this.get(key)
-        if not t or t["cost"] < cost_min:
-            ended_ads.append(p)
-
-    return {
-        "new": sorted(new_ads, key=lambda x: -x["cost"])[:top_n],
-        "ended": sorted(ended_ads, key=lambda x: -x["cost"])[:top_n],
-        "scaled": sorted(scaled_ads, key=lambda x: -x["change_pct"])[:top_n],
-        "cut": sorted(cut_ads, key=lambda x: x["change_pct"])[:top_n],
-    }
-
-
 def _build_country_perf(db: Session, branch: Branch,
                         week_start: date, week_end: date,
                         prev_start: date, prev_end: date,
@@ -1320,11 +1222,11 @@ def paid_ads_section(db: Session, branch: Branch, today: date,
     # NOTE: by_funnel removed per feedback (2026-05-04) — funnel-stage
     # breakdown wasn't driving decisions and added clutter to the per-branch
     # card. Funnel data is still surfaced inside Ad Budget Optimizer.
-
-    # ── Activity log: detect changes in last week's ad lineup ─────────────
-    activity_log = _build_activity_log(
-        db, branch_id, week_start, week_end, prev_start, prev_end,
-    )
+    #
+    # NOTE: activity_log removed per feedback (2026-05-18) — local diff on
+    # ads_performance was broken (grain='ad' rows are metadata-only, no cost)
+    # and the canonical Activity Log already lives in the Ads Platform
+    # dashboard. Duplicating it into the email added no value.
 
     # By Country — replaces the old Top by ROAS / Underperformers tables.
     # Per feedback (2026-05-04): operators want a country-level slice that
@@ -1344,7 +1246,6 @@ def paid_ads_section(db: Session, branch: Branch, today: date,
         "wow_roas_pct": _pct_change(last_week["roas"], prev_week["roas"]),
         "by_channel": by_channel,
         "by_country": by_country,
-        "activity_log": activity_log,
     }
 
 
