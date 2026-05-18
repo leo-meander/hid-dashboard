@@ -52,7 +52,7 @@ from app.services.kpi_engine import (
     _EXCLUDED_STATUSES,
     _EXCLUDED_SOURCES,
 )
-from app.services.weekly_report_builder import build_branch_analytics
+from app.services.weekly_report_builder import build_branch_analytics, last_week_range
 from app.models.gov_visitor import GovVisitorData
 
 router = APIRouter()
@@ -2442,6 +2442,18 @@ def send_weekly_cron(db: Session = Depends(get_db)):
     return _envelope(_send_weekly_email_to_default_recipients(db))
 
 
+def _archive_week_start(today: date) -> date:
+    """Monday of the week the report's data covers (= last completed Mon-Sun).
+
+    Used as the archive primary key so every click within a single "data
+    week" overwrites the same row. Cron runs Mon 03:00 ICT and reports on
+    last Mon-Sun; a manual click on Wed of the same week reports on the
+    same data and therefore the same archive row gets overwritten. Only
+    when a new Mon-Sun completes does a fresh archive row get created.
+    """
+    return last_week_range(today)[0]
+
+
 def _upsert_weekly_archive(
     db: Session,
     payload: list,
@@ -2482,11 +2494,13 @@ def refresh_cache(db: Session = Depends(get_db)):
     cache so the Weekly Report page loads instantly all week and the
     Mon 07:00 email send doesn't have to rebuild. Also snapshots the
     payload into `weekly_report_archives` keyed by the Monday of the
-    current week so users can filter past weeks from the UI.
+    DATA week (the just-closed Mon-Sun the report covers), so every
+    click within that week's lifecycle overwrites the same row instead
+    of creating duplicates per click day.
     """
     payload, computed_at = _get_report_with_cache(db, force_fresh=True)
     today = _ict_today()
-    archive_row = _upsert_weekly_archive(db, payload, _week_start(today), source="cron")
+    archive_row = _upsert_weekly_archive(db, payload, _archive_week_start(today), source="cron")
     return _envelope({
         "computed_at": computed_at.isoformat() if computed_at else None,
         "branches_included": len(payload),
@@ -2962,7 +2976,7 @@ def create_archive(
         raise HTTPException(403, "Admin only")
     payload, _ = _get_report_with_cache(db)
     row = _upsert_weekly_archive(
-        db, payload, _week_start(_ict_today()),
+        db, payload, _archive_week_start(_ict_today()),
         source="manual", archived_by=current.id,
     )
     return _envelope({
