@@ -62,6 +62,7 @@ def _crm_filter():
         Reservation.rate_plan_name.ilike("%Travel guide%"),
         Reservation.room_type.ilike("%Grand Open%"),
         Reservation.rate_plan_name.ilike("%Grand Open%"),
+        Reservation.rate_plan_name.ilike("%Extension Promotion%"),
     )
 
 
