@@ -299,7 +299,10 @@ def _growth_countries(db: Session, branch_id, limit: int = 3):
 
     results = []
     for code, (name, rec_cnt) in recent.items():
-        if rec_cnt < 2:
+        # Min volume — under 50 bookings/90d the WoW % is statistical noise
+        # (a country going from 1→5 bookings is a "+400%" Hottest Market
+        # that nobody should actually act on). Feedback 2026-05-18.
+        if rec_cnt < 50:
             continue
         prv_name, prv_cnt = prev.get(code, (name, 0))
         if prv_cnt == 0:
@@ -1873,9 +1876,14 @@ def _build_html(report: list, today: date) -> str:
         ach_color = "#16a34a" if ach and ach >= 100 else "#ca8a04" if ach and ach >= 80 else "#dc2626"
         ach_str = _pct(ach)
 
-        # Country intel next actions — driven by country_scorer tiers
+        # Country intel next actions — driven by country_scorer tiers.
+        # Drop "Unknown" rows — no actionable country to scale ads for.
+        # Feedback 2026-05-18.
         actions = []
-        intel = b.get("country_intel", [])
+        intel = [
+            c for c in b.get("country_intel", [])
+            if (c.get("country") or "").strip().lower() != "unknown"
+        ]
         hot_countries = [c for c in intel if c["tier"] == "Hot"]
         warm_countries = [c for c in intel if c["tier"] == "Warm"]
         cold_countries = [c for c in intel if c["tier"] == "Cold"]
