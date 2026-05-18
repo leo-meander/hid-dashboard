@@ -1292,12 +1292,14 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
             title="Filter by week"
           >
             <option value="current">This week (live)</option>
-            {archives.map(a => (
-              <option key={a.week_start} value={a.week_start}>
-                {fmtWeekLabel(a.week_start)}
-                {a.open_comment_count > 0 ? ` · 💬${a.open_comment_count}` : ""}
-              </option>
-            ))}
+            {archives
+              .filter(a => a.week_start !== fmtIsoDate(thisMonday()))
+              .map(a => (
+                <option key={a.week_start} value={a.week_start}>
+                  {fmtWeekLabel(a.week_start)}
+                  {a.open_comment_count > 0 ? ` · 💬${a.open_comment_count}` : ""}
+                </option>
+              ))}
           </select>
           <button
             onClick={() => setAllCommentsOpen(true)}
