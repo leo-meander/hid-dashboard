@@ -35,7 +35,7 @@ def _last_reservations_synced_at(db: Session, branch_id: Optional[UUID]) -> Opti
 
 
 def _crm_filter():
-    """Filter for CRM-related room types/rate plans: CRM, MEANDER'S FRIEND, Travel guide, Grand Open."""
+    """Filter for CRM-related room types/rate plans: CRM, MEANDER'S FRIEND, Travel guide, Grand Open, Extension Promotion."""
     return or_(
         Reservation.room_type.ilike("%CRM%"),
         Reservation.rate_plan_name.ilike("%CRM%"),
@@ -45,6 +45,7 @@ def _crm_filter():
         Reservation.rate_plan_name.ilike("%Travel guide%"),
         Reservation.room_type.ilike("%Grand Open%"),
         Reservation.rate_plan_name.ilike("%Grand Open%"),
+        Reservation.rate_plan_name.ilike("%Extension Promotion%"),
     )
 
 
