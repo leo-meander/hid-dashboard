@@ -73,27 +73,41 @@ class McpAuthMiddleware:
             await self._send_401(scope, send, "invalid_token", "Token invalid, expired, or user disabled")
             return
 
-        logger.info("MCP %s %s — auth ok user=%s", method, path, user.email)
+        logger.info("MCP %s %s — auth ok user=%s host=%s", method, path,
+                    user.email, _get_header(scope, b"host"))
         # FastMCP's streamable HTTP session manager has built-in DNS-rebinding
         # protection that rejects any Host header outside an allowlist
         # (defaults to localhost / 127.0.0.1) with 421 Misdirected Request.
         # Behind Zeabur the Host arrives as `meander-hid-dashboard.zeabur.app`
         # and gets rejected. Since OAuth + JWT verification has already
-        # established the caller is a real HiD user, it's safe to rewrite the
-        # Host downstream — the only thing the SDK uses it for is the rebind
-        # check we just authenticated past.
+        # established the caller is a real HiD user, it's safe to rewrite both
+        # the Host header AND scope["server"] (which Starlette also reads
+        # when building Request.url) so the downstream sees localhost.
+        original_server = scope.get("server") or ("localhost", 80)
         safe_scope = {
             **scope,
             "headers": [
                 (b"host", b"localhost") if k.lower() == b"host" else (k, v)
                 for k, v in scope.get("headers", [])
             ],
+            "server": ("localhost", original_server[1]),
         }
+        logger.info("MCP %s %s — forwarding to FastMCP with host rewritten", method, path)
         ctx_token = _current_user.set(user)
         try:
             await self.app(safe_scope, receive, send)
         finally:
             _current_user.reset(ctx_token)
+
+
+def _get_header(scope: Scope, name: bytes) -> str:
+    for k, v in scope.get("headers", []):
+        if k.lower() == name:
+            try:
+                return v.decode()
+            except Exception:
+                return "<undecodable>"
+    return "<missing>"
 
     @staticmethod
     def _extract_bearer(scope: Scope) -> Optional[str]:
