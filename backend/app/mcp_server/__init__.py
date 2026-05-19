@@ -7,6 +7,6 @@ default is DENY so a freshly created key can do nothing until an admin scopes it
 
 Every tool call (allowed, denied, or errored) writes one row to mcp_audit_log.
 """
-from app.mcp_server.server import mcp_asgi_app
+from app.mcp_server.server import mcp_asgi_app, mcp_instance
 
-__all__ = ["mcp_asgi_app"]
+__all__ = ["mcp_asgi_app", "mcp_instance"]

@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
 import os
@@ -26,11 +27,31 @@ from app.routers import chat
 from app.scheduler import setup_scheduler
 from app.database import SessionLocal
 from app.models.branch import Branch
+from app.mcp_server import mcp_asgi_app, mcp_instance
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="HiD — Hotel Intelligence Dashboard", version="5.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Run our existing one-time startup patches AND keep the FastMCP
+    session manager alive for the lifetime of the process.
+
+    Without the `mcp_instance.session_manager.run()` context, the streamable
+    HTTP transport raises "Task group is not initialized" on the first
+    incoming MCP request. FastAPI runs this once at startup; the inner
+    `yield` is where the app serves traffic; the cleanup runs at shutdown."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    # Forward references — these helpers are defined further down in the file.
+    loop.run_in_executor(None, _patch_branch_currencies)
+    loop.run_in_executor(None, _ensure_kpi_override_column)
+    async with mcp_instance.session_manager.run():
+        yield
+
+
+app = FastAPI(title="HiD — Hotel Intelligence Dashboard", version="5.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -107,9 +128,10 @@ app.include_router(oauth.router, tags=["OAuth (MCP)"])
 
 # MCP server — exposes HiD tools to external Claude clients via Streamable HTTP.
 # Mounted before the SPA catch-all so /mcp/* requests reach the MCP handler.
-# Auth: OAuth-issued JWT (aud='mcp') via Authorization: Bearer header. Identity
-# is the HiD User who authorized the connection via /oauth/authorize.
-from app.mcp_server import mcp_asgi_app  # noqa: E402
+# Auth: OAuth-issued JWT via Authorization: Bearer header. Identity is the HiD
+# User who authorized the connection via /oauth/authorize. The session manager
+# itself is started by the lifespan() context above — without it, the first
+# request raises "Task group is not initialized".
 app.mount("/mcp", mcp_asgi_app)
 
 setup_scheduler(app)
@@ -166,14 +188,6 @@ def _ensure_kpi_override_column():
         db.rollback()
     finally:
         db.close()
-
-@app.on_event("startup")
-async def _startup():
-    import asyncio
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _patch_branch_currencies)
-    loop.run_in_executor(None, _ensure_kpi_override_column)
-
 
 @app.get("/health")
 def health():
