@@ -39,3 +39,6 @@ backend/google_tokens.txt
 backend/oauth_output.txt
 backend/google_client_secret.json
 backend/get_google_refresh_token.py
+
+# One-off operational backfill scripts (keep local, copy manually between machines)
+backend/_backfill_2025_combined.py
