@@ -99,6 +99,13 @@ app.include_router(rate_plan_quota.router, prefix="/api/rate-plan-quotas", tags=
 # HiD Assistant chatbox — Claude-powered Q&A over all dashboard data (Phase 1: read-only)
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat Assistant"])
 
+# MCP server — exposes HiD tools to external Claude clients via Streamable HTTP.
+# Mounted before the SPA catch-all so /mcp/* requests reach the MCP handler.
+# Per-key scoping (allowed_tools, allowed_branches) enforced inside the wrapper;
+# default is DENY so a freshly created API key cannot read anything until scoped.
+from app.mcp_server import mcp_asgi_app  # noqa: E402
+app.mount("/mcp", mcp_asgi_app)
+
 setup_scheduler(app)
 
 
