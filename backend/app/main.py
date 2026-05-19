@@ -19,6 +19,7 @@ from app.routers import marketing_activity, marketing_budget
 from app.routers import gov_visitor
 from app.routers import holiday_intel
 from app.routers import api_keys, public_api
+from app.routers import oauth
 from app.routers import alerts
 from app.routers import rate_plan_quota
 from app.routers import chat
@@ -99,10 +100,15 @@ app.include_router(rate_plan_quota.router, prefix="/api/rate-plan-quotas", tags=
 # HiD Assistant chatbox — Claude-powered Q&A over all dashboard data (Phase 1: read-only)
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat Assistant"])
 
+# OAuth 2.1 authorization server for the MCP — claude.ai connector flow.
+# Mounted at root (no prefix) so `.well-known/*` paths land at the right place;
+# the actual OAuth endpoints live under /oauth/ on the same router.
+app.include_router(oauth.router, tags=["OAuth (MCP)"])
+
 # MCP server — exposes HiD tools to external Claude clients via Streamable HTTP.
 # Mounted before the SPA catch-all so /mcp/* requests reach the MCP handler.
-# Per-key scoping (allowed_tools, allowed_branches) enforced inside the wrapper;
-# default is DENY so a freshly created API key cannot read anything until scoped.
+# Auth: OAuth-issued JWT (aud='mcp') via Authorization: Bearer header. Identity
+# is the HiD User who authorized the connection via /oauth/authorize.
 from app.mcp_server import mcp_asgi_app  # noqa: E402
 app.mount("/mcp", mcp_asgi_app)
 

@@ -11,14 +11,14 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from app.models.api_key import ApiKey
 from app.models.mcp_audit_log import McpAuditLog
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
 
 def record(
-    api_key: Optional[ApiKey],
+    user: Optional[User],
     tool_name: str,
     arguments: dict,
     status: str,
@@ -37,7 +37,7 @@ def record(
                 size = None
         db = SessionLocal()
         row = McpAuditLog(
-            api_key_id=api_key.id if api_key else None,
+            user_id=user.id if user else None,
             tool_name=tool_name,
             arguments=arguments or {},
             status=status,
