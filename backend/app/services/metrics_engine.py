@@ -42,6 +42,7 @@ EXCLUDED_SOURCES_OCC = {"maintain", "maintenance"}
 EXCLUDED_SOURCES_REVENUE = {
     "blogger", "kol", "house use", "houseuse",
     "special case",
+    "work exchange",
     "maintain", "maintenance",
 }
 
