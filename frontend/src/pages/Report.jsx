@@ -61,6 +61,10 @@ const METRIC_LABELS = {
   "branch.next_adr": "Next Month ADR",
   "branch.next_occ_forecast": "Next Month Forecast OCC%",
   "branch.next_forecast": "Next Month Forecast (Adjusted)",
+  "paid_ads.summary": "Paid Ads — Summary",
+  "kol.collaborated": "KOL — Collaborated",
+  "kol.posted": "KOL — Posted",
+  "kol.invited.org": "KOL — Invited (Org-wide)",
 };
 
 // Prefix → label-template for dynamic metric_keys emitted by the backend
@@ -78,6 +82,9 @@ const DYNAMIC_PREFIXES = [
   ["country.book.", "Country (booked) — "],
   ["country.stay.", "Country (check-in) — "],
   ["outlier.", "Outlier — "],
+  ["paid_ads.channel.", "Paid Ads — "],
+  ["paid_ads.country.", "Paid Ads country — "],
+  ["kol.invited.country.", "KOL invited — "],
 ];
 
 const metricLabel = (key, fallback) => {

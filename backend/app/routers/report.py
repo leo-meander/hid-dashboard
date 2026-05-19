@@ -787,6 +787,12 @@ def _render_outliers(b: dict) -> str:
       <p style="margin:0 0 4px;font-size:11px;color:#9ca3af;">
         Source: daily_metrics (Cloudbeds Insights overlay) by stay date.
       </p>
+      <p style="margin:0 0 8px;font-size:11px;color:#6b7280;line-height:1.5;">
+        <strong>How to read:</strong> each row = a day where Revenue or OCC deviated &gt;1.5σ from the 30-day baseline.
+        <strong>TYPE</strong>: ▲ spike = above baseline, ▼ drop = below.
+        <strong>REASONS</strong> auto-tags: <em>weekend</em> (Sat/Sun) and/or <em>cancellation spike (X%)</em> when cancel+no-show rate &gt;15% for that stay date (X = cancelled+no-show ÷ total bookings with check-in on that date).
+        Note: "▲ spike" (TYPE) and "cancellation spike" (REASONS) are independent — a day can be both. Small denominators make % swing fast — always check absolute counts before reacting.
+      </p>
       <table style="width:100%;border-collapse:collapse;">
         <tr><th style="{_TABLE_TH}">Date</th><th style="{_TABLE_TH};text-align:right;">Type</th>
             <th style="{_TABLE_TH};text-align:right;">Revenue</th><th style="{_TABLE_TH};text-align:right;">OCC</th>
