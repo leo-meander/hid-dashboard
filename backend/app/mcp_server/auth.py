@@ -74,9 +74,24 @@ class McpAuthMiddleware:
             return
 
         logger.info("MCP %s %s — auth ok user=%s", method, path, user.email)
+        # FastMCP's streamable HTTP session manager has built-in DNS-rebinding
+        # protection that rejects any Host header outside an allowlist
+        # (defaults to localhost / 127.0.0.1) with 421 Misdirected Request.
+        # Behind Zeabur the Host arrives as `meander-hid-dashboard.zeabur.app`
+        # and gets rejected. Since OAuth + JWT verification has already
+        # established the caller is a real HiD user, it's safe to rewrite the
+        # Host downstream — the only thing the SDK uses it for is the rebind
+        # check we just authenticated past.
+        safe_scope = {
+            **scope,
+            "headers": [
+                (b"host", b"localhost") if k.lower() == b"host" else (k, v)
+                for k, v in scope.get("headers", [])
+            ],
+        }
         ctx_token = _current_user.set(user)
         try:
-            await self.app(scope, receive, send)
+            await self.app(safe_scope, receive, send)
         finally:
             _current_user.reset(ctx_token)
 
