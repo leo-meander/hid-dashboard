@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.branch import Branch
-from app.services.chat_service import run_chat
+from app.services.chat_service import MODEL as CHAT_MODEL, run_chat
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -76,5 +76,5 @@ def chat_health():
     from app.config import settings
     return _envelope({
         "configured": bool(settings.ANTHROPIC_API_KEY),
-        "model": "claude-sonnet-4-5",
+        "model": CHAT_MODEL,
     })

@@ -24,9 +24,28 @@ from app.services.chat_tools import TOOL_DEFS, execute_tool
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-5"
+MODEL = "claude-sonnet-4-6"
 MAX_TOOL_ROUNDS = 6
 MAX_TOKENS = 2048
+
+
+def _cached_tools() -> list[dict]:
+    """Return TOOL_DEFS with cache_control on the last tool, so the entire
+    tools array is cached for 5 min. Cuts ~90% of input cost on follow-up turns."""
+    if not TOOL_DEFS:
+        return TOOL_DEFS
+    cached = [dict(t) for t in TOOL_DEFS]
+    cached[-1] = {**cached[-1], "cache_control": {"type": "ephemeral"}}
+    return cached
+
+
+def _cached_system() -> list[dict]:
+    """Wrap SYSTEM_PROMPT in a cacheable text block."""
+    return [{
+        "type": "text",
+        "text": SYSTEM_PROMPT,
+        "cache_control": {"type": "ephemeral"},
+    }]
 
 
 SYSTEM_PROMPT = """You are HiD Assistant — an internal analytics co-pilot for the Hotel Intelligence Dashboard used by the marketing team.
@@ -173,8 +192,8 @@ def run_chat(
             resp = client.messages.create(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
-                system=SYSTEM_PROMPT,
-                tools=TOOL_DEFS,
+                system=_cached_system(),
+                tools=_cached_tools(),
                 messages=messages,
             )
         except Exception as e:

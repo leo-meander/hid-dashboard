@@ -19,7 +19,7 @@ PRESET_TA = [
     "Business", "Digital Nomad", "High Intent", "Generic",
 ]
 
-MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-sonnet-4-6"
 
 
 def build_funnel_analysis(combo) -> dict:
