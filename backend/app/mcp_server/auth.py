@@ -3,8 +3,12 @@ every incoming /mcp request and stashes the matched User in a ContextVar
 so tool handlers can read it.
 
 JWTs are issued by /oauth/token in routers/oauth.py, signed with the same
-JWT_SECRET / HS256 as the rest of the app, but with `aud: "mcp"` so a web
-session token cannot be repurposed against /mcp and vice versa.
+JWT_SECRET / HS256 as the rest of the app. The `aud` claim is the resource
+URL the client requested (RFC 8707) — claude.ai canonicalises the connector
+URL and sends it back. We don't strict-match the value because the mount
+point (/mcp vs /mcp/mcp/) varies; we just require the claim is *present*,
+which cleanly distinguishes OAuth tokens from web session tokens (the
+latter have no `aud`).
 
 The official mcp Python SDK does not yet expose HTTP request headers to
 tool handlers (modelcontextprotocol/python-sdk#750), so ContextVar is the
@@ -25,8 +29,6 @@ from app.models.user import User
 from app.routers.auth import ALGORITHM, SECRET_KEY
 
 logger = logging.getLogger(__name__)
-
-MCP_AUDIENCE = "mcp"
 
 
 _current_user: contextvars.ContextVar[Optional[User]] = contextvars.ContextVar(
@@ -88,8 +90,13 @@ class McpAuthMiddleware:
             payload = jwt.decode(
                 token, SECRET_KEY,
                 algorithms=[ALGORITHM],
-                audience=MCP_AUDIENCE,
-                options={"require": ["exp", "sub", "aud"]},
+                # No strict `audience=` match — the JWT's aud is the
+                # resource URL the client requested (e.g.
+                # https://host/mcp), but the URL the client actually hits
+                # may differ in mount-point segments. We `require` aud is
+                # present (below), which is enough to separate OAuth
+                # tokens from web session tokens (latter have no aud).
+                options={"require": ["exp", "sub", "aud"], "verify_aud": False},
             )
         except jwt.PyJWTError as e:
             logger.info("MCP JWT verify failed: %s", e)

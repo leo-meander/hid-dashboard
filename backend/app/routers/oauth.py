@@ -55,7 +55,6 @@ logger = logging.getLogger(__name__)
 
 AUTH_CODE_TTL_SECONDS = 600         # 10 min
 ACCESS_TOKEN_TTL_SECONDS = 24 * 3600  # 24 hours
-MCP_AUDIENCE = "mcp"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -78,19 +77,36 @@ def _verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
     return False
 
 
-def _issue_access_token(user: User) -> tuple[str, int]:
-    """Return (jwt, expires_in_seconds). aud='mcp' so this token cannot be
-    used to call the web session-protected endpoints, and vice versa."""
+def _issue_access_token(user: User, audience: str) -> tuple[str, int]:
+    """Return (jwt, expires_in_seconds).
+
+    `audience` is the canonical resource URI per RFC 8707 — claude.ai
+    requires that the JWT `aud` claim equals the URL of the MCP server it
+    is using the token against. Web session tokens (issued by /api/auth/login)
+    have no `aud` claim, so the MCP middleware's `require: ["aud"]` check
+    cleanly separates the two token families."""
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user.id),
         "email": user.email,
         "role": user.role,
-        "aud": MCP_AUDIENCE,
+        "aud": audience,
         "iat": now,
         "exp": now + timedelta(seconds=ACCESS_TOKEN_TTL_SECONDS),
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM), ACCESS_TOKEN_TTL_SECONDS
+
+
+def _validate_resource(request: Request, resource: Optional[str]) -> str:
+    """If client supplied a `resource` parameter (RFC 8707), require it to
+    be on our origin and return it. Otherwise default to the canonical MCP
+    URL on our origin (used as the JWT `aud`)."""
+    own_origin = _issuer(request)
+    if resource:
+        if not resource.startswith(own_origin):
+            raise HTTPException(400, f"resource must be on origin {own_origin}")
+        return resource
+    return f"{own_origin}/mcp"
 
 
 def _consent_page(
@@ -184,6 +200,9 @@ def discovery_authz_server(request: Request):
 def discovery_protected_resource(request: Request):
     iss = _issuer(request)
     return JSONResponse({
+        # Use the canonical /mcp URL (no trailing slash, no double-/mcp/) —
+        # claude.ai canonicalizes the connector URL the user typed and sends
+        # this exact value in /authorize and /token `resource` params.
         "resource": f"{iss}/mcp",
         "authorization_servers": [iss],
         "bearer_methods_supported": ["header"],
@@ -242,11 +261,16 @@ def authorize_get(
     code_challenge_method: str = "S256",
     state: Optional[str] = None,
     scope: Optional[str] = None,
+    resource: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     client = _validate_authz_request(
         db, client_id, redirect_uri, response_type, code_challenge_method,
     )
+    # Validate resource if provided (RFC 8707). Errors here surface in the
+    # browser before the user logs in, which is the right place to surface
+    # misconfiguration.
+    _validate_resource(request, resource)
     return HTMLResponse(_consent_page(
         client_name=client.client_name,
         error=None,
@@ -258,6 +282,7 @@ def authorize_get(
             "code_challenge_method": code_challenge_method,
             "state": state,
             "scope": scope,
+            "resource": resource,
         },
     ))
 
@@ -272,6 +297,7 @@ def authorize_post(
     code_challenge_method: str = Form("S256"),
     state: Optional[str] = Form(None),
     scope: Optional[str] = Form(None),
+    resource: Optional[str] = Form(None),
     email: str = Form(...),
     password: str = Form(...),
     decision: str = Form(...),
@@ -280,6 +306,7 @@ def authorize_post(
     client = _validate_authz_request(
         db, client_id, redirect_uri, response_type, code_challenge_method,
     )
+    _validate_resource(request, resource)
 
     if decision != "allow":
         return _redirect_with(redirect_uri, {
@@ -297,7 +324,8 @@ def authorize_post(
             form_fields={
                 "client_id": client_id, "redirect_uri": redirect_uri,
                 "response_type": response_type, "code_challenge": code_challenge,
-                "code_challenge_method": code_challenge_method, "state": state, "scope": scope,
+                "code_challenge_method": code_challenge_method,
+                "state": state, "scope": scope, "resource": resource,
             },
         ), status_code=401)
 
@@ -349,11 +377,13 @@ def _check_pw(plain: str, hashed: str) -> bool:
 
 @router.post("/oauth/token")
 def token(
+    request: Request,
     grant_type: str = Form(...),
     code: str = Form(...),
     redirect_uri: str = Form(...),
     client_id: str = Form(...),
     code_verifier: str = Form(...),
+    resource: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     if grant_type != "authorization_code":
@@ -380,7 +410,13 @@ def token(
     row.used_at = datetime.now(timezone.utc)
     db.commit()
 
-    access_token, expires_in = _issue_access_token(user)
+    # Audience binding (RFC 8707). Use the resource parameter the client
+    # sent (claude.ai always sends one). If absent, fall back to our
+    # canonical URL — this happens for clients that don't implement
+    # Resource Indicators, who then accept whatever aud we issue.
+    audience = _validate_resource(request, resource)
+    access_token, expires_in = _issue_access_token(user, audience)
+    logger.info("OAuth token issued user=%s client=%s aud=%s", user.email, client_id, audience)
     return JSONResponse({
         "access_token": access_token,
         "token_type": "Bearer",
