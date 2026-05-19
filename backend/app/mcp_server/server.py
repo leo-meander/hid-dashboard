@@ -27,25 +27,31 @@ from app.mcp_server.auth import McpAuthMiddleware
 from app.mcp_server.tools import register_tools
 
 
-_mcp = FastMCP(
+mcp_instance = FastMCP(
     name="hid-mcp",
     instructions=(
         "HiD — Hotel Intelligence Dashboard. Tools here return read-only "
         "marketing + operations data for the MEANDER hotel group (5 branches: "
-        "Saigon, Taipei, 1948, Osaka, Oani). Every tool call is scoped by the "
-        "API key the user configured; tools may return empty results when the "
-        "key isn't permitted to see a given branch."
+        "Saigon, Taipei, 1948, Osaka, Oani). Identity is the HiD user who "
+        "completed OAuth via /oauth/authorize; every active HiD user gets "
+        "full access to all tools and all branches."
     ),
     stateless_http=True,
 )
 
-register_tools(_mcp)
+register_tools(mcp_instance)
 
 
 # streamable_http_app() returns a Starlette app — wrap with our auth middleware
 # BEFORE mounting so unauthenticated requests are rejected with 401 without
 # ever reaching the MCP protocol handler.
-_inner_app = _mcp.streamable_http_app()
+#
+# IMPORTANT: the FastMCP session manager needs to be started inside an async
+# context for the streamable HTTP transport to work — otherwise the first
+# request raises "Task group is not initialized. Make sure to use run()."
+# main.py wires `mcp_instance.session_manager.run()` into the FastAPI lifespan
+# so it's active for the lifetime of the process.
+_inner_app = mcp_instance.streamable_http_app()
 
 
 class _MountedApp:
