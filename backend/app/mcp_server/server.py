@@ -22,10 +22,26 @@ file tiny; if it bites users we can configure FastMCP's internal path later.
 from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from app.mcp_server.auth import McpAuthMiddleware
 from app.mcp_server.tools import register_tools
 
+
+# DNS rebinding protection: FastMCP's streamable HTTP transport rejects any
+# Host header outside this allowlist with 421 Misdirected Request. Behind
+# Zeabur the Host arrives as the public hostname, so we add it here. The
+# ":*" suffix wildcards the port (Zeabur terminates TLS at the proxy and
+# forwards on whatever port — we don't want to hardcode 443).
+_TRANSPORT_SECURITY = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=[
+        "localhost:*",
+        "127.0.0.1:*",
+        "meander-hid-dashboard.zeabur.app",
+        "meander-hid-dashboard.zeabur.app:*",
+    ],
+)
 
 mcp_instance = FastMCP(
     name="hid-mcp",
@@ -37,6 +53,7 @@ mcp_instance = FastMCP(
         "full access to all tools and all branches."
     ),
     stateless_http=True,
+    transport_security=_TRANSPORT_SECURITY,
 )
 
 register_tools(mcp_instance)

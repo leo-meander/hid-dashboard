@@ -59,16 +59,24 @@ class McpAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        method = scope.get("method", "?")
+        path = scope.get("path", "?")
         token = self._extract_bearer(scope)
         if not token:
+            logger.info("MCP %s %s — no bearer token", method, path)
             await self._send_401(scope, send, "invalid_request", "Missing Bearer token")
             return
 
         user = self._verify_jwt_and_load_user(token)
         if user is None:
+            logger.info("MCP %s %s — token verify failed", method, path)
             await self._send_401(scope, send, "invalid_token", "Token invalid, expired, or user disabled")
             return
 
+        logger.info("MCP %s %s — auth ok user=%s", method, path, user.email)
+        # DNS-rebinding protection is handled at the FastMCP layer via
+        # TransportSecuritySettings(allowed_hosts=...) configured in
+        # mcp_server/server.py — no scope rewrite needed here.
         ctx_token = _current_user.set(user)
         try:
             await self.app(scope, receive, send)

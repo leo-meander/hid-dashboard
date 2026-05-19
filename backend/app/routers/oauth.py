@@ -225,7 +225,10 @@ class RegisterIn(BaseModel):
 
 
 @router.post("/oauth/register", status_code=201)
-def register_client(body: RegisterIn, db: Session = Depends(get_db)):
+def register_client(body: RegisterIn, request: Request, db: Session = Depends(get_db)):
+    logger.info("OAuth REGISTER from %s: redirect_uris=%s client_name=%s",
+                request.client.host if request.client else "?",
+                body.redirect_uris, body.client_name)
     client_id = "mcp_" + secrets.token_urlsafe(24)
     client = OAuthClient(
         client_id=client_id,
@@ -264,6 +267,8 @@ def authorize_get(
     resource: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
+    logger.info("OAuth AUTHORIZE GET client_id=%s redirect_uri=%s resource=%s scope=%s",
+                client_id, redirect_uri, resource, scope)
     client = _validate_authz_request(
         db, client_id, redirect_uri, response_type, code_challenge_method,
     )
@@ -303,6 +308,8 @@ def authorize_post(
     decision: str = Form(...),
     db: Session = Depends(get_db),
 ):
+    logger.info("OAuth AUTHORIZE POST client_id=%s email=%s decision=%s resource=%s",
+                client_id, email, decision, resource)
     client = _validate_authz_request(
         db, client_id, redirect_uri, response_type, code_challenge_method,
     )
@@ -386,6 +393,8 @@ def token(
     resource: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
+    logger.info("OAuth TOKEN grant=%s client_id=%s redirect_uri=%s resource=%s",
+                grant_type, client_id, redirect_uri, resource)
     if grant_type != "authorization_code":
         raise HTTPException(400, "Only grant_type=authorization_code is supported")
 
