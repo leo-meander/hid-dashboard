@@ -1723,7 +1723,7 @@ def _render_crm(b: dict) -> str:
     """CRM section — revenue only, sourced from CRM-tagged reservations.
 
     Data source: reservations where room_type or rate_plan_name contains
-    'CRM' / "MEANDER'S FRIEND" / 'Travel guide' / 'Grand Open'. Filtered
+    'CRM' / "MEANDER'S FRIEND" / 'Travel guide' / 'Grand Open' / 'Extension Promotion'. Filtered
     on reservation_date (Date Booked) per the team rule. Excludes
     Blogger / House Use / KOL / Special Case / Work Exchange from revenue.
 
@@ -1752,7 +1752,7 @@ def _render_crm(b: dict) -> str:
           <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#374151;">✉️ CRM (last week · {c['window_start']} → {c['window_end']})</p>
           <p style="margin:0;font-size:12px;color:#9ca3af;">
             No CRM-tagged reservations in window. Source: room_type / rate_plan_name
-            containing "CRM" / "MEANDER'S FRIEND" / "Travel guide" / "Grand Open".
+            containing "CRM" / "MEANDER'S FRIEND" / "Travel guide" / "Grand Open" / "Extension Promotion".
           </p>
         </div>"""
 
@@ -1788,7 +1788,7 @@ def _render_crm(b: dict) -> str:
         ✉️ CRM (last week · {c['window_start']} → {c['window_end']})
       </p>
       <p style="margin:0 0 6px;font-size:11px;color:#9ca3af;">
-        Source: CRM-tagged reservations (room_type/rate_plan contains CRM / MEANDER'S FRIEND / Travel guide / Grand Open) by reservation_date (Date Booked).
+        Source: CRM-tagged reservations (room_type/rate_plan contains CRM / MEANDER'S FRIEND / Travel guide / Grand Open / Extension Promotion) by reservation_date (Date Booked).
       </p>
       <p style="margin:0;font-size:12px;color:#374151;">
         Bookings: <strong>{rev_t['bookings']}</strong> ({rev_t['nights']} nights) ·

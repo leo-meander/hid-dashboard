@@ -10,7 +10,7 @@ Data sources (post migration 028):
     yearly-plan feed). Not split per-country — daily grain has no country.
   - KOL:                       Cloudbeds reservations (room_type ILIKE '%KOL_%')
   - CRM:                       Cloudbeds reservations (CRM/MEANDER'S FRIEND/
-                               Travel guide/Grand Open)
+                               Travel guide/Grand Open/Extension Promotion)
 
 Revenue exclusion: Blogger, House Use, Special Case, Work Exchange (non-paying guests)
 """

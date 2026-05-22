@@ -17,12 +17,11 @@ CRM_TAGS = (
     "MEANDER'S FRIEND",
     "Travel guide",
     "Grand Open",
-)
-
-# Tags that only ever appear on rate_plan_name (no room_type packing).
-RATE_PLAN_ONLY_TAGS = (
     "Extension Promotion",
 )
+
+# Reserved for tags confirmed to appear only on rate_plan_name (no room_type packing).
+RATE_PLAN_ONLY_TAGS = ()
 
 
 def crm_reservation_filter():

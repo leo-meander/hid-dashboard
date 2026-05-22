@@ -253,7 +253,7 @@ function CRMRatePlansTab({ rows, cur }) {
   return (
     <div className="space-y-4">
       <p className="text-sm text-gray-500">
-        CRM reservations (CRM / MEANDER&apos;S FRIEND / Travel Guide / Grand Open) broken down by Rate Plan Name,
+        CRM reservations (CRM / MEANDER&apos;S FRIEND / Travel Guide / Grand Open / Extension Promotion) broken down by Rate Plan Name,
         filtered by Date Booked (not Stay Date).
         Excludes cancelled bookings and non-paying sources (Blogger / House Use / Special Case).
       </p>

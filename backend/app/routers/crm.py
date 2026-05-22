@@ -1,6 +1,6 @@
 """
 CRM Dashboard router — Revenue & Booking analytics for CRM room types.
-Queries reservations where room_type contains 'CRM', "MEANDER'S FRIEND", or 'Travel guide'.
+Queries reservations where room_type or rate_plan_name contains 'CRM', "MEANDER'S FRIEND", 'Travel guide', 'Grand Open', or 'Extension Promotion'.
 """
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
