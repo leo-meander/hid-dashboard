@@ -225,6 +225,26 @@ def _adjustment_formula_html(raw_forecast, deduct_pct, other_rev, currency):
     )
 
 
+def _split_subline(room_val, dorm_val, kind: str, currency: str = "") -> str:
+    """Render a 'Room … · Dorm …' breakdown sub-line under a metric cell.
+
+    Used on the per-branch card to split ADR and forecast OCC% into Room
+    vs Dorm (team feedback: weekly report should always show both broken
+    out). Renders nothing unless BOTH values are present, so rooms-only or
+    dorms-only branches — and branches missing split data — don't show a
+    half-empty 'Room — · Dorm —' line.
+
+    kind="money" formats with the branch currency; kind="pct" as a percent.
+    """
+    if room_val is None or dorm_val is None:
+        return ""
+    fmt = (lambda v: _fmt(v, currency)) if kind == "money" else _pct
+    return (
+        f"<span style='font-weight:400;color:#6b7280;font-size:11px;display:block;'>"
+        f"Room {fmt(room_val)} · Dorm {fmt(dorm_val)}</span>"
+    )
+
+
 def _top_countries(db: Session, branch_id, days: int = 90, limit: int = 5):
     # GROUP BY guest_country_code (indexed via idx_reservations_country_code)
     # — the previous GROUP BY on raw guest_country plus a LOWER(...) LIKE
@@ -533,6 +553,11 @@ def _build_report(db: Session):
         # Predicted/forecast OCC from KPI targets
         predicted_occ_current = kpi.get("predicted_occ_pct")
         predicted_occ_next = nxt.get("predicted_occ_next")
+        # Room/Dorm forecast-OCC split (from KPITarget.predicted_room/dorm_occ_pct)
+        predicted_room_occ_current = kpi.get("predicted_room_occ_pct")
+        predicted_dorm_occ_current = kpi.get("predicted_dorm_occ_pct")
+        predicted_room_occ_next = nxt.get("predicted_room_occ_next")
+        predicted_dorm_occ_next = nxt.get("predicted_dorm_occ_next")
 
         # Gov visitor forecast for recommendations
         dest = _resolve_branch_dest(b.name)
@@ -579,8 +604,12 @@ def _build_report(db: Session):
             "target_revenue": kpi["target_revenue_native"],
             "achievement_pct": round(kpi["achievement_pct"] * 100, 1) if kpi["achievement_pct"] else None,
             "avg_adr": kpi["avg_adr_native"],
+            "room_adr": kpi.get("room_adr_native"),
+            "dorm_adr": kpi.get("dorm_adr_native"),
             "avg_occ_pct": round(actual_occ * 100, 1) if actual_occ else None,
             "predicted_occ_pct": round(predicted_occ_current * 100, 1) if predicted_occ_current else None,
+            "predicted_room_occ_pct": round(predicted_room_occ_current * 100, 1) if predicted_room_occ_current else None,
+            "predicted_dorm_occ_pct": round(predicted_dorm_occ_current * 100, 1) if predicted_dorm_occ_current else None,
             "days_elapsed": kpi["days_elapsed"],
             "total_days": kpi["total_days"],
             "occ_forecast": kpi["occ_forecast_native"],
@@ -610,9 +639,13 @@ def _build_report(db: Session):
                 if (adjusted_nxt is not None and nxt["next_month_target_native"]) else None
             ),
             "next_adr": nxt["next_month_adr"],
+            "next_room_adr": nxt.get("next_month_room_adr"),
+            "next_dorm_adr": nxt.get("next_month_dorm_adr"),
             "next_booked_nights": nxt["next_month_booked_nights"],
             "next_booked_revenue": nxt.get("next_month_booked_revenue"),
             "predicted_occ_next": round(predicted_occ_next * 100, 1) if predicted_occ_next else None,
+            "predicted_room_occ_next": round(predicted_room_occ_next * 100, 1) if predicted_room_occ_next else None,
+            "predicted_dorm_occ_next": round(predicted_dorm_occ_next * 100, 1) if predicted_dorm_occ_next else None,
             # Country intel
             "top_countries": top,
             "growth_countries": growth,
@@ -2040,8 +2073,14 @@ def _build_html(report: list, today: date) -> str:
             </tr>
             <tr style="border-top:1px solid #f3f4f6;">
               <td style="padding:8px 12px;color:#374151;">ADR</td>
-              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;"{_cell_attrs(bid, 'branch.adr')}>{_fmt(b['avg_adr'], cur)}</td>
-              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;"{_cell_attrs(bid, 'branch.next_adr')}>{_fmt(b['next_adr'], cur)}</td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;"{_cell_attrs(bid, 'branch.adr')}>
+                {_fmt(b['avg_adr'], cur)}
+                {_split_subline(b.get('room_adr'), b.get('dorm_adr'), 'money', cur)}
+              </td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#111827;"{_cell_attrs(bid, 'branch.next_adr')}>
+                {_fmt(b['next_adr'], cur)}
+                {_split_subline(b.get('next_room_adr'), b.get('next_dorm_adr'), 'money', cur)}
+              </td>
             </tr>
             <tr style="border-top:1px solid #f3f4f6;background:#f9fafb;">
               <td style="padding:8px 12px;color:#374151;">OCC% (actual)</td>
@@ -2050,8 +2089,14 @@ def _build_html(report: list, today: date) -> str:
             </tr>
             <tr style="border-top:1px solid #f3f4f6;">
               <td style="padding:8px 12px;color:#374151;">OCC% (forecast)</td>
-              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#4f46e5;"{_cell_attrs(bid, 'branch.occ_forecast')}>{_pct(b['predicted_occ_pct'])}</td>
-              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#059669;"{_cell_attrs(bid, 'branch.next_occ_forecast')}>{_pct(b['predicted_occ_next'])}</td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#4f46e5;"{_cell_attrs(bid, 'branch.occ_forecast')}>
+                {_pct(b['predicted_occ_pct'])}
+                {_split_subline(b.get('predicted_room_occ_pct'), b.get('predicted_dorm_occ_pct'), 'pct')}
+              </td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;color:#059669;"{_cell_attrs(bid, 'branch.next_occ_forecast')}>
+                {_pct(b['predicted_occ_next'])}
+                {_split_subline(b.get('predicted_room_occ_next'), b.get('predicted_dorm_occ_next'), 'pct')}
+              </td>
             </tr>
             <tr style="border-top:1px solid #f3f4f6;">
               <td style="padding:8px 12px;color:#374151;font-weight:600;">Forecast (Adjusted)</td>
