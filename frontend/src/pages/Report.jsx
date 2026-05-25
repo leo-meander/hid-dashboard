@@ -869,8 +869,13 @@ function GeneralNotesCard({ branchId, branchName, allComments, onOpen }) {
 // (switching branches + scrolling into view) and opens the standard
 // CommentDrawer. Mirrors the Google Sheets "Comments" UX.
 
-function AllCommentsPanel({ allComments, branches, onClose, onJump, weekStart }) {
+function AllCommentsPanel({ allComments, branches, selectedBranch, onClose, onJump, weekStart }) {
   const [filter, setFilter] = useState("open"); // open / action / resolved / all
+  // Branch segmentation. Defaults to the branch tab the panel was opened
+  // from, so "open All comments while viewing Saigon" lists only Saigon's
+  // threads. "all" = every branch + the cross-branch summary threads
+  // (branch_id null, e.g. the All-Branches general notes / group totals).
+  const [branchScope, setBranchScope] = useState(selectedBranch || "all");
 
   // Group by (branch_id, metric_key). Newest thread (most recent comment) first.
   const threads = useMemo(() => {
@@ -899,11 +904,15 @@ function AllCommentsPanel({ allComments, branches, onClose, onJump, weekStart })
   }, [allComments]);
 
   const filtered = useMemo(() => threads.filter(t => {
+    // Branch segment first: "all" keeps everything, otherwise the thread's
+    // branch must match the active scope (null-branch threads only show
+    // under "all").
+    if (branchScope !== "all" && (t.branchId || null) !== branchScope) return false;
     if (filter === "all") return true;
     if (filter === "resolved") return t.openCount === 0;
     if (filter === "action") return t.hasAction;
     return t.openCount > 0; // "open"
-  }), [threads, filter]);
+  }), [threads, filter, branchScope]);
 
   const branchName = (bid) => {
     if (!bid) return "All Branches";
@@ -922,10 +931,35 @@ function AllCommentsPanel({ allComments, branches, onClose, onJump, weekStart })
               Week of {fmtWeekLabel(weekStart)}
             </h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              {threads.length} thread{threads.length === 1 ? "" : "s"} · click to jump to the metric
+              {filtered.length} thread{filtered.length === 1 ? "" : "s"}
+              {branchScope !== "all" && ` · ${branchName(branchScope)}`} · click to jump to the metric
             </p>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-2xl leading-none ml-3" aria-label="Close">&times;</button>
+        </div>
+
+        {/* Branch segment bar — mirrors the main branch tabs so the panel
+            can be scoped to a single branch. */}
+        <div className="px-5 py-2 border-b border-gray-100 flex flex-wrap gap-1.5 text-xs">
+          <button
+            onClick={() => setBranchScope("all")}
+            className={`px-2.5 py-1 rounded-md font-medium ${
+              branchScope === "all" ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+            }`}
+          >
+            All branches
+          </button>
+          {branches.map(b => (
+            <button
+              key={b.id}
+              onClick={() => setBranchScope(b.id)}
+              className={`px-2.5 py-1 rounded-md font-medium ${
+                branchScope === b.id ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              {b.name}
+            </button>
+          ))}
         </div>
 
         {/* Filter bar */}
@@ -968,9 +1002,16 @@ function AllCommentsPanel({ allComments, branches, onClose, onJump, weekStart })
                       <p className="text-[11px] text-gray-500 truncate">
                         {branchName(t.branchId)}
                       </p>
-                      <p className="text-sm font-semibold text-gray-800 truncate">
-                        {t.metricLabel}
-                      </p>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <p className="text-sm font-semibold text-gray-800 truncate">
+                          {t.metricLabel}
+                        </p>
+                        {t.metricKey === GENERAL_KEY && (
+                          <span className="flex-shrink-0 text-[9px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide">
+                            General
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="flex flex-col items-end gap-1 text-[10px]">
                       {t.hasAction && (
@@ -1421,6 +1462,7 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
         <AllCommentsPanel
           allComments={allComments}
           branches={parsed.branches}
+          selectedBranch={selectedBranch}
           weekStart={activeWeekStart}
           onClose={() => setAllCommentsOpen(false)}
           onJump={jumpToThread}
