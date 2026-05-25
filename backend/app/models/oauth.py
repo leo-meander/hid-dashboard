@@ -4,9 +4,15 @@ OAuthClient — one row per registered MCP client (claude.ai registers itself
 via Dynamic Client Registration on first connect).
 
 OAuthAuthCode — short-lived (10 min) single-use authorization codes that
-hold the PKCE challenge between /oauth/authorize and /oauth/token. Refresh
-tokens are intentionally skipped in v1: claude.ai will just redo the OAuth
-dance silently when access tokens expire (24h)."""
+hold the PKCE challenge between /oauth/authorize and /oauth/token.
+
+OAuthRefreshToken — long-lived (30 day) rotating refresh tokens. The access
+JWT lives only 24h; without a refresh token claude.ai cannot silently renew
+it (the /oauth/authorize step is an interactive email+password form), so the
+connection would drop and force a manual re-login every day. Refresh tokens
+let claude.ai renew in the background via grant_type=refresh_token. We store
+only the SHA-256 hash of the token (never the plaintext), and rotate on every
+use — each refresh marks the old row revoked and issues a fresh one."""
 from __future__ import annotations
 
 import uuid
@@ -43,4 +49,24 @@ class OAuthAuthCode(Base):
     scope = Column(Text, nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class OAuthRefreshToken(Base):
+    __tablename__ = "oauth_refresh_tokens"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # SHA-256 hex of the opaque refresh token. We never store the plaintext —
+    # /oauth/token looks the token up by hashing the presented value.
+    token_hash = Column(String(64), nullable=False, unique=True)
+    client_id = Column(String(64), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # The RFC 8707 resource URI this token's access JWTs are bound to (`aud`),
+    # captured at issue time so refresh re-issues with the same audience.
+    audience = Column(Text, nullable=False)
+    scope = Column(Text, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    # Set when this token is rotated away (used) or explicitly revoked. A
+    # non-null value means the token is no longer accepted.
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

@@ -20,12 +20,22 @@ Flow
      auth code, redirect browser to the registered redirect_uri?code=…&state=…
 4. claude.ai → POST /oauth/token  (authorization_code grant)
    ↳ we verify PKCE (SHA256(verifier) == challenge), mark code used,
-     return a 24h JWT
+     return a 24h access JWT + a 30-day refresh token
 5. claude.ai → GET /mcp/mcp/ with Authorization: Bearer <jwt>
    ↳ McpAuthMiddleware (in app/mcp_server/auth.py) decodes, loads User
+6. When the access JWT expires, claude.ai → POST /oauth/token
+   (refresh_token grant)
+   ↳ we verify the refresh token, rotate it, return a new access JWT +
+     a new refresh token — no user interaction
 
-Refresh tokens are intentionally skipped for v1 — claude.ai re-runs steps
-3-4 silently when the access token expires.
+Why refresh tokens (added after v1)
+-----------------------------------
+v1 issued only a 24h access JWT, assuming claude.ai would silently redo
+steps 3-4 when it expired. That was wrong: step 3 (/oauth/authorize) is an
+interactive email+password consent page, so claude.ai cannot renew silently.
+The connector dropped every ~24h with "Connection has expired" and forced a
+manual re-login. Rotating refresh tokens (step 6) fix that — claude.ai renews
+in the background and the connection stays live for the 30-day refresh window.
 """
 from __future__ import annotations
 
@@ -45,7 +55,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.oauth import OAuthAuthCode, OAuthClient
+from app.models.oauth import OAuthAuthCode, OAuthClient, OAuthRefreshToken
 from app.models.user import User
 from app.routers.auth import ALGORITHM, SECRET_KEY
 
@@ -53,8 +63,9 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-AUTH_CODE_TTL_SECONDS = 600         # 10 min
-ACCESS_TOKEN_TTL_SECONDS = 24 * 3600  # 24 hours
+AUTH_CODE_TTL_SECONDS = 600              # 10 min
+ACCESS_TOKEN_TTL_SECONDS = 24 * 3600     # 24 hours
+REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 3600  # 30 days
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -95,6 +106,37 @@ def _issue_access_token(user: User, audience: str) -> tuple[str, int]:
         "exp": now + timedelta(seconds=ACCESS_TOKEN_TTL_SECONDS),
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM), ACCESS_TOKEN_TTL_SECONDS
+
+
+def _hash_refresh_token(raw: str) -> str:
+    """SHA-256 hex — what we persist. The plaintext only ever leaves in the
+    token response; the DB stores this so a DB leak can't be replayed."""
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _issue_refresh_token(
+    db: Session, *, user: User, client_id: str, audience: str, scope: Optional[str]
+) -> str:
+    """Mint an opaque refresh token, store its hash, return the plaintext."""
+    raw = secrets.token_urlsafe(40)
+    db.add(OAuthRefreshToken(
+        token_hash=_hash_refresh_token(raw),
+        client_id=client_id,
+        user_id=user.id,
+        audience=audience,
+        scope=scope,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS),
+    ))
+    return raw
+
+
+def _token_error(error: str, description: str, status_code: int = 400) -> JSONResponse:
+    """RFC 6749 §5.2 error body. The token endpoint must return this shape
+    (not FastAPI's {"detail": ...}) so MCP clients can tell, e.g., a one-off
+    invalid_grant (re-auth) apart from a hard failure."""
+    return JSONResponse(
+        {"error": error, "error_description": description}, status_code=status_code
+    )
 
 
 def _validate_resource(request: Request, resource: Optional[str]) -> str:
@@ -189,7 +231,7 @@ def discovery_authz_server(request: Request):
         "token_endpoint": f"{iss}/oauth/token",
         "registration_endpoint": f"{iss}/oauth/register",
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256", "plain"],
         "token_endpoint_auth_methods_supported": ["none"],
         "scopes_supported": ["mcp"],
@@ -386,38 +428,60 @@ def _check_pw(plain: str, hashed: str) -> bool:
 def token(
     request: Request,
     grant_type: str = Form(...),
-    code: str = Form(...),
-    redirect_uri: str = Form(...),
     client_id: str = Form(...),
-    code_verifier: str = Form(...),
+    # authorization_code grant fields
+    code: Optional[str] = Form(None),
+    redirect_uri: Optional[str] = Form(None),
+    code_verifier: Optional[str] = Form(None),
+    # refresh_token grant field
+    refresh_token: Optional[str] = Form(None),
     resource: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     logger.info("OAuth TOKEN grant=%s client_id=%s redirect_uri=%s resource=%s",
                 grant_type, client_id, redirect_uri, resource)
-    if grant_type != "authorization_code":
-        raise HTTPException(400, "Only grant_type=authorization_code is supported")
+    if grant_type == "authorization_code":
+        return _grant_authorization_code(
+            request, db, client_id=client_id, code=code,
+            redirect_uri=redirect_uri, code_verifier=code_verifier, resource=resource,
+        )
+    if grant_type == "refresh_token":
+        return _grant_refresh_token(db, client_id=client_id, refresh_token=refresh_token)
+    return _token_error(
+        "unsupported_grant_type",
+        "Only authorization_code and refresh_token are supported",
+    )
+
+
+def _grant_authorization_code(
+    request: Request, db: Session, *, client_id: str, code: Optional[str],
+    redirect_uri: Optional[str], code_verifier: Optional[str], resource: Optional[str],
+) -> JSONResponse:
+    if not code or not redirect_uri or not code_verifier:
+        return _token_error(
+            "invalid_request",
+            "code, redirect_uri and code_verifier are required for authorization_code",
+        )
 
     row = db.query(OAuthAuthCode).filter_by(code=code).first()
     if row is None:
-        raise HTTPException(400, "Invalid or unknown code")
+        return _token_error("invalid_grant", "Invalid or unknown code")
     if row.used_at is not None:
-        raise HTTPException(400, "Code already used")
+        return _token_error("invalid_grant", "Code already used")
     if row.expires_at < datetime.now(timezone.utc):
-        raise HTTPException(400, "Code expired")
+        return _token_error("invalid_grant", "Code expired")
     if row.client_id != client_id:
-        raise HTTPException(400, "client_id mismatch")
+        return _token_error("invalid_grant", "client_id mismatch")
     if row.redirect_uri != redirect_uri:
-        raise HTTPException(400, "redirect_uri mismatch")
+        return _token_error("invalid_grant", "redirect_uri mismatch")
     if not _verify_pkce(code_verifier, row.code_challenge, row.code_challenge_method):
-        raise HTTPException(400, "PKCE verification failed")
+        return _token_error("invalid_grant", "PKCE verification failed")
 
     user = db.query(User).filter_by(id=row.user_id, is_active=True).first()
     if not user:
-        raise HTTPException(400, "User no longer active")
+        return _token_error("invalid_grant", "User no longer active")
 
     row.used_at = datetime.now(timezone.utc)
-    db.commit()
 
     # Audience binding (RFC 8707). Use the resource parameter the client
     # sent (claude.ai always sends one). If absent, fall back to our
@@ -425,10 +489,60 @@ def token(
     # Resource Indicators, who then accept whatever aud we issue.
     audience = _validate_resource(request, resource)
     access_token, expires_in = _issue_access_token(user, audience)
-    logger.info("OAuth token issued user=%s client=%s aud=%s", user.email, client_id, audience)
+    refresh = _issue_refresh_token(
+        db, user=user, client_id=client_id, audience=audience, scope=row.scope,
+    )
+    db.commit()
+    logger.info("OAuth token issued (auth_code) user=%s client=%s aud=%s", user.email, client_id, audience)
     return JSONResponse({
         "access_token": access_token,
         "token_type": "Bearer",
         "expires_in": expires_in,
+        "refresh_token": refresh,
+        "scope": row.scope or "mcp",
+    })
+
+
+def _grant_refresh_token(
+    db: Session, *, client_id: str, refresh_token: Optional[str],
+) -> JSONResponse:
+    """Rotating refresh (RFC 6749 §6 + OAuth 2.1 §4.3.1). Verify the presented
+    token, revoke it, and issue a fresh access JWT + a fresh refresh token. A
+    presented token that is missing/expired/already-rotated yields
+    invalid_grant, which tells claude.ai to fall back to the full login flow."""
+    if not refresh_token:
+        return _token_error("invalid_request", "refresh_token is required")
+
+    row = db.query(OAuthRefreshToken).filter_by(
+        token_hash=_hash_refresh_token(refresh_token)
+    ).first()
+    if row is None:
+        return _token_error("invalid_grant", "Unknown refresh token")
+    if row.revoked_at is not None:
+        # Already rotated away (or revoked). claude.ai should be holding the
+        # successor token; an old one here means a stale/duplicate request.
+        return _token_error("invalid_grant", "Refresh token no longer valid")
+    if row.expires_at < datetime.now(timezone.utc):
+        return _token_error("invalid_grant", "Refresh token expired")
+    if row.client_id != client_id:
+        return _token_error("invalid_grant", "client_id mismatch")
+
+    user = db.query(User).filter_by(id=row.user_id, is_active=True).first()
+    if not user:
+        return _token_error("invalid_grant", "User no longer active")
+
+    # Rotate: this token is single-use. Mark it revoked and mint a successor.
+    row.revoked_at = datetime.now(timezone.utc)
+    access_token, expires_in = _issue_access_token(user, row.audience)
+    new_refresh = _issue_refresh_token(
+        db, user=user, client_id=client_id, audience=row.audience, scope=row.scope,
+    )
+    db.commit()
+    logger.info("OAuth token issued (refresh) user=%s client=%s aud=%s", user.email, client_id, row.audience)
+    return JSONResponse({
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": expires_in,
+        "refresh_token": new_refresh,
         "scope": row.scope or "mcp",
     })
