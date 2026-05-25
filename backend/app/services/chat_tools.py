@@ -105,6 +105,38 @@ TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "get_source_by_country",
+        "description": (
+            "Bookings + revenue broken down by source AND country together — the "
+            "source × country cross-tab. Each row is one (source, country) pair with "
+            "current-period bookings, revenue, prior-period bookings, and growth "
+            "(delta + %). Use when the user wants both dimensions at once: 'which "
+            "country grew Website/Booking Engine bookings last week', 'which markets "
+            "drove Agoda', 'Direct bookings by country', 'where did OTA growth come "
+            "from'. Filter with `source` (substring match on raw source name, e.g. "
+            "'website', 'booking engine', 'agoda', 'booking.com') and/or "
+            "`source_category` ('OTA' | 'Direct' | 'Local travel agency'); pass "
+            "`country` to pin one market. Defaults to date_basis='reservation' "
+            "(when booked) over the last 7 days, with growth vs the prior 7 days. "
+            "For top markets WITHOUT a source split use get_country_breakdown; for "
+            "channel mix WITHOUT a country split use get_ota_mix."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch_id": {"type": "string", "description": "UUID of branch, or 'all'. Defaults to current."},
+                "source": {"type": "string", "description": "Case-insensitive substring match on raw source name (e.g. 'website', 'agoda'). Omit for all sources."},
+                "source_category": {"type": "string", "enum": ["OTA", "Direct", "Local travel agency"], "description": "Exact source_category filter. Omit for all."},
+                "country": {"type": "string", "description": "Pin to one guest country (case-insensitive). Omit for all."},
+                "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD. If set, overrides `days`."},
+                "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD."},
+                "days": {"type": "integer", "description": "Window size in days when date_from/date_to omitted, default 7."},
+                "date_basis": {"type": "string", "enum": ["reservation", "checkin"], "description": "Filter by reservation_date (when booked, default) or check_in_date (when staying)."},
+                "limit": {"type": "integer", "description": "Max (source, country) rows, default 15."},
+            },
+        },
+    },
+    {
         "name": "get_alerts",
         "description": (
             "Active alerts — anomalies/issues the system flagged today (drops in "
@@ -229,6 +261,31 @@ def _b_filter_clause(branch_id: Optional[str], col_alias: str = "r") -> tuple[st
     if branch_id:
         return f"AND {col_alias}.branch_id = :bid", {"bid": branch_id}
     return "", {}
+
+
+def _resolve_compare_windows(
+    inp: dict, today: date, default_days: int = 7
+) -> tuple[date, date, date, date]:
+    """Resolve a current window and the equal-length window immediately before it.
+
+    If date_from/date_to are given they define the current window (inclusive);
+    otherwise the current window is the last `days` ending today. The previous
+    window is the same number of days ending the day before the current window
+    starts. Returns (d_from, d_to, prev_from, prev_to)."""
+    if inp.get("date_from") or inp.get("date_to"):
+        d_to = _parse_date(inp.get("date_to"), today)
+        d_from = _parse_date(inp.get("date_from"), d_to - timedelta(days=default_days - 1))
+    else:
+        days = int(inp.get("days") or default_days)
+        days = max(days, 1)
+        d_to = today
+        d_from = today - timedelta(days=days - 1)
+    if d_from > d_to:
+        d_from, d_to = d_to, d_from
+    window_len = (d_to - d_from).days + 1
+    prev_to = d_from - timedelta(days=1)
+    prev_from = prev_to - timedelta(days=window_len - 1)
+    return d_from, d_to, prev_from, prev_to
 
 
 # ── Tool implementations ─────────────────────────────────────────────────────
@@ -478,6 +535,103 @@ def tool_get_country_breakdown(db: Session, inp: dict, default_branch: Optional[
             "growth_pct": growth,
         })
     return {"window_days": days, "countries": out}
+
+
+def tool_get_source_by_country(db: Session, inp: dict, default_branch: Optional[str]) -> dict:
+    """Source × country cross-tab with prior-period growth. Each row is one
+    (source, country) pair. Defaults to reservation_date (when booked) over the
+    last 7 days vs the prior 7 days. Excludes cancellations/no-shows only — the
+    point is to see every booking source, so no source is dropped."""
+    branch_id = _resolve_branch_id(inp.get("branch_id"), default_branch)
+    limit = int(inp.get("limit") or 15)
+    date_basis = (inp.get("date_basis") or "reservation").lower()
+    date_col = "r.check_in_date" if date_basis == "checkin" else "r.reservation_date"
+
+    d_from, d_to, prev_from, prev_to = _resolve_compare_windows(inp, date.today(), default_days=7)
+
+    bf, params = _b_filter_clause(branch_id, "r")
+    params.update({"df": d_from, "dt": d_to, "pf": prev_from, "pt": prev_to, "limit": limit})
+
+    # Optional filters — built once and reused in both window CTEs.
+    filters = ""
+    if inp.get("source"):
+        filters += " AND lower(r.source) LIKE :src"
+        params["src"] = f"%{str(inp['source']).lower().strip()}%"
+    if inp.get("source_category"):
+        filters += " AND lower(r.source_category) = lower(:cat)"
+        params["cat"] = str(inp["source_category"]).strip()
+    if inp.get("country"):
+        filters += " AND lower(r.guest_country) = lower(:country)"
+        params["country"] = str(inp["country"]).strip()
+
+    country_valid = (
+        "r.guest_country IS NOT NULL AND r.guest_country != '' "
+        "AND r.guest_country != '0' AND length(r.guest_country) > 1"
+    )
+    status_ok = "r.status NOT IN ('canceled','cancelled','no_show','no-show','cancelled_by_guest')"
+
+    rows = db.execute(text(f"""
+        WITH recent AS (
+            SELECT COALESCE(r.source, 'Unknown') AS source,
+                   COALESCE(r.source_category, 'OTA') AS source_category,
+                   r.guest_country, r.guest_country_code,
+                   COUNT(*) AS cnt,
+                   COALESCE(SUM(r.grand_total_vnd), 0) AS rev_vnd
+            FROM reservations r
+            WHERE {country_valid} AND {status_ok}
+              AND {date_col} BETWEEN :df AND :dt
+              {bf}{filters}
+            GROUP BY r.source, r.source_category, r.guest_country, r.guest_country_code
+        ),
+        prev AS (
+            SELECT COALESCE(r.source, 'Unknown') AS source,
+                   r.guest_country, COUNT(*) AS cnt
+            FROM reservations r
+            WHERE {country_valid} AND {status_ok}
+              AND {date_col} BETWEEN :pf AND :pt
+              {bf}{filters}
+            GROUP BY r.source, r.guest_country
+        )
+        SELECT recent.source, recent.source_category, recent.guest_country,
+               recent.guest_country_code, recent.cnt, recent.rev_vnd,
+               COALESCE(prev.cnt, 0) AS prev_cnt
+        FROM recent
+        LEFT JOIN prev
+               ON prev.source = recent.source
+              AND prev.guest_country = recent.guest_country
+        ORDER BY recent.cnt DESC
+        LIMIT :limit
+    """), params).fetchall()
+
+    out = []
+    for r in rows:
+        cur, prv = int(r[4]), int(r[6] or 0)
+        growth = None if prv == 0 else round((cur - prv) / prv * 100, 2)
+        out.append({
+            "source": r[0],
+            "source_category": r[1],
+            "country": r[2],
+            "country_code": r[3],
+            "bookings": cur,
+            "revenue_vnd": float(r[5] or 0),
+            "prev_period_bookings": prv,
+            "delta_bookings": cur - prv,
+            "growth_pct": growth,
+        })
+
+    return {
+        "date_basis": "check_in_date" if date_basis == "checkin" else "reservation_date",
+        "current_period": {"date_from": d_from.isoformat(), "date_to": d_to.isoformat()},
+        "prior_period": {"date_from": prev_from.isoformat(), "date_to": prev_to.isoformat()},
+        "filters": {
+            "source": inp.get("source"),
+            "source_category": inp.get("source_category"),
+            "country": inp.get("country"),
+        },
+        "exclusions": "cancelled/no-show only",
+        "note": "growth_pct is null when the country had no bookings for this source in the prior period (new market).",
+        "rows": out,
+    }
 
 
 def tool_get_alerts(db: Session, inp: dict, default_branch: Optional[str]) -> dict:
@@ -825,6 +979,7 @@ TOOL_HANDLERS = {
     "get_kpi_status": tool_get_kpi_status,
     "get_ota_mix": tool_get_ota_mix,
     "get_country_breakdown": tool_get_country_breakdown,
+    "get_source_by_country": tool_get_source_by_country,
     "get_alerts": tool_get_alerts,
     "get_upcoming_holidays": tool_get_upcoming_holidays,
     "get_ads_performance": tool_get_ads_performance,

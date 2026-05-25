@@ -136,6 +136,42 @@ def register_tools(mcp: FastMCP) -> None:
         })
 
     @mcp.tool()
+    def get_source_by_country(
+        branch_id: Optional[str] = None,
+        source: Optional[str] = None,
+        source_category: Optional[str] = None,
+        country: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        days: int = 7,
+        date_basis: str = "reservation",
+        limit: int = 15,
+    ) -> dict:
+        """Bookings + revenue broken down by source AND country together — the
+        source × country cross-tab. Each row is one (source, country) pair with
+        current-period bookings, revenue, prior-period bookings, and growth
+        (delta + %).
+
+        Use when the user wants both dimensions at once: 'which country grew
+        Website/Booking Engine bookings last week', 'which markets drove Agoda',
+        'Direct bookings by country', 'where did OTA growth come from'. Filter
+        with `source` (substring match on raw source name, e.g. 'website',
+        'booking engine', 'agoda', 'booking.com') and/or `source_category`
+        ('OTA' | 'Direct' | 'Local travel agency'); pass `country` to pin one
+        market. date_basis='reservation' (when booked, default) or 'checkin'.
+        Defaults to the last 7 days vs the prior 7 days. growth_pct is null for
+        a market that was new this period (no prior-period bookings).
+
+        For top markets WITHOUT a source split use get_country_breakdown; for
+        channel mix WITHOUT a country split use get_ota_mix."""
+        return _run("get_source_by_country", {
+            "branch_id": branch_id, "source": source,
+            "source_category": source_category, "country": country,
+            "date_from": date_from, "date_to": date_to, "days": days,
+            "date_basis": date_basis, "limit": limit,
+        })
+
+    @mcp.tool()
     def get_alerts(
         branch_id: Optional[str] = None,
         severity: str = "all",
