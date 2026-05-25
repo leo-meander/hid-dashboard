@@ -30,7 +30,7 @@ from app.models.holiday_intel import HolidayCalendar
 from app.models.kol import KOLRecord
 from app.models.kpi import KPITarget
 from app.models.reservation import Reservation
-from app.services.crm_filters import crm_reservation_filter
+from app.services.crm_filters import crm_rate_plan_label_expr, crm_reservation_filter
 from app.services.kpi_engine import _EXCLUDED_SOURCES, _EXCLUDED_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -1471,19 +1471,20 @@ def _crm_revenue(db: Session, branch_id: UUID, d_from: date, d_to: date) -> dict
 def _crm_revenue_by_rate_plan(
     db: Session, branch_id: UUID, d_from: date, d_to: date,
 ) -> list[dict]:
-    """Per-rate-plan breakdown of CRM bookings/revenue in window.
+    """Per-rate-plan breakdown of CRM bookings/revenue/ADR in window.
 
-    Groups by (rate_plan_name, room_type) so reservations with NULL
-    rate_plan_name (CRM signal lives on room_type instead) still get
-    bucketed correctly. The renderer prefers rate_plan_name for the
-    label, falling back to room_type.
+    Groups by the shared crm_rate_plan_label_expr() — the same rate-plan
+    grouping the Marketing Activity → CRM Reservations tab uses — so this
+    table mirrors that page (one row per rate plan, not per room_type ×
+    rate_plan combo). Reservations whose CRM tag lives in the room_type
+    parentheses still collapse under their campaign tag.
 
-    Sorted by revenue desc — usually 1-3 rows per branch per week
-    because each branch has only a handful of CRM rate plans.
+    Sorted by revenue desc. Excludes the same non-paying sources as the
+    aggregate _crm_revenue() so the rows sum back to the summary line.
     """
+    rate_plan_expr = crm_rate_plan_label_expr()
     rows = db.query(
-        Reservation.rate_plan_name,
-        Reservation.room_type,
+        rate_plan_expr,
         func.count(Reservation.id),
         func.coalesce(func.sum(Reservation.nights), 0),
         func.coalesce(func.sum(Reservation.grand_total_native), 0),
@@ -1494,22 +1495,20 @@ def _crm_revenue_by_rate_plan(
         Reservation.reservation_date <= d_to,
         ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
         ~func.lower(func.coalesce(Reservation.source, "")).in_(list(_NON_PAYING_SOURCES)),
-    ).group_by(
-        Reservation.rate_plan_name,
-        Reservation.room_type,
-    ).all()
+    ).group_by("rate_plan").all()
 
     out = []
     for r in rows:
         rate_plan = r[0]
-        room_type = r[1]
+        nights = int(r[2] or 0)
+        revenue = round(float(r[3] or 0), 2)
         out.append({
             "rate_plan_name": rate_plan,
-            "room_type": room_type,
-            "label": rate_plan or room_type or "—",
-            "bookings": int(r[2] or 0),
-            "nights": int(r[3] or 0),
-            "revenue": round(float(r[4] or 0), 2),
+            "label": rate_plan or "—",
+            "bookings": int(r[1] or 0),
+            "nights": nights,
+            "revenue": revenue,
+            "adr": round(revenue / nights, 2) if nights > 0 else 0,
         })
     out.sort(key=lambda x: -x["revenue"])
     return out

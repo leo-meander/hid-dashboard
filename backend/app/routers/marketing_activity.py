@@ -22,7 +22,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, literal_column
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, get_db
@@ -32,7 +32,7 @@ from app.models.branch import Branch
 from app.models.reservation import Reservation
 from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
 from app.services.ads_platform import branch_slug_for, get_client as _get_ads_client
-from app.services.crm_filters import crm_reservation_filter
+from app.services.crm_filters import crm_rate_plan_label_expr, crm_reservation_filter
 from app.services.kol_engine import fetch_kol_revenue, resolve_hotel_id_from_branch_name
 from app.config import settings
 
@@ -406,22 +406,9 @@ def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date
     """CRM reservations grouped by rate plan tag (extracted from room_type when rate_plan_name blank)."""
     rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
 
-    # Cloudbeds packs the rate plan name inside the roomTypeName parentheses,
-    # e.g. 'Female Dorm* (CRM_May 2026 Event)'. When rate_plan_name is null we
-    # extract just the parenthesised tag so each CRM event gets its own row
-    # instead of collapsing into one row per base room type.
-    # Fallback order: rate_plan_name → substring inside first (…) in room_type
-    #                 → full room_type → '(unknown)'.
-    # PostgreSQL-specific: SUBSTRING(col FROM 'pattern') returns the first
-    # capture group or NULL. Wrap in literal_column because SQLAlchemy's
-    # func.substring emits the positional (int) form instead of the FROM form.
-    crm_tag = literal_column(r"substring(reservations.room_type from E'\\(([^)]+)\\)')")
-    rate_plan_expr = func.coalesce(
-        func.nullif(func.trim(Reservation.rate_plan_name), ""),
-        func.nullif(func.trim(crm_tag), ""),
-        func.nullif(func.trim(Reservation.room_type), ""),
-        "(unknown)",
-    ).label("rate_plan")
+    # Group by rate plan tag via the shared crm_filters expression (kept in
+    # one place so the Weekly Report and this page never drift).
+    rate_plan_expr = crm_rate_plan_label_expr()
 
     q = db.query(
         rate_plan_expr,

@@ -1789,28 +1789,46 @@ def _render_crm(b: dict) -> str:
           </p>
         </div>"""
 
-    # Per-rate-plan breakdown — operators want to know WHICH plan drove
-    # the CRM bookings, not just the aggregate. Sorted by revenue desc.
+    # Per-rate-plan breakdown — grouped by Rate Plan Name to mirror the
+    # Marketing Activity → CRM Reservations tab (one row per rate plan, not
+    # per room_type × rate_plan combo). Sorted by revenue desc, with a
+    # Total row matching that page.
     by_rate_plan = c.get("by_rate_plan") or []
     if by_rate_plan:
         rp_rows = "".join(
             f"<tr>"
-            f"<td style='{_TABLE_TD}'>{rp['label']}</td>"
+            f"<td style='{_TABLE_TD}'>{_attr_escape(rp.get('rate_plan_name') or '—')}</td>"
             f"<td style='{_TABLE_TD};text-align:right;'>{rp['bookings']}</td>"
             f"<td style='{_TABLE_TD};text-align:right;color:#6b7280;'>{rp['nights']}</td>"
             f"<td style='{_TABLE_TD};text-align:right;font-weight:600;'>{_fmt(rp['revenue'], cur)}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(rp.get('adr'), cur)}</td>"
             f"</tr>"
             for rp in by_rate_plan
+        )
+        tot_bookings = sum(rp["bookings"] for rp in by_rate_plan)
+        tot_nights = sum(rp["nights"] for rp in by_rate_plan)
+        tot_revenue = sum(rp["revenue"] for rp in by_rate_plan)
+        tot_adr = round(tot_revenue / tot_nights, 2) if tot_nights > 0 else None
+        total_row = (
+            f"<tr style='background:#f9fafb;font-weight:700;color:#111827;'>"
+            f"<td style='{_TABLE_TD}'>Total</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{tot_bookings}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{tot_nights}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(tot_revenue, cur)}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(tot_adr, cur)}</td>"
+            f"</tr>"
         )
         rp_table = f"""
       <table style="width:100%;border-collapse:collapse;margin-top:8px;">
         <tr>
-          <th style="{_TABLE_TH}">Rate Plan / Room Type</th>
+          <th style="{_TABLE_TH}">Rate Plan Name</th>
           <th style="{_TABLE_TH};text-align:right;">Bookings</th>
           <th style="{_TABLE_TH};text-align:right;">Nights</th>
           <th style="{_TABLE_TH};text-align:right;">Revenue</th>
+          <th style="{_TABLE_TH};text-align:right;">ADR</th>
         </tr>
         {rp_rows}
+        {total_row}
       </table>"""
     else:
         rp_table = ""
