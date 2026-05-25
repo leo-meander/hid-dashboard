@@ -30,6 +30,7 @@ from app.models.holiday_intel import HolidayCalendar
 from app.models.kol import KOLRecord
 from app.models.kpi import KPITarget
 from app.models.reservation import Reservation
+from app.models.reservation_daily import ReservationDaily
 from app.services.crm_filters import crm_rate_plan_label_expr, crm_reservation_filter
 from app.services.kpi_engine import _EXCLUDED_SOURCES, _EXCLUDED_STATUSES
 
@@ -420,28 +421,44 @@ def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7) -> dic
     """Room-nights + revenue share by source_category and by specific
     source — last calendar week vs prev calendar week.
 
-    Filtered on **check_in_date** (cohort = stays last week). Same date
-    column as booking_behavior to keep both views consistent. Revenue
-    excludes the usual non-paying sources (Blogger / House Use /
-    Special Case).
+    Counted on an **occupancy basis** from ``reservation_daily``: one row
+    per reservation × per night, so only nights physically falling inside
+    the week are counted (room-nights = COUNT(rows), revenue =
+    SUM(nightly_rate)). This matches Cloudbeds' channel reports and the
+    OCC/ADR/RevPAR engine, which also reads ``reservation_daily``.
+
+    (Previously this filtered ``Reservation.check_in_date`` and summed the
+    whole-stay ``nights``/``grand_total_native``, a check-in cohort basis.
+    That over-counted late-week check-ins whose stay spilled into the next
+    week and dropped guests who checked in earlier but were still in-house
+    — producing per-source drift in both directions vs Cloudbeds.)
     """
     cutoff, end_date = last_week_range(today)
     prev_end = cutoff - timedelta(days=1)
     prev_start = prev_end - timedelta(days=6)
 
+    def _daily_base(d_from: date, d_to: date):
+        """reservation_daily rows in [d_from, d_to], cancelled/no-show excluded."""
+        return (
+            db.query(ReservationDaily)
+            .join(Reservation, ReservationDaily.reservation_id == Reservation.id)
+            .filter(
+                ReservationDaily.branch_id == branch_id,
+                ReservationDaily.date >= d_from,
+                ReservationDaily.date <= d_to,
+                ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
+            )
+        )
+
     def _category_aggregate(d_from: date, d_to: date) -> dict:
         rows = (
-            _reservations_base(db, branch_id)
-            .filter(
-                Reservation.check_in_date >= d_from,
-                Reservation.check_in_date <= d_to,
-            )
+            _daily_base(d_from, d_to)
             .with_entities(
-                Reservation.source_category,
-                func.coalesce(func.sum(Reservation.nights), 0),
-                func.coalesce(func.sum(Reservation.grand_total_native), 0),
+                ReservationDaily.source_category,
+                func.count(ReservationDaily.id),
+                func.coalesce(func.sum(ReservationDaily.nightly_rate), 0),
             )
-            .group_by(Reservation.source_category)
+            .group_by(ReservationDaily.source_category)
             .all()
         )
         return {
@@ -454,17 +471,13 @@ def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7) -> dic
 
     def _source_aggregate(d_from: date, d_to: date) -> dict:
         rows = (
-            _reservations_base(db, branch_id)
-            .filter(
-                Reservation.check_in_date >= d_from,
-                Reservation.check_in_date <= d_to,
-            )
+            _daily_base(d_from, d_to)
             .with_entities(
-                Reservation.source,
-                func.coalesce(func.sum(Reservation.nights), 0),
-                func.coalesce(func.sum(Reservation.grand_total_native), 0),
+                ReservationDaily.source,
+                func.count(ReservationDaily.id),
+                func.coalesce(func.sum(ReservationDaily.nightly_rate), 0),
             )
-            .group_by(Reservation.source)
+            .group_by(ReservationDaily.source)
             .all()
         )
         return {
@@ -525,13 +538,10 @@ def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7) -> dic
         month_end = date(month_start.year, month_start.month,
                          calendar.monthrange(month_start.year, month_start.month)[1])
         month_end = min(month_end, today)
-        month_rows = _reservations_base(db, branch_id).filter(
-            Reservation.check_in_date >= month_start,
-            Reservation.check_in_date <= month_end,
-        ).with_entities(
-            Reservation.source_category,
-            func.coalesce(func.sum(Reservation.nights), 0),
-        ).group_by(Reservation.source_category).all()
+        month_rows = _daily_base(month_start, month_end).with_entities(
+            ReservationDaily.source_category,
+            func.count(ReservationDaily.id),
+        ).group_by(ReservationDaily.source_category).all()
         m_total = sum(int(r[1] or 0) for r in month_rows)
         m_direct = sum(int(r[1] or 0) for r in month_rows if (r[0] or "").lower() == "direct")
         direct_trend.append({
@@ -547,7 +557,7 @@ def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7) -> dic
         "window_end": end_date.isoformat(),
         "prev_window_start": prev_start.isoformat(),
         "prev_window_end": prev_end.isoformat(),
-        "date_filter_col": "check_in_date",
+        "date_filter_col": "stay_date",
         "total_nights": total_nights,
         "total_revenue_native": round(total_rev, 2),
         "prev_total_nights": prev_total_nights,

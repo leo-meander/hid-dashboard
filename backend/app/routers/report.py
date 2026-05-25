@@ -998,7 +998,7 @@ def _render_channel_mix(b: dict) -> str:
         📡 Channel Mix (last week · {mix['window_start']} → {mix['window_end']})
       </p>
       <p style="margin:0 0 6px;font-size:11px;color:#9ca3af;">
-        Source: reservations by check-in date · {mix['total_nights']:,} nights ({_wow(mix.get('wow_total_nights_pct'))} WoW) ·
+        Source: room-nights occupied last week · {mix['total_nights']:,} nights ({_wow(mix.get('wow_total_nights_pct'))} WoW) ·
         {_fmt(mix['total_revenue_native'], cur)} revenue ({_wow(mix.get('wow_total_revenue_pct'))} WoW) ·
         compared to prev week ({mix['prev_window_start']} → {mix['prev_window_end']})
       </p>
