@@ -455,9 +455,27 @@ def _actual_occ_pct(db: Session, branch_id, year: int, month: int, total_rooms: 
     return sold_int / (total_rooms * days)
 
 
+# Branch display order on the weekly report — tabs + cards follow this.
+# Matched as case-insensitive substrings of Branch.name; any branch not
+# listed falls to the end, alphabetically. Requested by growth team
+# 2026-05-26: Taipei → 1948 → Oani → Osaka → Saigon.
+_BRANCH_DISPLAY_ORDER = ("taipei", "1948", "oani", "osaka", "saigon")
+
+
+def _branch_display_sort_key(b):
+    name = (b.name or "").lower()
+    for i, kw in enumerate(_BRANCH_DISPLAY_ORDER):
+        if kw in name:
+            return (i, name)
+    return (len(_BRANCH_DISPLAY_ORDER), name)
+
+
 def _build_report(db: Session):
     today = _ict_today()
-    branches = db.query(Branch).filter_by(is_active=True).all()
+    branches = sorted(
+        db.query(Branch).filter_by(is_active=True).all(),
+        key=_branch_display_sort_key,
+    )
     report = []
 
     # No Cloudbeds pre-sync here — daily_metrics is already refreshed twice
