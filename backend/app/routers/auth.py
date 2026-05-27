@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 import bcrypt
@@ -89,12 +89,17 @@ class CreateUserIn(BaseModel):
     name: Optional[str] = None
     password: str
     role: str = "editor"   # admin | editor | viewer
+    # Access scope — empty/None means "all". Ignored for admins.
+    allowed_branches: Optional[List[str]] = None  # branch UUIDs (as text)
+    allowed_pages: Optional[List[str]] = None      # sidebar group keys
 
 class UpdateUserIn(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
     password: Optional[str] = None
     is_active: Optional[bool] = None
+    allowed_branches: Optional[List[str]] = None
+    allowed_pages: Optional[List[str]] = None
 
 class ChangePasswordIn(BaseModel):
     old_password: str
@@ -102,12 +107,15 @@ class ChangePasswordIn(BaseModel):
 
 def _user_out(u: User) -> dict:
     return {
-        "id":         str(u.id),
-        "email":      u.email,
-        "name":       u.name,
-        "role":       u.role,
-        "is_active":  u.is_active,
-        "created_at": u.created_at.isoformat() if u.created_at else None,
+        "id":               str(u.id),
+        "email":            u.email,
+        "name":             u.name,
+        "role":             u.role,
+        "is_active":        u.is_active,
+        # Always arrays for the frontend; [] means "all".
+        "allowed_branches": list(u.allowed_branches or []),
+        "allowed_pages":    list(u.allowed_pages or []),
+        "created_at":       u.created_at.isoformat() if u.created_at else None,
     }
 
 
@@ -168,11 +176,15 @@ def create_user(
         raise HTTPException(400, "Role must be admin, editor, or viewer")
     if db.query(User).filter_by(email=body.email.lower().strip()).first():
         raise HTTPException(400, "Email already exists")
+    # Admins always have full access — scope only applies to editor/viewer.
+    is_admin = body.role == "admin"
     user = User(
         email=body.email.lower().strip(),
         name=body.name,
         role=body.role,
         password_hash=_hash(body.password),
+        allowed_branches=None if is_admin else (body.allowed_branches or None),
+        allowed_pages=None if is_admin else (body.allowed_pages or None),
     )
     db.add(user)
     db.commit()
@@ -197,6 +209,13 @@ def update_user(
         user.role = body.role
     if body.is_active is not None: user.is_active  = body.is_active
     if body.password  is not None: user.password_hash = _hash(body.password)
+    # Empty list normalizes to NULL = "all". Field omitted (None) = leave unchanged.
+    if body.allowed_branches is not None: user.allowed_branches = body.allowed_branches or None
+    if body.allowed_pages    is not None: user.allowed_pages    = body.allowed_pages or None
+    # Admins always have full access — clear any scope when promoting to admin.
+    if user.role == "admin":
+        user.allowed_branches = None
+        user.allowed_pages = None
     db.commit()
     db.refresh(user)
     return {"success": True, "data": _user_out(user)}

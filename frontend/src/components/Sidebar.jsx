@@ -5,12 +5,14 @@ import { getAlertsSummary } from "../api/alerts";
 
 const NAV = [
   {
+    key: "overview",
     label: "Overview",
     items: [
       { to: "/home", label: "Home", icon: "⊞" },
     ],
   },
   {
+    key: "performance",
     label: "Performance",
     items: [
       { to: "/performance",         label: "Summary",  icon: "▦" },
@@ -22,6 +24,7 @@ const NAV = [
     ],
   },
   {
+    key: "strategy",
     label: "Strategy",
     items: [
       { to: "/kpi",           label: "KPI Dashboard", icon: "◎" },
@@ -31,6 +34,7 @@ const NAV = [
     ],
   },
   {
+    key: "marketing",
     label: "Marketing",
     items: [
       { to: "/marketing-activity", label: "Marketing Activity", icon: "◈" },
@@ -38,6 +42,7 @@ const NAV = [
     ],
   },
   {
+    key: "reports",
     label: "Reports",
     items: [
       { to: "/alerts", label: "Alerts", icon: "▲", badge: true },
@@ -49,8 +54,11 @@ const NAV = [
 
 export default function Sidebar() {
   const location = useLocation();
-  const { user, logout, isAdmin } = useAuth();
+  const { user, logout, isAdmin, canViewGroup } = useAuth();
   const [alertCount, setAlertCount] = useState(0);
+
+  // Hide whole groups the user has no access to (admins see everything).
+  const visibleNav = NAV.filter(({ key }) => canViewGroup(key));
 
   useEffect(() => {
     const fetchCount = () => {
@@ -73,7 +81,7 @@ export default function Sidebar() {
 
       {/* Nav groups */}
       <nav className="flex-1 px-2 py-3 space-y-3 overflow-y-auto">
-        {NAV.map(({ label, items }) => (
+        {visibleNav.map(({ label, items }) => (
           <div key={label}>
             <p className="px-3 mb-1 text-xs font-semibold uppercase tracking-wider text-gray-500">
               {label}

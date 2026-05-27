@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
 import axios from "axios";
+import { groupAllowed, firstAllowedPath as computeFirstAllowedPath } from "../constants/pageGroups";
 
 const AuthContext = createContext(null);
 
@@ -19,6 +20,8 @@ const DEV_USER = import.meta.env.DEV ? {
   email: "admin@hid.local",
   name: "Dev Admin",
   role: "admin",
+  allowed_branches: [],
+  allowed_pages: [],
 } : null;
 
 export function AuthProvider({ children }) {
@@ -54,8 +57,33 @@ export function AuthProvider({ children }) {
     setUser(null);
   }, []);
 
+  const isAdmin = user?.role === "admin";
+
+  // Access scope — admins ignore both; empty arrays mean "all".
+  const allowedBranches = isAdmin ? [] : (user?.allowed_branches || []);
+  const allowedPages    = isAdmin ? [] : (user?.allowed_pages || []);
+
+  // Can the user open a given sidebar group?
+  const canViewGroup = useCallback(
+    (key) => isAdmin || groupAllowed(allowedPages, key),
+    [isAdmin, allowedPages],
+  );
+
+  // Can the user see a given branch id? (admins + unrestricted users: yes)
+  const canViewBranch = useCallback(
+    (branchId) => isAdmin || allowedBranches.length === 0 || allowedBranches.includes(branchId),
+    [isAdmin, allowedBranches],
+  );
+
+  // Where to send the user if they hit a page they can't view.
+  const firstAllowedPath = isAdmin ? "/home" : computeFirstAllowedPath(allowedPages);
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, isAdmin: user?.role === "admin" }}>
+    <AuthContext.Provider value={{
+      user, loading, login, logout, isAdmin,
+      allowedBranches, allowedPages,
+      canViewGroup, canViewBranch, firstAllowedPath,
+    }}>
       {children}
     </AuthContext.Provider>
   );

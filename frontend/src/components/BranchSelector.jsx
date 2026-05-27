@@ -1,7 +1,7 @@
 import { useBranch, CURRENCY_SYMBOLS } from '../context/BranchContext'
 
 export default function BranchSelector() {
-  const { branches, selected, selectBranch, loading } = useBranch()
+  const { branches, selected, selectBranch, loading, canSelectAll } = useBranch()
 
   if (loading) {
     return (
@@ -16,7 +16,7 @@ export default function BranchSelector() {
   }
 
   const tabs = [
-    { id: 'all', label: 'All Branches', symbol: null },
+    ...(canSelectAll ? [{ id: 'all', label: 'All Branches', symbol: null }] : []),
     ...branches.map(b => ({
       id: b.id,
       label: b.name,

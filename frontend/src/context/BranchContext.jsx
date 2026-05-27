@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { useAuth } from './AuthContext'
 
 const BranchContext = createContext(null)
 
@@ -15,7 +16,8 @@ export const CURRENCY_SYMBOLS = {
 }
 
 export function BranchProvider({ children }) {
-  const [branches, setBranches] = useState([])
+  const { canViewBranch, allowedBranches, isAdmin } = useAuth()
+  const [allBranches, setAllBranches] = useState([])
   const [selected, setSelected] = useState(() => {
     return localStorage.getItem(STORAGE_KEY) || 'all'
   })
@@ -26,16 +28,34 @@ export function BranchProvider({ children }) {
     fetch('/api/branches')
       .then(r => r.json())
       .then(data => {
-        setBranches(data.data || data || [])
+        setAllBranches(data.data || data || [])
       })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [])
 
+  // Only the branches this user is allowed to see.
+  const branches = allBranches.filter(b => canViewBranch(b.id))
+
+  // A user restricted to a subset of branches loses the aggregate "All" tab —
+  // "All" would otherwise pull data across every branch (no branch_id filter).
+  const restricted = !isAdmin && Array.isArray(allowedBranches) && allowedBranches.length > 0
+  const canSelectAll = !restricted
+
   const selectBranch = useCallback((id) => {
     setSelected(id)
     localStorage.setItem(STORAGE_KEY, id)
   }, [])
+
+  // Keep the active tab valid: if a restricted user has 'all' or a branch they
+  // can't see selected, snap to their first allowed branch once loaded.
+  useEffect(() => {
+    if (loading || branches.length === 0) return
+    const validIds = branches.map(b => b.id)
+    if (!canSelectAll && (selected === 'all' || !validIds.includes(selected))) {
+      selectBranch(validIds[0])
+    }
+  }, [loading, branches, canSelectAll, selected, selectBranch])
 
   // Current branch object (null when 'all')
   const currentBranch = selected === 'all'
@@ -60,6 +80,7 @@ export function BranchProvider({ children }) {
       currency,
       currencySymbol,
       branchParam,
+      canSelectAll,
       isAll: selected === 'all',
       loading,
     }}>

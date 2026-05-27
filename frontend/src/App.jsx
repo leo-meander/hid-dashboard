@@ -1,6 +1,7 @@
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { BranchProvider } from "./context/BranchContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { pageGroupForPath } from "./constants/pageGroups";
 import Sidebar from "./components/Sidebar";
 import BranchSelector from "./components/BranchSelector";
 import ChatWidget from "./components/ChatWidget";
@@ -87,6 +88,7 @@ function AppRoutes() {
       <div className="flex-1 flex flex-col overflow-hidden">
         <BranchSelector />
         <main className="flex-1 overflow-auto p-6">
+          <RouteGuard>
           <Routes>
             <Route path="/" element={<Navigate to="/home" replace />} />
             <Route path="/login" element={<Navigate to="/home" replace />} />
@@ -136,9 +138,26 @@ function AppRoutes() {
             <Route path="/reservations" element={<Reservations />} />
             <Route path="/kpi-targets"  element={<KPITargets />} />
           </Routes>
+          </RouteGuard>
         </main>
       </div>
       <ChatWidget />
     </div>
   );
+}
+
+// Redirects away from any page whose group the user can't access.
+// Page groups are gated by `allowed_pages`; the `admin` group is gated by role.
+function RouteGuard({ children }) {
+  const { pathname } = useLocation();
+  const { isAdmin, canViewGroup, firstAllowedPath } = useAuth();
+  const group = pageGroupForPath(pathname);
+
+  if (group === "admin") {
+    return isAdmin ? children : <Navigate to={firstAllowedPath} replace />;
+  }
+  if (group && !canViewGroup(group)) {
+    return <Navigate to={firstAllowedPath} replace />;
+  }
+  return children;
 }

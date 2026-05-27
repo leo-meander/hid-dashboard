@@ -4,6 +4,8 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { useAuth } from "../context/AuthContext";
+import { useBranch } from "../context/BranchContext";
+import { PAGE_GROUPS } from "../constants/pageGroups";
 import { useNavigate } from "react-router-dom";
 
 const ROLE_LABELS = { admin: "Admin", editor: "Editor", viewer: "Viewer" };
@@ -13,12 +15,28 @@ const ROLE_COLORS = {
   viewer: "bg-gray-100 text-gray-600",
 };
 
+const GROUP_LABELS = Object.fromEntries(PAGE_GROUPS.map(g => [g.key, g.label]));
+
 export default function Users() {
   const { isAdmin, user: me } = useAuth();
+  const { branches } = useBranch();
   const navigate = useNavigate();
   const [users,   setUsers]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal,   setModal]   = useState(null);  // null | "create" | user object (edit)
+
+  const branchName = (id) => branches.find(b => b.id === id)?.name || "?";
+
+  function accessSummary(u) {
+    if (u.role === "admin") return { branches: "All branches", pages: "All pages" };
+    const b = (u.allowed_branches || []).length
+      ? (u.allowed_branches).map(branchName).join(", ")
+      : "All branches";
+    const p = (u.allowed_pages || []).length
+      ? (u.allowed_pages).map(k => GROUP_LABELS[k] || k).join(", ")
+      : "All pages";
+    return { branches: b, pages: p };
+  }
 
   useEffect(() => {
     if (!isAdmin) { navigate("/home"); return; }
@@ -66,6 +84,7 @@ export default function Users() {
               <tr className="bg-gray-50 text-xs text-gray-500 uppercase border-b border-gray-100">
                 <th className="px-5 py-3 text-left">Name / Email</th>
                 <th className="px-5 py-3 text-left">Role</th>
+                <th className="px-5 py-3 text-left">Access</th>
                 <th className="px-5 py-3 text-left">Status</th>
                 <th className="px-5 py-3 text-left">Created</th>
                 <th className="px-5 py-3 text-right">Actions</th>
@@ -82,6 +101,21 @@ export default function Users() {
                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${ROLE_COLORS[u.role] || ROLE_COLORS.viewer}`}>
                       {ROLE_LABELS[u.role] || u.role}
                     </span>
+                  </td>
+                  <td className="px-5 py-3 max-w-xs">
+                    {(() => {
+                      const a = accessSummary(u);
+                      return (
+                        <div className="text-xs leading-tight">
+                          <div className="text-gray-700 truncate" title={a.branches}>
+                            <span className="text-gray-400">Branches: </span>{a.branches}
+                          </div>
+                          <div className="text-gray-700 truncate" title={a.pages}>
+                            <span className="text-gray-400">Pages: </span>{a.pages}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td className="px-5 py-3">
                     <span className={`text-xs font-medium ${u.is_active ? "text-emerald-600" : "text-gray-400"}`}>
@@ -124,24 +158,38 @@ export default function Users() {
 
 function UserModal({ user, onClose, onSaved }) {
   const isEdit = !!user;
+  const { branches } = useBranch();
   const [name,     setName]     = useState(user?.name || "");
   const [email,    setEmail]    = useState(user?.email || "");
   const [role,     setRole]     = useState(user?.role || "editor");
   const [password, setPassword] = useState("");
+  const [allowedBranches, setAllowedBranches] = useState(user?.allowed_branches || []);
+  const [allowedPages,    setAllowedPages]    = useState(user?.allowed_pages || []);
   const [error,    setError]    = useState("");
   const [saving,   setSaving]   = useState(false);
+
+  const isAdminRole = role === "admin";
+
+  function toggle(list, setList, value) {
+    setList(list.includes(value) ? list.filter(v => v !== value) : [...list, value]);
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
     setError(""); setSaving(true);
+    // Admins are always full-access — clear any scope. Empty arrays mean "all".
+    const scope = {
+      allowed_branches: isAdminRole ? [] : allowedBranches,
+      allowed_pages:    isAdminRole ? [] : allowedPages,
+    };
     try {
       if (isEdit) {
-        const body = { name, role };
+        const body = { name, role, ...scope };
         if (password) body.password = password;
         await axios.put(`/api/auth/users/${user.id}`, body);
       } else {
         if (!password) { setError("Password is required"); setSaving(false); return; }
-        await axios.post("/api/auth/users", { email: email.trim(), name, role, password });
+        await axios.post("/api/auth/users", { email: email.trim(), name, role, password, ...scope });
       }
       onSaved();
     } catch (err) {
@@ -153,8 +201,8 @@ function UserModal({ user, onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 sticky top-0 bg-white">
           <h2 className="font-semibold text-gray-800">{isEdit ? "Edit User" : "Add User"}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
         </div>
@@ -174,6 +222,31 @@ function UserModal({ user, onClose, onSaved }) {
               <option value="admin">Admin — full access + user management</option>
             </select>
           </div>
+
+          {/* Access scope — only for non-admins */}
+          {isAdminRole ? (
+            <p className="text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+              Admins always have access to all branches and all pages.
+            </p>
+          ) : (
+            <>
+              <CheckGroup
+                label="Branches"
+                hint="Leave all unchecked = every branch"
+                options={branches.map(b => ({ value: b.id, label: b.name }))}
+                selected={allowedBranches}
+                onToggle={(v) => toggle(allowedBranches, setAllowedBranches, v)}
+              />
+              <CheckGroup
+                label="Pages"
+                hint="Leave all unchecked = every page"
+                options={PAGE_GROUPS.map(g => ({ value: g.key, label: g.label, sub: g.hint }))}
+                selected={allowedPages}
+                onToggle={(v) => toggle(allowedPages, setAllowedPages, v)}
+              />
+            </>
+          )}
+
           <Field label={isEdit ? "New password (leave blank to keep)" : "Password"}
             type="password" value={password} onChange={setPassword}
             placeholder="••••••••" required={!isEdit} />
@@ -204,6 +277,38 @@ function Field({ label, type, value, onChange, placeholder, required }) {
         placeholder={placeholder} required={required}
         className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700
           focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+    </div>
+  );
+}
+
+function CheckGroup({ label, hint, options, selected, onToggle }) {
+  const allChecked = selected.length === 0;
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-1.5">
+        <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</label>
+        <span className={`text-xs ${allChecked ? "text-emerald-600" : "text-gray-400"}`}>
+          {allChecked ? "All" : `${selected.length} selected`}
+        </span>
+      </div>
+      <p className="text-xs text-gray-400 mb-1.5">{hint}</p>
+      <div className="border border-gray-200 rounded-lg divide-y divide-gray-50 max-h-44 overflow-y-auto">
+        {options.length === 0 && (
+          <p className="px-3 py-2 text-xs text-gray-400">No options available</p>
+        )}
+        {options.map(opt => (
+          <label key={opt.value}
+            className="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50">
+            <input type="checkbox" checked={selected.includes(opt.value)}
+              onChange={() => onToggle(opt.value)}
+              className="mt-0.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-400" />
+            <span className="min-w-0">
+              <span className="block text-sm text-gray-700">{opt.label}</span>
+              {opt.sub && <span className="block text-xs text-gray-400 truncate">{opt.sub}</span>}
+            </span>
+          </label>
+        ))}
+      </div>
     </div>
   );
 }
