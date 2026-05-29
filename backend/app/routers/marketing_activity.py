@@ -22,7 +22,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
+from sqlalchemy import extract, func
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, get_db
@@ -44,6 +44,18 @@ _EXCLUDED_STATUSES = {"cancelled", "canceled", "no_show", "noshow", "no show", "
 
 # Revenue exclusion: non-paying guests
 _EXCLUDED_SOURCES = {"blogger", "house use", "houseuse", "special case", "work exchange"}
+
+# Branch display order — mirrors the Weekly Report (report.py). Requested by
+# growth team 2026-05-26: Taipei → 1948 → Oani → Osaka → Saigon.
+_BRANCH_DISPLAY_ORDER = ("taipei", "1948", "oani", "osaka", "saigon")
+
+
+def _branch_display_sort_key(name: str):
+    n = (name or "").lower()
+    for i, kw in enumerate(_BRANCH_DISPLAY_ORDER):
+        if kw in n:
+            return (i, n)
+    return (len(_BRANCH_DISPLAY_ORDER), n)
 
 
 def _envelope(data):
@@ -442,6 +454,129 @@ def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date
 
     result.sort(key=lambda x: -x["revenue"])
     return result
+
+
+# ── CRM Branch Comparison (campaign × branch and month × branch) ─────────────
+
+@router.get("/crm-branch-comparison")
+def get_crm_branch_comparison(
+    month: Optional[str] = Query(None),
+    months_back: int = Query(6, ge=1, le=24),
+    db: Session = Depends(get_db),
+):
+    """Cross-branch CRM comparison for the CRM Reservations tab.
+
+    Returns two matrices, both in VND so the five branches (VND/TWD/JPY/THB)
+    are directly comparable:
+      - ``by_campaign``: rate plan × branch for the selected month
+      - ``by_month``:    month × branch over a trailing ``months_back`` window
+
+    Filtered by Date Booked (reservation_date), excluding cancelled bookings
+    and non-paying sources — same rules as the rest of this page.
+    """
+    today = date.today()
+    current_month = month or f"{today.year}-{today.month:02d}"
+
+    d_from, d_to = _month_range(current_month)
+
+    # Trailing window ending at (and including) current_month.
+    win_start_str = current_month
+    for _ in range(months_back - 1):
+        win_start_str = _prev_month_str(win_start_str)
+    w_from, _w0 = _month_range(win_start_str)
+    _w1, w_to = _month_range(current_month)
+
+    branches = sorted(
+        db.query(Branch).filter(Branch.is_active.is_(True)).all(),
+        key=lambda b: _branch_display_sort_key(b.name),
+    )
+    branch_list = [{"branch_id": str(b.id), "name": b.name} for b in branches]
+
+    return _envelope({
+        "branches": branch_list,
+        "by_campaign": _crm_comparison_by_campaign(db, d_from, d_to),
+        "by_month": _crm_comparison_by_month(db, w_from, w_to),
+        "currency": "VND",
+        "month": current_month,
+        "months_back": months_back,
+    })
+
+
+def _crm_comparison_by_campaign(db: Session, d_from: date, d_to: date):
+    """Rate plan × branch matrix for one month (revenue in VND)."""
+    rate_plan_expr = crm_rate_plan_label_expr()
+    rows = db.query(
+        Reservation.branch_id,
+        rate_plan_expr,
+        func.count(Reservation.id).label("bookings"),
+        func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
+        func.coalesce(func.sum(Reservation.grand_total_vnd), 0).label("revenue"),
+    ).filter(
+        crm_reservation_filter(),
+        Reservation.reservation_date >= d_from,
+        Reservation.reservation_date <= d_to,
+        _status_filter(),
+        _revenue_source_filter(),
+    ).group_by(Reservation.branch_id, "rate_plan").all()
+
+    by_plan: dict = {}
+    for branch_id, rate_plan, bookings, nights, revenue in rows:
+        entry = by_plan.setdefault(rate_plan, {
+            "rate_plan_name": rate_plan,
+            "cells": {},
+            "total": {"bookings": 0, "nights": 0, "revenue": 0.0},
+        })
+        cell = {
+            "bookings": int(bookings or 0),
+            "nights": int(nights or 0),
+            "revenue": float(revenue or 0),
+        }
+        entry["cells"][str(branch_id)] = cell
+        entry["total"]["bookings"] += cell["bookings"]
+        entry["total"]["nights"] += cell["nights"]
+        entry["total"]["revenue"] += cell["revenue"]
+
+    result = list(by_plan.values())
+    result.sort(key=lambda x: -x["total"]["revenue"])
+    return result
+
+
+def _crm_comparison_by_month(db: Session, d_from: date, d_to: date):
+    """Month × branch matrix over a date window (revenue in VND)."""
+    rows = db.query(
+        Reservation.branch_id,
+        extract("year", Reservation.reservation_date).label("year"),
+        extract("month", Reservation.reservation_date).label("month"),
+        func.count(Reservation.id).label("bookings"),
+        func.coalesce(func.sum(Reservation.nights), 0).label("nights"),
+        func.coalesce(func.sum(Reservation.grand_total_vnd), 0).label("revenue"),
+    ).filter(
+        crm_reservation_filter(),
+        Reservation.reservation_date >= d_from,
+        Reservation.reservation_date <= d_to,
+        _status_filter(),
+        _revenue_source_filter(),
+    ).group_by(Reservation.branch_id, "year", "month").all()
+
+    by_month: dict = {}
+    for branch_id, year, mon, bookings, nights, revenue in rows:
+        key = f"{int(year)}-{int(mon):02d}"
+        entry = by_month.setdefault(key, {
+            "month": key,
+            "cells": {},
+            "total": {"bookings": 0, "nights": 0, "revenue": 0.0},
+        })
+        cell = {
+            "bookings": int(bookings or 0),
+            "nights": int(nights or 0),
+            "revenue": float(revenue or 0),
+        }
+        entry["cells"][str(branch_id)] = cell
+        entry["total"]["bookings"] += cell["bookings"]
+        entry["total"]["nights"] += cell["nights"]
+        entry["total"]["revenue"] += cell["revenue"]
+
+    return sorted(by_month.values(), key=lambda x: x["month"])
 
 
 # ── Debug: probe Ads Platform endpoints to find authoritative source ────────

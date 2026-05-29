@@ -4,7 +4,7 @@
  */
 import { useEffect, useState, useMemo } from "react";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
-import { getMarketingActivitySummary } from "../api/marketingActivity";
+import { getMarketingActivitySummary, getCRMBranchComparison } from "../api/marketingActivity";
 import { getEmailSummary, getEmailByCampaign } from "../api/emailMarketing";
 
 // Map HiD branch name to GHL location name (5 branches × different naming)
@@ -148,7 +148,7 @@ export default function MarketingActivity() {
       ) : (
         <>
           {tab === "overview" && <OverviewTab overview={overview} prevOverview={prevOverview} prevLabel={prevLabel} cur={cur} />}
-          {tab === "crm-rate-plans" && <CRMRatePlansTab rows={crmRatePlans} cur={cur} />}
+          {tab === "crm-rate-plans" && <CRMRatePlansTab rows={crmRatePlans} cur={cur} month={month} />}
         </>
       )}
     </div>
@@ -227,12 +227,42 @@ function OverviewTab({ overview, prevOverview, prevLabel, cur }) {
 }
 
 /* ── CRM Reservations Tab — grouped by Rate Plan Name ────────────────────── */
-function CRMRatePlansTab({ rows, cur }) {
+function CRMRatePlansTab({ rows, cur, month }) {
+  const [view, setView] = useState("rate-plan");
+
+  const subToggle = (
+    <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
+      {[
+        { key: "rate-plan", label: "By Rate Plan" },
+        { key: "compare", label: "Compare Branches" },
+      ].map((v) => (
+        <button key={v.key} onClick={() => setView(v.key)}
+          className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+            view === v.key ? "bg-white text-gray-800 shadow-sm" : "text-gray-500 hover:text-gray-700"
+          }`}>
+          {v.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (view === "compare") {
+    return (
+      <div className="space-y-4">
+        {subToggle}
+        <CRMBranchComparison month={month} />
+      </div>
+    );
+  }
+
   if (!rows || rows.length === 0) {
     return (
-      <p className="text-gray-400 text-sm text-center py-8">
-        No CRM reservations found for this month.
-      </p>
+      <div className="space-y-4">
+        {subToggle}
+        <p className="text-gray-400 text-sm text-center py-8">
+          No CRM reservations found for this month.
+        </p>
+      </div>
     );
   }
 
@@ -252,6 +282,7 @@ function CRMRatePlansTab({ rows, cur }) {
 
   return (
     <div className="space-y-4">
+      {subToggle}
       <p className="text-sm text-gray-500">
         CRM reservations (CRM / MEANDER&apos;S FRIEND / Travel Guide / Grand Open / Extension Promotion) broken down by Rate Plan Name,
         filtered by Date Booked (not Stay Date).
@@ -307,6 +338,145 @@ function CRMRatePlansTab({ rows, cur }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/* ── CRM Branch Comparison — campaign × branch and month × branch ───────── */
+function shortBranchName(name) {
+  return (name || "").replace(/^meander\s+/i, "").trim() || name || "—";
+}
+
+const COMPARE_METRICS = [
+  { key: "revenue", label: "Revenue" },
+  { key: "bookings", label: "Bookings" },
+  { key: "nights", label: "Nights" },
+];
+
+function ComparisonMatrix({ title, subtitle, branches, rows, rowLabel, metric }) {
+  const cellVal = (cell) => (cell ? cell[metric] || 0 : 0);
+  const colTotal = (bid) => rows.reduce((s, r) => s + cellVal(r.cells[bid]), 0);
+  const grandTotal = rows.reduce((s, r) => s + (r.total?.[metric] || 0), 0);
+
+  return (
+    <div className="bg-white rounded-lg border overflow-x-auto">
+      <div className="px-4 py-3 border-b bg-gray-50/50">
+        <p className="text-sm font-semibold text-gray-700">{title}</p>
+        {subtitle && <p className="text-xs text-gray-400 mt-0.5">{subtitle}</p>}
+      </div>
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50">
+          <tr>
+            <th className="text-left px-4 py-2.5 font-semibold text-gray-600">{rowLabel}</th>
+            {branches.map((b) => (
+              <th key={b.branch_id} className="text-right px-4 py-2.5 font-semibold text-gray-600 whitespace-nowrap">
+                {shortBranchName(b.name)}
+              </th>
+            ))}
+            <th className="text-right px-4 py-2.5 font-semibold text-gray-600">Total</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y">
+          {rows.map((r, i) => (
+            <tr key={i} className="hover:bg-gray-50">
+              <td className="px-4 py-2.5 font-medium text-gray-900 whitespace-nowrap">{r[rowLabel === "Month" ? "month" : "rate_plan_name"]}</td>
+              {branches.map((b) => {
+                const v = cellVal(r.cells[b.branch_id]);
+                return (
+                  <td key={b.branch_id} className={`px-4 py-2.5 text-right tabular-nums ${v === 0 ? "text-gray-300" : "text-gray-700"}`}>
+                    {fmtNum(v)}
+                  </td>
+                );
+              })}
+              <td className="px-4 py-2.5 text-right tabular-nums font-semibold">{fmtNum(r.total?.[metric] || 0)}</td>
+            </tr>
+          ))}
+          <tr className="bg-gray-50 font-semibold">
+            <td className="px-4 py-2.5">Total</td>
+            {branches.map((b) => (
+              <td key={b.branch_id} className="px-4 py-2.5 text-right tabular-nums">{fmtNum(colTotal(b.branch_id))}</td>
+            ))}
+            <td className="px-4 py-2.5 text-right tabular-nums">{fmtNum(grandTotal)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CRMBranchComparison({ month }) {
+  const { branches: allowedBranches } = useBranch();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [metric, setMetric] = useState("revenue");
+
+  useEffect(() => {
+    setLoading(true);
+    getCRMBranchComparison({ month, months_back: 6 })
+      .then(setData)
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, [month]);
+
+  // Only show branches this user is allowed to see, in the backend's display order.
+  const branches = useMemo(() => {
+    if (!data?.branches) return [];
+    const allowedIds = new Set(allowedBranches.map((b) => b.id));
+    return data.branches.filter((b) => allowedIds.size === 0 || allowedIds.has(b.branch_id));
+  }, [data, allowedBranches]);
+
+  if (loading) {
+    return <div className="text-center text-gray-400 py-12 text-sm animate-pulse">Loading...</div>;
+  }
+  if (!data || branches.length === 0) {
+    return <p className="text-gray-400 text-sm text-center py-8">No CRM comparison data.</p>;
+  }
+
+  const hasCampaign = (data.by_campaign || []).length > 0;
+  const hasMonth = (data.by_month || []).length > 0;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <p className="text-sm text-gray-500">
+          CRM performance compared across branches. Revenue in VND for cross-branch parity.
+          Filtered by Date Booked, excluding cancelled bookings and non-paying sources.
+        </p>
+        <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
+          {COMPARE_METRICS.map((m) => (
+            <button key={m.key} onClick={() => setMetric(m.key)}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                metric === m.key ? "bg-white text-gray-800 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              }`}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {hasCampaign ? (
+        <ComparisonMatrix
+          title={`By Campaign × Branch — ${metric === "revenue" ? "Revenue (VND)" : COMPARE_METRICS.find((m) => m.key === metric).label}`}
+          subtitle="Selected month, grouped by Rate Plan Name"
+          branches={branches}
+          rows={data.by_campaign}
+          rowLabel="Rate Plan"
+          metric={metric}
+        />
+      ) : (
+        <p className="text-gray-400 text-sm text-center py-6">No campaign data this month.</p>
+      )}
+
+      {hasMonth && (
+        <ComparisonMatrix
+          title={`By Month × Branch — ${metric === "revenue" ? "Revenue (VND)" : COMPARE_METRICS.find((m) => m.key === metric).label}`}
+          subtitle="Trailing 6 months by Date Booked"
+          branches={branches}
+          rows={data.by_month}
+          rowLabel="Month"
+          metric={metric}
+        />
+      )}
     </div>
   );
 }
