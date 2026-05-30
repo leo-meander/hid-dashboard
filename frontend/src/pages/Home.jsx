@@ -457,7 +457,7 @@ function AllBranchesTable({ data, loading }) {
                             {fmt(row.adjusted_forecast, cur)}
                             {row.target_revenue_native
                               ? <span className="ml-1 text-xs text-gray-400 font-normal">
-                                  ({Math.round(row.adjusted_forecast / row.target_revenue_native * 100)}%)
+                                  ({(row.adjusted_forecast / row.target_revenue_native * 100).toFixed(2)}%)
                                 </span>
                               : null}
                           </span>
