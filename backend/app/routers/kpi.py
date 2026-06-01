@@ -498,22 +498,35 @@ def kpi_period_achievement(
         bid = str(branch.id)
         cur = branch.currency or branch.native_currency or "VND"
 
-        # Calculate period target by summing daily goals
+        # Fixed per-branch adjustment (same as Group Summary Adjusted Forecast):
+        # value × (1 − deduct%) + other_rev. Deduct% is a multiplier; other_rev is
+        # a MONTHLY add-on, so prorate it per day like the target so arbitrary
+        # ranges (7/30/90 days) don't over- or under-count it.
+        mult = 1 - float(branch.deduction_pct or 0) / 100
+        other_rev_month = float(branch.other_revenue_native or 0)
+
+        # Calculate period target by summing daily goals (+ prorated other rev)
         period_target = 0.0
+        other_rev_period = 0.0
         d = date_from
         while d <= date_to:
             yr, mo = d.year, d.month
             monthly_target = target_map.get((bid, yr, mo), 0)
             dim = calendar.monthrange(yr, mo)[1]
-            daily_goal = monthly_target / dim if dim > 0 else 0
-            period_target += daily_goal
+            if dim > 0:
+                period_target += monthly_target / dim
+                other_rev_period += other_rev_month / dim
             d += timedelta(days=1)
 
         actual_revenue = actual_map.get(bid, 0)
-        achievement_pct = round(actual_revenue / period_target, 4) if period_target > 0 else None
 
-        avg_daily_goal = round(period_target / total_days, 2) if total_days > 0 else 0
-        avg_daily_actual = round(actual_revenue / total_days, 2) if total_days > 0 else 0
+        # Adjust both sides identically before comparing.
+        adj_target = max(0.0, period_target * mult + other_rev_period)
+        adj_actual = max(0.0, actual_revenue * mult + other_rev_period)
+        achievement_pct = round(adj_actual / adj_target, 4) if adj_target > 0 else None
+
+        avg_daily_goal = round(adj_target / total_days, 2) if total_days > 0 else 0
+        avg_daily_actual = round(adj_actual / total_days, 2) if total_days > 0 else 0
 
         results.append({
             "branch_id": bid,
@@ -521,8 +534,8 @@ def kpi_period_achievement(
             "currency": cur,
             "date_from": date_from.isoformat(),
             "date_to": date_to.isoformat(),
-            "actual_revenue": round(actual_revenue, 2),
-            "target_revenue": round(period_target, 2),
+            "actual_revenue": round(adj_actual, 2),
+            "target_revenue": round(adj_target, 2),
             "achievement_pct": achievement_pct,
             "daily_goal": avg_daily_goal,
             "daily_actual": avg_daily_actual,
