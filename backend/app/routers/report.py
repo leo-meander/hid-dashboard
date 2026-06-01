@@ -1598,6 +1598,103 @@ def _render_paid_ads(b: dict) -> str:
     </div>"""
 
 
+def _render_meta_correlation(b: dict) -> str:
+    """Meta budget × website-booking correlation — sits under Paid Ads.
+
+    Per-country table pairing Meta-only spend Δ% with website-only direct
+    booking Δ% (by date booked), plus a headline Pearson r across countries.
+    Framed as a directional TOF signal, not attribution — see the builder's
+    meta_country_correlation() for the data + caveats.
+    """
+    mc = b.get("analytics", {}).get("meta_correlation")
+    if not mc or not mc.get("rows"):
+        return ""
+    cur = b["currency"]
+    bid = b["branch_id"]
+    rows = mc["rows"]
+
+    def _delta(val):
+        if val is None:
+            return "<span style='color:#9ca3af;'>n/a</span>"
+        color = "#16a34a" if val >= 0 else "#dc2626"
+        return f"<span style='color:{color};font-weight:600;'>{_signed_pct(val)}</span>"
+
+    def _read(sp, bk):
+        # Directional read of spend vs booking movement for the country.
+        if sp is None or bk is None:
+            return "<span style='color:#9ca3af;'>—</span>"
+        if sp > 0 and bk > 0:
+            return "<span style='color:#16a34a;font-weight:600;'>✓ aligned</span>"
+        if sp > 0 and bk <= 0:
+            return "<span style='color:#dc2626;font-weight:600;'>✗ spend↑ bk↓</span>"
+        if sp <= 0 and bk <= 0:
+            return "<span style='color:#6b7280;'>↓ both</span>"
+        return "<span style='color:#ca8a04;'>spend↓ bk↑</span>"
+
+    row_parts = []
+    for r in rows:
+        attrs = _cell_attrs(bid, f"meta_corr.{r['country']}", f"Meta×Website — {r['country']}")
+        lift_html = f"{r['lift']:.2f}×" if r.get("lift") is not None else "—"
+        row_parts.append(
+            f"<tr{attrs}>"
+            f"<td style='{_TABLE_TD}'>{r['country']}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_fmt(r['spend'], cur)}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_delta(r['spend_pct'])}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{r['bookings']} "
+            f"<span style='color:#9ca3af;'>(prev {r['prev_bookings']})</span></td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_delta(r['book_pct'])}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{lift_html}</td>"
+            f"<td style='{_TABLE_TD};text-align:right;'>{_read(r['spend_pct'], r['book_pct'])}</td>"
+            f"</tr>"
+        )
+    rows_html = "".join(row_parts)
+
+    r_val = mc.get("pearson_r")
+    n = mc.get("n_pairs", 0)
+    if r_val is None:
+        corr_line = (
+            f"<span style='color:#9ca3af;'>Not enough overlapping countries for a "
+            f"correlation coefficient (need ≥3 with a defined Δ% on both sides; have {n}).</span>"
+        )
+    else:
+        a = abs(r_val)
+        strength = ("strong" if a >= 0.7 else "moderate" if a >= 0.4
+                    else "weak" if a >= 0.2 else "negligible")
+        direction = "positive" if r_val > 0 else "negative" if r_val < 0 else "flat"
+        corr_color = ("#16a34a" if r_val >= 0.4 else "#ca8a04" if r_val >= 0.2
+                      else "#6b7280" if r_val >= 0 else "#dc2626")
+        corr_line = (
+            f"Pearson r = <strong style='color:{corr_color};'>{r_val:+.2f}</strong> "
+            f"across {n} countries — {strength} {direction} link between Meta budget Δ% "
+            f"and website-booking Δ%."
+        )
+
+    summary_attrs = _cell_attrs(bid, "meta_corr.summary", "Meta×Website correlation — summary")
+    return f"""
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f3f4f6;">
+      <p{summary_attrs} style="margin:0 0 4px;font-size:12px;font-weight:600;color:#374151;">🔗 Meta Budget × Website Bookings — correlation (last week · {mc['window_start']} → {mc['window_end']})</p>
+      <p style="margin:0 0 6px;font-size:11px;color:#9ca3af;">
+        Meta-only ad spend per targeting country (WoW) vs <strong>website-only</strong> direct bookings (source contains "website")
+        per country by date booked (reservation_date), same week vs prior week. TOF read — directional signal, not attribution.
+        Lift = booking Δ% ÷ spend Δ%. Ad country (targeting) is matched to guest nationality.
+      </p>
+      <p style="margin:0 0 8px;font-size:12px;color:#374151;">{corr_line}</p>
+      <table style="width:100%;border-collapse:collapse;">
+        <tr><th style="{_TABLE_TH}" colspan="7">By Country · Meta spend vs website bookings (date booked)</th></tr>
+        <tr>
+          <th style="{_TABLE_TH}">Country</th>
+          <th style="{_TABLE_TH};text-align:right;">Meta spend</th>
+          <th style="{_TABLE_TH};text-align:right;" title="Meta spend last week vs prior week">Spend Δ%</th>
+          <th style="{_TABLE_TH};text-align:right;" title="website-only direct bookings, last week">Web bk</th>
+          <th style="{_TABLE_TH};text-align:right;" title="website booking count last week vs prior week">Bk Δ%</th>
+          <th style="{_TABLE_TH};text-align:right;" title="booking Δ% ÷ spend Δ%">Lift</th>
+          <th style="{_TABLE_TH};text-align:right;">Read</th>
+        </tr>
+        {rows_html}
+      </table>
+    </div>"""
+
+
 def _render_kol(b: dict) -> str:
     """Render the KOL section as a monthly progress table.
 
@@ -2144,6 +2241,7 @@ def _build_html(report: list, today: date) -> str:
           {_render_channel_mix(b)}
           {_render_country_detail(b)}
           {paid_ads_block}
+          {_render_meta_correlation(b)}
           {kol_block}
           {crm_block}
           {combined_action_html}

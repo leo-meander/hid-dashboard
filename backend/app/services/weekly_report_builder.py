@@ -1258,6 +1258,152 @@ def paid_ads_section(db: Session, branch: Branch, today: date,
     }
 
 
+# ── 7b. Meta budget × website-booking correlation ───────────────────────────
+
+def _pearson(xs: list, ys: list) -> Optional[float]:
+    """Pearson correlation coefficient. None when <3 points or zero variance."""
+    n = len(xs)
+    if n < 3:
+        return None
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    vx = sum((x - mx) ** 2 for x in xs)
+    vy = sum((y - my) ** 2 for y in ys)
+    if vx <= 0 or vy <= 0:
+        return None
+    return round(cov / ((vx * vy) ** 0.5), 2)
+
+
+def meta_country_correlation(db: Session, branch: Branch, today: date) -> dict:
+    """Meta ad budget Δ% per country vs website-only direct booking Δ% per
+    country, week-over-week, same week (by date booked).
+
+    Why this exists: Meta is a TOF channel — ROAS / pixel attribution
+    under-reports and is noisy. Instead of trusting Meta's own conversion
+    attribution, we line up "how much we changed Meta budget for country X"
+    against "how many more *website* bookings (by reservation_date) came from
+    country X", and read the cross-country correlation as a directional
+    signal (NOT causal attribution).
+
+      - Meta spend: Ads Platform /spend/daily-by-country filtered
+        platform="meta", keyed by ad-targeting country. ISO-2 codes are
+        normalized to canonical names via map_country_code so they join the
+        reservations.guest_country_code space (which stores canonical names,
+        not ISO codes).
+      - Website bookings: reservations with source ILIKE '%website%'
+        (website-only, per team decision 2026-06-01 — narrower than the
+        Direct source_category), grouped by guest_country_code, counted by
+        reservation_date.
+      - Windows: last calendar week vs the week before (same 7d vs 7d the
+        Paid Ads section uses).
+
+    Returns {} rows on upstream failure so the renderer shows an empty state.
+    """
+    from app.services.ads_platform import (
+        AdsPlatformClient, AdsPlatformError, branch_slug_for,
+    )
+    from app.services.cloudbeds import map_country_code
+
+    branch_id = branch.id
+    week_start, week_end = last_week_range(today)
+    prev_end = week_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=6)
+    slug = branch_slug_for(branch)
+
+    # Meta-only spend per canonical country name for a window.
+    def _meta_spend(d_from: date, d_to: date) -> dict:
+        try:
+            client = AdsPlatformClient()
+            rows = client.get_spend_daily_by_country(
+                date_from=d_from.isoformat(), date_to=d_to.isoformat(),
+                platform="meta", branch=slug,
+            )
+        except (AdsPlatformError, Exception) as e:
+            logger.warning(
+                "meta country spend fetch failed branch=%s %s..%s: %s",
+                slug, d_from, d_to, e,
+            )
+            return {}
+        out: dict = {}
+        for r in rows or []:
+            code = (r.get("country") or "").strip()
+            if not code:
+                continue
+            name = map_country_code(code)
+            if not name or name == "Unknown":
+                continue
+            out[name] = out.get(name, 0.0) + float(r.get("spend") or 0)
+        return out
+
+    # Website-only direct bookings per canonical country by reservation_date.
+    def _web_bookings(d_from: date, d_to: date) -> dict:
+        rows = db.query(
+            Reservation.guest_country_code.label("country"),
+            func.count(Reservation.id).label("bookings"),
+        ).filter(
+            Reservation.branch_id == branch_id,
+            Reservation.reservation_date >= d_from,
+            Reservation.reservation_date <= d_to,
+            Reservation.guest_country_code.isnot(None),
+            func.lower(func.coalesce(Reservation.source, "")).like("%website%"),
+            ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
+        ).group_by(Reservation.guest_country_code).all()
+        out: dict = {}
+        for r in rows:
+            name = (r.country or "").strip()
+            if not name or "unknown" in name.lower():
+                continue
+            out[name] = int(r.bookings or 0)
+        return out
+
+    meta_this = _meta_spend(week_start, week_end)
+    meta_prev = _meta_spend(prev_start, prev_end)
+    web_this = _web_bookings(week_start, week_end)
+    web_prev = _web_bookings(prev_start, prev_end)
+
+    # One row per country that had Meta spend in either week (the spend side
+    # is the lever we control, so it anchors the row set).
+    rows_out = []
+    for name in set(meta_this) | set(meta_prev):
+        sp_t = meta_this.get(name, 0.0)
+        sp_p = meta_prev.get(name, 0.0)
+        bk_t = web_this.get(name, 0)
+        bk_p = web_prev.get(name, 0)
+        spend_pct = _pct_change(sp_t, sp_p)
+        book_pct = _pct_change(bk_t, bk_p)
+        lift = None
+        if spend_pct is not None and book_pct is not None and abs(spend_pct) > 1e-9:
+            lift = round(book_pct / spend_pct, 2)
+        rows_out.append({
+            "country": name,
+            "spend": round(sp_t, 2),
+            "prev_spend": round(sp_p, 2),
+            "spend_pct": spend_pct,
+            "bookings": bk_t,
+            "prev_bookings": bk_p,
+            "book_pct": book_pct,
+            "lift": lift,
+        })
+    rows_out.sort(key=lambda x: -x["spend"])
+
+    # Correlation over countries where BOTH deltas are defined (prev>0 so a
+    # % change exists). New/zeroed countries fall out of r but stay in table.
+    pairs = [(r["spend_pct"], r["book_pct"]) for r in rows_out
+             if r["spend_pct"] is not None and r["book_pct"] is not None]
+    pearson = _pearson([p[0] for p in pairs], [p[1] for p in pairs])
+
+    return {
+        "window_start": week_start.isoformat(),
+        "window_end": week_end.isoformat(),
+        "prev_start": prev_start.isoformat(),
+        "prev_end": prev_end.isoformat(),
+        "rows": rows_out,
+        "pearson_r": pearson,
+        "n_pairs": len(pairs),
+    }
+
+
 # ── 8. KOL — pipeline, ROI, expiring usage rights ───────────────────────────
 
 def kol_section(db: Session, branch_id: UUID, branch_name: str,
@@ -1701,6 +1847,7 @@ def build_branch_analytics(db: Session, branch: Branch, today: date) -> dict:
         "countries": country_insights(db, branch.id, today, days=30, limit=10),
         "ad_optimizer": ad_budget_optimizer(db, branch.id, today, total_rooms),
         "paid_ads": paid_ads_section(db, branch, today, days=7),
+        "meta_correlation": meta_country_correlation(db, branch, today),
         "kol": kol_section(db, branch.id, branch.name, today, days=7),
         "crm": crm_section(db, branch.id, branch.name, today, days=7),
     }

@@ -77,6 +77,7 @@ const DYNAMIC_PREFIXES = [
   ["behavior.los.", "LOS — "],
   ["country.book.", "Country (booked) — "],
   ["country.stay.", "Country (check-in) — "],
+  ["meta_corr.", "Meta×Website — "],
   ["outlier.", "Outlier — "],
 ];
 
