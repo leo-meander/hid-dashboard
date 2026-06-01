@@ -153,6 +153,12 @@ function KPIAchievement({ branchId }) {
         </div>
       </div>
 
+      <div className="px-5 pt-3 text-[11px] leading-relaxed text-gray-400">
+        Achievement % = Adjusted Actual ÷ Adjusted Target. Both sides adjusted per branch:
+        <span className="text-gray-500"> Revenue × (1 − Deduction %) + Other Revenue</span>.
+        Other Revenue is a monthly figure prorated by day, so it scales with the selected range.
+      </div>
+
       <div className="px-5 py-5">
         {loading ? (
           <div className="text-center py-4 text-gray-400 animate-pulse">Loading...</div>
