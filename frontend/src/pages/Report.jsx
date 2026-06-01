@@ -1042,6 +1042,130 @@ function AllCommentsPanel({ allComments, branches, selectedBranch, onClose, onJu
   );
 }
 
+// ── Client-side table sort ──────────────────────────────────────────────────
+//
+// The report HTML is server-rendered static markup injected via
+// dangerouslySetInnerHTML — there are no React table components to wire
+// sorting into. So we post-process the rendered DOM instead: for every
+// <table>, detect its column-header row, make each header cell click-to-sort,
+// and reorder the data rows in place. Frontend-only — no backend change.
+//
+// Notes:
+//   - Tables have no <thead>; the header is a <tr> of all-<th>. Some tables
+//     prefix a colspan "title" row — we pick the leading all-<th> row with the
+//     MOST cells as the real header.
+//   - Data <tr>s may carry data-metric-key (comment system) and a comment
+//     badge injected into their last <td>. We strip the badge text when
+//     reading a cell's value, and rows keep their badge when moved.
+//   - Header clicks stopPropagation so they don't open the comment drawer.
+
+const SORT_BLANKISH = new Set(["", "n/a", "na", "-", "—", "–", "--"]);
+
+// Text of a cell, minus any injected comment badge / sort arrow, so those
+// don't pollute the sort value of the last column.
+function sortCellText(td) {
+  if (!td) return "";
+  const clone = td.cloneNode(true);
+  clone.querySelectorAll(".hid-comment-badge, .hid-sort-arrow").forEach(n => n.remove());
+  return (clone.textContent || "").trim();
+}
+
+// Parse a display string to a number, tolerating currency, thousands commas,
+// a leading +/- sign, and a trailing %. Returns NaN for non-numeric / blank.
+function parseSortNum(raw) {
+  const t = (raw || "").trim();
+  if (SORT_BLANKISH.has(t.toLowerCase())) return NaN;
+  // e.g. "NT$969,324", "1,083", "31.87%", "+44.09%", "-25.00%"
+  if (!/^[^\d+-]*[-+]?\d[\d,]*(\.\d+)?\s*%?$/.test(t)) return NaN;
+  const n = parseFloat(t.replace(/[^0-9.\-]/g, ""));
+  return Number.isFinite(n) ? n : NaN;
+}
+
+// A column is numeric when every non-blank cell parses as a number (and at
+// least one does). A single real text cell (e.g. a country name) → string sort.
+function sortColumnIsNumeric(rows, colIndex) {
+  let anyNum = false;
+  for (const row of rows) {
+    const raw = sortCellText(row.cells[colIndex]);
+    if (Number.isFinite(parseSortNum(raw))) { anyNum = true; continue; }
+    if (!SORT_BLANKISH.has(raw.toLowerCase())) return false;
+  }
+  return anyNum;
+}
+
+function applyTableSort(table, headerRow, sortable, pinned, colIndex, dir) {
+  const numeric = sortColumnIsNumeric(sortable, colIndex);
+  sortable.sort((ra, rb) => {
+    const a = sortCellText(ra.cells[colIndex]);
+    const b = sortCellText(rb.cells[colIndex]);
+    if (numeric) {
+      const na = parseSortNum(a), nb = parseSortNum(b);
+      const aNaN = !Number.isFinite(na), bNaN = !Number.isFinite(nb);
+      if (aNaN && bNaN) return 0;
+      if (aNaN) return 1;            // missing values always sink to the bottom
+      if (bNaN) return -1;
+      return dir === "asc" ? na - nb : nb - na;
+    }
+    const r = a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+    return dir === "asc" ? r : -r;
+  });
+  // appendChild moves an existing node, so re-appending in order reorders the
+  // body rows after the (untouched) header; pinned rows (e.g. "No data") last.
+  const parent = sortable[0].parentNode;
+  sortable.forEach(r => parent.appendChild(r));
+  pinned.forEach(r => parent.appendChild(r));
+  // Refresh the ▲/▼ indicator on the active header cell only.
+  Array.from(headerRow.cells).forEach((th, i) => {
+    let arrow = th.querySelector(".hid-sort-arrow");
+    if (i === colIndex) {
+      if (!arrow) {
+        arrow = document.createElement("span");
+        arrow.className = "hid-sort-arrow";
+        th.appendChild(arrow);
+      }
+      arrow.textContent = dir === "asc" ? " ▲" : " ▼";
+    } else if (arrow) {
+      arrow.remove();
+    }
+  });
+}
+
+function makeTableSortable(table) {
+  if (table.dataset.hidSortable === "1") return;
+  const rows = Array.from(table.rows);
+  // Header = leading all-<th> row with the most cells (skips colspan titles).
+  let headerRow = null, headerIdx = -1, best = -1;
+  for (let i = 0; i < rows.length; i++) {
+    const cells = Array.from(rows[i].cells);
+    if (cells.length === 0 || !cells.every(c => c.tagName === "TH")) break;
+    if (cells.length > best) { best = cells.length; headerRow = rows[i]; headerIdx = i; }
+  }
+  if (!headerRow || best < 2) return;          // nothing sortable
+  const colCount = headerRow.cells.length;
+  const bodyRows = rows.slice(headerIdx + 1);
+  const sortable = bodyRows.filter(r => r.cells.length === colCount);
+  const pinned = bodyRows.filter(r => r.cells.length !== colCount);
+  table.dataset.hidSortable = "1";
+  if (sortable.length < 2) return;             // 0–1 data rows: nothing to sort
+
+  Array.from(headerRow.cells).forEach((th, colIndex) => {
+    th.classList.add("hid-sortable-th");
+    th.addEventListener("click", (ev) => {
+      ev.stopPropagation();                    // don't trigger the comment drawer
+      let dir;
+      if (String(colIndex) === table.dataset.sortCol) {
+        dir = table.dataset.sortDir === "asc" ? "desc" : "asc";
+      } else {
+        // First click: numbers high→low (most useful), text A→Z.
+        dir = sortColumnIsNumeric(sortable, colIndex) ? "desc" : "asc";
+      }
+      table.dataset.sortCol = String(colIndex);
+      table.dataset.sortDir = dir;
+      applyTableSort(table, headerRow, sortable, pinned, colIndex, dir);
+    });
+  });
+}
+
 // ── Weekly Report viewer tab ────────────────────────────────────────────────
 
 function WeeklyReportTab({ initialBranch, onBranchChange }) {
@@ -1277,6 +1401,15 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
     });
   }, [renderedHtml, commentCounts]);
 
+  // Make every rendered table click-to-sort. Runs once per HTML render (the
+  // dataset guard inside makeTableSortable prevents double-wiring); rows reset
+  // to the backend's original order whenever the branch/week changes.
+  useEffect(() => {
+    const root = reportContainerRef.current;
+    if (!root) return;
+    root.querySelectorAll("table").forEach(makeTableSortable);
+  }, [renderedHtml]);
+
   return (
     <div className="space-y-4">
       {/* Inline styles: hover effect + badge appearance. Scoped under
@@ -1313,6 +1446,19 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
           animation: hid-flash-bg 0.9s ease-in-out 2;
           outline: 2px solid rgba(245, 158, 11, 0.8) !important;
           outline-offset: -2px;
+        }
+        .hid-report-body .hid-sortable-th {
+          cursor: pointer;
+          user-select: none;
+          white-space: nowrap;
+        }
+        .hid-report-body .hid-sortable-th:hover {
+          background-color: #eef2ff !important;
+          color: #4338ca !important;
+        }
+        .hid-sort-arrow {
+          font-size: 10px;
+          color: #4338ca;
         }
       `}</style>
 
