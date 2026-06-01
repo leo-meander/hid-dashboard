@@ -529,22 +529,12 @@ def _build_report(db: Session):
 
         # ── KPI Dashboard "Adjusted" inputs (Home page) ────────────────────
         # Adjusted Forecast = Forecast × (1 − deduction%) + Other Revenue.
-        # Operators set deduction% + other_rev per month in /kpi to model
-        # known headwinds (commissions, comps) and add-ons (F&B, parking).
-        # Pull both for current month + next month so Exec Summary and
-        # Next-Month columns show the same numbers as the dashboard.
-        kt_cur = (db.query(KPITarget)
-                    .filter_by(branch_id=b.id, year=today.year, month=today.month)
-                    .first())
-        nxt_year = nxt.get("next_year") or today.year
-        nxt_month = nxt.get("next_month") or (today.month % 12 + 1)
-        kt_nxt = (db.query(KPITarget)
-                    .filter_by(branch_id=b.id, year=nxt_year, month=nxt_month)
-                    .first())
-        deduct_cur = float(kt_cur.deduction_pct or 0) if kt_cur else 0.0
-        other_rev_cur = float(kt_cur.other_revenue_native or 0) if kt_cur else 0.0
-        deduct_nxt = float(kt_nxt.deduction_pct or 0) if kt_nxt else 0.0
-        other_rev_nxt = float(kt_nxt.other_revenue_native or 0) if kt_nxt else 0.0
+        # Operators set a FIXED deduction% + other_rev per branch in /kpi to
+        # model known headwinds (commissions, comps) and add-ons (F&B, parking).
+        # These are branch-level constants applied to every month (no monthly
+        # reset), so current + next month share the same values.
+        deduct_cur = deduct_nxt = float(b.deduction_pct or 0)
+        other_rev_cur = other_rev_nxt = float(b.other_revenue_native or 0)
 
         def _adjust(forecast, deduct_pct, other_rev):
             if forecast is None:

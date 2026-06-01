@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, Column, Integer, String, DateTime
+from sqlalchemy import Boolean, Column, Integer, Numeric, String, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -20,6 +20,9 @@ class Branch(Base):
     timezone = Column(String(50), nullable=False)
     cloudbeds_property_id = Column(String(100), nullable=True)
     ads_platform_slug = Column(String(32), nullable=True)   # maps to Ads Platform branch key
+    # Fixed Group Summary adjustments — applied to EVERY month, do not reset monthly
+    deduction_pct = Column(Numeric(5, 2), nullable=True, default=0)
+    other_revenue_native = Column(Numeric(15, 2), nullable=True, default=0)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),

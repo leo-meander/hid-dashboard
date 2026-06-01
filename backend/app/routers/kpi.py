@@ -180,61 +180,29 @@ def update_kpi_target(target_id: UUID, payload: KPITargetPatch, db: Session = De
 
 @router.put("/deduction")
 def save_deduction(payload: DeductionUpdate, db: Session = Depends(get_db)):
-    """Save deduction % for a branch/year/month. Creates KPI target if not exists."""
-    existing = (
-        db.query(KPITarget)
-        .filter_by(branch_id=payload.branch_id, year=payload.year, month=payload.month)
-        .first()
-    )
-    if existing:
-        existing.deduction_pct = max(0, min(100, payload.deduction_pct))
-        db.commit()
-        db.refresh(existing)
-        return _envelope({"saved": True, "deduction_pct": float(existing.deduction_pct)})
-    else:
-        # Create minimal target so deduction can be stored
-        target = KPITarget(
-            branch_id=payload.branch_id,
-            year=payload.year,
-            month=payload.month,
-            target_revenue_native=0,
-            target_revenue_vnd=0,
-            deduction_pct=max(0, min(100, payload.deduction_pct)),
-        )
-        db.add(target)
-        db.commit()
-        db.refresh(target)
-        return _envelope({"saved": True, "deduction_pct": float(target.deduction_pct)})
+    """Save fixed deduction %% for a branch. Applies to every month (no monthly reset).
+    year/month are accepted for backward compatibility but ignored."""
+    branch = db.query(Branch).filter_by(id=payload.branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    branch.deduction_pct = max(0, min(100, payload.deduction_pct))
+    db.commit()
+    db.refresh(branch)
+    return _envelope({"saved": True, "deduction_pct": float(branch.deduction_pct)})
 
 
 @router.put("/other-revenue")
 def save_other_revenue(payload: OtherRevenueUpdate, db: Session = Depends(get_db)):
-    """Save manual other revenue (native currency) for a branch/year/month.
-    Added on top of the deducted forecast in the All Branches summary."""
-    val = max(0, float(payload.other_revenue_native or 0))
-    existing = (
-        db.query(KPITarget)
-        .filter_by(branch_id=payload.branch_id, year=payload.year, month=payload.month)
-        .first()
-    )
-    if existing:
-        existing.other_revenue_native = val
-        db.commit()
-        db.refresh(existing)
-        return _envelope({"saved": True, "other_revenue_native": float(existing.other_revenue_native)})
-    else:
-        target = KPITarget(
-            branch_id=payload.branch_id,
-            year=payload.year,
-            month=payload.month,
-            target_revenue_native=0,
-            target_revenue_vnd=0,
-            other_revenue_native=val,
-        )
-        db.add(target)
-        db.commit()
-        db.refresh(target)
-        return _envelope({"saved": True, "other_revenue_native": float(target.other_revenue_native)})
+    """Save fixed manual other revenue (native currency) for a branch. Applies to every
+    month (no monthly reset). Added on top of the deducted forecast in the All Branches
+    summary. year/month are accepted for backward compatibility but ignored."""
+    branch = db.query(Branch).filter_by(id=payload.branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    branch.other_revenue_native = max(0, float(payload.other_revenue_native or 0))
+    db.commit()
+    db.refresh(branch)
+    return _envelope({"saved": True, "other_revenue_native": float(branch.other_revenue_native)})
 
 
 # ── Summary Endpoints (Phase 2) ────────────────────────────────────────────────
@@ -259,14 +227,9 @@ def _branch_summary(db, branch, year, month):
     summary["total_room_count"] = total_room_count
     summary["total_dorm_count"] = total_dorm_count
 
-    # Include saved deduction_pct from KPI target
-    target = (
-        db.query(KPITarget)
-        .filter_by(branch_id=branch.id, year=year, month=month)
-        .first()
-    )
-    summary["deduction_pct"] = float(target.deduction_pct or 0) if target else 0
-    summary["other_revenue_native"] = float(target.other_revenue_native or 0) if target else 0
+    # Fixed per-branch adjustments — same value every month (no monthly reset)
+    summary["deduction_pct"] = float(branch.deduction_pct or 0)
+    summary["other_revenue_native"] = float(branch.other_revenue_native or 0)
 
     # Always include next-month forecast
     next_data = compute_next_month_forecast(
