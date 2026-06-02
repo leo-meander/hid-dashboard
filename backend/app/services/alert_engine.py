@@ -594,24 +594,21 @@ def _check_ota_dependency(db: Session, branch: Branch, target_date: date, rule: 
 
 
 # Forward-looking OTA commission opportunity ──────────────────────────────────
-# How far ahead to scan for soft weeks, and the minimum lead time a week needs
-# for an OTA-commission push to still move pickup before guests arrive.
-_OTA_OPP_HORIZON_DAYS = 56   # scan up to 8 weeks out
-_OTA_OPP_MIN_LEAD_DAYS = 10  # skip weeks too close to act on
+# How many upcoming weeks to scan for soft (low-occupancy) weeks.
+_OTA_OPP_WEEKS_AHEAD = 4
 
 _CANCELLED_STATUSES = ["Cancelled", "No-show", "No Show"]
 
 
 @_register("ota_commission_opportunity")
 def _check_ota_commission_opportunity(db: Session, branch: Branch, target_date: date, rule: AlertRule):
-    """Forward-looking: flag the soonest upcoming week whose on-the-books
-    occupancy is low enough that raising OTA commission could drive incremental
-    demand while there is still lead time to fill rooms.
+    """Forward-looking: list each of the next 4 weeks whose on-the-books
+    occupancy is below threshold (e.g. 40%), so the team can raise OTA
+    commission to fill those soft weeks while there is still lead time — then
+    step rates back up as they fill to protect ADR.
 
-    Trigger: projected occupancy for an upcoming week < threshold (e.g. 40%).
-    Strategy: extra OTA commission buys visibility/volume now; once the week
-    fills, rates can step back up to protect ADR. Reports the single nearest
-    actionable soft week so the recommendation names a specific week.
+    One alert row per soft week (composite metric key), mirroring the
+    per-country market alerts.
     """
     if not branch.total_rooms:
         return None
@@ -619,12 +616,12 @@ def _check_ota_commission_opportunity(db: Session, branch: Branch, target_date: 
     threshold = float(rule.threshold_value)  # e.g. 0.40
     available_per_week = branch.total_rooms * 7
 
-    # First Monday at least MIN_LEAD_DAYS out (snap forward to Monday).
-    first_day = target_date + timedelta(days=_OTA_OPP_MIN_LEAD_DAYS)
-    week_start = first_day + timedelta(days=(7 - first_day.weekday()) % 7)
-    horizon_end = target_date + timedelta(days=_OTA_OPP_HORIZON_DAYS)
+    # Start at the first Monday strictly after target_date (next week boundary).
+    days_to_monday = (7 - target_date.weekday()) % 7 or 7
+    week_start = target_date + timedelta(days=days_to_monday)
 
-    while week_start <= horizon_end:
+    alerts_created = []
+    for _ in range(_OTA_OPP_WEEKS_AHEAD):
         week_end_excl = week_start + timedelta(days=7)
 
         # Occupied room-nights overlapping the week — accurate for multi-night
@@ -651,8 +648,10 @@ def _check_ota_commission_opportunity(db: Session, branch: Branch, target_date: 
             occ_pct = projected_occ * 100
             week_label = week_start.isoformat()
             lead_days = (week_start - target_date).days
-            return _upsert_alert(
-                db, branch_id=branch.id, metric_key=rule.metric_key, alert_date=target_date,
+            # Composite key → one alert row per soft week (like country alerts).
+            composite_key = f"{rule.metric_key}_{week_label}"
+            alert = _upsert_alert(
+                db, branch_id=branch.id, metric_key=composite_key, alert_date=target_date,
                 severity=rule.severity, category=rule.category,
                 current_value=projected_occ, threshold_value=threshold,
                 baseline_value=None, deviation_pct=occ_pct,
@@ -663,10 +662,11 @@ def _check_ota_commission_opportunity(db: Session, branch: Branch, target_date: 
                 ),
                 recommendation=_fmt_rec(rule.metric_key, branch.name, occ_pct, extra=week_label),
             )
+            alerts_created.append(alert)
 
         week_start = week_end_excl
 
-    return None
+    return alerts_created[0] if alerts_created else None
 
 
 # ── Guest Market evaluators ──────────────────────────────────────────────────
