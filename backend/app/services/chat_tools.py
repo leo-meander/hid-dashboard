@@ -380,8 +380,6 @@ def tool_get_performance(db: Session, inp: dict, default_branch: Optional[str]) 
                 "branch_name": name_map.get(str(dm.branch_id), "Unknown"),
                 "date": dm.date.isoformat(),
                 "occ_pct": float(dm.occ_pct or 0),
-                "room_occ_pct": float(dm.room_occ_pct) if dm.room_occ_pct is not None else None,
-                "dorm_occ_pct": float(dm.dorm_occ_pct) if dm.dorm_occ_pct is not None else None,
                 "adr_native": float(dm.adr_native or 0),
                 "room_adr_native": float(dm.room_adr_native) if dm.room_adr_native is not None else None,
                 "dorm_adr_native": float(dm.dorm_adr_native) if dm.dorm_adr_native is not None else None,
@@ -423,7 +421,6 @@ def tool_get_performance(db: Session, inp: dict, default_branch: Optional[str]) 
             "revenue_native": 0.0, "revenue_vnd": 0.0,
             "room_revenue_native": 0.0, "dorm_revenue_native": 0.0,
             "new_bookings": 0, "cancellations": 0, "occ_sum": 0.0, "n": 0,
-            "room_occ_sum": 0.0, "room_occ_n": 0, "dorm_occ_sum": 0.0, "dorm_occ_n": 0,
         })
         if period == "weekly":
             a["year"] = k[1]; a["week"] = k[2]
@@ -444,10 +441,6 @@ def tool_get_performance(db: Session, inp: dict, default_branch: Optional[str]) 
         a["new_bookings"] += dm.new_bookings or 0
         a["cancellations"] += dm.cancellations or 0
         a["occ_sum"] += float(dm.occ_pct or 0)
-        if dm.room_occ_pct is not None:
-            a["room_occ_sum"] += float(dm.room_occ_pct); a["room_occ_n"] += 1
-        if dm.dorm_occ_pct is not None:
-            a["dorm_occ_sum"] += float(dm.dorm_occ_pct); a["dorm_occ_n"] += 1
         a["n"] += 1
 
     out = []
@@ -468,8 +461,12 @@ def tool_get_performance(db: Session, inp: dict, default_branch: Optional[str]) 
         tdc = info.get("total_dorm_count", 0) or 0
         room_revpar = v["room_revenue_native"] / (trc * n) if trc > 0 else None
         dorm_revpar = v["dorm_revenue_native"] / (tdc * n) if tdc > 0 else None
-        room_occ = v["room_occ_sum"] / v["room_occ_n"] if v["room_occ_n"] else None
-        dorm_occ = v["dorm_occ_sum"] / v["dorm_occ_n"] if v["dorm_occ_n"] else None
+        # Segment OCC on the sold-units basis (reservation_daily) — consistent
+        # with segment ADR/RevPAR so RevPAR = ADR × OCC holds. NOT daily_metrics
+        # room_occ_pct/dorm_occ_pct, which are spanning-based and badly
+        # under-count dorm beds (dorm reservations lack per-bed room numbers).
+        room_occ = v["rooms_sold"] / (trc * n) if trc > 0 else None
+        dorm_occ = v["dorms_sold"] / (tdc * n) if tdc > 0 else None
         v["branch_name"] = name_map.get(v["branch_id"], "Unknown")
         v["days"] = n
         v["total_rooms"] = info.get("total_rooms")
@@ -489,8 +486,6 @@ def tool_get_performance(db: Session, inp: dict, default_branch: Optional[str]) 
         v["room_revenue_native"] = round(v["room_revenue_native"], 2)
         v["dorm_revenue_native"] = round(v["dorm_revenue_native"], 2)
         v.pop("occ_sum", None); v.pop("n", None)
-        v.pop("room_occ_sum", None); v.pop("room_occ_n", None)
-        v.pop("dorm_occ_sum", None); v.pop("dorm_occ_n", None)
         out.append(v)
 
     out.sort(key=lambda x: (x.get("branch_id"), x.get("year", 0), x.get("month", x.get("week", 0))))
