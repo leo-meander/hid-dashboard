@@ -80,11 +80,14 @@ def register_tools(mcp: FastMCP) -> None:
         to scope to one branch, or omit / 'all' for every branch. Defaults:
         period='monthly', last ~6 months.
 
-        ADR (avg_adr_native) is blended across private rooms AND dorm beds; the
-        per-segment split is also returned as avg_room_adr_native (private rooms)
-        and avg_dorm_adr_native (dorm beds), so ADR CAN be broken out by dorm vs
-        room. Dorm-heavy branches (Taipei, 1948, Oani) have a much lower dorm ADR
-        than the blended figure.
+        ADR and RevPAR come blended AND split by segment, so both CAN be broken
+        out by dorm vs room: avg_room_adr_native / avg_dorm_adr_native, and
+        avg_room_revpar_native / avg_dorm_revpar_native (true per-available-unit
+        RevPAR = segment revenue / available units / days). The available-inventory
+        denominators are returned too — total_room_count (private room units),
+        total_dorm_count (dorm beds), plus avg_room_occ_pct / avg_dorm_occ_pct and
+        days. Dorm-heavy branches (Taipei, 1948, Oani) have much lower dorm
+        ADR/RevPAR than the blended figure.
 
         IMPORTANT: this returns ONLY what already happened (no forecast). For
         end-of-month projection, target achievement, or "are we on track"
