@@ -44,7 +44,12 @@ TOOL_DEFS: list[dict] = [
         "description": (
             "Performance metrics (OCC, ADR, RevPAR, Revenue, bookings, cancellations) "
             "aggregated daily, weekly, or monthly. Defaults: branch_id = current "
-            "selected branch (or all if 'all'); period = 'monthly'; last 6 months."
+            "selected branch (or all if 'all'); period = 'monthly'; last 6 months. "
+            "ADR (avg_adr_native) is blended across private rooms AND dorm beds; the "
+            "per-segment split is also returned — avg_room_adr_native (private rooms) "
+            "and avg_dorm_adr_native (dorm beds) — so you CAN break ADR out by dorm "
+            "vs room. Dorm-heavy branches (Taipei, 1948, Oani) have a much lower dorm "
+            "ADR than the blended figure."
         ),
         "input_schema": {
             "type": "object",
@@ -234,6 +239,27 @@ TOOL_DEFS: list[dict] = [
             },
         },
     },
+    {
+        "name": "get_cancellation_leadtime",
+        "description": (
+            "Lead-time profile of the CANCELLED / no-show cohort: how far ahead "
+            "those guests had originally booked (reservation_date → check_in_date), "
+            "bucketed (same-day, 1-7, 8-30, 31-60, 60+ days) with avg + median. "
+            "Use for 'how far in advance were the cancellations', cancellation "
+            "timing/behaviour questions. NOTE: this is BOOKING lead time, not "
+            "cancel-to-check-in timing — cancellation_date is not reliably stored, "
+            "so true 'how long before check-in did they cancel' is unavailable. "
+            "Filtered by check_in_date; defaults to the last 90 days."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch_id": {"type": "string", "description": "UUID of branch, or 'all'. Defaults to current."},
+                "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD (by check-in date)"},
+                "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD (by check-in date)"},
+            },
+        },
+    },
 ]
 
 
@@ -339,10 +365,14 @@ def tool_get_performance(db: Session, inp: dict, default_branch: Optional[str]) 
                 "date": dm.date.isoformat(),
                 "occ_pct": float(dm.occ_pct or 0),
                 "adr_native": float(dm.adr_native or 0),
+                "room_adr_native": float(dm.room_adr_native) if dm.room_adr_native is not None else None,
+                "dorm_adr_native": float(dm.dorm_adr_native) if dm.dorm_adr_native is not None else None,
                 "revpar_native": float(dm.revpar_native or 0),
                 "revenue_native": float(dm.revenue_native or 0),
                 "revenue_vnd": float(dm.revenue_vnd or 0),
                 "rooms_sold": dm.rooms_sold,
+                "dorms_sold": dm.dorms_sold,
+                "total_sold": dm.total_sold,
                 "new_bookings": dm.new_bookings,
                 "cancellations": dm.cancellations,
                 "cancellation_pct": float(dm.cancellation_pct or 0),
@@ -367,14 +397,25 @@ def tool_get_performance(db: Session, inp: dict, default_branch: Optional[str]) 
         k = _key(dm.date)
         a = agg.setdefault(k, {
             "branch_id": str(dm.branch_id),
-            "rooms_sold": 0, "revenue_native": 0.0, "revenue_vnd": 0.0,
+            "total_sold": 0, "rooms_sold": 0, "dorms_sold": 0,
+            "revenue_native": 0.0, "revenue_vnd": 0.0,
+            "room_revenue_native": 0.0, "dorm_revenue_native": 0.0,
             "new_bookings": 0, "cancellations": 0, "occ_sum": 0.0, "n": 0,
         })
         if period == "weekly":
             a["year"] = k[1]; a["week"] = k[2]
         else:
             a["year"] = k[1]; a["month"] = k[2]
+        # ADR denominator must include dorm beds, not just private rooms.
+        # dm.rooms_sold is Room-category only; dm.total_sold = rooms + dorms,
+        # which matches the revenue numerator (rooms + dorm revenue) and the
+        # dashboard's SOLD column. Using rooms_sold here over-stated ADR/RevPAR
+        # several-fold for dorm-heavy branches (Taipei, 1948, Oani).
+        a["total_sold"] += dm.total_sold or 0
         a["rooms_sold"] += dm.rooms_sold or 0
+        a["dorms_sold"] += dm.dorms_sold or 0
+        a["room_revenue_native"] += float(dm.room_revenue_native or 0)
+        a["dorm_revenue_native"] += float(dm.dorm_revenue_native or 0)
         a["revenue_native"] += float(dm.revenue_native or 0)
         a["revenue_vnd"] += float(dm.revenue_vnd or 0)
         a["new_bookings"] += dm.new_bookings or 0
@@ -385,14 +426,23 @@ def tool_get_performance(db: Session, inp: dict, default_branch: Optional[str]) 
     out = []
     for v in agg.values():
         n = v["n"] or 1
-        adr = v["revenue_native"] / v["rooms_sold"] if v["rooms_sold"] > 0 else 0
+        adr = v["revenue_native"] / v["total_sold"] if v["total_sold"] > 0 else 0
+        # Per-segment ADR: Room revenue ÷ private rooms sold, Dorm revenue ÷
+        # dorm beds sold. Lets the assistant answer "ADR by dorm vs room" —
+        # the split lives on daily_metrics but was never exposed by any tool.
+        room_adr = v["room_revenue_native"] / v["rooms_sold"] if v["rooms_sold"] > 0 else None
+        dorm_adr = v["dorm_revenue_native"] / v["dorms_sold"] if v["dorms_sold"] > 0 else None
         occ = v["occ_sum"] / n
         v["branch_name"] = name_map.get(v["branch_id"], "Unknown")
         v["avg_occ_pct"] = round(occ, 4)
         v["avg_adr_native"] = round(adr, 2)
+        v["avg_room_adr_native"] = round(room_adr, 2) if room_adr is not None else None
+        v["avg_dorm_adr_native"] = round(dorm_adr, 2) if dorm_adr is not None else None
         v["avg_revpar_native"] = round(occ * adr, 2)
         v["revenue_native"] = round(v["revenue_native"], 2)
         v["revenue_vnd"] = round(v["revenue_vnd"], 2)
+        v["room_revenue_native"] = round(v["room_revenue_native"], 2)
+        v["dorm_revenue_native"] = round(v["dorm_revenue_native"], 2)
         v.pop("occ_sum", None); v.pop("n", None)
         out.append(v)
 
@@ -971,6 +1021,81 @@ def tool_get_marketing_activity(db: Session, inp: dict, default_branch: Optional
     }
 
 
+def tool_get_cancellation_leadtime(db: Session, inp: dict, default_branch: Optional[str]) -> dict:
+    """How far ahead the CANCELLED / no-show cohort had booked, bucketed.
+
+    IMPORTANT — this is BOOKING lead time (reservation_date → check_in_date),
+    NOT cancel-to-check-in timing. cancellation_date is not reliably populated
+    from the Cloudbeds bulk API, so true "how long before check-in did they
+    cancel" is unavailable. This is the closest proxy HiD can give today:
+    among reservations that ended up cancelled, how far in advance had they
+    originally booked. Filtered by check_in_date window."""
+    branch_id = _resolve_branch_id(inp.get("branch_id"), default_branch)
+    today = date.today()
+    d_to = _parse_date(inp.get("date_to"), today)
+    d_from = _parse_date(inp.get("date_from"), d_to - timedelta(days=90))
+    bf, params = _b_filter_clause(branch_id, "r")
+    params.update({"df": d_from, "dt": d_to})
+
+    row = db.execute(text(f"""
+        WITH base AS (
+            SELECT lower(r.status) AS status,
+                   CASE WHEN r.reservation_date IS NOT NULL
+                             AND r.check_in_date IS NOT NULL
+                             AND r.check_in_date >= r.reservation_date
+                        THEN (r.check_in_date - r.reservation_date) END AS lead_days
+            FROM reservations r
+            WHERE lower(r.status) IN
+                  ('cancelled','canceled','no_show','noshow','no show','no-show','cancelled_by_guest')
+              AND r.check_in_date >= :df AND r.check_in_date <= :dt
+              {bf}
+        )
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE status IN ('no_show','noshow','no show','no-show')) AS no_show,
+               AVG(lead_days) AS lead_avg,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY lead_days) AS lead_median,
+               COUNT(*) FILTER (WHERE lead_days = 0) AS lt_same_day,
+               COUNT(*) FILTER (WHERE lead_days BETWEEN 1 AND 7) AS lt_1_7,
+               COUNT(*) FILTER (WHERE lead_days BETWEEN 8 AND 30) AS lt_8_30,
+               COUNT(*) FILTER (WHERE lead_days BETWEEN 31 AND 60) AS lt_31_60,
+               COUNT(*) FILTER (WHERE lead_days > 60) AS lt_60_plus,
+               COUNT(*) FILTER (WHERE lead_days IS NULL) AS lt_unknown
+        FROM base
+    """), params).fetchone()
+
+    total = int(row[0] or 0)
+
+    def bucket(cnt) -> dict:
+        c = int(cnt or 0)
+        return {"count": c, "pct": round(c / total * 100, 2) if total else 0.0}
+
+    return {
+        "basis": "booking_lead_time",
+        "note": (
+            "Booking lead time (reservation_date → check_in_date) for the "
+            "cancelled/no-show cohort — i.e. how far ahead these guests had "
+            "booked, NOT how long before check-in they cancelled. "
+            "cancellation_date is not reliably stored, so true cancel-to-check-in "
+            "timing is not available in HiD today."
+        ),
+        "branch_id": branch_id or "all",
+        "date_from": d_from.isoformat(),
+        "date_to": d_to.isoformat(),
+        "total_cancellations": total,
+        "no_shows": int(row[1] or 0),
+        "lead_time_avg_days": round(float(row[2]), 1) if row[2] is not None else None,
+        "lead_time_median_days": round(float(row[3]), 1) if row[3] is not None else None,
+        "lead_time_distribution": {
+            "same_day_0": bucket(row[4]),
+            "1_7_days": bucket(row[5]),
+            "8_30_days": bucket(row[6]),
+            "31_60_days": bucket(row[7]),
+            "60_plus_days": bucket(row[8]),
+            "unknown": bucket(row[9]),
+        },
+    }
+
+
 # ── Dispatch ────────────────────────────────────────────────────────────────
 
 TOOL_HANDLERS = {
@@ -986,6 +1111,7 @@ TOOL_HANDLERS = {
     "get_kol_performance": tool_get_kol_performance,
     "get_country_profile": tool_get_country_profile,
     "get_marketing_activity": tool_get_marketing_activity,
+    "get_cancellation_leadtime": tool_get_cancellation_leadtime,
 }
 
 

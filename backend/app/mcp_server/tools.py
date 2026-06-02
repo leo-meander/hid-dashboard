@@ -80,6 +80,12 @@ def register_tools(mcp: FastMCP) -> None:
         to scope to one branch, or omit / 'all' for every branch. Defaults:
         period='monthly', last ~6 months.
 
+        ADR (avg_adr_native) is blended across private rooms AND dorm beds; the
+        per-segment split is also returned as avg_room_adr_native (private rooms)
+        and avg_dorm_adr_native (dorm beds), so ADR CAN be broken out by dorm vs
+        room. Dorm-heavy branches (Taipei, 1948, Oani) have a much lower dorm ADR
+        than the blended figure.
+
         IMPORTANT: this returns ONLY what already happened (no forecast). For
         end-of-month projection, target achievement, or "are we on track"
         questions about an in-progress month, use get_kpi_status instead.
@@ -242,5 +248,25 @@ def register_tools(mcp: FastMCP) -> None:
         bookings, paid ads bookings + revenue. Filtered by reservation_date
         (when booked), not check_in_date. Use for 'how's marketing performing'."""
         return _run("get_marketing_activity", {
+            "branch_id": branch_id, "date_from": date_from, "date_to": date_to,
+        })
+
+    @mcp.tool()
+    def get_cancellation_leadtime(
+        branch_id: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> dict:
+        """Lead-time profile of the CANCELLED / no-show cohort: how far ahead
+        those guests had originally booked (reservation_date → check_in_date),
+        bucketed (same-day, 1-7, 8-30, 31-60, 60+ days) with avg + median. Use
+        for 'how far in advance were the cancellations' and cancellation-timing
+        questions.
+
+        NOTE: this is BOOKING lead time, not cancel-to-check-in timing —
+        cancellation_date is not reliably stored from the Cloudbeds bulk API, so
+        true 'how long before check-in did they cancel' is unavailable today.
+        Filtered by check_in_date; defaults to the last 90 days."""
+        return _run("get_cancellation_leadtime", {
             "branch_id": branch_id, "date_from": date_from, "date_to": date_to,
         })
