@@ -299,10 +299,14 @@ def trigger_guest_country_backfill(
 _CANCEL_STATUSES = (
     "('cancelled','canceled','no_show','noshow','no show','no-show','cancelled_by_guest')"
 )
-# First 10 chars look like a real ISO date and aren't the Cloudbeds null sentinel.
+# raw_data carries NO 'cancellationDate' (confirmed 0/54669). It does carry
+# 'dateModified' on every row, and for a cancelled booking the last modification
+# is the cancellation itself — so dateModified is a free proxy for the cancel
+# date. Guard: first 10 chars look like a real ISO date, not the null sentinel.
+_CANCEL_PROXY_KEY = "dateModified"
 _CANCEL_DATE_GUARD = (
-    " r.raw_data->>'cancellationDate' ~ '^\\d{4}-\\d{2}-\\d{2}'"
-    " AND left(r.raw_data->>'cancellationDate', 10) <> '0000-00-00'"
+    " r.raw_data->>'dateModified' ~ '^\\d{4}-\\d{2}-\\d{2}'"
+    " AND left(r.raw_data->>'dateModified', 10) <> '0000-00-00'"
 )
 
 
@@ -349,18 +353,21 @@ def cancellation_date_coverage(db: Session = Depends(get_db)):
 
     # A few sample raw values so we can see the stored format.
     samples = db.execute(text(
-        "SELECT DISTINCT left(r.raw_data->>'cancellationDate', 19) AS v"
+        "SELECT DISTINCT left(r.raw_data->>'dateModified', 19) AS v"
         " FROM reservations r WHERE lower(r.status) IN " + _CANCEL_STATUSES +
-        " AND r.raw_data->>'cancellationDate' IS NOT NULL"
-        " AND r.raw_data->>'cancellationDate' <> '' LIMIT 8"
+        " AND r.raw_data->>'dateModified' IS NOT NULL"
+        " AND r.raw_data->>'dateModified' <> '' LIMIT 8"
     )).fetchall()
 
     return _envelope({
+        "proxy_field": _CANCEL_PROXY_KEY,
         "totals": totals,
         "coverage_pct_after_tier1": cov_after,
         "per_branch": per_branch,
         "raw_value_samples": [s[0] for s in samples],
-        "note": "Tier-1 = fill from raw_data (free). still_null_after_tier1 needs a Cloudbeds /getReservation pull.",
+        "note": ("Tier-1 = fill cancellation_date from raw_data->>'dateModified' (proxy = "
+                 "last-modified ≈ cancel moment; free). still_null_after_tier1 would need a "
+                 "Cloudbeds /getReservation pull (tier-2)."),
     })
 
 
@@ -369,9 +376,9 @@ def backfill_cancellation_date_from_raw(
     apply: bool = Query(False, description="False = dry-run (count only); True = write the column."),
     db: Session = Depends(get_db),
 ):
-    """Tier-1 backfill (NO Cloudbeds): set cancellation_date from
-    raw_data->>'cancellationDate' for cancelled/no-show rows where it's NULL and
-    raw_data already carries a usable value. Idempotent; default is dry-run."""
+    """Tier-1 backfill (NO Cloudbeds): set cancellation_date from the
+    raw_data->>'dateModified' proxy for cancelled/no-show rows where it's NULL
+    and raw_data carries a usable value. Idempotent; default is dry-run."""
     from sqlalchemy import text
 
     where = (
@@ -384,7 +391,7 @@ def backfill_cancellation_date_from_raw(
     if apply and candidates:
         res = db.execute(text(
             "UPDATE reservations r SET cancellation_date ="
-            " left(r.raw_data->>'cancellationDate', 10)::date WHERE" + where
+            " left(r.raw_data->>'dateModified', 10)::date WHERE" + where
         ))
         updated = res.rowcount
         db.commit()
@@ -396,6 +403,22 @@ def backfill_cancellation_date_from_raw(
         "message": ("Dry-run — pass ?apply=true to write." if not apply
                     else f"Filled cancellation_date on {updated} rows."),
     })
+
+
+@router.get("/debug/cancellation-leadtime")
+def debug_cancellation_leadtime(
+    branch_id: Optional[UUID] = Query(None),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD (by check-in)"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD (by check-in)"),
+    db: Session = Depends(get_db),
+):
+    """Debug passthrough: run the get_cancellation_leadtime chat/MCP tool over
+    HTTP so its output can be inspected without an MCP/chat round-trip."""
+    from app.services.chat_tools import execute_tool
+    return _envelope(execute_tool("get_cancellation_leadtime", {
+        "branch_id": str(branch_id) if branch_id else None,
+        "date_from": date_from, "date_to": date_to,
+    }, db, None))
 
 
 @router.post("/daily-revenue")

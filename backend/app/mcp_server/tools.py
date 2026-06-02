@@ -257,16 +257,15 @@ def register_tools(mcp: FastMCP) -> None:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
     ) -> dict:
-        """Lead-time profile of the CANCELLED / no-show cohort: how far ahead
-        those guests had originally booked (reservation_date → check_in_date),
-        bucketed (same-day, 1-7, 8-30, 31-60, 60+ days) with avg + median. Use
-        for 'how far in advance were the cancellations' and cancellation-timing
-        questions.
+        """How long before check-in the CANCELLED / no-show cohort cancelled:
+        days between cancel date and check_in_date, bucketed (after/same-day,
+        1-7, 8-30, 31-60, 60+ days) with avg + median. Use for 'how far in
+        advance were the cancellations' and cancellation-timing questions.
 
-        NOTE: this is BOOKING lead time, not cancel-to-check-in timing —
-        cancellation_date is not reliably stored from the Cloudbeds bulk API, so
-        true 'how long before check-in did they cancel' is unavailable today.
-        Filtered by check_in_date; defaults to the last 90 days."""
+        NOTE: the cancel date is APPROXIMATE — derived from the reservation's
+        last-modified timestamp (Cloudbeds exposes no exact cancellationDate in
+        HiD's data; for a cancelled booking the final modification is effectively
+        the cancellation). Filtered by check_in_date; defaults to last 90 days."""
         return _run("get_cancellation_leadtime", {
             "branch_id": branch_id, "date_from": date_from, "date_to": date_to,
         })

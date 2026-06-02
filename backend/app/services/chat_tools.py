@@ -242,14 +242,15 @@ TOOL_DEFS: list[dict] = [
     {
         "name": "get_cancellation_leadtime",
         "description": (
-            "Lead-time profile of the CANCELLED / no-show cohort: how far ahead "
-            "those guests had originally booked (reservation_date → check_in_date), "
-            "bucketed (same-day, 1-7, 8-30, 31-60, 60+ days) with avg + median. "
-            "Use for 'how far in advance were the cancellations', cancellation "
-            "timing/behaviour questions. NOTE: this is BOOKING lead time, not "
-            "cancel-to-check-in timing — cancellation_date is not reliably stored, "
-            "so true 'how long before check-in did they cancel' is unavailable. "
-            "Filtered by check_in_date; defaults to the last 90 days."
+            "How long before check-in the CANCELLED / no-show cohort cancelled: "
+            "days between cancel date and check_in_date, bucketed (after/same-day, "
+            "1-7, 8-30, 31-60, 60+ days) with avg + median. Use for 'how far in "
+            "advance were the cancellations', cancellation timing/behaviour. NOTE: "
+            "the cancel date is APPROXIMATE — derived from the reservation's "
+            "last-modified timestamp (Cloudbeds exposes no exact cancellationDate "
+            "in HiD's data; for a cancelled booking the final modification is "
+            "effectively the cancellation). Filtered by check_in_date; defaults to "
+            "the last 90 days."
         ),
         "input_schema": {
             "type": "object",
@@ -1022,14 +1023,15 @@ def tool_get_marketing_activity(db: Session, inp: dict, default_branch: Optional
 
 
 def tool_get_cancellation_leadtime(db: Session, inp: dict, default_branch: Optional[str]) -> dict:
-    """How far ahead the CANCELLED / no-show cohort had booked, bucketed.
+    """How many days before check-in the CANCELLED / no-show cohort cancelled.
 
-    IMPORTANT — this is BOOKING lead time (reservation_date → check_in_date),
-    NOT cancel-to-check-in timing. cancellation_date is not reliably populated
-    from the Cloudbeds bulk API, so true "how long before check-in did they
-    cancel" is unavailable. This is the closest proxy HiD can give today:
-    among reservations that ended up cancelled, how far in advance had they
-    originally booked. Filtered by check_in_date window."""
+    Uses cancellation_date when populated; otherwise falls back to raw_data's
+    'dateModified' (the last-modified timestamp — for a cancelled booking the
+    final modification is effectively the cancellation). This is an APPROXIMATE
+    cancel date: Cloudbeds does not expose an exact cancellationDate in the data
+    HiD ingests. Positive lead_days = cancelled in advance; <= 0 = cancelled on
+    or after the check-in date (includes no-shows). Filtered by check_in_date
+    window; defaults to the last 90 days."""
     branch_id = _resolve_branch_id(inp.get("branch_id"), default_branch)
     today = date.today()
     d_to = _parse_date(inp.get("date_to"), today)
@@ -1040,10 +1042,14 @@ def tool_get_cancellation_leadtime(db: Session, inp: dict, default_branch: Optio
     row = db.execute(text(f"""
         WITH base AS (
             SELECT lower(r.status) AS status,
-                   CASE WHEN r.reservation_date IS NOT NULL
-                             AND r.check_in_date IS NOT NULL
-                             AND r.check_in_date >= r.reservation_date
-                        THEN (r.check_in_date - r.reservation_date) END AS lead_days
+                   CASE
+                       WHEN r.cancellation_date IS NOT NULL AND r.check_in_date IS NOT NULL
+                            THEN (r.check_in_date - r.cancellation_date)
+                       WHEN r.raw_data->>'dateModified' ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}'
+                            AND left(r.raw_data->>'dateModified', 10) <> '0000-00-00'
+                            AND r.check_in_date IS NOT NULL
+                            THEN (r.check_in_date - left(r.raw_data->>'dateModified', 10)::date)
+                   END AS lead_days
             FROM reservations r
             WHERE lower(r.status) IN
                   ('cancelled','canceled','no_show','noshow','no show','no-show','cancelled_by_guest')
@@ -1054,7 +1060,7 @@ def tool_get_cancellation_leadtime(db: Session, inp: dict, default_branch: Optio
                COUNT(*) FILTER (WHERE status IN ('no_show','noshow','no show','no-show')) AS no_show,
                AVG(lead_days) AS lead_avg,
                percentile_cont(0.5) WITHIN GROUP (ORDER BY lead_days) AS lead_median,
-               COUNT(*) FILTER (WHERE lead_days = 0) AS lt_same_day,
+               COUNT(*) FILTER (WHERE lead_days <= 0) AS lt_after_or_same,
                COUNT(*) FILTER (WHERE lead_days BETWEEN 1 AND 7) AS lt_1_7,
                COUNT(*) FILTER (WHERE lead_days BETWEEN 8 AND 30) AS lt_8_30,
                COUNT(*) FILTER (WHERE lead_days BETWEEN 31 AND 60) AS lt_31_60,
@@ -1070,13 +1076,14 @@ def tool_get_cancellation_leadtime(db: Session, inp: dict, default_branch: Optio
         return {"count": c, "pct": round(c / total * 100, 2) if total else 0.0}
 
     return {
-        "basis": "booking_lead_time",
+        "basis": "cancellation_lead_time_approx",
         "note": (
-            "Booking lead time (reservation_date → check_in_date) for the "
-            "cancelled/no-show cohort — i.e. how far ahead these guests had "
-            "booked, NOT how long before check-in they cancelled. "
-            "cancellation_date is not reliably stored, so true cancel-to-check-in "
-            "timing is not available in HiD today."
+            "Days between cancellation and check-in (check_in_date − cancel date). "
+            "Cancel date is approximated from the reservation's last-modified "
+            "timestamp — Cloudbeds exposes no exact cancellationDate in HiD's data, "
+            "and for a cancelled booking the last modification is effectively the "
+            "cancellation. Positive = cancelled in advance; 'after_or_same_day' = "
+            "cancelled on/after check-in (includes no-shows)."
         ),
         "branch_id": branch_id or "all",
         "date_from": d_from.isoformat(),
@@ -1086,7 +1093,7 @@ def tool_get_cancellation_leadtime(db: Session, inp: dict, default_branch: Optio
         "lead_time_avg_days": round(float(row[2]), 1) if row[2] is not None else None,
         "lead_time_median_days": round(float(row[3]), 1) if row[3] is not None else None,
         "lead_time_distribution": {
-            "same_day_0": bucket(row[4]),
+            "after_or_same_day": bucket(row[4]),
             "1_7_days": bucket(row[5]),
             "8_30_days": bucket(row[6]),
             "31_60_days": bucket(row[7]),
