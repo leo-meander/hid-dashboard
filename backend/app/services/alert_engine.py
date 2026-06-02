@@ -73,6 +73,12 @@ RECOMMENDATIONS = {
         "Invest in direct booking campaigns, improve website booking engine experience, "
         "and create exclusive direct-booking perks to reduce commission costs."
     ),
+    "ota_commission_opportunity": (
+        "Week of {extra} is only {dev:.1f}% booked at {branch} — a soft week with room to fill. "
+        "Raise OTA commission for that week so OTAs surface {branch} to more potential guests and accelerate "
+        "pickup while there is still lead time. As occupancy firms up, step room rates back up to protect ADR — "
+        "the extra commission is the cost of buying incremental volume now, and the ADR recovery offsets it."
+    ),
     "country_booking_drop": (
         "Top source country {extra} dropped {dev:.1f}% YoY at {branch}. "
         "Investigate market-specific issues (visa changes, airline routes, competitor pricing). "
@@ -584,6 +590,82 @@ def _check_ota_dependency(db: Session, branch: Branch, target_date: date, rule: 
             message=f"OTA share is {deviation:.1f}% of room nights (last {lookback} days)",
             recommendation=_fmt_rec(rule.metric_key, branch.name, deviation),
         )
+    return None
+
+
+# Forward-looking OTA commission opportunity ──────────────────────────────────
+# How far ahead to scan for soft weeks, and the minimum lead time a week needs
+# for an OTA-commission push to still move pickup before guests arrive.
+_OTA_OPP_HORIZON_DAYS = 56   # scan up to 8 weeks out
+_OTA_OPP_MIN_LEAD_DAYS = 10  # skip weeks too close to act on
+
+_CANCELLED_STATUSES = ["Cancelled", "No-show", "No Show"]
+
+
+@_register("ota_commission_opportunity")
+def _check_ota_commission_opportunity(db: Session, branch: Branch, target_date: date, rule: AlertRule):
+    """Forward-looking: flag the soonest upcoming week whose on-the-books
+    occupancy is low enough that raising OTA commission could drive incremental
+    demand while there is still lead time to fill rooms.
+
+    Trigger: projected occupancy for an upcoming week < threshold (e.g. 40%).
+    Strategy: extra OTA commission buys visibility/volume now; once the week
+    fills, rates can step back up to protect ADR. Reports the single nearest
+    actionable soft week so the recommendation names a specific week.
+    """
+    if not branch.total_rooms:
+        return None
+
+    threshold = float(rule.threshold_value)  # e.g. 0.40
+    available_per_week = branch.total_rooms * 7
+
+    # First Monday at least MIN_LEAD_DAYS out (snap forward to Monday).
+    first_day = target_date + timedelta(days=_OTA_OPP_MIN_LEAD_DAYS)
+    week_start = first_day + timedelta(days=(7 - first_day.weekday()) % 7)
+    horizon_end = target_date + timedelta(days=_OTA_OPP_HORIZON_DAYS)
+
+    while week_start <= horizon_end:
+        week_end_excl = week_start + timedelta(days=7)
+
+        # Occupied room-nights overlapping the week — accurate for multi-night
+        # stays: sum of LEAST(checkout, week_end) - GREATEST(checkin, week_start).
+        overlap = func.greatest(
+            0,
+            func.least(Reservation.check_out_date, week_end_excl)
+            - func.greatest(Reservation.check_in_date, week_start),
+        )
+        booked_nights = (
+            db.query(func.coalesce(func.sum(overlap), 0))
+            .filter(
+                Reservation.branch_id == branch.id,
+                Reservation.check_in_date < week_end_excl,
+                Reservation.check_out_date > week_start,
+                ~Reservation.status.in_(_CANCELLED_STATUSES),
+            )
+            .scalar()
+        ) or 0
+
+        projected_occ = float(booked_nights) / available_per_week
+
+        if projected_occ < threshold:
+            occ_pct = projected_occ * 100
+            week_label = week_start.isoformat()
+            lead_days = (week_start - target_date).days
+            return _upsert_alert(
+                db, branch_id=branch.id, metric_key=rule.metric_key, alert_date=target_date,
+                severity=rule.severity, category=rule.category,
+                current_value=projected_occ, threshold_value=threshold,
+                baseline_value=None, deviation_pct=occ_pct,
+                message=(
+                    f"Week of {week_label} is only {occ_pct:.1f}% booked "
+                    f"({int(booked_nights)}/{available_per_week} room-nights) — below the "
+                    f"{threshold * 100:.0f}% floor with {lead_days} days lead time to fill it"
+                ),
+                recommendation=_fmt_rec(rule.metric_key, branch.name, occ_pct, extra=week_label),
+            )
+
+        week_start = week_end_excl
+
     return None
 
 
