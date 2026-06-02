@@ -289,6 +289,115 @@ def trigger_guest_country_backfill(
     })
 
 
+# ── Cancellation-date tier-1 backfill (from raw_data JSONB, no Cloudbeds) ────
+# Cancelled/no-show rows often have cancellation_date NULL because the bulk
+# /getReservations lite payload omits it. But the stored raw_data JSONB may
+# already carry 'cancellationDate' (full modifiedAt payloads include it). These
+# two endpoints measure coverage and fill the column from raw_data alone — no
+# Cloudbeds API calls. Used to power get_cancellation_leadtime's true metric.
+
+_CANCEL_STATUSES = (
+    "('cancelled','canceled','no_show','noshow','no show','no-show','cancelled_by_guest')"
+)
+# First 10 chars look like a real ISO date and aren't the Cloudbeds null sentinel.
+_CANCEL_DATE_GUARD = (
+    " r.raw_data->>'cancellationDate' ~ '^\\d{4}-\\d{2}-\\d{2}'"
+    " AND left(r.raw_data->>'cancellationDate', 10) <> '0000-00-00'"
+)
+
+
+@router.get("/cancellation-date-coverage")
+def cancellation_date_coverage(db: Session = Depends(get_db)):
+    """Read-only: how many cancelled/no-show reservations already have, or could
+    get, a cancellation_date from raw_data — WITHOUT calling Cloudbeds.
+
+    fillable_from_raw = rows currently NULL whose raw_data JSONB already carries
+    a usable 'cancellationDate' (tier-1 backfill candidates). still_null_after =
+    what would remain NULL and require a Cloudbeds /getReservation pull (tier-2).
+    """
+    from sqlalchemy import text
+
+    rows = db.execute(text(
+        "SELECT b.name AS branch,"
+        " COUNT(*) AS cancelled_total,"
+        " COUNT(*) FILTER (WHERE r.cancellation_date IS NOT NULL) AS already_filled,"
+        " COUNT(*) FILTER (WHERE r.cancellation_date IS NULL) AS null_count,"
+        " COUNT(*) FILTER (WHERE r.cancellation_date IS NULL AND r.raw_data IS NOT NULL) AS null_with_rawdata,"
+        " COUNT(*) FILTER (WHERE r.cancellation_date IS NULL AND" + _CANCEL_DATE_GUARD + ") AS fillable_from_raw"
+        " FROM reservations r JOIN branches b ON b.id = r.branch_id"
+        " WHERE lower(r.status) IN " + _CANCEL_STATUSES +
+        " GROUP BY b.name ORDER BY b.name"
+    )).fetchall()
+
+    per_branch, totals = [], {"cancelled_total": 0, "already_filled": 0,
+                              "null_count": 0, "null_with_rawdata": 0, "fillable_from_raw": 0}
+    for r in rows:
+        d = {
+            "branch": r[0], "cancelled_total": int(r[1]), "already_filled": int(r[2]),
+            "null_count": int(r[3]), "null_with_rawdata": int(r[4]), "fillable_from_raw": int(r[5]),
+        }
+        d["still_null_after_tier1"] = d["null_count"] - d["fillable_from_raw"]
+        per_branch.append(d)
+        for k in totals:
+            totals[k] += d[k]
+    totals["still_null_after_tier1"] = totals["null_count"] - totals["fillable_from_raw"]
+
+    cov_after = (
+        round((totals["already_filled"] + totals["fillable_from_raw"]) / totals["cancelled_total"] * 100, 1)
+        if totals["cancelled_total"] else None
+    )
+
+    # A few sample raw values so we can see the stored format.
+    samples = db.execute(text(
+        "SELECT DISTINCT left(r.raw_data->>'cancellationDate', 19) AS v"
+        " FROM reservations r WHERE lower(r.status) IN " + _CANCEL_STATUSES +
+        " AND r.raw_data->>'cancellationDate' IS NOT NULL"
+        " AND r.raw_data->>'cancellationDate' <> '' LIMIT 8"
+    )).fetchall()
+
+    return _envelope({
+        "totals": totals,
+        "coverage_pct_after_tier1": cov_after,
+        "per_branch": per_branch,
+        "raw_value_samples": [s[0] for s in samples],
+        "note": "Tier-1 = fill from raw_data (free). still_null_after_tier1 needs a Cloudbeds /getReservation pull.",
+    })
+
+
+@router.post("/backfill-cancellation-date")
+def backfill_cancellation_date_from_raw(
+    apply: bool = Query(False, description="False = dry-run (count only); True = write the column."),
+    db: Session = Depends(get_db),
+):
+    """Tier-1 backfill (NO Cloudbeds): set cancellation_date from
+    raw_data->>'cancellationDate' for cancelled/no-show rows where it's NULL and
+    raw_data already carries a usable value. Idempotent; default is dry-run."""
+    from sqlalchemy import text
+
+    where = (
+        " lower(r.status) IN " + _CANCEL_STATUSES +
+        " AND r.cancellation_date IS NULL AND" + _CANCEL_DATE_GUARD
+    )
+    candidates = db.execute(text("SELECT COUNT(*) FROM reservations r WHERE" + where)).scalar()
+
+    updated = 0
+    if apply and candidates:
+        res = db.execute(text(
+            "UPDATE reservations r SET cancellation_date ="
+            " left(r.raw_data->>'cancellationDate', 10)::date WHERE" + where
+        ))
+        updated = res.rowcount
+        db.commit()
+
+    return _envelope({
+        "applied": apply,
+        "candidates": int(candidates or 0),
+        "updated": updated,
+        "message": ("Dry-run — pass ?apply=true to write." if not apply
+                    else f"Filled cancellation_date on {updated} rows."),
+    })
+
+
 @router.post("/daily-revenue")
 def trigger_daily_revenue_sync(
     branch_id: Optional[UUID] = Query(None),
