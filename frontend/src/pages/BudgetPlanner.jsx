@@ -63,15 +63,20 @@ function ProgressBar({ pct }) {
     </div>
   );
 }
-function StatusBadge({ status }) {
+function StatusBadge({ status, pct }) {
   const map = {
     Under: "bg-yellow-50 text-yellow-700 border border-yellow-200",
     "On Track": "bg-green-50 text-green-700 border border-green-200",
     Over: "bg-red-50 text-red-700 border border-red-200",
   };
   const cls = map[status] || "bg-gray-50 text-gray-500 border border-gray-200";
+  const label = pct != null ? `${status} · ${pct.toFixed(0)}%` : status;
+  const title =
+    pct != null
+      ? `Projected end-of-month spend = ${pct.toFixed(0)}% of this month's budget (run-rate). Over >110%, Under <90%.`
+      : undefined;
   return (
-    <span className={"inline-block px-2 py-0.5 rounded text-xs font-medium " + cls}>{status}</span>
+    <span title={title} className={"inline-block px-2 py-0.5 rounded text-xs font-medium " + cls}>{label}</span>
   );
 }
 
@@ -607,7 +612,11 @@ function MonthlyTab({ branchId, year, month }) {
         </div>
         <ProgressBar pct={total.pct} />
         <div className="flex items-center justify-between text-xs text-gray-400 pt-1">
-          <span>Projected: {fmtDot(total.projected_native)}</span>
+          <span>
+            Projected: {fmtDot(total.projected_native)}
+            {total.allocated_native > 0 &&
+              ` · ${((total.projected_native / total.allocated_native) * 100).toFixed(0)}% of budget`}
+          </span>
           <span>{data.days_remaining}d remaining</span>
         </div>
       </div>
@@ -657,18 +666,24 @@ function ChannelMonthlyCard({ c, cur, rate, branchId, year, month, onSaved }) {
     }
   };
 
+  const projPct =
+    c.allocated_native > 0 ? (c.projected_native / c.allocated_native) * 100 : null;
+
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
         <span className="font-medium text-gray-900">{c.label}</span>
-        <StatusBadge status={c.status} />
+        <StatusBadge status={c.status} pct={projPct} />
       </div>
       <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
         <span>Spent</span>
         <span>{fmtDot(c.actual_native)} / {fmtDot(c.allocated_native)} {cur}</span>
       </div>
       <ProgressBar pct={c.pct} />
-      <div className="text-xs text-gray-400 pt-1">Projected: {fmtDot(c.projected_native)}</div>
+      <div className="text-xs text-gray-400 pt-1">
+        Projected: {fmtDot(c.projected_native)}
+        {projPct != null && ` · ${projPct.toFixed(0)}% of budget`}
+      </div>
 
       {isCrm && (
         <div className="mt-2 flex items-center gap-2 text-xs">
