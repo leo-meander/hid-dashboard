@@ -597,6 +597,15 @@ function MonthlyTab({ branchId, year, month }) {
           Actuals from Paid Ads · KOL · CRM
           <SyncBadge timestamp={data.data_synced_at} />
         </p>
+        <p className="text-xs text-gray-500 mt-2 leading-relaxed bg-gray-50 border rounded px-3 py-2">
+          <span className="font-medium text-gray-700">Projected</span> = actual ÷ days
+          elapsed × days in month — i.e. the current spend pace extended to the full
+          month. The <span className="font-medium text-gray-700">Over / Under / On&nbsp;Track</span>{" "}
+          badge compares this projection to the budget:{" "}
+          <span className="text-red-600 font-medium">Over</span> &gt; 110%,{" "}
+          <span className="text-yellow-600 font-medium">Under</span> &lt; 90%,{" "}
+          <span className="text-green-600 font-medium">On&nbsp;Track</span> in between.
+        </p>
       </div>
 
       <div className="space-y-1.5">
