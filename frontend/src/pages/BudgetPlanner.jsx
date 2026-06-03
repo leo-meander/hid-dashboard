@@ -330,6 +330,7 @@ function YearlyPlanTab({ branchId, year }) {
 /* ── Channel Splits Tab ───────────────────────────────────────────────────── */
 function ChannelSplitsTab({ branchId, year }) {
   const [data, setData] = useState(null);
+  const [yearly, setYearly] = useState(null);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState({});
   const [savingMonth, setSavingMonth] = useState(null);
@@ -353,6 +354,10 @@ function ChannelSplitsTab({ branchId, year }) {
       })
       .catch(() => setData(null))
       .finally(() => setLoading(false));
+    // Actual spend (per-channel allocate vs actual) for the bars below.
+    getYearlyBudget({ branch_id: branchId, year })
+      .then(setYearly)
+      .catch(() => setYearly(null));
   };
   useEffect(load, [branchId, year]);
 
@@ -503,6 +508,51 @@ function ChannelSplitsTab({ branchId, year }) {
           })}
         </tbody>
       </table>
+
+      {yearly && (
+        <div className="p-5 border-t space-y-5">
+          <div>
+            <h3 className="font-semibold text-gray-900">Actual spend</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Live actuals vs the allocations above — overall and per channel.
+            </p>
+          </div>
+
+          {/* Branch-level: same two bars as the Yearly tab. */}
+          <div className="space-y-3">
+            <FullYearBar
+              title={data.branch_name.replace(/^MEANDER\s+/i, "") + " — all channels"}
+              actual={yearly.total_actual_native}
+              allocated={yearly.total_allocated_native}
+              currency={cur}
+              syncedAt={yearly.data_synced_at}
+            />
+            <YtdPaceBar months={yearly.months} year={year} currency={cur} />
+          </div>
+
+          {/* Per-channel: the same two bars, one block per channel. */}
+          {CHANNELS.map((ch) => {
+            const series = channelSeries(yearly.months, ch.key);
+            const tot = sumSeries(series);
+            return (
+              <div key={ch.key} className="rounded-lg border p-4 space-y-3 bg-white">
+                <FullYearBar
+                  title={ch.label}
+                  actual={tot.actual}
+                  allocated={tot.allocated}
+                  currency={cur}
+                />
+                <YtdPaceBar
+                  months={series}
+                  year={year}
+                  currency={cur}
+                  title={ch.label + " · YTD pace"}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -637,12 +687,62 @@ function ChannelMonthlyCard({ c, cur, rate, branchId, year, month, onSaved }) {
   );
 }
 
+/* ── Budget bar helpers ───────────────────────────────────────────────────────
+ * Shared between the Yearly tab and the Channel Splits "Actual" panel so the
+ * branch-level and per-channel bars look identical.
+ */
+
+/* Project a months[] series down to a single channel's allocate/actual. */
+function channelSeries(months, channelKey) {
+  return (months || []).map((m) => {
+    const ch = (m.channels || []).find((c) => c.channel === channelKey) || {};
+    return {
+      month: m.month,
+      allocated_native: ch.allocated_native || 0,
+      actual_native: ch.actual_native || 0,
+    };
+  });
+}
+
+function sumSeries(months) {
+  return (months || []).reduce(
+    (acc, m) => {
+      acc.allocated += m.allocated_native || 0;
+      acc.actual += m.actual_native || 0;
+      return acc;
+    },
+    { allocated: 0, actual: 0 }
+  );
+}
+
+/* Full-year cumulative actual-vs-allocate bar (matches the Yearly tab header). */
+function FullYearBar({ title, actual, allocated, currency, syncedAt }) {
+  const pct = allocated > 0 ? (actual / allocated) * 100 : 0;
+  return (
+    <div className="space-y-2">
+      <div className="flex items-start justify-between flex-wrap gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {fmtDot(actual)} / {fmtDot(allocated)} {currency}
+            {syncedAt != null && <SyncBadge timestamp={syncedAt} className="text-gray-400" />}
+          </p>
+        </div>
+        <span className="px-2 py-0.5 rounded text-xs font-medium bg-yellow-50 text-yellow-700">
+          {pct.toFixed(1)}%
+        </span>
+      </div>
+      <ProgressBar pct={pct} />
+    </div>
+  );
+}
+
 /* ── YTD Pace Bar ─────────────────────────────────────────────────────────────
  * Compares cumulative actual vs allocate from Jan through the current month
  * (or Dec for past years). Lets the team see whether YTD spend is pacing
  * ahead or behind the planned budget at this point in the year.
  */
-function YtdPaceBar({ months, year, currency }) {
+function YtdPaceBar({ months, year, currency, title = "YTD pace" }) {
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
@@ -676,7 +776,7 @@ function YtdPaceBar({ months, year, currency }) {
       <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
         <div>
           <h3 className="text-sm font-semibold text-gray-900">
-            YTD pace ({rangeLabel})
+            {title} ({rangeLabel})
           </h3>
           <p className="text-xs text-gray-500 mt-0.5">
             {fmtDot(ytd.actual)} / {fmtDot(ytd.allocated)} {currency}
@@ -714,19 +814,13 @@ function YearlyTab({ branchId, year }) {
 
   return (
     <div className="bg-white rounded-lg border p-5 space-y-4">
-      <div className="flex items-start justify-between flex-wrap gap-2">
-        <div>
-          <h2 className="font-semibold text-gray-900">{data.branch_name.replace(/^MEANDER\s+/i, "")}</h2>
-          <p className="text-xs text-gray-500 mt-0.5">
-            {fmtDot(data.total_actual_native)} / {fmtDot(data.total_allocated_native)} {cur}
-            <SyncBadge timestamp={data.data_synced_at} className="text-gray-400" />
-          </p>
-        </div>
-        <span className="px-2 py-0.5 rounded text-xs font-medium bg-yellow-50 text-yellow-700">
-          {data.pct.toFixed(1)}%
-        </span>
-      </div>
-      <ProgressBar pct={data.pct} />
+      <FullYearBar
+        title={data.branch_name.replace(/^MEANDER\s+/i, "")}
+        actual={data.total_actual_native}
+        allocated={data.total_allocated_native}
+        currency={cur}
+        syncedAt={data.data_synced_at}
+      />
 
       <YtdPaceBar months={data.months} year={year} currency={cur} />
 
