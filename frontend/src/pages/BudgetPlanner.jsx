@@ -418,14 +418,66 @@ function ChannelSplitsTab({ branchId, year }) {
 
   return (
     <div className="bg-white rounded-lg border">
+      <div className="p-5 border-b">
+        <h2 className="font-semibold text-gray-900">
+          {data.branch_name.replace(/^MEANDER\s+/i, "")} — {year} channel splits
+        </h2>
+        <p className="text-xs text-gray-500 mt-0.5">
+          Monthly totals come from the Yearly tab. Set channel % to allocate
+          each month across {CHANNELS.map((c) => c.label.toLowerCase()).join(" / ")}.
+        </p>
+      </div>
+
+      {yearly && (
+        <div className="p-5 border-b space-y-5">
+          <div>
+            <h3 className="font-semibold text-gray-900">Actual spend</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Live actuals vs the allocations below — overall and per channel.
+            </p>
+          </div>
+
+          {/* Branch-level: same two bars as the Yearly tab. */}
+          <div className="space-y-3">
+            <FullYearBar
+              title={data.branch_name.replace(/^MEANDER\s+/i, "") + " — all channels"}
+              actual={yearly.total_actual_native}
+              allocated={yearly.total_allocated_native}
+              currency={cur}
+              syncedAt={yearly.data_synced_at}
+            />
+            <YtdPaceBar months={yearly.months} year={year} currency={cur} />
+          </div>
+
+          {/* Per-channel: the same two bars, one block per channel. */}
+          {CHANNELS.map((ch) => {
+            const series = channelSeries(yearly.months, ch.key);
+            const tot = sumSeries(series);
+            return (
+              <div key={ch.key} className="rounded-lg border p-4 space-y-3 bg-white">
+                <FullYearBar
+                  title={ch.label}
+                  actual={tot.actual}
+                  allocated={tot.allocated}
+                  currency={cur}
+                />
+                <YtdPaceBar
+                  months={series}
+                  year={year}
+                  currency={cur}
+                  title={ch.label + " · YTD pace"}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div className="p-5 border-b flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h2 className="font-semibold text-gray-900">
-            {data.branch_name.replace(/^MEANDER\s+/i, "")} — {year} channel splits
-          </h2>
+          <h3 className="font-semibold text-gray-900">Allocate</h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            Monthly totals come from the Yearly tab. Set channel % to allocate
-            each month across {CHANNELS.map((c) => c.label.toLowerCase()).join(" / ")}.
+            Set channel % per month, then Save each row.
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs">
@@ -508,51 +560,6 @@ function ChannelSplitsTab({ branchId, year }) {
           })}
         </tbody>
       </table>
-
-      {yearly && (
-        <div className="p-5 border-t space-y-5">
-          <div>
-            <h3 className="font-semibold text-gray-900">Actual spend</h3>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Live actuals vs the allocations above — overall and per channel.
-            </p>
-          </div>
-
-          {/* Branch-level: same two bars as the Yearly tab. */}
-          <div className="space-y-3">
-            <FullYearBar
-              title={data.branch_name.replace(/^MEANDER\s+/i, "") + " — all channels"}
-              actual={yearly.total_actual_native}
-              allocated={yearly.total_allocated_native}
-              currency={cur}
-              syncedAt={yearly.data_synced_at}
-            />
-            <YtdPaceBar months={yearly.months} year={year} currency={cur} />
-          </div>
-
-          {/* Per-channel: the same two bars, one block per channel. */}
-          {CHANNELS.map((ch) => {
-            const series = channelSeries(yearly.months, ch.key);
-            const tot = sumSeries(series);
-            return (
-              <div key={ch.key} className="rounded-lg border p-4 space-y-3 bg-white">
-                <FullYearBar
-                  title={ch.label}
-                  actual={tot.actual}
-                  allocated={tot.allocated}
-                  currency={cur}
-                />
-                <YtdPaceBar
-                  months={series}
-                  year={year}
-                  currency={cur}
-                  title={ch.label + " · YTD pace"}
-                />
-              </div>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }
