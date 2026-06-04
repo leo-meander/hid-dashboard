@@ -7,6 +7,7 @@ import { useEffect, useState, useMemo, useRef } from "react";
 import axios from "axios";
 import {
   AreaChart, Area,
+  LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
 import SyncBadge from "../components/SyncBadge";
@@ -33,13 +34,25 @@ function fmtNum(val) {
   return new Intl.NumberFormat("en").format(Math.round(val));
 }
 
+function fmtPct(val) {
+  if (val == null) return "-";
+  return `${val.toFixed(1)}%`;
+}
+
 export default function PerformanceCountry() {
   const { isAll, selected, branches } = useBranch();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState("monthly"); // weekly | monthly | compare | branch
+  const [view, setView] = useState("monthly"); // weekly | monthly | share | compare | branch
   const [filterCountry, setFilterCountry] = useState("");
   const [dateType, setDateType] = useState("check_in"); // check_in | booked
+
+  // Share % view state — distribution of a metric across countries per period.
+  const [shareMetric, setShareMetric] = useState("reservations"); // reservations | revenue
+  const [shareGranularity, setShareGranularity] = useState("monthly"); // monthly | weekly
+  const [shareData, setShareData] = useState(null);
+  const [shareLoading, setShareLoading] = useState(true);
+  const [shareSelected, setShareSelected] = useState([]); // country names ticked for trend
 
   // Trend table sort state. sortKey is one of:
   //   "country" | "total_reservations" | "total_nights" | "total_revenue"
@@ -78,6 +91,19 @@ export default function PerformanceCountry() {
       .then((r) => setData(r.data.data))
       .catch(() => setData(null))
       .finally(() => setLoading(false));
+  };
+
+  // Load Share % data — same endpoint as the trend view, but driven by the
+  // tab's own granularity toggle (independent of the weekly/monthly buttons).
+  const loadShare = () => {
+    setShareLoading(true);
+    const params = { view: shareGranularity, limit: 500, date_type: dateType };
+    if (!isAll && selected) params.branch_id = selected;
+
+    axios.get("/api/metrics/country-reservations", { params })
+      .then((r) => setShareData(r.data.data))
+      .catch(() => setShareData(null))
+      .finally(() => setShareLoading(false));
   };
 
   // Load YoY compare data
@@ -120,10 +146,12 @@ export default function PerformanceCountry() {
       loadCompare();
     } else if (view === "branch") {
       loadBranchCompare();
+    } else if (view === "share") {
+      loadShare();
     } else {
       loadTrend();
     }
-  }, [selected, isAll, view, cmpYear, cmpMonth, branchYear, branchMonth, selectedBranches, dateType]);
+  }, [selected, isAll, view, cmpYear, cmpMonth, branchYear, branchMonth, selectedBranches, dateType, shareGranularity]);
 
   const periods = data?.periods || [];
   const allCountries = data?.countries || [];
@@ -233,14 +261,17 @@ export default function PerformanceCountry() {
     ? `${MONTHS[cmpMonth - 1]} ${cmpYear} vs ${MONTHS[cmpMonth - 1]} ${cmpYear - 1}`
     : view === "branch"
     ? `${MONTHS[branchMonth - 1]} ${branchYear} — Branch Comparison`
+    : view === "share"
+    ? `% share of ${shareMetric === "revenue" ? "revenue" : "reservations"} \u2014 last 7 ${shareGranularity === "monthly" ? "months" : "weeks"}`
     : `All countries \u2014 last 7 ${view === "monthly" ? "months" : "weeks"}`;
 
   // Country filter options differ per view
   const countryFilterOptions = useMemo(() => {
     if (view === "branch") return branchCountryList;
     if (view === "compare") return (cmpData?.countries || []).map((c) => c.country);
+    if (view === "share") return (shareData?.countries || []).map((c) => c.country);
     return allCountries.map((c) => c.country);
-  }, [view, branchCountryList, cmpData, allCountries]);
+  }, [view, branchCountryList, cmpData, shareData, allCountries]);
 
   return (
     <div className="space-y-6">
@@ -292,12 +323,12 @@ export default function PerformanceCountry() {
             </div>
           )}
           <div className="flex rounded-lg border overflow-hidden">
-            {["weekly", "monthly", "compare", "branch"].map((v) => (
+            {["weekly", "monthly", "share", "compare", "branch"].map((v) => (
               <button key={v} onClick={() => setView(v)}
                 className={`px-3 py-1.5 text-sm font-medium ${
                   view === v ? "bg-indigo-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
                 }`}>
-                {v === "weekly" ? "Weekly" : v === "monthly" ? "Monthly" : v === "compare" ? "Compare" : "Branches"}
+                {v === "weekly" ? "Weekly" : v === "monthly" ? "Monthly" : v === "share" ? "Share %" : v === "compare" ? "Compare" : "Branches"}
               </button>
             ))}
           </div>
@@ -321,8 +352,25 @@ export default function PerformanceCountry() {
         ))}
       </div>
 
-      {/* ── Branch Compare View ── */}
-      {view === "branch" ? (
+      {/* ── Share % View ── */}
+      {view === "share" ? (
+        shareLoading ? (
+          <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
+        ) : !shareData || (shareData.countries || []).length === 0 ? (
+          <div className="text-center text-gray-400 py-16 text-sm">No data available.</div>
+        ) : (
+          <ShareView
+            data={shareData}
+            metric={shareMetric}
+            setMetric={setShareMetric}
+            granularity={shareGranularity}
+            setGranularity={setShareGranularity}
+            filterCountry={filterCountry}
+            selected={shareSelected}
+            setSelected={setShareSelected}
+          />
+        )
+      ) : view === "branch" ? (
         <>
           {/* Branch selector chips */}
           <div className="flex flex-wrap items-center gap-2">
@@ -523,6 +571,244 @@ export default function PerformanceCountry() {
         )
       )}
     </div>
+  );
+}
+
+
+/* ── Share % View Component ────────────────────────────────────────────────
+ * Distribution of a chosen metric (reservations or revenue) across countries,
+ * per period. Each cell is that country's % of the period total; the small
+ * number underneath is the percentage-POINT change vs the previous period
+ * (i.e. share gained/lost, not a relative growth rate). Tick countries to plot
+ * their share trend as lines.
+ */
+function ShareView({
+  data, metric, setMetric, granularity, setGranularity,
+  filterCountry, selected, setSelected,
+}) {
+  const periods = data.periods || [];
+  const trendMap = metric === "revenue" ? (data.trend_revenue || {}) : (data.trend || {});
+
+  // Total of the metric in each period (denominator for the share).
+  const periodTotals = useMemo(() => {
+    const t = {};
+    for (const p of periods) {
+      const row = trendMap[p] || {};
+      t[p] = Object.values(row).reduce((a, b) => a + (b || 0), 0);
+    }
+    return t;
+  }, [periods, trendMap]);
+
+  // Every country that appears in the metric trend.
+  const countryList = useMemo(() => {
+    const set = new Set();
+    for (const p of periods) {
+      for (const c of Object.keys(trendMap[p] || {})) set.add(c);
+    }
+    return [...set];
+  }, [periods, trendMap]);
+
+  // Per-country total across all periods → used for ordering + overall share.
+  const countryTotals = useMemo(() => {
+    const t = {};
+    for (const c of countryList) {
+      let sum = 0;
+      for (const p of periods) sum += (trendMap[p]?.[c] || 0);
+      t[c] = sum;
+    }
+    return t;
+  }, [countryList, periods, trendMap]);
+
+  const grandTotal = periods.reduce((a, p) => a + (periodTotals[p] || 0), 0);
+
+  // Rows: countries sorted by overall metric desc, optionally narrowed by the
+  // header combobox filter.
+  let rows = [...countryList].sort((a, b) => countryTotals[b] - countryTotals[a]);
+  if (filterCountry) rows = rows.filter((c) => c === filterCountry);
+
+  const shareOf = (country, period) => {
+    const tot = periodTotals[period] || 0;
+    if (!tot) return null;
+    return ((trendMap[period]?.[country] || 0) / tot) * 100;
+  };
+
+  const toggle = (country) => {
+    setSelected((prev) =>
+      prev.includes(country) ? prev.filter((c) => c !== country) : [...prev, country]
+    );
+  };
+
+  // Color for a ticked country = its position in the selection.
+  const selColor = (country) => COLORS[selected.indexOf(country) % COLORS.length];
+
+  // Chart: one point per period, a key per ticked country holding its share%.
+  const chartData = useMemo(() => periods.map((p) => {
+    const row = { period: p };
+    for (const c of selected) row[c] = shareOf(c, p);
+    return row;
+  }), [periods, selected, trendMap, periodTotals]);
+
+  const latestPeriod = periods[periods.length - 1];
+  const topCountry = rows[0];
+  const topShare = topCountry ? shareOf(topCountry, latestPeriod) : null;
+
+  return (
+    <>
+      {/* Controls: metric + granularity toggles */}
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Compare %</span>
+          <div className="flex rounded-lg border overflow-hidden">
+            {[["reservations", "Reservations"], ["revenue", "Revenue"]].map(([k, label]) => (
+              <button key={k} onClick={() => setMetric(k)}
+                className={`px-3 py-1.5 text-sm font-medium ${
+                  metric === k ? "bg-indigo-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+                }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">By</span>
+          <div className="flex rounded-lg border overflow-hidden">
+            {[["monthly", "Monthly"], ["weekly", "Weekly"]].map(([k, label]) => (
+              <button key={k} onClick={() => setGranularity(k)}
+                className={`px-3 py-1.5 text-sm font-medium ${
+                  granularity === k ? "bg-indigo-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+                }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {selected.length > 0 && (
+          <button onClick={() => setSelected([])}
+            className="text-xs text-gray-500 hover:text-gray-700 underline ml-auto">
+            Clear {selected.length} selected
+          </button>
+        )}
+      </div>
+
+      {/* KPI Summary */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <div className="bg-white rounded-lg border p-4">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+            Top Share — {latestPeriod}
+          </p>
+          <p className="text-2xl font-bold text-gray-900">{topCountry || "-"}</p>
+          <p className="text-xs text-gray-400 mt-1">
+            {topShare != null ? fmtPct(topShare) : "-"} of {metric === "revenue" ? "revenue" : "reservations"}
+          </p>
+        </div>
+        <div className="bg-white rounded-lg border p-4">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Countries Tracked</p>
+          <p className="text-2xl font-bold text-gray-900">{rows.length}</p>
+          <p className="text-xs text-gray-400 mt-1">across {periods.length} periods</p>
+        </div>
+        <div className="bg-white rounded-lg border p-4">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Selected for Trend</p>
+          <p className="text-2xl font-bold text-gray-900">{selected.length}</p>
+          <p className="text-xs text-gray-400 mt-1">tick countries in the table</p>
+        </div>
+      </div>
+
+      {/* Share trend line chart (only when countries are ticked) */}
+      {selected.length > 0 && (
+        <div className="bg-white rounded-lg border p-4">
+          <h2 className="text-sm font-semibold text-gray-700 mb-4">
+            % Share Trend
+            <span className="text-xs font-normal text-gray-400 ml-1">
+              ({metric === "revenue" ? "revenue" : "reservations"})
+            </span>
+          </h2>
+          <ResponsiveContainer width="100%" height={320}>
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="period" tick={{ fontSize: 12 }} />
+              <YAxis tick={{ fontSize: 12 }} unit="%" />
+              <Tooltip
+                contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                formatter={(val, name) => [val == null ? "-" : fmtPct(val), name]}
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              {selected.map((c) => (
+                <Line key={c} type="monotone" dataKey={c}
+                  stroke={selColor(c)} strokeWidth={2} dot={{ r: 3 }} connectNulls />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Share table */}
+      <div className="bg-white rounded-lg border overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="text-center px-3 py-3 font-semibold text-gray-600 w-10">#</th>
+              <th className="text-left px-4 py-3 font-semibold text-gray-600">Country</th>
+              <th className="text-right px-4 py-3 font-semibold text-gray-600">Overall %</th>
+              {periods.map((p) => (
+                <th key={p} className="text-right px-3 py-3 font-semibold text-gray-500 text-xs">
+                  {p}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {rows.map((country, i) => {
+              const isSel = selected.includes(country);
+              const overall = grandTotal > 0 ? (countryTotals[country] / grandTotal) * 100 : null;
+              return (
+                <tr key={country}
+                  onClick={() => toggle(country)}
+                  className={`cursor-pointer ${isSel ? "bg-indigo-50/50" : "hover:bg-gray-50"}`}>
+                  <td className="px-3 py-2.5 text-center">
+                    <input type="checkbox" readOnly checked={isSel}
+                      className="accent-indigo-600 pointer-events-none" />
+                  </td>
+                  <td className="px-4 py-2.5 font-medium text-gray-900">
+                    {isSel && (
+                      <span className="inline-block w-2 h-2 rounded-full mr-2 align-middle"
+                        style={{ backgroundColor: selColor(country) }} />
+                    )}
+                    {country}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-semibold">{fmtPct(overall)}</td>
+                  {periods.map((p, pIdx) => {
+                    const share = shareOf(country, p);
+                    const prevP = pIdx > 0 ? periods[pIdx - 1] : null;
+                    const prevShare = prevP ? shareOf(country, prevP) : null;
+                    const dPp = (share != null && prevShare != null) ? share - prevShare : null;
+                    return (
+                      <td key={p} className="px-3 py-2.5 text-right text-xs">
+                        {share != null && (share > 0 || prevShare > 0) ? (
+                          <div className="flex flex-col items-end leading-tight">
+                            <span className="font-medium">
+                              {share > 0 ? fmtPct(share) : <span className="text-gray-300">-</span>}
+                            </span>
+                            {dPp != null && Math.abs(dPp) >= 0.05 && (
+                              <span className={`text-[10px] mt-0.5 ${
+                                dPp > 0 ? "text-emerald-600" : "text-red-500"
+                              }`}>
+                                {dPp > 0 ? "▲" : "▼"}{Math.abs(dPp).toFixed(1)}pp
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-gray-300">-</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

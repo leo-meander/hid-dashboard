@@ -638,13 +638,14 @@ def get_country_reservations(
     # countries + trend) which scanned the same date range twice — the table
     # is large enough that the second scan dominated response time on the
     # All-Branches view (~16s combined vs ~8s for one scan).
-    top_countries, trend = _query_country_breakdown(
+    top_countries, trend, trend_revenue = _query_country_breakdown(
         db, branch_id, overall_start, overall_end, view, date_col, limit
     )
 
     if not top_countries:
         return _envelope({
             "view": view, "periods": [], "countries": [], "trend": [],
+            "trend_revenue": {},
             "currency": currency, "date_type": date_type,
             "data_synced_at": _last_reservations_synced_at(db, branch_id),
         })
@@ -657,6 +658,7 @@ def get_country_reservations(
         "periods": period_labels,
         "countries": top_countries,
         "trend": trend,
+        "trend_revenue": trend_revenue,
         "currency": currency,
         "date_type": date_type,
         "data_synced_at": _last_reservations_synced_at(db, branch_id),
@@ -700,12 +702,16 @@ def _build_weekly_periods(today, count):
 
 
 def _query_country_breakdown(db, branch_id, d_from, d_to, view, date_col, limit):
-    """Single-pass country breakdown. Returns (top_countries, trend) where:
+    """Single-pass country breakdown. Returns (top_countries, trend,
+    trend_revenue) where:
 
     - top_countries: list of {country_code, country, total_reservations,
       total_nights, total_revenue} sorted by reservation count desc, sliced
       to the top `limit`.
     - trend: dict {period_label: {country: count}} for the chart/table.
+    - trend_revenue: dict {period_label: {country: revenue}} — same shape as
+      trend but carrying revenue, so the Share % tab can switch the metric
+      it distributes between reservations and revenue without a second query.
 
     Replaces the prior pattern of two separate scans
     (_query_top_countries + _query_monthly_trend) — the date range typically
@@ -753,9 +759,10 @@ def _query_country_breakdown(db, branch_id, d_from, d_to, view, date_col, limit)
 
     rows = q.all()
 
-    # Aggregate per-country totals across all periods, and build trend dict.
+    # Aggregate per-country totals across all periods, and build trend dicts.
     totals = {}  # (code, country) -> {total, nights, revenue}
     trend = defaultdict(lambda: defaultdict(int))
+    trend_revenue = defaultdict(lambda: defaultdict(float))
 
     for row in rows:
         code = row.code
@@ -780,6 +787,7 @@ def _query_country_breakdown(db, branch_id, d_from, d_to, view, date_col, limit)
             week_start = d_val - timedelta(days=d_val.weekday())
             label = week_start.strftime("%d %b")
         trend[label][country] += cnt
+        trend_revenue[label][country] += rev
 
     # Top countries sorted by total reservations desc, sliced.
     top = sorted(
@@ -796,7 +804,11 @@ def _query_country_breakdown(db, branch_id, d_from, d_to, view, date_col, limit)
         key=lambda x: -x["total_reservations"],
     )[:limit]
 
-    return top, dict(trend)
+    # Convert nested defaultdicts to plain dicts for JSON serialization.
+    trend_plain = {p: dict(c) for p, c in trend.items()}
+    trend_revenue_plain = {p: dict(c) for p, c in trend_revenue.items()}
+
+    return top, trend_plain, trend_revenue_plain
 
 
 def _query_top_countries(db, branch_id, d_from, d_to, limit, date_col=None):
