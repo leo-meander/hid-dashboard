@@ -42,19 +42,21 @@ function checkinBg(rate) {
 export default function PerformanceOTA() {
   const { selected, isAll } = useBranch();
   const [mode,     setMode]     = useState("daily");
+  const [months,   setMonths]   = useState(3);      // monthly mode: how many months to show
   const [dateType, setDateType] = useState("check_in");
   const [data,     setData]     = useState(null);
   const [loading,  setLoading]  = useState(true);
 
   const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
+  const mParam = mode === "monthly" ? `&months=${months}` : "";
 
   useEffect(() => {
     setLoading(true);
-    axios.get(`/api/metrics/rates-trend?mode=${mode}&date_type=${dateType}${bParam}`)
+    axios.get(`/api/metrics/rates-trend?mode=${mode}&date_type=${dateType}${bParam}${mParam}`)
       .then(r => setData(r.data.data))
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [mode, dateType, selected, isAll]);
+  }, [mode, months, dateType, selected, isAll]);
 
   return (
     <div className="space-y-5">
@@ -69,11 +71,11 @@ export default function PerformanceOTA() {
         </div>
 
         {/* Mode selector */}
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           {[
             ["daily",   "Daily (7 days)"],
             ["weekly",  "Weekly (7 weeks)"],
-            ["monthly", "Monthly (3 months)"],
+            ["monthly", `Monthly (${months} months)`],
           ].map(([k, label]) => (
             <button key={k} onClick={() => setMode(k)}
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
@@ -84,6 +86,22 @@ export default function PerformanceOTA() {
               {label}
             </button>
           ))}
+
+          {/* Month-count picker — only in monthly mode */}
+          {mode === "monthly" && (
+            <label className="flex items-center gap-1.5 text-sm text-gray-500 ml-1">
+              <span>Show</span>
+              <input
+                type="number" min={1} max={36} value={months}
+                onChange={e => {
+                  const n = parseInt(e.target.value, 10);
+                  setMonths(Number.isNaN(n) ? 1 : Math.min(36, Math.max(1, n)));
+                }}
+                className="w-16 px-2 py-1.5 rounded-lg border border-gray-200 text-gray-700 text-sm text-center tabular-nums focus:outline-none focus:border-indigo-400"
+              />
+              <span>months</span>
+            </label>
+          )}
         </div>
       </div>
 

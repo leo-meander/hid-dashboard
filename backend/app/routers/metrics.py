@@ -411,10 +411,12 @@ def get_rates_trend_endpoint(
     mode: str = Query("daily", pattern="^(daily|weekly|monthly)$"),
     branch_id: Optional[UUID] = Query(None),
     date_type: str = Query("check_in", pattern="^(check_in|booked)$"),
+    months: int = Query(3, ge=1, le=36),
     db: Session = Depends(get_db),
 ):
-    """Cancel rate & check-in rate pivot per channel × period."""
-    result = get_rates_trend(db, branch_id, mode, date_type)
+    """Cancel rate & check-in rate pivot per channel × period.
+    months controls how many months the monthly view spans (1–36)."""
+    result = get_rates_trend(db, branch_id, mode, date_type, months)
     last_synced_iso = _last_reservations_synced_at(db, branch_id)
     if isinstance(result, dict):
         result["data_synced_at"] = last_synced_iso

@@ -1037,11 +1037,14 @@ def get_rates_trend(
     branch_id: Optional[UUID],
     mode: str = "daily",
     date_type: str = "check_in",
+    months: int = 3,
 ) -> dict:
     """Cancel rate & check-in rate pivot: per channel × per time period.
-    mode: daily (last 7 days) | weekly (last 7 weeks) | monthly (last 3 months)
+    mode: daily (last 7 days) | weekly (last 7 weeks) | monthly (last `months` months)
     date_type: check_in (by check-in date) | booked (by reservation/booking date)
+    months: number of months to show in monthly mode (ignored for daily/weekly)
     """
+    months = max(1, months)
     from collections import defaultdict
     from sqlalchemy import case as sa_case
 
@@ -1055,8 +1058,8 @@ def get_rates_trend(
     elif mode == "weekly":
         start_of_this_week = today - timedelta(days=today.weekday())
         date_from = start_of_this_week - timedelta(weeks=6)
-    else:
-        m, y = today.month - 2, today.year
+    else:  # monthly
+        m, y = today.month - (months - 1), today.year
         while m <= 0:
             m += 12; y -= 1
         date_from = date(y, m, 1)
@@ -1115,9 +1118,9 @@ def get_rates_trend(
         start_of_this_week = today - timedelta(days=today.weekday())
         periods = [start_of_this_week - timedelta(weeks=i) for i in range(6, -1, -1)]
         labels  = [f"W{d.isocalendar()[1]:02d} ({d.strftime('%m/%d')})" for d in periods]
-    else:
+    else:  # monthly
         periods = []
-        for i in range(2, -1, -1):
+        for i in range(months - 1, -1, -1):
             m, y = today.month - i, today.year
             while m <= 0:
                 m += 12; y -= 1
