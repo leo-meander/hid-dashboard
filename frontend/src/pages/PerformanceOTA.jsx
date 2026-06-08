@@ -228,8 +228,10 @@ function DataRow({ channel, isDirect, total, grandTotal, cells, bgFn, valueKey, 
     ? "bg-green-50 text-green-900"
     : isLocalTA
       ? "bg-sky-50 text-sky-900"
-      : altRow ? "bg-red-50/40 text-gray-800" : "bg-white text-gray-800";
-  const labelBg = isDirect ? "bg-green-50" : isLocalTA ? "bg-sky-50" : altRow ? "bg-red-50/40" : "bg-white";
+      : altRow ? "bg-red-50 text-gray-800" : "bg-white text-gray-800";
+  // labelBg backs the sticky left column — must be fully opaque, otherwise
+  // horizontally-scrolled cells bleed through it (e.g. 24-month view).
+  const labelBg = isDirect ? "bg-green-50" : isLocalTA ? "bg-sky-50" : altRow ? "bg-red-50" : "bg-white";
   const totalBg = isDirect
     ? "bg-green-50 text-green-700"
     : isLocalTA
