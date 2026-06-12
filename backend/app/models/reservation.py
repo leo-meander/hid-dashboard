@@ -20,6 +20,13 @@ class Reservation(Base):
     cloudbeds_reservation_id = Column(String(50), unique=True, nullable=False)
     guest_country = Column(String(100), nullable=True)
     guest_country_code = Column(String(50), nullable=True)
+    # Guest demographics — backfilled from Cloudbeds /getReservation guestList:
+    # gender = "M"/"F"/"N/A" (guestGender); date_of_birth from guestBirthdate.
+    # Columns (not raw_data) because the bulk sync overwrites raw_data, same as
+    # guest_country. "N/A" doubles as the "already fetched, none on file" marker
+    # so re-runs of backfill_guest_demographics skip already-attempted rows.
+    gender = Column(String(10), nullable=True)
+    date_of_birth = Column(Date, nullable=True)
     room_type = Column(String(100), nullable=True)
     room_type_category = Column(String(10), nullable=True)   # "Room" or "Dorm"
     rate_plan_name = Column(String(200), nullable=True)

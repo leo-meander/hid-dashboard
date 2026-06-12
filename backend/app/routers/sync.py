@@ -25,7 +25,7 @@ def verify_sync_token(x_sync_token: Optional[str] = Header(None)):
     if not x_sync_token or x_sync_token != expected:
         raise HTTPException(status_code=401, detail="Invalid or missing X-Sync-Token")
 
-from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_room_type_and_rate_plan, backfill_guest_country, probe_guest_detail_fields, map_country_code
+from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_room_type_and_rate_plan, backfill_guest_country, backfill_guest_demographics, probe_guest_detail_fields, map_country_code
 from app.services.ingest_csv import import_all_csvs, import_csv_file, CSV_CONFIGS
 from app.services.ads_platform_sync import run_ads_platform_sync
 from app.services.metrics_engine import recompute_branch_range, recompute_occ_and_bookings
@@ -369,6 +369,84 @@ def trigger_guest_country_backfill(
     return _envelope({
         "status": "started",
         "message": "Guest country backfill running in background. Check logs for progress.",
+        "window": {"from": df.isoformat(), "to": dt.isoformat()},
+        "branches_queued": [c["name"] for c in branch_configs],
+        "skipped": skipped,
+    })
+
+
+def _run_demographics_backfill_bg(branch_configs: list, df, dt):
+    """Background worker: runs gender/date_of_birth backfill for each branch."""
+    import logging
+    log = logging.getLogger(__name__)
+    for cfg in branch_configs:
+        try:
+            result = backfill_guest_demographics(
+                cfg["branch_id"], cfg["property_id"],
+                api_key=cfg["api_key"], checkin_from=df, checkin_to=dt, limit=cfg.get("limit")
+            )
+            log.info("Demographics backfill %s: fetched=%s gender=%s dob=%s na=%s",
+                     cfg["name"], result.get("fetched"), result.get("gender_filled"),
+                     result.get("dob_filled"), result.get("na"))
+        except Exception as exc:
+            log.error("Demographics backfill failed for %s: %s", cfg["name"], exc)
+
+
+@router.post("/backfill-demographics")
+def trigger_demographics_backfill(
+    background_tasks: BackgroundTasks,
+    branch_id: Optional[UUID] = Query(None),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD check-in from (default: 2025-01-01)"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD check-in to (default: today + 365d)"),
+    limit: Optional[int] = Query(None, description="Max reservations per branch (for testing)"),
+    db: Session = Depends(get_db),
+):
+    """
+    Backfill gender + date_of_birth for reservations where gender IS NULL.
+    Calls Cloudbeds /getReservation per row and reads guestList[*].guestGender /
+    guestBirthdate — the bulk endpoint never includes guest detail.
+
+    gender='N/A' is written when Cloudbeds has none, so re-runs skip already-
+    fetched rows. Birthdate is sparse, so date_of_birth fills for few rows.
+    Default window 2025-01-01..today+365d (pre-2025 detail carries no guest
+    demographics). Returns immediately; backfill runs in background — this is a
+    multi-hour run across all branches. Check logs for progress.
+    """
+    from datetime import date as date_cls, timedelta as _td
+
+    today = date_cls.today()
+    df = date_cls.fromisoformat(date_from) if date_from else date_cls(2025, 1, 1)
+    dt = date_cls.fromisoformat(date_to) if date_to else (today + _td(days=365))
+
+    branches_q = db.query(Branch).filter_by(is_active=True)
+    if branch_id:
+        branches_q = branches_q.filter(Branch.id == branch_id)
+    branches = branches_q.all()
+
+    branch_configs = []
+    skipped = []
+    for branch in branches:
+        pid = branch.cloudbeds_property_id
+        if not pid:
+            skipped.append({"branch": branch.name, "reason": "no property_id"})
+            continue
+        api_key = settings.get_api_key_for_property(str(pid))
+        if not api_key:
+            skipped.append({"branch": branch.name, "reason": f"no api_key for property {pid}"})
+            continue
+        branch_configs.append({
+            "branch_id": str(branch.id),
+            "property_id": str(pid),
+            "api_key": api_key,
+            "name": branch.name,
+            "limit": limit,
+        })
+
+    background_tasks.add_task(_run_demographics_backfill_bg, branch_configs, df, dt)
+
+    return _envelope({
+        "status": "started",
+        "message": "Demographics backfill running in background. Check logs for progress.",
         "window": {"from": df.isoformat(), "to": dt.isoformat()},
         "branches_queued": [c["name"] for c in branch_configs],
         "skipped": skipped,

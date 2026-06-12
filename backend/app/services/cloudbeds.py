@@ -135,6 +135,39 @@ def _extract_guest_country_from_detail(data: dict) -> Optional[str]:
     return None
 
 
+def _extract_guest_demographics_from_detail(
+    data: dict,
+) -> tuple[Optional[str], Optional[date]]:
+    """Extract (gender, date_of_birth) for the main guest from a /getReservation
+    detail response.
+
+    guestList[*] carries guestGender ('M' / 'F' / 'N/A') and guestBirthdate
+    (ISO 'YYYY-MM-DD' or ''). Prefers the main guest (isMainGuest), then falls
+    back to the first guest that has a usable value. 'N/A' and '' are treated as
+    missing → returned as None. Returns (None, None) when nothing usable.
+    """
+    gl = data.get("guestList") or {}
+    if not isinstance(gl, dict):
+        return None, None
+
+    guests = [g for g in gl.values() if isinstance(g, dict)]
+    # Main guest first so their gender/DOB win over additional guests'.
+    guests.sort(key=lambda g: 0 if g.get("isMainGuest") in (True, 1, "1", "true") else 1)
+
+    gender: Optional[str] = None
+    dob: Optional[date] = None
+    for g in guests:
+        if gender is None:
+            gv = (g.get("guestGender") or "").strip()
+            if gv and gv.upper() != "N/A":
+                gender = gv.upper()
+        if dob is None:
+            dob = _parse_date((g.get("guestBirthdate") or "").strip())
+        if gender and dob:
+            break
+    return gender, dob
+
+
 def probe_guest_detail_fields(
     branch_id: str,
     property_id: str,
@@ -1003,6 +1036,130 @@ def backfill_guest_country(
         "fetched": total_fetched,
         "filled": filled,
         "still_unknown": empty,
+    }
+
+
+def backfill_guest_demographics(
+    branch_id: str,
+    property_id: str,
+    api_key: Optional[str] = None,
+    checkin_from: Optional[date] = None,
+    checkin_to: Optional[date] = None,
+    limit: Optional[int] = None,
+) -> dict:
+    """Backfill gender + date_of_birth from Cloudbeds /getReservation detail.
+
+    Reads guestList[*].guestGender / guestBirthdate for the main guest and writes
+    the `gender` and `date_of_birth` columns (NOT raw_data, which the bulk sync
+    overwrites). Targets rows where gender IS NULL (never attempted) and writes
+    gender='N/A' when Cloudbeds carries none, so re-runs skip already-fetched
+    rows instead of re-hitting the API forever. Birthdate is sparse in practice —
+    most guests have none on file — so date_of_birth stays NULL for most rows.
+    Rows whose API call fails are left untouched (gender stays NULL) so a later
+    run retries them. Idempotent.
+
+    Default window: check-in 2025-01-01 .. today+365d. Pre-2025 detail responses
+    carry no guest demographics (same as guest_country), so they're skipped.
+    """
+    import time
+
+    today = date.today()
+    df = checkin_from or date(2025, 1, 1)
+    dt = checkin_to or (today + timedelta(days=365))
+
+    db = SessionLocal()
+    query = db.query(Reservation).filter(
+        Reservation.branch_id == branch_id,
+        Reservation.check_in_date >= df,
+        Reservation.check_in_date <= dt,
+        Reservation.gender == None,  # noqa: E711
+        Reservation.cloudbeds_reservation_id != None,  # noqa: E711
+    )
+    if limit:
+        query = query.limit(limit)
+    targets = query.all()
+    db.close()
+
+    total_fetched = gender_filled = dob_filled = na = 0
+    now = datetime.now(timezone.utc)
+    BATCH_SIZE = 20
+    PROGRESS_FLUSH_EVERY = 100
+
+    logger.info("Demographics backfill: %d rows for branch %s (%s..%s)",
+                len(targets), branch_id, df, dt)
+
+    with httpx.Client(timeout=30) as client:
+        # (cb_id, gender, dob_or_None) — only successfully-fetched rows enqueued
+        batch_buf: list[tuple[str, str, Optional[date]]] = []
+        for i, r in enumerate(targets):
+            ok = False
+            gender_val = "N/A"
+            dob_val: Optional[date] = None
+            try:
+                resp = client.get(
+                    f"{CLOUDBEDS_BASE_URL}/getReservation",
+                    headers=_headers(api_key),
+                    params={"propertyID": property_id, "reservationID": r.cloudbeds_reservation_id},
+                )
+                resp.raise_for_status()
+                data = resp.json().get("data") or {}
+                g, d = _extract_guest_demographics_from_detail(data)
+                total_fetched += 1
+                if g:
+                    gender_val = g
+                dob_val = d
+                ok = True
+            except Exception as e:
+                logger.warning("Demographics backfill failed res %s: %s",
+                               r.cloudbeds_reservation_id, e)
+
+            if ok:
+                batch_buf.append((r.cloudbeds_reservation_id, gender_val, dob_val))
+
+            should_flush = (
+                len(batch_buf) >= BATCH_SIZE
+                or (i == len(targets) - 1 and batch_buf)
+                or ((i + 1) % PROGRESS_FLUSH_EVERY == 0 and batch_buf)
+            )
+            if should_flush:
+                _s = SessionLocal()
+                try:
+                    for cb_id, gv, dv in batch_buf:
+                        result = _s.execute(_text(
+                            "UPDATE reservations "
+                            "SET gender=:g, date_of_birth=:d, updated_at=:t "
+                            "WHERE cloudbeds_reservation_id=:cid AND gender IS NULL"
+                        ), {"g": gv, "d": dv, "t": now, "cid": cb_id})
+                        if result.rowcount:
+                            if gv and gv != "N/A":
+                                gender_filled += 1
+                            else:
+                                na += 1
+                            if dv is not None:
+                                dob_filled += 1
+                    _s.commit()
+                except Exception as e:
+                    _s.rollback()
+                    logger.warning("Demographics backfill batch write failed: %s", e)
+                finally:
+                    _s.close()
+                batch_buf.clear()
+
+            if (i + 1) % 50 == 0:
+                logger.info("Demographics progress: %d/%d fetched, %d gender, %d dob, %d N/A",
+                            i + 1, len(targets), gender_filled, dob_filled, na)
+
+            # Rate limit: 0.2s between API calls (matches existing backfills)
+            time.sleep(0.2)
+
+    logger.info("Demographics backfill complete branch %s: %d fetched, %d gender, %d dob, %d N/A",
+                branch_id, total_fetched, gender_filled, dob_filled, na)
+    return {
+        "branch_id": branch_id,
+        "fetched": total_fetched,
+        "gender_filled": gender_filled,
+        "dob_filled": dob_filled,
+        "na": na,
     }
 
 
