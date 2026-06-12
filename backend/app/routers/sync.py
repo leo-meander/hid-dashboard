@@ -375,19 +375,31 @@ def trigger_guest_country_backfill(
     })
 
 
-def _run_demographics_backfill_bg(branch_configs: list, df, dt):
-    """Background worker: runs gender/date_of_birth backfill for each branch."""
+def _run_demographics_backfill_bg(branch_configs: list, df, dt, total_limit=None):
+    """Background worker: runs gender/date_of_birth backfill for each branch.
+
+    `total_limit` is a budget shared ACROSS branches (not per-branch): each
+    branch consumes from the remaining budget, so a cron can drive a bounded
+    chunk per invocation (e.g. ?limit=2000) that finishes well within the cron
+    interval — no long-lived task to pile up when the container stays healthy.
+    None = process every pending row (one long run)."""
     import logging
     log = logging.getLogger(__name__)
+    remaining = total_limit
     for cfg in branch_configs:
+        if remaining is not None and remaining <= 0:
+            break
         try:
             result = backfill_guest_demographics(
                 cfg["branch_id"], cfg["property_id"],
-                api_key=cfg["api_key"], checkin_from=df, checkin_to=dt, limit=cfg.get("limit")
+                api_key=cfg["api_key"], checkin_from=df, checkin_to=dt,
+                limit=remaining if remaining is not None else None,
             )
             log.info("Demographics backfill %s: fetched=%s gender=%s dob=%s na=%s",
                      cfg["name"], result.get("fetched"), result.get("gender_filled"),
                      result.get("dob_filled"), result.get("na"))
+            if remaining is not None:
+                remaining -= result.get("fetched", 0)
         except Exception as exc:
             log.error("Demographics backfill failed for %s: %s", cfg["name"], exc)
 
@@ -398,7 +410,7 @@ def trigger_demographics_backfill(
     branch_id: Optional[UUID] = Query(None),
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD check-in from (default: 2025-01-01)"),
     date_to: Optional[str] = Query(None, description="YYYY-MM-DD check-in to (default: today + 365d)"),
-    limit: Optional[int] = Query(None, description="Max reservations per branch (for testing)"),
+    limit: Optional[int] = Query(None, description="Total rows this run, shared across branches (default: all). Cron drives bounded chunks via this."),
     db: Session = Depends(get_db),
 ):
     """
@@ -439,10 +451,9 @@ def trigger_demographics_backfill(
             "property_id": str(pid),
             "api_key": api_key,
             "name": branch.name,
-            "limit": limit,
         })
 
-    background_tasks.add_task(_run_demographics_backfill_bg, branch_configs, df, dt)
+    background_tasks.add_task(_run_demographics_backfill_bg, branch_configs, df, dt, limit)
 
     return _envelope({
         "status": "started",
