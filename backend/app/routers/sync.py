@@ -51,6 +51,33 @@ def _envelope(data):
 
 
 
+@router.post("/run-migrations")
+def run_migrations(_auth: None = Depends(verify_sync_token)):
+    """Run `alembic upgrade head` on the live container, which holds DATABASE_URL.
+
+    The Docker image starts uvicorn directly and does NOT auto-migrate on
+    deploy, so schema changes need a manual trigger. CWD on the container is
+    /app (alembic.ini + alembic/ live there); env.py reads DATABASE_URL from
+    the environment. Idempotent — a no-op when already at head."""
+    import io
+    from contextlib import redirect_stderr, redirect_stdout
+
+    from alembic import command
+    from alembic.config import Config
+
+    buf = io.StringIO()
+    try:
+        cfg = Config("alembic.ini")
+        with redirect_stdout(buf), redirect_stderr(buf):
+            command.upgrade(cfg, "head")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Migration failed: {exc}\n{buf.getvalue()[-2000:]}",
+        )
+    return _envelope({"output": buf.getvalue()[-3000:] or "upgraded to head"})
+
+
 def _run_backfill_bg(branch_configs: list, df, dt, do_recompute: bool):
     """Background worker: runs backfill + optional recompute for each branch config."""
     import logging
