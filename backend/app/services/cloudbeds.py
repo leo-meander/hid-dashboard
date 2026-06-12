@@ -135,6 +135,82 @@ def _extract_guest_country_from_detail(data: dict) -> Optional[str]:
     return None
 
 
+def probe_guest_detail_fields(
+    branch_id: str,
+    property_id: str,
+    api_key: Optional[str],
+    limit: int = 5,
+    checkin_from: Optional[date] = None,
+) -> dict:
+    """One-off diagnostic (NO writes): sample a few /getReservation detail
+    responses and report which keys carry guest gender / birthday, so the
+    demographics backfill can target the right fields.
+
+    Country lives at guestList[*].guestCountry, but the gender/birthday key
+    names are unconfirmed (public_api reads top-level guestGender/guestBirthday,
+    which the bulk payload never carries). This samples the real detail payload
+    to settle it. Returns, per reservation, the guestList key set, the top-level
+    key set, and the value of any key whose name matches gender/birth/age. Plain
+    PII (name/email/phone) is deliberately NOT returned — only the demographic
+    fields we're trying to locate.
+    """
+    import re as _re
+
+    df = checkin_from or date(2025, 1, 1)
+    demo_re = _re.compile(r"gender|sex|birth|dob|\bage\b", _re.I)
+
+    db = SessionLocal()
+    targets = (
+        db.query(Reservation)
+        .filter(
+            Reservation.branch_id == branch_id,
+            Reservation.check_in_date >= df,
+            Reservation.cloudbeds_reservation_id != None,  # noqa: E711
+        )
+        .order_by(Reservation.check_in_date.desc())
+        .limit(limit)
+        .all()
+    )
+    res_ids = [r.cloudbeds_reservation_id for r in targets]
+    db.close()
+
+    samples: list[dict] = []
+    with httpx.Client(timeout=30) as client:
+        for cid in res_ids:
+            try:
+                resp = client.get(
+                    f"{CLOUDBEDS_BASE_URL}/getReservation",
+                    headers=_headers(api_key),
+                    params={"propertyID": property_id, "reservationID": cid},
+                )
+                resp.raise_for_status()
+                data = resp.json().get("data") or {}
+            except Exception as e:
+                samples.append({"reservation_id": cid, "error": str(e)})
+                continue
+
+            gl = data.get("guestList") or {}
+            guest_keys: set[str] = set()
+            demo_hits: dict = {}
+            if isinstance(gl, dict):
+                for ginfo in gl.values():
+                    if isinstance(ginfo, dict):
+                        guest_keys.update(ginfo.keys())
+                        for k, v in ginfo.items():
+                            if demo_re.search(k):
+                                demo_hits[k] = v
+            top_demo = {k: v for k, v in data.items() if demo_re.search(k)}
+            samples.append({
+                "reservation_id": cid,
+                "guestList_keys": sorted(guest_keys),
+                "guestList_demo_fields": demo_hits,
+                "top_level_demo_fields": top_demo,
+                "top_level_keys": sorted(data.keys()),
+            })
+
+    return {"branch_id": branch_id, "sampled": len(samples), "samples": samples}
+
+
 DIRECT_KEYWORDS = [
     "website", "booking engine", "direct", "blogger",
     "walk-in", "walk in", "walkin",

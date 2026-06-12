@@ -25,7 +25,7 @@ def verify_sync_token(x_sync_token: Optional[str] = Header(None)):
     if not x_sync_token or x_sync_token != expected:
         raise HTTPException(status_code=401, detail="Invalid or missing X-Sync-Token")
 
-from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_room_type_and_rate_plan, backfill_guest_country, map_country_code
+from app.services.cloudbeds import sync_branch, sync_all_branches, sync_branch_revenue, sync_daily_revenue, fetch_total_rooms, backfill_accommodation_total, backfill_room_type_and_rate_plan, backfill_guest_country, probe_guest_detail_fields, map_country_code
 from app.services.ingest_csv import import_all_csvs, import_csv_file, CSV_CONFIGS
 from app.services.ads_platform_sync import run_ads_platform_sync
 from app.services.metrics_engine import recompute_branch_range, recompute_occ_and_bookings
@@ -226,6 +226,43 @@ def _run_guest_country_backfill_bg(branch_configs: list, df, dt):
                      cfg["name"], result.get("fetched"), result.get("filled"), result.get("still_unknown"))
         except Exception as exc:
             log.error("Guest country backfill failed for %s: %s", cfg["name"], exc)
+
+
+@router.get("/probe-guest-fields")
+def probe_guest_fields(
+    branch_id: Optional[UUID] = Query(None, description="Limit to one branch; default samples every active branch"),
+    limit: int = Query(5, description="Reservations to sample per branch (keep small)"),
+    _auth: None = Depends(verify_sync_token),
+    db: Session = Depends(get_db),
+):
+    """Diagnostic (NO writes): sample /getReservation detail for a few 2025+
+    reservations per branch and report which guestList keys carry gender /
+    birthday. Used to design the demographics backfill before committing to a
+    multi-hour run. Synchronous — keep limit small (a handful per branch)."""
+    from datetime import date
+
+    branches_q = db.query(Branch).filter_by(is_active=True)
+    if branch_id:
+        branches_q = branches_q.filter(Branch.id == branch_id)
+    branches = branches_q.all()
+
+    results = []
+    for branch in branches:
+        pid = branch.cloudbeds_property_id
+        if not pid:
+            results.append({"branch": branch.name, "skipped": "no property_id"})
+            continue
+        api_key = settings.get_api_key_for_property(str(pid))
+        if not api_key:
+            results.append({"branch": branch.name, "skipped": f"no api_key for property {pid}"})
+            continue
+        probe = probe_guest_detail_fields(
+            str(branch.id), str(pid), api_key, limit=limit, checkin_from=date(2025, 1, 1)
+        )
+        probe["branch"] = branch.name
+        results.append(probe)
+
+    return _envelope({"branches": results})
 
 
 @router.post("/backfill-guest-country")
