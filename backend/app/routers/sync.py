@@ -65,6 +65,8 @@ def run_migrations(_auth: None = Depends(verify_sync_token)):
     from alembic import command
     from alembic.config import Config
 
+    from sqlalchemy import text as _sqltext
+
     buf = io.StringIO()
     try:
         cfg = Config("alembic.ini")
@@ -75,7 +77,27 @@ def run_migrations(_auth: None = Depends(verify_sync_token)):
             status_code=500,
             detail=f"Migration failed: {exc}\n{buf.getvalue()[-2000:]}",
         )
-    return _envelope({"output": buf.getvalue()[-3000:] or "upgraded to head"})
+
+    # Verify the columns this migration set adds actually exist, plus the
+    # recorded alembic version, so the caller can trust the schema is ready
+    # before relying on it (logging alone doesn't prove the columns landed).
+    from app.database import SessionLocal
+    _s = SessionLocal()
+    try:
+        version = _s.execute(_sqltext("SELECT version_num FROM alembic_version")).scalar()
+        cols = [row[0] for row in _s.execute(_sqltext(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='reservations' "
+            "AND column_name IN ('gender','date_of_birth')"
+        )).all()]
+    finally:
+        _s.close()
+
+    return _envelope({
+        "output": buf.getvalue()[-3000:] or "no pending migrations",
+        "alembic_version": version,
+        "reservations_demographic_columns": sorted(cols),
+    })
 
 
 def _run_backfill_bg(branch_configs: list, df, dt, do_recompute: bool):
