@@ -453,6 +453,52 @@ def trigger_demographics_backfill(
     })
 
 
+@router.get("/demographics-coverage")
+def demographics_coverage(
+    branch_id: Optional[UUID] = Query(None),
+    _auth: None = Depends(verify_sync_token),
+    db: Session = Depends(get_db),
+):
+    """Read-only coverage stats for the gender/date_of_birth backfill, scoped to
+    the backfill window (check-in >= 2025-01-01). Per branch: total rows,
+    gender_known (M/F), gender_na ('N/A' = fetched but none on file),
+    gender_pending (NULL = not yet fetched), dob_known. Use to watch backfill
+    progress and verify results."""
+    from datetime import date as date_cls
+
+    from sqlalchemy import case
+
+    df = date_cls(2025, 1, 1)
+    q = (
+        db.query(
+            Branch.name,
+            func.count(Reservation.id).label("total"),
+            func.count(case((Reservation.gender.in_(("M", "F")), 1))).label("gender_known"),
+            func.count(case((Reservation.gender == "N/A", 1))).label("gender_na"),
+            func.count(case((Reservation.gender.is_(None), 1))).label("gender_pending"),
+            func.count(Reservation.date_of_birth).label("dob_known"),
+        )
+        .join(Reservation, Reservation.branch_id == Branch.id)
+        .filter(Reservation.check_in_date >= df)
+    )
+    if branch_id:
+        q = q.filter(Branch.id == branch_id)
+    rows = q.group_by(Branch.name).order_by(Branch.name).all()
+
+    branches = [
+        {
+            "branch": r[0], "total": r[1], "gender_known": r[2],
+            "gender_na": r[3], "gender_pending": r[4], "dob_known": r[5],
+        }
+        for r in rows
+    ]
+    totals = {
+        k: sum(b[k] for b in branches)
+        for k in ("total", "gender_known", "gender_na", "gender_pending", "dob_known")
+    }
+    return _envelope({"window_from": df.isoformat(), "branches": branches, "totals": totals})
+
+
 # ── Cancellation-date tier-1 backfill (from raw_data JSONB, no Cloudbeds) ────
 # Cancelled/no-show rows often have cancellation_date NULL because the bulk
 # /getReservations lite payload omits it. But the stored raw_data JSONB may
