@@ -449,19 +449,29 @@ function AllBranchesTable({ data, loading }) {
                       )}
                     </div>
                   </td>
-                  {/* Adjusted forecast */}
+                  {/* Adjusted forecast \u2014 blue if \u2265100% of target, red if below */}
                   <td className="px-3 py-3.5 text-center">
                     {row.adjusted_forecast != null
-                      ? <HoverTooltip content={adjustedBreakdown(row, "current")}>
-                          <span className={(dedPct > 0 ? "text-orange-600" : "text-indigo-700") + " font-medium border-b border-dotted border-gray-300"}>
-                            {fmt(row.adjusted_forecast, cur)}
-                            {row.target_revenue_native
-                              ? <span className="ml-1 text-xs text-gray-400 font-normal">
-                                  ({(row.adjusted_forecast / row.target_revenue_native * 100).toFixed(2)}%)
-                                </span>
-                              : null}
-                          </span>
-                        </HoverTooltip>
+                      ? (() => {
+                          const adjPct = row.target_revenue_native
+                            ? row.adjusted_forecast / row.target_revenue_native * 100
+                            : null;
+                          const adjColor = adjPct == null
+                            ? "text-indigo-700"
+                            : adjPct >= 100 ? "text-blue-600" : "text-red-600";
+                          return (
+                            <HoverTooltip content={adjustedBreakdown(row, "current")}>
+                              <span className={adjColor + " font-medium border-b border-dotted border-gray-300"}>
+                                {fmt(row.adjusted_forecast, cur)}
+                                {adjPct != null
+                                  ? <span className="ml-1 text-xs text-gray-400 font-normal">
+                                      ({adjPct.toFixed(2)}%)
+                                    </span>
+                                  : null}
+                              </span>
+                            </HoverTooltip>
+                          );
+                        })()
                       : <span className="text-gray-300">{"\u2014"}</span>}
                   </td>
                   {/* Next month actual booked revenue */}
