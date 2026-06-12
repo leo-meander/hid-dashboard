@@ -487,10 +487,18 @@ function AllBranchesTable({ data, loading }) {
                         </span>
                       : <span className="text-gray-300">{"\u2014"}</span>}
                   </td>
-                  {/* Next month forecast — always shows adjusted */}
+                  {/* Next month forecast — blue if ≥100% of target, red if below */}
                   <td className="px-3 py-3.5 text-center">
                     {row.adjusted_next_forecast != null
-                      ? <div>
+                      ? (() => {
+                          const nextPct = row.next_month_target_native
+                            ? row.adjusted_next_forecast / row.next_month_target_native * 100
+                            : null;
+                          const nextColor = nextPct == null
+                            ? "text-purple-700"
+                            : nextPct >= 100 ? "text-blue-600" : "text-red-600";
+                          return (
+                      <div>
                           <HoverTooltip content={
                             <>
                               {forecastBreakdown(row, "next")}
@@ -501,11 +509,11 @@ function AllBranchesTable({ data, loading }) {
                               )}
                             </>
                           }>
-                            <span className={(dedPct > 0 ? "text-orange-600" : "text-purple-700") + " font-medium border-b border-dotted border-purple-300"}>
+                            <span className={nextColor + " font-medium border-b border-dotted border-purple-300"}>
                               {fmt(row.adjusted_next_forecast, cur)}
-                              {row.next_month_target_native
+                              {nextPct != null
                                 ? <span className="ml-1 text-xs text-gray-400 font-normal">
-                                    ({Math.round(row.adjusted_next_forecast / row.next_month_target_native * 100)}%)
+                                    ({Math.round(nextPct)}%)
                                   </span>
                                 : null}
                             </span>
@@ -534,6 +542,8 @@ function AllBranchesTable({ data, loading }) {
                             return null;
                           })()}
                         </div>
+                          );
+                        })()
                       : <span className="text-gray-300">{"\u2014"}</span>}
                   </td>
                 </tr>
