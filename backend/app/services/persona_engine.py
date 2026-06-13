@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Optional
 
-from sqlalchemy import and_, case, func
+from sqlalchemy import Date, and_, case, cast, func
 from sqlalchemy.orm import Session
 
 from app.models.branch import Branch
@@ -198,6 +198,65 @@ def build_persona(db: Session, branch: Branch, df: date, dt: date) -> dict:
     persona["lead_time"] = {
         "avg_days": round(float(lead_row[0]), 1) if lead_row[0] is not None else None,
         "median_days": round(float(lead_row[1]), 1) if lead_row[1] is not None else None,
+    }
+
+    # ── Cancellation lead time (cancelled cohort: how far ahead they cancel) ─
+    # lead_days = check_in − cancel date. >0 = cancelled in advance; <=0 = on
+    # or after check-in (includes no-shows). Cloudbeds' bulk payload often omits
+    # an exact cancellation_date, so we fall back to raw_data's last-modified
+    # date (for a cancelled booking the final edit ≈ the cancellation) and
+    # report coverage so the UI can flag the figure as approximate.
+    dm_txt = func.substr(Reservation.raw_data["dateModified"].astext, 1, 10)
+    cancel_date = func.coalesce(
+        Reservation.cancellation_date,
+        case(
+            (and_(dm_txt.op("~")(r"^\d{4}-\d{2}-\d{2}"), dm_txt != "0000-00-00"),
+             cast(dm_txt, Date)),
+        ),
+    )
+    lead_days = Reservation.check_in_date - cancel_date
+    cancel_cohort = and_(
+        Reservation.branch_id == bid,
+        Reservation.check_in_date >= df,
+        Reservation.check_in_date <= dt,
+        func.lower(Reservation.status).in_(list(EXCLUDED_STATUSES)),
+    )
+    clt = db.query(
+        func.count(Reservation.id),
+        func.count(lead_days),
+        func.avg(lead_days),
+        func.percentile_cont(0.5).within_group(lead_days.asc()),
+        func.count(case((lead_days <= 0, 1))),
+        func.count(case((and_(lead_days >= 1, lead_days <= 7), 1))),
+        func.count(case((and_(lead_days >= 8, lead_days <= 30), 1))),
+        func.count(case((and_(lead_days >= 31, lead_days <= 60), 1))),
+        func.count(case((lead_days > 60, 1))),
+    ).filter(cancel_cohort).first()
+
+    clt_total = int(clt[0] or 0)
+    clt_known = int(clt[1] or 0)
+    _bucket_defs = [
+        ("after_or_same", "On/after check-in", clt[4]),
+        ("d1_7", "1–7 days (last-minute)", clt[5]),
+        ("d8_30", "8–30 days", clt[6]),
+        ("d31_60", "31–60 days", clt[7]),
+        ("d60_plus", "60+ days", clt[8]),
+    ]
+    cancel_buckets = [
+        {"key": k, "label": lbl, "count": int(c or 0), "pct": _pct(int(c or 0), clt_known)}
+        for k, lbl, c in _bucket_defs
+    ]
+    dom = max(cancel_buckets, key=lambda b: b["count"]) if clt_known else None
+    persona["cancel_lead_time"] = {
+        "cancelled": clt_total,
+        "known": clt_known,
+        "coverage_pct": _pct(clt_known, clt_total),
+        "avg_days": round(float(clt[2]), 1) if clt[2] is not None else None,
+        "median_days": round(float(clt[3]), 1) if clt[3] is not None else None,
+        "buckets": cancel_buckets,
+        "dominant": dom["label"] if dom else None,
+        "dominant_key": dom["key"] if dom else None,
+        "approx": True,
     }
 
     # ── Length of stay (nights) ──────────────────────────────────────────

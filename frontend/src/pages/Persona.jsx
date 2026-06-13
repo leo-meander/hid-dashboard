@@ -91,12 +91,28 @@ function dominant(items, key) {
   return items.reduce((a, b) => (b.pct > (a?.pct ?? -1) ? b : a), null)?.[key];
 }
 
+const CANCEL_STYLE_SHORT = {
+  after_or_same: "On/after day",
+  d1_7: "Last-minute",
+  d8_30: "Weeks ahead",
+  d31_60: "1–2 mo ahead",
+  d60_plus: "Months ahead",
+};
+function cancelStyle(clt) {
+  if (!clt?.known) return { label: "—", sub: "no cancel-date data" };
+  return {
+    label: CANCEL_STYLE_SHORT[clt.dominant_key] || "—",
+    sub: clt.median_days != null ? `median ${clt.median_days}d` : null,
+  };
+}
+
 /* ── comparison card (All Branches view) ──────────────────────────────── */
 
-function BranchCard({ p, color }) {
+function BranchCard({ p, color, onClick }) {
+  const clickable = "cursor-pointer hover:shadow-md hover:border-indigo-300 transition";
   if (p.empty) {
     return (
-      <div className="shrink-0 w-72 bg-white rounded-lg border p-4">
+      <div className={"shrink-0 w-72 bg-white rounded-lg border p-4 " + clickable} onClick={onClick}>
         <h3 className="font-bold text-gray-900">{p.branch_name}</h3>
         <p className="text-sm text-gray-400 mt-4">No bookings in this window.</p>
       </div>
@@ -106,7 +122,7 @@ function BranchCard({ p, color }) {
   const country = p.top_countries?.[0];
   const chan = dominant(p.source_mix, "category");
   return (
-    <div className="shrink-0 w-72 bg-white rounded-lg border p-4 space-y-3">
+    <div className={"shrink-0 w-72 bg-white rounded-lg border p-4 space-y-3 " + clickable} onClick={onClick}>
       <div className="flex items-center gap-2 border-b pb-2" style={{ borderColor: color }}>
         <span className="w-2.5 h-2.5 rounded-full" style={{ background: color }} />
         <h3 className="font-bold text-gray-900">{p.branch_name}</h3>
@@ -126,12 +142,14 @@ function BranchCard({ p, color }) {
         <Stat label="Lead time" value={`${p.lead_time?.median_days ?? "—"} d`} />
         <Stat label="ADR" value={fmtMoney(p.value?.adr_native, p.currency)} />
         <Stat label="Cancel rate" value={fmtPct(p.cancellation_rate_pct)} />
+        <Stat label="Cancel lead" value={cancelStyle(p.cancel_lead_time).label} sub={cancelStyle(p.cancel_lead_time).sub} />
         <Stat label="Bookings" value={fmtNum(p.total_bookings)} />
       </div>
 
       <div className="pt-1 border-t">
         <CoverageNote p={p} />
       </div>
+      <p className="text-[11px] font-medium text-indigo-500">View full persona →</p>
     </div>
   );
 }
@@ -158,6 +176,8 @@ function DeepDive({ p }) {
   const channelData = (p.source_mix || []).map((s) => ({ name: s.category, value: s.count }));
   const ageData = (p.age?.bands || []).map((b) => ({ name: b.label, pct: b.pct }));
   const countryData = (p.top_countries || []).slice(0, 8).map((c) => ({ name: c.country, pct: c.pct }));
+  const clt = p.cancel_lead_time;
+  const cancelData = (clt?.buckets || []).map((b) => ({ name: b.label, pct: b.pct, count: b.count }));
 
   return (
     <div className="space-y-5">
@@ -232,6 +252,28 @@ function DeepDive({ p }) {
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
+
+        {/* Cancellation timing */}
+        <ChartCard title={`Cancellation timing${clt?.median_days != null ? ` — median ${clt.median_days}d before check-in` : ""}`}>
+          {clt?.known ? (
+            <>
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={cancelData} layout="vertical" margin={{ left: 30 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis type="number" tick={{ fontSize: 11 }} unit="%" />
+                  <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={120} />
+                  <Tooltip formatter={(v, _n, item) => [`${v}% (${item.payload.count})`, "share"]} />
+                  <Bar dataKey="pct" fill="#ef4444" radius={[0, 4, 4, 0]}>
+                    <LabelList dataKey="pct" position="right" formatter={(v) => `${v}%`} style={{ fontSize: 10, fill: "#888" }} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+              <p className="text-[10px] text-amber-600 mt-1">
+                Based on {fmtPct(clt.coverage_pct)} of cancellations with a usable date · cancel date approximated from last-modified where Cloudbeds omits it.
+              </p>
+            </>
+          ) : <Empty label="No cancel-date data yet" />}
+        </ChartCard>
       </div>
 
       {/* Behaviour strip */}
@@ -262,7 +304,7 @@ function Empty({ label }) {
 /* ── page ─────────────────────────────────────────────────────────────── */
 
 export default function Persona() {
-  const { isAll, selected, branches } = useBranch();
+  const { isAll, selected, branches, selectBranch, canSelectAll } = useBranch();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -296,11 +338,21 @@ export default function Persona() {
       ) : isAll ? (
         <div className="flex gap-4 overflow-x-auto pb-2">
           {personas.map((p, i) => (
-            <BranchCard key={p.branch_id} p={p} color={COLORS[i % COLORS.length]} />
+            <BranchCard key={p.branch_id} p={p} color={COLORS[i % COLORS.length]} onClick={() => selectBranch(p.branch_id)} />
           ))}
         </div>
       ) : (
-        <DeepDive p={personas[0]} />
+        <div className="space-y-3">
+          {canSelectAll && (
+            <button
+              onClick={() => selectBranch("all")}
+              className="text-sm text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              ← All branches
+            </button>
+          )}
+          <DeepDive p={personas[0]} />
+        </div>
       )}
     </div>
   );
