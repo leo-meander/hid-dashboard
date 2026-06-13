@@ -361,7 +361,32 @@ function AllBranchesTable({ data, loading }) {
                 <tr key={row.branch_id} className="hover:bg-gray-50">
                   <td className="px-5 py-3.5 font-medium text-gray-800">{row.branch_name}</td>
                   <td className="px-3 py-3.5 text-gray-500 text-xs">{cur}</td>
-                  <td className="px-3 py-3.5 text-right font-mono">{fmt(row.actual_revenue_native, cur)}</td>
+                  <td className="px-3 py-3.5 text-right font-mono">
+                    <div>{fmt(row.actual_revenue_native, cur)}</div>
+                    {(() => {
+                      const rOcc = row.actual_room_occ_pct;
+                      const dOcc = row.actual_dorm_occ_pct;
+                      const fallback = row.actual_occ_pct;
+                      const hasDorm = row.total_dorm_count > 0;
+                      if (rOcc != null || dOcc != null) {
+                        return (
+                          <div className="text-[10px] text-gray-400 mt-0.5 font-sans">
+                            {rOcc != null && <span>R:{Math.round(rOcc * 100)}%</span>}
+                            {rOcc != null && dOcc != null && hasDorm && <span> · </span>}
+                            {dOcc != null && hasDorm && <span>D:{Math.round(dOcc * 100)}%</span>}
+                          </div>
+                        );
+                      }
+                      if (fallback != null) {
+                        return (
+                          <div className="text-[10px] text-gray-400 mt-0.5 font-sans">
+                            {hasDorm ? `R:${Math.round(fallback * 100)}% · D:${Math.round(fallback * 100)}%` : `R:${Math.round(fallback * 100)}%`}
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </td>
                   <td className="px-3 py-3.5 text-right font-mono text-gray-500">{fmt(row.target_revenue_native, cur)}</td>
                   <td className="px-3 py-3.5 text-center"><AchievementBadge value={row.achievement_pct != null ? row.achievement_pct * 100 : null} /></td>
                   {/* Forecast this month */}
