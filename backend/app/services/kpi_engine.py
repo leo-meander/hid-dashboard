@@ -548,14 +548,19 @@ def compute_kpi_summary(
         room_adr = avg_adr
 
     # ── Actual OCC from daily_metrics ────────────────────────────────────
-    actual_occ = round(total_sold / (total_rooms * days_elapsed), 4) if (total_rooms > 0 and days_elapsed > 0) else None
+    # _get_insights_filtered sums nights sold over the WHOLE calendar month
+    # (incl. future on-the-books dates) — the same basis as the booked revenue
+    # above. So the OCC denominator must be full-month capacity (total_days),
+    # NOT days_elapsed; using days_elapsed double-counted future nights against
+    # an elapsed-only denominator and produced >100% occupancy mid-month.
+    actual_occ = round(total_sold / (total_rooms * total_days), 4) if (total_rooms > 0 and total_days > 0) else None
     actual_room_occ = None
     actual_dorm_occ = None
-    if has_split and days_elapsed > 0:
+    if has_split and total_days > 0:
         room_sold_total = insights.get("room_sold", 0)
         dorm_sold_total = insights.get("dorm_sold", 0)
-        actual_room_occ = round(room_sold_total / (total_room_count * days_elapsed), 4) if total_room_count > 0 else None
-        actual_dorm_occ = round(dorm_sold_total / (total_dorm_count * days_elapsed), 4) if total_dorm_count > 0 else None
+        actual_room_occ = round(room_sold_total / (total_room_count * total_days), 4) if total_room_count > 0 else None
+        actual_dorm_occ = round(dorm_sold_total / (total_dorm_count * total_days), 4) if total_dorm_count > 0 else None
 
     # ── Forecasts ─────────────────────────────────────────────────────────
     # Forecast (with split):  room_adr × pred_room_sold + dorm_adr × pred_dorm_sold
