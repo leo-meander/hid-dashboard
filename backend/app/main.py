@@ -17,6 +17,7 @@ from app.routers import ad_analyzer
 from app.routers import crm
 from app.routers import email_marketing
 from app.routers import marketing_activity, marketing_budget
+from app.routers import personas
 from app.routers import gov_visitor
 from app.routers import holiday_intel
 from app.routers import api_keys, public_api
@@ -97,6 +98,7 @@ app.include_router(crm.router, prefix="/api/crm", tags=["CRM"])
 app.include_router(email_marketing.router, prefix="/api/email-marketing", tags=["Email Marketing"])
 
 # Marketing Activity (consolidated view)
+app.include_router(personas.router, prefix="/api/personas", tags=["Personas"])
 app.include_router(marketing_activity.router, prefix="/api/marketing-activity", tags=["Marketing Activity"])
 
 # Marketing Budget Planner — monthly allocation per branch & channel
