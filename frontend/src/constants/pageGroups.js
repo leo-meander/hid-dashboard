@@ -12,7 +12,7 @@ export const PAGE_GROUPS = [
   { key: "overview",    label: "Overview",    hint: "Home" },
   { key: "performance", label: "Performance", hint: "Summary, Daily, Weekly, Monthly, OTA, Countries" },
   { key: "strategy",    label: "Strategy",    hint: "KPI, Targets, Country Intel, Holiday Intel" },
-  { key: "marketing",   label: "Marketing",   hint: "Marketing Activity, Budget Planner, Email" },
+  { key: "marketing",   label: "Marketing",   hint: "Marketing Activity, Budget Planner, Persona, Email" },
   { key: "reports",     label: "Reports",     hint: "Alerts, Rate Plan Quotas, Weekly Report" },
 ];
 
@@ -32,6 +32,7 @@ const ROUTE_GROUPS = [
   ["/holiday-intel",      "strategy"],
   ["/marketing-activity", "marketing"],
   ["/budget-planner",     "marketing"],
+  ["/persona",            "marketing"],
   ["/email-marketing",    "marketing"],
   ["/alerts",             "reports"],
   ["/rate-plan-quotas",   "reports"],
