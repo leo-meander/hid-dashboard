@@ -23,14 +23,20 @@ def _envelope(data):
 def get_personas(
     branch_id: Optional[UUID] = Query(None, description="One branch; omit for all active branches"),
     months: int = Query(12, ge=1, le=36, description="Trailing window in months (default 12)"),
+    fresh: int = Query(0, description="Pass 1 to bypass the in-memory cache and rebuild"),
     db: Session = Depends(get_db),
 ):
     """Guest persona per branch: demographics (gender/age/country), behaviour
     (lead time, length of stay, channel mix, party size, room vs dorm,
     cancellation rate), value (ADR, avg booking value), plus a synthesised
     headline. Demographic coverage is reported per dimension — gender/age are
-    still backfilling from Cloudbeds."""
-    data = build_all_personas(db, str(branch_id) if branch_id else None, months)
+    still backfilling from Cloudbeds.
+
+    The computed payload is cached in-process (~15 min TTL); pass ?fresh=1 to
+    force a rebuild."""
+    data = build_all_personas(
+        db, str(branch_id) if branch_id else None, months, force_fresh=bool(fresh)
+    )
     last_synced = db.query(func.max(Reservation.updated_at))
     if branch_id:
         last_synced = last_synced.filter(Reservation.branch_id == branch_id)

@@ -12,6 +12,7 @@ too thin to be meaningful. See [[demographics-backfill]].
 """
 from __future__ import annotations
 
+import time
 from datetime import date, timedelta
 from typing import Optional
 
@@ -369,13 +370,36 @@ def _build_headline(p: dict) -> str:
     return "Guests are " + ", ".join(clauses) + "."
 
 
+# ── In-memory TTL cache ───────────────────────────────────────────────────
+# Persona output is read-only derived data that only changes on sync (nightly
+# Cloudbeds sync + demographics backfill), yet the "All Branches" view fans out
+# to ~13 queries per branch (~66 round-trips). Caching the computed payload makes
+# repeat loads — and the 6-person team hitting the same page — near-instant.
+# Single Zeabur instance, so a process-local dict is sufficient. Pass
+# force_fresh=True (router's ?fresh=1) to bypass and rebuild. See [[weekly-report-cache-refresh]].
+_PERSONA_TTL_SECONDS = 15 * 60
+_persona_cache: dict[tuple, tuple[float, dict]] = {}
+
+
 def build_all_personas(
     db: Session,
     branch_id: Optional[str] = None,
     months: int = 12,
+    force_fresh: bool = False,
 ) -> dict:
-    """Build personas for one branch (if branch_id) or all active branches."""
+    """Build personas for one branch (if branch_id) or all active branches.
+
+    Result is cached in-process for _PERSONA_TTL_SECONDS, keyed by
+    (branch_id, months, today). force_fresh bypasses and refreshes the entry.
+    """
     dt = date.today()
+    key = (branch_id, months, dt.isoformat())
+
+    if not force_fresh:
+        hit = _persona_cache.get(key)
+        if hit and (time.monotonic() - hit[0]) < _PERSONA_TTL_SECONDS:
+            return hit[1]
+
     df = dt - timedelta(days=round(months * 30.44))
 
     q = db.query(Branch).filter_by(is_active=True)
@@ -384,7 +408,9 @@ def build_all_personas(
     branches = q.order_by(Branch.name).all()
 
     personas = [build_persona(db, b, df, dt) for b in branches]
-    return {
+    result = {
         "window": {"from": df.isoformat(), "to": dt.isoformat(), "months": months},
         "personas": personas,
     }
+    _persona_cache[key] = (time.monotonic(), result)
+    return result
