@@ -164,10 +164,14 @@ def register_tools(mcp: FastMCP) -> None:
         Use when the user wants both dimensions at once: 'which country grew
         Website/Booking Engine bookings last week', 'which markets drove Agoda',
         'Direct bookings by country', 'where did OTA growth come from'. Filter
-        with `source` (substring match on raw source name, e.g. 'website',
-        'booking engine', 'agoda', 'booking.com') and/or `source_category`
-        ('OTA' | 'Direct' | 'Local travel agency'); pass `country` to pin one
-        market. date_basis='reservation' (when booked, default) or 'checkin'.
+        with `source` (case-insensitive substring on the raw source name, e.g.
+        'website', 'agoda', 'booking.com', 'extension', 'walk-in'). NOTE:
+        'Extension' is a real, common source = a guest extending their stay
+        (source_category Direct, shown in the Weekly Report Top Sources) — NOT an
+        OTA, and distinct from the 'Extension Promotion' CRM rate-plan. And/or
+        filter `source_category` ('OTA' | 'Direct' | 'Local travel agency'); pass
+        `country` to pin one market. date_basis='reservation' (when booked,
+        default) or 'checkin'.
         Defaults to the last 7 days vs the prior 7 days. growth_pct is null for
         a market that was new this period (no prior-period bookings).
 
