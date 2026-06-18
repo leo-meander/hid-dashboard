@@ -154,6 +154,7 @@ function inlineMd(s) {
 export default function ChatWidget() {
   const { selected, currentBranch } = useBranch();
   const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [dismissed, setDismissed] = useState(() => {
     try {
       return localStorage.getItem(DISMISSED_KEY) === "1";
@@ -290,7 +291,13 @@ export default function ChatWidget() {
 
       {/* Panel */}
       {open && (
-        <div className="fixed bottom-5 right-5 z-50 w-[420px] max-w-[95vw] h-[640px] max-h-[85vh] bg-white border border-gray-200 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+        <div
+          className={`fixed bottom-5 right-5 z-50 max-w-[95vw] bg-white border border-gray-200 rounded-xl shadow-2xl flex flex-col overflow-hidden transition-all duration-200 ${
+            expanded
+              ? "w-[900px] h-[90vh] max-h-[92vh]"
+              : "w-[420px] h-[640px] max-h-[85vh]"
+          }`}
+        >
           {/* Header */}
           <div className="px-4 py-3 bg-gray-900 text-white flex items-center justify-between">
             <div>
@@ -300,6 +307,28 @@ export default function ChatWidget() {
               </div>
             </div>
             <div className="flex items-center gap-1">
+              <button
+                onClick={() => setExpanded(v => !v)}
+                title={expanded ? "Shrink" : "Expand"}
+                aria-label={expanded ? "Shrink chat" : "Expand chat"}
+                className="text-gray-400 hover:text-white p-1 rounded"
+              >
+                {expanded ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="4 14 10 14 10 20" />
+                    <polyline points="20 10 14 10 14 4" />
+                    <line x1="14" y1="10" x2="21" y2="3" />
+                    <line x1="3" y1="21" x2="10" y2="14" />
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 3 21 3 21 9" />
+                    <polyline points="9 21 3 21 3 15" />
+                    <line x1="21" y1="3" x2="14" y2="10" />
+                    <line x1="3" y1="21" x2="10" y2="14" />
+                  </svg>
+                )}
+              </button>
               <button
                 onClick={clear}
                 title="Clear history"
