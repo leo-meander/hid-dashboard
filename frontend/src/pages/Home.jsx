@@ -502,14 +502,31 @@ function AllBranchesTable({ data, loading }) {
                   {/* Next month actual booked revenue */}
                   <td className="px-3 py-3.5 text-center">
                     {row.next_month_booked_revenue != null && row.next_month_booked_revenue > 0
-                      ? <span className="text-gray-700 font-mono">
-                          {fmt(row.next_month_booked_revenue, cur)}
-                          {row.next_month_target_native
-                            ? <span className="ml-1 text-xs text-gray-400 font-normal">
-                                ({Math.round(row.next_month_booked_revenue / row.next_month_target_native * 100)}%)
-                              </span>
-                            : null}
-                        </span>
+                      ? <div>
+                          <span className="text-gray-700 font-mono">
+                            {fmt(row.next_month_booked_revenue, cur)}
+                            {row.next_month_target_native
+                              ? <span className="ml-1 text-xs text-gray-400 font-normal">
+                                  ({Math.round(row.next_month_booked_revenue / row.next_month_target_native * 100)}%)
+                                </span>
+                              : null}
+                          </span>
+                          {(() => {
+                            const rOcc = row.booked_room_occ_next;
+                            const dOcc = row.booked_dorm_occ_next;
+                            const hasDorm = row.total_dorm_count > 0;
+                            if (rOcc != null || dOcc != null) {
+                              return (
+                                <div className="text-[10px] text-gray-400 mt-0.5 font-sans">
+                                  {rOcc != null && <span>R:{Math.round(rOcc * 100)}%</span>}
+                                  {rOcc != null && dOcc != null && hasDorm && <span> \u00b7 </span>}
+                                  {dOcc != null && hasDorm && <span>D:{Math.round(dOcc * 100)}%</span>}
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </div>
                       : <span className="text-gray-300">{"\u2014"}</span>}
                   </td>
                   {/* Next month forecast — blue if ≥100% of target, red if below */}

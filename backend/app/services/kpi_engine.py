@@ -423,6 +423,16 @@ def compute_next_month_forecast(
     if total_room_count > 0 and total_dorm_count == 0:
         room_adr = total_adr
 
+    # ── Booked OCC split for next month (ALL sources, same rule as actuals) ──
+    booked_room_occ_next = (
+        round(insights.get("room_sold", 0) / (total_room_count * total_days), 4)
+        if total_room_count > 0 else None
+    )
+    booked_dorm_occ_next = (
+        round(insights.get("dorm_sold", 0) / (total_dorm_count * total_days), 4)
+        if total_dorm_count > 0 else None
+    )
+
     # ── Predicted OCC for next month ──────────────────────────────────────
     target_row = (
         db.query(KPITarget)
@@ -472,6 +482,8 @@ def compute_next_month_forecast(
         "next_month_dorm_adr": dorm_adr,
         "next_month_booked_revenue": round(total_revenue, 2),
         "next_month_booked_nights": total_sold,
+        "booked_room_occ_next": booked_room_occ_next,
+        "booked_dorm_occ_next": booked_dorm_occ_next,
         "predicted_occ_next": predicted_occ_next,
         "predicted_room_occ_next": predicted_room_occ_next,
         "predicted_dorm_occ_next": predicted_dorm_occ_next,
