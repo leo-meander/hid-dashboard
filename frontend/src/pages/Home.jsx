@@ -519,7 +519,7 @@ function AllBranchesTable({ data, loading }) {
                               return (
                                 <div className="text-[10px] text-gray-400 mt-0.5 font-sans">
                                   {rOcc != null && <span>R:{Math.round(rOcc * 100)}%</span>}
-                                  {rOcc != null && dOcc != null && hasDorm && <span> \u00b7 </span>}
+                                  {rOcc != null && dOcc != null && hasDorm && <span> · </span>}
                                   {dOcc != null && hasDorm && <span>D:{Math.round(dOcc * 100)}%</span>}
                                 </div>
                               );
