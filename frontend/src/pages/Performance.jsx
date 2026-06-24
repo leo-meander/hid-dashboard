@@ -70,18 +70,24 @@ function KPIAchievement({ branchId }) {
           setData(rows[0] || null);
         } else {
           if (!rows.length) { setData(null); return; }
+          // Branches use different currencies — roll up the group total in VND,
+          // the common denominator stored alongside every native amount.
           const agg = {
-            actual_revenue: 0, target_revenue: 0, daily_goal: 0, daily_actual: 0,
+            actual_revenue_vnd: 0, target_revenue_vnd: 0,
             total_days: rows[0].total_days, date_from: rows[0].date_from, date_to: rows[0].date_to,
             branches: rows,
           };
           for (const r of rows) {
-            agg.actual_revenue += r.actual_revenue;
-            agg.target_revenue += r.target_revenue;
-            agg.daily_goal += r.daily_goal;
-            agg.daily_actual += r.daily_actual;
+            agg.actual_revenue_vnd += r.actual_revenue_vnd || 0;
+            agg.target_revenue_vnd += r.target_revenue_vnd || 0;
           }
-          agg.achievement_pct = agg.target_revenue > 0 ? agg.actual_revenue / agg.target_revenue : null;
+          agg.achievement_pct = agg.target_revenue_vnd > 0
+            ? agg.actual_revenue_vnd / agg.target_revenue_vnd
+            : null;
+          if (agg.total_days > 0) {
+            agg.daily_goal_vnd = agg.target_revenue_vnd / agg.total_days;
+            agg.daily_actual_vnd = agg.actual_revenue_vnd / agg.total_days;
+          }
           setData(agg);
         }
       })
@@ -122,6 +128,8 @@ function KPIAchievement({ branchId }) {
     const sym = CURRENCY_SYMBOLS[c] || c || "";
     return sym + new Intl.NumberFormat("en").format(Math.round(v));
   };
+
+  const fmtVnd = (v) => (v == null ? "\u2014" : "\u20ab" + new Intl.NumberFormat("en").format(Math.round(v)));
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
@@ -166,6 +174,39 @@ function KPIAchievement({ branchId }) {
           <div className="text-center py-4 text-gray-400">No data available</div>
         ) : data.branches ? (
           <div className="space-y-4">
+            {/* Group total — all branches summed in VND (common currency) */}
+            <div className="pb-4 border-b border-gray-200">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm font-semibold text-gray-800">
+                  All Branches <span className="font-normal text-gray-400">(VND)</span>
+                </span>
+                <span className={"text-lg font-bold " + pctColor}>{pctDisplay}</span>
+              </div>
+              <div className="flex items-baseline gap-2 mb-2">
+                <span className="text-xl font-bold text-gray-800">
+                  {fmtVnd(data.actual_revenue_vnd)}
+                </span>
+                <span className="text-sm text-gray-400">
+                  / {fmtVnd(data.target_revenue_vnd)}
+                </span>
+              </div>
+              <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden mb-1.5">
+                <div className={"h-full rounded-full transition-all duration-500 " + barColor} style={{ width: barWidth }} />
+              </div>
+              <p className="text-xs text-gray-400">
+                Daily Goal {fmtVnd(data.daily_goal_vnd)}
+                {" · "}
+                Daily Actual {fmtVnd(data.daily_actual_vnd)}
+                {data.daily_goal_vnd > 0 && (() => {
+                  const diff = ((data.daily_actual_vnd - data.daily_goal_vnd) / data.daily_goal_vnd * 100).toFixed(1);
+                  return (
+                    <span className={Number(diff) >= 0 ? "text-green-600 ml-1" : "text-red-500 ml-1"}>
+                      ({Number(diff) >= 0 ? "+" : ""}{diff}%)
+                    </span>
+                  );
+                })()}
+              </p>
+            </div>
             {data.branches.map(row => {
               const rPct = row.achievement_pct;
               const rPctDisplay = rPct != null ? (rPct * 100).toFixed(1) + "%" : "\u2014";

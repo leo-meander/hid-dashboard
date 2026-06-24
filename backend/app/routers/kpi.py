@@ -13,6 +13,7 @@ from app.models.branch import Branch
 from app.models.kpi import KPITarget
 from app.models.daily_metrics import DailyMetrics
 from app.services.kpi_engine import compute_kpi_summary, compute_next_month_forecast
+from app.services.currency import get_cached_rate
 
 router = APIRouter()
 
@@ -472,16 +473,17 @@ def kpi_period_achievement(
         KPITarget.branch_id.in_(branch_ids),
     ).all()
 
-    # target_map[(branch_id, year, month)] = target_revenue_native
+    # target_map[(branch_id, year, month)] = (target_revenue_native, target_revenue_vnd)
     target_map = {}
     for t in targets:
         key = (str(t.branch_id), t.year, t.month)
-        target_map[key] = float(t.target_revenue_native or 0)
+        target_map[key] = (float(t.target_revenue_native or 0), float(t.target_revenue_vnd or 0))
 
-    # Load actual revenue from daily_metrics grouped by branch
+    # Load actual revenue from daily_metrics grouped by branch (native + VND)
     actuals = db.query(
         DailyMetrics.branch_id,
         func.coalesce(func.sum(DailyMetrics.revenue_native), 0).label("revenue"),
+        func.coalesce(func.sum(DailyMetrics.revenue_vnd), 0).label("revenue_vnd"),
     ).filter(
         DailyMetrics.branch_id.in_(branch_ids),
         DailyMetrics.date >= date_from,
@@ -489,6 +491,7 @@ def kpi_period_achievement(
     ).group_by(DailyMetrics.branch_id).all()
 
     actual_map = {str(a.branch_id): float(a.revenue) for a in actuals}
+    actual_vnd_map = {str(a.branch_id): float(a.revenue_vnd) for a in actuals}
 
     # Count total days in range
     total_days = (date_to - date_from).days + 1
@@ -504,26 +507,39 @@ def kpi_period_achievement(
         # ranges (7/30/90 days) don't over- or under-count it.
         mult = 1 - float(branch.deduction_pct or 0) / 100
         other_rev_month = float(branch.other_revenue_native or 0)
+        # FX for normalising native amounts to VND (so multi-currency branches can
+        # be summed into a single group total). other_revenue is stored native only.
+        fx = get_cached_rate(cur, "VND") or 1.0
+        other_rev_month_vnd = other_rev_month * fx
 
         # Calculate period target by summing daily goals (+ prorated other rev)
         period_target = 0.0
+        period_target_vnd = 0.0
         other_rev_period = 0.0
+        other_rev_period_vnd = 0.0
         d = date_from
         while d <= date_to:
             yr, mo = d.year, d.month
-            monthly_target = target_map.get((bid, yr, mo), 0)
+            monthly_target, monthly_target_vnd = target_map.get((bid, yr, mo), (0, 0))
             dim = calendar.monthrange(yr, mo)[1]
             if dim > 0:
                 period_target += monthly_target / dim
+                period_target_vnd += monthly_target_vnd / dim
                 other_rev_period += other_rev_month / dim
+                other_rev_period_vnd += other_rev_month_vnd / dim
             d += timedelta(days=1)
 
         actual_revenue = actual_map.get(bid, 0)
+        actual_revenue_vnd = actual_vnd_map.get(bid, 0)
 
         # Adjust both sides identically before comparing.
         adj_target = max(0.0, period_target * mult + other_rev_period)
         adj_actual = max(0.0, actual_revenue * mult + other_rev_period)
         achievement_pct = round(adj_actual / adj_target, 4) if adj_target > 0 else None
+
+        # VND-normalised, same adjustment — used for the group total rollup.
+        adj_target_vnd = max(0.0, period_target_vnd * mult + other_rev_period_vnd)
+        adj_actual_vnd = max(0.0, actual_revenue_vnd * mult + other_rev_period_vnd)
 
         avg_daily_goal = round(adj_target / total_days, 2) if total_days > 0 else 0
         avg_daily_actual = round(adj_actual / total_days, 2) if total_days > 0 else 0
@@ -536,6 +552,8 @@ def kpi_period_achievement(
             "date_to": date_to.isoformat(),
             "actual_revenue": round(adj_actual, 2),
             "target_revenue": round(adj_target, 2),
+            "actual_revenue_vnd": round(adj_actual_vnd, 2),
+            "target_revenue_vnd": round(adj_target_vnd, 2),
             "achievement_pct": achievement_pct,
             "daily_goal": avg_daily_goal,
             "daily_actual": avg_daily_actual,
