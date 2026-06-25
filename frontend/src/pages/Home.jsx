@@ -317,6 +317,22 @@ function AllBranchesTable({ data, loading }) {
     });
   }, [data, deductions, otherRevs]);
 
+  // Cross-branch average KPI achievement — branches use different currencies,
+  // so we average the per-branch percentages rather than summing amounts.
+  const avgPct = useMemo(() => {
+    const collect = (toPct) => {
+      const vals = rows.map(toPct).filter(v => v != null && isFinite(v));
+      if (!vals.length) return null;
+      return vals.reduce((a, b) => a + b, 0) / vals.length;
+    };
+    return {
+      adjusted: collect(r => r.target_revenue_native && r.adjusted_forecast != null
+        ? r.adjusted_forecast / r.target_revenue_native * 100 : null),
+      next: collect(r => r.next_month_target_native && r.adjusted_next_forecast != null
+        ? r.adjusted_next_forecast / r.next_month_target_native * 100 : null),
+    };
+  }, [rows]);
+
   if (loading) return (
     <div className="bg-white rounded-xl border p-8 text-center">
       <div className="text-gray-400 animate-pulse text-lg">Loading\u2026</div>
@@ -592,6 +608,30 @@ function AllBranchesTable({ data, loading }) {
               );
             })}
           </tbody>
+          <tfoot>
+            <tr className="border-t-2 border-gray-200 bg-gray-50 font-medium">
+              <td colSpan={8} className="px-5 py-3 text-right text-xs text-gray-500 uppercase tracking-wide whitespace-nowrap">
+                Avg KPI % (5 branches)
+              </td>
+              {/* Adjusted average */}
+              <td className="px-3 py-3 text-center">
+                {avgPct.adjusted != null
+                  ? <span className={(avgPct.adjusted >= 100 ? "text-blue-600" : "text-red-600") + " font-bold"}>
+                      {avgPct.adjusted.toFixed(2)}%
+                    </span>
+                  : <span className="text-gray-300">{"—"}</span>}
+              </td>
+              <td className="px-3 py-3" />
+              {/* Next Forecast average */}
+              <td className="px-3 py-3 text-center">
+                {avgPct.next != null
+                  ? <span className={(avgPct.next >= 100 ? "text-blue-600" : "text-red-600") + " font-bold"}>
+                      {Math.round(avgPct.next)}%
+                    </span>
+                  : <span className="text-gray-300">{"—"}</span>}
+              </td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>
