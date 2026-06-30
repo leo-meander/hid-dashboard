@@ -247,6 +247,24 @@ TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "get_extension_channel",
+        "description": (
+            "Extension channel growth analysis: bookings where source_category = 'Extension' "
+            "(front-desk stay extensions) OR (source is Website/Booking Engine AND rate_plan_name "
+            "ILIKE '%Extension%'). Compares current period vs prior period of equal length, "
+            "segmented by branch. Use when asked about Extension channel performance, "
+            "extension rate plan bookings, or 'website bookings with Extension rate plan'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch_id": {"type": "string", "description": "UUID of branch, or 'all'. Defaults to all."},
+                "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD start of current period (reservation_date)."},
+                "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD end of current period (reservation_date)."},
+            },
+        },
+    },
+    {
         "name": "get_cancellation_leadtime",
         "description": (
             "How long before check-in the CANCELLED / no-show cohort cancelled: "
@@ -1067,6 +1085,109 @@ def tool_get_marketing_activity(db: Session, inp: dict, default_branch: Optional
     }
 
 
+def tool_get_extension_channel(db: Session, inp: dict, default_branch: Optional[str]) -> dict:
+    """Extension channel bookings: front-desk source_category='Extension' UNION
+    Website/Booking Engine reservations with rate_plan_name ILIKE '%Extension%'.
+    Compares current period vs prior period of equal length, by branch."""
+    branch_id = _resolve_branch_id(inp.get("branch_id"), default_branch)
+    today = date.today()
+    d_to = _parse_date(inp.get("date_to"), today)
+    d_from = _parse_date(inp.get("date_from"), today - timedelta(days=47))  # ~May 14 default
+    span = (d_to - d_from).days + 1
+    prior_to = d_from - timedelta(days=1)
+    prior_from = prior_to - timedelta(days=span - 1)
+
+    bf, params = _b_filter_clause(branch_id, "r")
+    params.update({
+        "df": d_from, "dt": d_to,
+        "pf": prior_from, "pt": prior_to,
+    })
+
+    status_excl = "('canceled','cancelled','no_show','no-show','cancelled_by_guest')"
+
+    def _fetch(date_col_from: str, date_col_to: str) -> list:
+        rows = db.execute(text(f"""
+            SELECT
+                b.name AS branch_name,
+                b.id::text AS branch_id,
+                COUNT(*) AS bookings,
+                COALESCE(SUM(r.grand_total_vnd), 0) AS revenue_vnd
+            FROM reservations r
+            JOIN branches b ON b.id = r.branch_id
+            WHERE r.reservation_date >= :{date_col_from}
+              AND r.reservation_date <= :{date_col_to}
+              AND r.status NOT IN {status_excl}
+              AND (
+                  r.source_category = 'Extension'
+                  OR (
+                      r.source ILIKE '%website%' OR r.source ILIKE '%booking engine%'
+                  ) AND r.rate_plan_name ILIKE '%Extension%'
+              )
+              {bf}
+            GROUP BY b.id, b.name
+            ORDER BY bookings DESC
+        """), params).fetchall()
+        return rows
+
+    cur_rows = _fetch("df", "dt")
+    pri_rows = _fetch("pf", "pt")
+
+    prior_map = {r[0]: {"bookings": int(r[2]), "revenue_vnd": float(r[3])} for r in pri_rows}
+    result = []
+    for r in cur_rows:
+        name, bid, bk, rev = r[0], r[1], int(r[2]), float(r[3])
+        prior = prior_map.get(name, {"bookings": 0, "revenue_vnd": 0.0})
+        delta = bk - prior["bookings"]
+        pct = round(delta / prior["bookings"] * 100, 2) if prior["bookings"] else None
+        result.append({
+            "branch": name,
+            "branch_id": bid,
+            "current_bookings": bk,
+            "prior_bookings": prior["bookings"],
+            "delta_bookings": delta,
+            "growth_pct": pct,
+            "current_revenue_vnd": rev,
+            "prior_revenue_vnd": prior["revenue_vnd"],
+        })
+    # Include branches with only prior-period bookings (current = 0)
+    cur_names = {r[0] for r in cur_rows}
+    for r in pri_rows:
+        if r[0] not in cur_names:
+            result.append({
+                "branch": r[0],
+                "branch_id": r[1],
+                "current_bookings": 0,
+                "prior_bookings": int(r[2]),
+                "delta_bookings": -int(r[2]),
+                "growth_pct": -100.0,
+                "current_revenue_vnd": 0.0,
+                "prior_revenue_vnd": float(r[3]),
+            })
+
+    cur_total = sum(x["current_bookings"] for x in result)
+    pri_total = sum(x["prior_bookings"] for x in result)
+    total_delta = cur_total - pri_total
+    total_pct = round(total_delta / pri_total * 100, 2) if pri_total else None
+
+    return {
+        "current_period": {"date_from": d_from.isoformat(), "date_to": d_to.isoformat()},
+        "prior_period": {"date_from": prior_from.isoformat(), "date_to": prior_to.isoformat()},
+        "filter_basis": "reservation_date (when booked)",
+        "channel_definition": (
+            "source_category='Extension' OR "
+            "(source ILIKE '%website%' OR source ILIKE '%booking engine%') "
+            "AND rate_plan_name ILIKE '%Extension%'"
+        ),
+        "by_branch": result,
+        "totals": {
+            "current_bookings": cur_total,
+            "prior_bookings": pri_total,
+            "delta_bookings": total_delta,
+            "growth_pct": total_pct,
+        },
+    }
+
+
 def tool_get_cancellation_leadtime(db: Session, inp: dict, default_branch: Optional[str]) -> dict:
     """How many days before check-in the CANCELLED / no-show cohort cancelled.
 
@@ -1163,6 +1284,7 @@ TOOL_HANDLERS = {
     "get_kol_performance": tool_get_kol_performance,
     "get_country_profile": tool_get_country_profile,
     "get_marketing_activity": tool_get_marketing_activity,
+    "get_extension_channel": tool_get_extension_channel,
     "get_cancellation_leadtime": tool_get_cancellation_leadtime,
 }
 
