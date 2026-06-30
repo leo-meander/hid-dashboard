@@ -127,6 +127,12 @@ def list_kpi_targets(
 @router.put("/targets/upsert")
 def upsert_kpi_target(payload: KPITargetUpsert, db: Session = Depends(get_db)):
     """Create or update a KPI target for a branch/year/month."""
+    branch = db.query(Branch).filter_by(id=payload.branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    cur = branch.currency or branch.native_currency or "VND"
+    fx = get_cached_rate(cur, "VND") or 1.0
+
     existing = (
         db.query(KPITarget)
         .filter_by(branch_id=payload.branch_id, year=payload.year, month=payload.month)
@@ -134,7 +140,7 @@ def upsert_kpi_target(payload: KPITargetUpsert, db: Session = Depends(get_db)):
     )
     if existing:
         existing.target_revenue_native = payload.target_revenue_native
-        existing.target_revenue_vnd = payload.target_revenue_native  # placeholder
+        existing.target_revenue_vnd = round(payload.target_revenue_native * fx, 2)
         if payload.predicted_occ_pct is not None:
             existing.predicted_occ_pct = payload.predicted_occ_pct
         if payload.predicted_room_occ_pct is not None:
@@ -152,7 +158,7 @@ def upsert_kpi_target(payload: KPITargetUpsert, db: Session = Depends(get_db)):
             year=payload.year,
             month=payload.month,
             target_revenue_native=payload.target_revenue_native,
-            target_revenue_vnd=payload.target_revenue_native,
+            target_revenue_vnd=round(payload.target_revenue_native * fx, 2),
             predicted_occ_pct=payload.predicted_occ_pct,
             predicted_room_occ_pct=payload.predicted_room_occ_pct,
             predicted_dorm_occ_pct=payload.predicted_dorm_occ_pct,
@@ -162,6 +168,26 @@ def upsert_kpi_target(payload: KPITargetUpsert, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(target)
         return _envelope(KPITargetOut.model_validate(target).model_dump())
+
+
+@router.post("/targets/backfill-vnd")
+def backfill_target_vnd(db: Session = Depends(get_db)):
+    """One-time fix: recompute target_revenue_vnd for all existing KPI targets using current FX rates."""
+    branches = {str(b.id): b for b in db.query(Branch).all()}
+    targets = db.query(KPITarget).all()
+    updated = 0
+    for t in targets:
+        branch = branches.get(str(t.branch_id))
+        if not branch:
+            continue
+        cur = branch.currency or branch.native_currency or "VND"
+        fx = get_cached_rate(cur, "VND") or 1.0
+        correct_vnd = round(float(t.target_revenue_native or 0) * fx, 2)
+        if abs(correct_vnd - float(t.target_revenue_vnd or 0)) > 1:
+            t.target_revenue_vnd = correct_vnd
+            updated += 1
+    db.commit()
+    return _envelope({"updated": updated, "total": len(targets)})
 
 
 @router.patch("/targets/{target_id}")
