@@ -1114,8 +1114,8 @@ def tool_get_extension_channel(db: Session, inp: dict, default_branch: Optional[
                 COALESCE(SUM(r.grand_total_vnd), 0) AS revenue_vnd
             FROM reservations r
             JOIN branches b ON b.id = r.branch_id
-            WHERE r.reservation_date >= :{date_col_from}
-              AND r.reservation_date <= :{date_col_to}
+            WHERE r.check_in_date >= :{date_col_from}
+              AND r.check_in_date <= :{date_col_to}
               AND r.status NOT IN {status_excl}
               AND (
                   LOWER(r.source) = 'extension'
@@ -1173,7 +1173,7 @@ def tool_get_extension_channel(db: Session, inp: dict, default_branch: Optional[
     return {
         "current_period": {"date_from": d_from.isoformat(), "date_to": d_to.isoformat()},
         "prior_period": {"date_from": prior_from.isoformat(), "date_to": prior_to.isoformat()},
-        "filter_basis": "reservation_date (when booked)",
+        "filter_basis": "check_in_date (when guest stays)",
         "channel_definition": (
             "source = 'Extension' (front-desk stay extension) OR "
             "(source ILIKE '%website%' OR '%booking engine%') "
