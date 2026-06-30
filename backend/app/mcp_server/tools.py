@@ -259,6 +259,21 @@ def register_tools(mcp: FastMCP) -> None:
         })
 
     @mcp.tool()
+    def get_extension_channel(
+        branch_id: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> dict:
+        """Extension channel growth: bookings where source_category='Extension' (front-desk
+        stay extensions) OR source is Website/Booking Engine AND rate_plan_name contains
+        'Extension'. Compares current period vs prior period of equal length, by branch.
+        Use for 'Extension channel performance', 'extension rate plan bookings', or
+        'website bookings with Extension rate plan'."""
+        return _run("get_extension_channel", {
+            "branch_id": branch_id, "date_from": date_from, "date_to": date_to,
+        })
+
+    @mcp.tool()
     def get_cancellation_leadtime(
         branch_id: Optional[str] = None,
         date_from: Optional[str] = None,
