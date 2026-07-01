@@ -1119,7 +1119,7 @@ def tool_get_extension_channel(db: Session, inp: dict, default_branch: Optional[
               AND r.status NOT IN {status_excl}
               AND (
                   LOWER(r.source) = 'extension'
-                  OR r.rate_plan_name ILIKE '%Extension%'
+                  OR r.room_type ILIKE '%Extension Promotion%'
               )
               {bf}
             GROUP BY b.id, b.name
@@ -1173,7 +1173,7 @@ def tool_get_extension_channel(db: Session, inp: dict, default_branch: Optional[
         "filter_basis": "reservation_date (when booked)",
         "channel_definition": (
             "source = 'Extension' (front-desk stay extension) OR "
-            "rate_plan_name ILIKE '%Extension%' (any source with Extension rate plan)"
+            "room_type ILIKE '%Extension Promotion%' (Website/Booking Engine with Extension Promotion packed in room_type)"
         ),
         "by_branch": result,
         "totals": {
