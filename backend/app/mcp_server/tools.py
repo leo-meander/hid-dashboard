@@ -274,6 +274,19 @@ def register_tools(mcp: FastMCP) -> None:
         })
 
     @mcp.tool()
+    def get_blogger_channel(
+        branch_id: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> dict:
+        """Blogger channel spend: bookings where source = 'Blogger' (KOL/influencer stays).
+        Returns bookings + revenue by branch vs prior period of equal length.
+        Use for 'Blogger channel spend', 'how much spent on bloggers/KOLs', or 'Blogger source revenue'."""
+        return _run("get_blogger_channel", {
+            "branch_id": branch_id, "date_from": date_from, "date_to": date_to,
+        })
+
+    @mcp.tool()
     def get_cancellation_leadtime(
         branch_id: Optional[str] = None,
         date_from: Optional[str] = None,
