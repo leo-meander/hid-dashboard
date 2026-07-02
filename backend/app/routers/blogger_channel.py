@@ -1,25 +1,32 @@
 """
 GET /api/blogger-channel
-Auth: X-API-Key: hid_... (same API key system as /api/public/*)
+Auth: Authorization: Bearer <HID_API_SECRET>
 """
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
-from app.routers.public_api import verify_api_key
-from app.models.api_key import ApiKey
 
 router = APIRouter()
+_bearer = HTTPBearer()
 
 EXCLUDED_STATUSES = (
     "canceled", "cancelled", "no_show", "no-show", "cancelled_by_guest",
 )
+
+
+def _verify_bearer(credentials: HTTPAuthorizationCredentials = Depends(_bearer)) -> None:
+    secret = settings.HID_API_SECRET
+    if not secret or credentials.credentials != secret:
+        raise HTTPException(status_code=401, detail="Invalid or missing Bearer token")
 
 
 @router.get("/blogger-channel")
@@ -27,7 +34,7 @@ def get_blogger_channel(
     date_from: Optional[date] = Query(None, description="Start date (reservation_date). Defaults to 12 months ago."),
     date_to: Optional[date] = Query(None, description="End date (reservation_date). Defaults to today."),
     branch_id: Optional[str] = Query(None, description="Branch UUID to filter. Omit for all branches."),
-    _key: ApiKey = Depends(verify_api_key),
+    _auth: None = Depends(_verify_bearer),
     db: Session = Depends(get_db),
 ):
     """

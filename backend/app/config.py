@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     # 2026-05-01 onwards. Distinct secret from KOL_PUBLIC_API_KEY because
     # the two endpoints rotate independently.
     KOL_REVENUE_API_SECRET: str = ""
+    HID_API_SECRET: str = ""
     GHL_BASE_URL: str = "https://services.leadconnectorhq.com"
     # Legacy single-location (kept for backward compat)
     GHL_LOCATION_ID: str = ""
