@@ -21,6 +21,7 @@ from app.routers import personas
 from app.routers import gov_visitor
 from app.routers import holiday_intel
 from app.routers import api_keys, public_api
+from app.routers import blogger_channel
 from app.routers import oauth
 from app.routers import alerts
 from app.routers import rate_plan_quota
@@ -113,6 +114,7 @@ app.include_router(holiday_intel.router)
 # API Keys & Public API
 app.include_router(api_keys.router, prefix="/api/api-keys", tags=["API Keys"])
 app.include_router(public_api.router, prefix="/api/public", tags=["Public API"])
+app.include_router(blogger_channel.router, prefix="/api", tags=["Blogger Channel"])
 
 # Alert System
 app.include_router(alerts.router, prefix="/api/alerts", tags=["Alerts"])
