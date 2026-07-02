@@ -1,36 +1,25 @@
 """
 GET /api/blogger-channel
-Auth: Authorization: Bearer <HID_API_SECRET>
-
-Returns Blogger source bookings + revenue aggregated by month,
-by branch×month, and by branch. Used by external tools to track
-KOL/influencer spend against the hotel group.
+Auth: X-API-Key: hid_... (same API key system as /api/public/*)
 """
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.database import get_db
+from app.routers.public_api import verify_api_key
+from app.models.api_key import ApiKey
 
 router = APIRouter()
-_bearer = HTTPBearer()
 
 EXCLUDED_STATUSES = (
     "canceled", "cancelled", "no_show", "no-show", "cancelled_by_guest",
 )
-
-
-def _verify_bearer(credentials: HTTPAuthorizationCredentials = Depends(_bearer)) -> None:
-    secret = settings.HID_API_SECRET
-    if not secret or credentials.credentials != secret:
-        raise HTTPException(status_code=401, detail="Invalid or missing Bearer token")
 
 
 @router.get("/blogger-channel")
@@ -38,16 +27,17 @@ def get_blogger_channel(
     date_from: Optional[date] = Query(None, description="Start date (reservation_date). Defaults to 12 months ago."),
     date_to: Optional[date] = Query(None, description="End date (reservation_date). Defaults to today."),
     branch_id: Optional[str] = Query(None, description="Branch UUID to filter. Omit for all branches."),
-    _auth: None = Depends(_verify_bearer),
+    _key: ApiKey = Depends(verify_api_key),
     db: Session = Depends(get_db),
 ):
     """
     Blogger channel spend: reservations where source = 'Blogger' (KOL/influencer stays).
     Aggregated by month, by branch×month, and by branch.
+    Auth: X-API-Key header (same keys as /api/public/*).
     """
     today = date.today()
     d_to = date_to or today
-    d_from = date_from or (today.replace(day=1) - timedelta(days=365 * 1)).replace(day=1)
+    d_from = date_from or (today.replace(day=1) - timedelta(days=365)).replace(day=1)
 
     excluded = tuple(EXCLUDED_STATUSES)
 
@@ -76,7 +66,7 @@ def get_blogger_channel(
         ORDER BY month, b.name
     """), {**params, "excluded": excluded}).fetchall()
 
-    # ── Aggregate by_month ────────────────────────────────────────────────────
+    # ── by_month ──────────────────────────────────────────────────────────────
     month_map: dict[str, dict] = {}
     for r in rows:
         m = r.month
