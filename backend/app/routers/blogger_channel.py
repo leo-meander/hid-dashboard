@@ -55,6 +55,7 @@ def get_blogger_channel(
             TO_CHAR(r.reservation_date, 'YYYY-MM')  AS month,
             b.name                                  AS branch_name,
             b.id::text                              AS branch_id,
+            b.ads_platform_slug                     AS branch_code,
             COUNT(*)                                AS bookings,
             COALESCE(SUM(r.grand_total_vnd), 0)     AS revenue_vnd
         FROM reservations r
@@ -64,7 +65,7 @@ def get_blogger_channel(
           AND LOWER(r.status) NOT IN {excluded_clause}
           AND LOWER(r.source) = 'blogger'
           {branch_clause}
-        GROUP BY TO_CHAR(r.reservation_date, 'YYYY-MM'), b.id, b.name
+        GROUP BY TO_CHAR(r.reservation_date, 'YYYY-MM'), b.id, b.name, b.ads_platform_slug
         ORDER BY month, b.name
     """), params).fetchall()
 
@@ -82,6 +83,7 @@ def get_blogger_channel(
     # ── by_branch_month ───────────────────────────────────────────────────────
     by_branch_month = [
         {
+            "branch_code": r.branch_code,
             "branch_name": r.branch_name,
             "branch_id": r.branch_id,
             "month": r.month,
@@ -97,6 +99,7 @@ def get_blogger_channel(
         bid = r.branch_id
         if bid not in branch_map:
             branch_map[bid] = {
+                "branch_code": r.branch_code,
                 "branch_name": r.branch_name,
                 "branch_id": bid,
                 "revenue_vnd": 0.0,
