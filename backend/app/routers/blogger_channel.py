@@ -18,10 +18,6 @@ from app.database import get_db
 router = APIRouter()
 _bearer = HTTPBearer()
 
-EXCLUDED_STATUSES = (
-    "canceled", "cancelled", "no_show", "no-show", "cancelled_by_guest",
-)
-
 
 def _verify_bearer(credentials: HTTPAuthorizationCredentials = Depends(_bearer)) -> None:
     secret = settings.HID_API_SECRET
@@ -46,7 +42,7 @@ def get_blogger_channel(
     d_to = date_to or today
     d_from = date_from or (today.replace(day=1) - timedelta(days=365)).replace(day=1)
 
-    excluded = tuple(EXCLUDED_STATUSES)
+    excluded_clause = "('canceled','cancelled','no_show','no-show','cancelled_by_guest')"
 
     branch_clause = ""
     params: dict = {"d_from": d_from, "d_to": d_to}
@@ -57,7 +53,6 @@ def get_blogger_channel(
     rows = db.execute(text(f"""
         SELECT
             TO_CHAR(r.reservation_date, 'YYYY-MM')  AS month,
-            b.code                                  AS branch_code,
             b.name                                  AS branch_name,
             b.id::text                              AS branch_id,
             COUNT(*)                                AS bookings,
@@ -66,12 +61,12 @@ def get_blogger_channel(
         JOIN branches b ON b.id = r.branch_id
         WHERE r.reservation_date >= :d_from
           AND r.reservation_date <= :d_to
-          AND LOWER(r.status) NOT IN :excluded
+          AND LOWER(r.status) NOT IN {excluded_clause}
           AND LOWER(r.source) = 'blogger'
           {branch_clause}
         GROUP BY TO_CHAR(r.reservation_date, 'YYYY-MM'), b.id, b.code, b.name
         ORDER BY month, b.name
-    """), {**params, "excluded": excluded}).fetchall()
+    """), params).fetchall()
 
     # ── by_month ──────────────────────────────────────────────────────────────
     month_map: dict[str, dict] = {}
@@ -87,7 +82,6 @@ def get_blogger_channel(
     # ── by_branch_month ───────────────────────────────────────────────────────
     by_branch_month = [
         {
-            "branch_code": r.branch_code,
             "branch_name": r.branch_name,
             "branch_id": r.branch_id,
             "month": r.month,
@@ -103,7 +97,6 @@ def get_blogger_channel(
         bid = r.branch_id
         if bid not in branch_map:
             branch_map[bid] = {
-                "branch_code": r.branch_code,
                 "branch_name": r.branch_name,
                 "branch_id": bid,
                 "revenue_vnd": 0.0,
