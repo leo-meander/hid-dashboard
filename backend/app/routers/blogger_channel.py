@@ -64,7 +64,7 @@ def get_blogger_channel(
           AND LOWER(r.status) NOT IN {excluded_clause}
           AND LOWER(r.source) = 'blogger'
           {branch_clause}
-        GROUP BY TO_CHAR(r.reservation_date, 'YYYY-MM'), b.id, b.code, b.name
+        GROUP BY TO_CHAR(r.reservation_date, 'YYYY-MM'), b.id, b.name
         ORDER BY month, b.name
     """), params).fetchall()
 
