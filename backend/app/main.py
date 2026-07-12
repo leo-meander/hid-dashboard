@@ -26,6 +26,7 @@ from app.routers import oauth
 from app.routers import alerts
 from app.routers import rate_plan_quota
 from app.routers import chat
+from app.routers import webhooks
 from app.scheduler import setup_scheduler
 from app.database import SessionLocal
 from app.models.branch import Branch
@@ -115,6 +116,9 @@ app.include_router(holiday_intel.router)
 app.include_router(api_keys.router, prefix="/api/api-keys", tags=["API Keys"])
 app.include_router(public_api.router, prefix="/api/public", tags=["Public API"])
 app.include_router(blogger_channel.router, prefix="/api", tags=["Blogger Channel"])
+
+# Inbound Webhooks (Cloudbeds → GHL CRM + Meta CAPI + Google Ads)
+app.include_router(webhooks.router, prefix="/api", tags=["Webhooks"])
 
 # Alert System
 app.include_router(alerts.router, prefix="/api/alerts", tags=["Alerts"])
