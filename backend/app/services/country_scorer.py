@@ -271,6 +271,7 @@ def score_countries(
             "booking_count_last_month": last_month_count,
             "mom_growth_pct": round(mom_growth * 100, 1) if last_month_count > 0 else None,
             "revenue_native": round(this_week_revenue, 2),
+            "adr": round(this_week_adr, 0),
         })
 
     scored.sort(key=lambda x: x["score"], reverse=True)

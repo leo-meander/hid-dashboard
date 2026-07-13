@@ -122,6 +122,7 @@ export default function Countries() {
                 <th className="px-4 py-3 text-right">Score</th>
                 <th className="px-4 py-3 text-right">Bookings</th>
                 <th className="px-4 py-3 text-right">Revenue</th>
+                <th className="px-4 py-3 text-right">ADR</th>
                 <th className="px-4 py-3 text-right">YoY Growth</th>
                 <th className="px-4 py-3 text-center">Details</th>
               </tr>
@@ -161,6 +162,11 @@ export default function Countries() {
                   <td className="px-4 py-2.5 text-right text-gray-700">{c.count?.toLocaleString()}</td>
                   <td className="px-4 py-2.5 text-right text-gray-700">
                     {new Intl.NumberFormat("en").format(Math.round(c.revenue_native || 0))}
+                  </td>
+                  <td className="px-4 py-2.5 text-right text-gray-700">
+                    {c.adr != null
+                      ? new Intl.NumberFormat("en").format(Math.round(c.adr))
+                      : <span className="text-gray-300">—</span>}
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     {c.yoy_growth != null ? (
