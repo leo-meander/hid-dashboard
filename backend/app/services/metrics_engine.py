@@ -810,6 +810,60 @@ async def cloudbeds_insights_sync_job(db_factory) -> None:
 
 # ── query helpers ──────────────────────────────────────────────────────────────
 
+def get_booking_pace(
+    db: Session,
+    branch_id: Optional[UUID],
+    year: int,
+    month: int,
+    lead_time_max: int = 15,
+) -> list:
+    """
+    Daily booking pace for reservations booked within year/month
+    where lead_time (check_in_date - reservation_date) <= lead_time_max days.
+
+    On PostgreSQL, DATE - DATE returns INTEGER so we filter directly.
+    Excludes cancelled/no-show and revenue-excluded sources.
+    Returns rows grouped by (branch_id, reservation_date).
+    """
+    import calendar as cal
+
+    first_day = date(year, month, 1)
+    last_day = date(year, month, cal.monthrange(year, month)[1])
+
+    lead_time_col = Reservation.check_in_date - Reservation.reservation_date
+
+    q = db.query(
+        Reservation.branch_id,
+        Reservation.reservation_date.label("booking_date"),
+        func.count(Reservation.id).label("bookings"),
+        func.sum(Reservation.nights).label("room_nights"),
+        func.sum(Reservation.grand_total_native).label("revenue_native"),
+        func.sum(Reservation.grand_total_vnd).label("revenue_vnd"),
+    ).filter(
+        Reservation.reservation_date >= first_day,
+        Reservation.reservation_date <= last_day,
+        Reservation.reservation_date.isnot(None),
+        Reservation.check_in_date.isnot(None),
+        ~func.lower(func.coalesce(Reservation.status, "")).in_(list(EXCLUDED_STATUSES)),
+        ~func.lower(func.coalesce(Reservation.source, "")).in_(
+            [s.lower() for s in EXCLUDED_SOURCES_REVENUE]
+        ),
+        lead_time_col >= 0,
+        lead_time_col <= lead_time_max,
+    )
+
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+
+    return q.group_by(
+        Reservation.branch_id,
+        Reservation.reservation_date,
+    ).order_by(
+        Reservation.reservation_date,
+        Reservation.branch_id,
+    ).all()
+
+
 def get_daily_metrics(
     db: Session,
     branch_id: Optional[UUID],

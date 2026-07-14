@@ -18,6 +18,7 @@ from app.models.branch import Branch
 from app.models.reservation import Reservation
 from app.services.metrics_engine import (
     EXCLUDED_STATUSES,
+    get_booking_pace,
     get_daily_metrics,
     get_ota_mix,
     get_channel_rates,
@@ -926,3 +927,89 @@ def _query_weekly_trend(db, branch_id, d_from, d_to, country_names, date_col=Non
         result[label][country] += 1
 
     return dict(result)
+
+
+# ── Booking Pace (by reservation_date, lead-time filtered) ───────────────────
+
+@router.get("/booking-pace")
+def get_booking_pace_endpoint(
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+    branch_id: Optional[UUID] = Query(None),
+    lead_time_max: int = Query(15, ge=1, le=90),
+    db: Session = Depends(get_db),
+):
+    """
+    Daily booking pace for reservations with lead_time <= lead_time_max days.
+
+    Groups by booking_date (reservation_date) within the given month.
+    Shows bookings count, room_nights sold, revenue, and running KPI progress
+    vs monthly target for each branch.
+
+    OCC contribution = room_nights booked that day / total_rooms
+    (rough gauge of how much inventory this booking batch will fill).
+    """
+    import calendar as cal
+    from app.models.branch import Branch
+    from app.models.kpi import KPITarget
+
+    rows = get_booking_pace(db, branch_id, year, month, lead_time_max)
+
+    branches = {str(b.id): b for b in db.query(Branch).all()}
+
+    kpi_q = db.query(KPITarget).filter(
+        KPITarget.year == year,
+        KPITarget.month == month,
+    )
+    if branch_id:
+        kpi_q = kpi_q.filter(KPITarget.branch_id == branch_id)
+    kpi_targets = {str(k.branch_id): k for k in kpi_q.all()}
+
+    days_in_month = cal.monthrange(year, month)[1]
+
+    branch_cumulative: dict[str, float] = defaultdict(float)
+
+    by_date: dict[str, list] = defaultdict(list)
+    for row in rows:
+        bid = str(row.branch_id)
+        branch = branches.get(bid)
+        kpi = kpi_targets.get(bid)
+
+        revenue_native = float(row.revenue_native or 0)
+        branch_cumulative[bid] += revenue_native
+
+        kpi_monthly = float(kpi.target_revenue_native) if kpi else None
+        kpi_daily_avg = kpi_monthly / days_in_month if kpi_monthly else None
+        total_rooms = branch.total_rooms if branch else None
+        room_nights = int(row.room_nights or 0)
+
+        by_date[row.booking_date.isoformat()].append({
+            "branch_id": bid,
+            "branch_name": branch.name if branch else bid,
+            "currency": branch.currency if branch else None,
+            "total_rooms": total_rooms,
+            "bookings": int(row.bookings or 0),
+            "room_nights": room_nights,
+            "revenue_native": revenue_native,
+            "revenue_vnd": float(row.revenue_vnd or 0),
+            "occ_contribution_pct": round(
+                room_nights / total_rooms * 100, 2
+            ) if total_rooms else None,
+            "kpi_monthly_target": kpi_monthly,
+            "kpi_daily_avg": round(kpi_daily_avg, 0) if kpi_daily_avg else None,
+            "kpi_cumulative_actual": round(branch_cumulative[bid], 0),
+            "kpi_progress_pct": round(
+                branch_cumulative[bid] / kpi_monthly * 100, 2
+            ) if kpi_monthly else None,
+        })
+
+    return _envelope({
+        "year": year,
+        "month": month,
+        "lead_time_max": lead_time_max,
+        "days_in_month": days_in_month,
+        "days": [
+            {"booking_date": d, "branches": blist}
+            for d, blist in sorted(by_date.items())
+        ],
+    })
