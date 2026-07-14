@@ -5,7 +5,7 @@ import io
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func
@@ -61,12 +61,15 @@ def _row_to_dict(r: GovVisitorData) -> dict:
 @router.get("")
 def list_gov_visitor(
     destination: Optional[str] = Query(None),
+    year: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ):
     q = db.query(GovVisitorData)
     if destination:
         q = q.filter(GovVisitorData.destination == destination)
-    q = q.order_by(GovVisitorData.destination, GovVisitorData.rank.asc().nullslast())
+    if year:
+        q = q.filter(GovVisitorData.data_year == year)
+    q = q.order_by(GovVisitorData.destination, GovVisitorData.data_year.desc().nullslast(), GovVisitorData.rank.asc().nullslast())
     rows = q.all()
     sync_q = db.query(func.max(GovVisitorData.updated_at))
     if destination:
@@ -84,6 +87,18 @@ def list_gov_visitor(
 @router.get("/destinations")
 def list_destinations(db: Session = Depends(get_db)):
     rows = db.query(GovVisitorData.destination).distinct().order_by(GovVisitorData.destination).all()
+    return _envelope([r[0] for r in rows])
+
+
+@router.get("/years")
+def list_years(db: Session = Depends(get_db)):
+    rows = (
+        db.query(GovVisitorData.data_year)
+        .filter(GovVisitorData.data_year.isnot(None))
+        .distinct()
+        .order_by(GovVisitorData.data_year.desc())
+        .all()
+    )
     return _envelope([r[0] for r in rows])
 
 
@@ -117,10 +132,14 @@ def delete_gov_visitor(
 @router.delete("")
 def delete_by_destination(
     destination: str = Query(...),
+    year: Optional[int] = Query(None),
     _admin=Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    count = db.query(GovVisitorData).filter_by(destination=destination).delete()
+    q = db.query(GovVisitorData).filter_by(destination=destination)
+    if year:
+        q = q.filter(GovVisitorData.data_year == year)
+    count = q.delete()
     db.commit()
     return _envelope({"deleted_count": count})
 
@@ -128,6 +147,7 @@ def delete_by_destination(
 @router.post("/import")
 async def import_excel(
     file: UploadFile = File(...),
+    year: Optional[int] = Form(None),
     _admin=Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -149,8 +169,11 @@ async def import_excel(
         ws = wb[sheet_name]
         destination = sheet_name.strip()
 
-        # Delete existing data for this destination before re-importing
-        db.query(GovVisitorData).filter_by(destination=destination).delete()
+        # Delete existing data for this destination+year before re-importing
+        q = db.query(GovVisitorData).filter_by(destination=destination)
+        if year:
+            q = q.filter(GovVisitorData.data_year == year)
+        q.delete()
 
         rows_list = list(ws.iter_rows(min_row=1, values_only=True))
         if len(rows_list) < 2:
@@ -182,6 +205,7 @@ async def import_excel(
                 jul=month_vals[6], aug=month_vals[7], sep=month_vals[8],
                 oct=month_vals[9], nov=month_vals[10], dec=month_vals[11],
                 total=total_val,
+                data_year=year,
             )
             db.add(record)
             imported += 1
@@ -195,6 +219,7 @@ async def import_excel(
         "imported_rows": imported,
         "destinations": destinations_imported,
         "filename": file.filename,
+        "year": year,
     })
 
 
