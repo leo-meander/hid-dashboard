@@ -185,6 +185,14 @@ export default function GovVisitorData() {
         )}
       </div>
 
+      {/* Manual input */}
+      <ManualAddForm
+        destinations={destinations}
+        years={years}
+        defaultYear={selectedYear}
+        onSaved={() => loadAll(true)}
+      />
+
       {/* Filters + view mode */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
@@ -322,6 +330,159 @@ function RawTable({ dest, year, rows, viewMode, onDelete }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function ManualAddForm({ destinations, years, defaultYear, onSaved }) {
+  const EMPTY = { destination: "", source_country: "", rank: "",
+    ...Object.fromEntries(MONTHS.map(m => [m, ""])), data_year: "" };
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(EMPTY);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  useEffect(() => {
+    if (defaultYear) setForm(f => ({ ...f, data_year: String(defaultYear) }));
+  }, [defaultYear]);
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const total = MONTHS.reduce((s, m) => s + (parseInt(form[m]) || 0), 0);
+
+  const handleSave = async () => {
+    if (!form.destination || !form.source_country) {
+      setMsg({ type: "err", text: "Destination and Source Country are required" });
+      return;
+    }
+    setSaving(true);
+    setMsg(null);
+    const body = {
+      destination: form.destination,
+      source_country: form.source_country,
+      rank: form.rank ? parseInt(form.rank) : null,
+      data_year: form.data_year ? parseInt(form.data_year) : null,
+      ...Object.fromEntries(MONTHS.map(m => [m, parseInt(form[m]) || 0])),
+      total,
+    };
+    const token = localStorage.getItem("token");
+    try {
+      const j = await fetch("/api/gov-visitor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(body),
+      }).then(r => r.json());
+      if (j.success) {
+        setMsg({ type: "ok", text: `Added ${form.source_country} → ${form.destination} (${form.data_year || "no year"})` });
+        setForm({ ...EMPTY, destination: form.destination, data_year: form.data_year });
+        onSaved();
+      } else {
+        setMsg({ type: "err", text: j.error || "Save failed" });
+      }
+    } catch {
+      setMsg({ type: "err", text: "Network error" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-5 py-3 text-left hover:bg-gray-50 transition-colors"
+      >
+        <span className="text-sm font-medium text-gray-700">+ Add Row Manually</span>
+        <span className="text-gray-400 text-xs">{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div className="px-5 pb-5 border-t">
+          {/* Top fields */}
+          <div className="grid grid-cols-2 gap-3 mt-4 sm:grid-cols-4">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Destination *</label>
+              <input
+                list="dest-list"
+                value={form.destination}
+                onChange={e => set("destination", e.target.value)}
+                placeholder="e.g. Japan"
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+              <datalist id="dest-list">
+                {destinations.map(d => <option key={d} value={d} />)}
+              </datalist>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Source Country *</label>
+              <input
+                value={form.source_country}
+                onChange={e => set("source_country", e.target.value)}
+                placeholder="e.g. Korea"
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Year</label>
+              <input
+                list="year-list"
+                value={form.data_year}
+                onChange={e => set("data_year", e.target.value)}
+                placeholder="2025"
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+              <datalist id="year-list">
+                {IMPORT_YEARS.map(y => <option key={y} value={y} />)}
+              </datalist>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Rank</label>
+              <input
+                type="number"
+                value={form.rank}
+                onChange={e => set("rank", e.target.value)}
+                placeholder="1"
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+            </div>
+          </div>
+
+          {/* Monthly inputs */}
+          <div className="mt-3 grid grid-cols-6 gap-2 sm:grid-cols-12">
+            {MONTHS.map((m, i) => (
+              <div key={m}>
+                <label className="block text-[10px] text-gray-400 mb-1 text-center">{MONTH_LABELS[i]}</label>
+                <input
+                  type="number"
+                  value={form[m]}
+                  onChange={e => set(m, e.target.value)}
+                  placeholder="0"
+                  className="w-full border border-gray-300 rounded px-1.5 py-1.5 text-xs text-right font-mono"
+                />
+              </div>
+            ))}
+          </div>
+
+          {/* Total + save */}
+          <div className="mt-3 flex items-center justify-between">
+            <div className="text-sm text-gray-500">
+              Total: <span className="font-mono font-semibold text-gray-800">{fmt(total)}</span>
+            </div>
+            <div className="flex items-center gap-3">
+              {msg && (
+                <span className={`text-xs ${msg.type === "ok" ? "text-green-600" : "text-red-500"}`}>{msg.text}</span>
+              )}
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {saving ? "Saving..." : "Save Row"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
