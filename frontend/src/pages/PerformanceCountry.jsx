@@ -195,6 +195,9 @@ export default function PerformanceCountry() {
         av = (a.country || "").toLowerCase();
         bv = (b.country || "").toLowerCase();
         return av < bv ? -1 * dir : av > bv ? 1 * dir : 0;
+      } else if (sortKey === "total_adr") {
+        av = a.total_nights > 0 ? a.total_revenue / a.total_nights : 0;
+        bv = b.total_nights > 0 ? b.total_revenue / b.total_nights : 0;
       } else {
         av = a[sortKey] || 0;
         bv = b[sortKey] || 0;
@@ -507,6 +510,12 @@ export default function PerformanceCountry() {
                     >
                       Revenue ({trendCurrencyLabel}){sortArrow("total_revenue")}
                     </th>
+                    <th
+                      onClick={() => toggleSort("total_adr")}
+                      className="text-right px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none"
+                    >
+                      ADR ({trendCurrencyLabel}){sortArrow("total_adr")}
+                    </th>
                     {periods.map((p) => (
                       <th
                         key={p}
@@ -531,6 +540,9 @@ export default function PerformanceCountry() {
                       <td className="px-4 py-2.5 text-right font-semibold">{fmtNum(c.total_reservations)}</td>
                       <td className="px-4 py-2.5 text-right">{fmtNum(c.total_nights)}</td>
                       <td className="px-4 py-2.5 text-right">{fmtNum(c.total_revenue)}</td>
+                      <td className="px-4 py-2.5 text-right">
+                        {c.total_nights > 0 ? fmtNum(c.total_revenue / c.total_nights) : <span className="text-gray-300">—</span>}
+                      </td>
                       {periods.map((p, pIdx) => {
                         const val = (trend[p] || {})[c.country] || 0;
                         const prevP = pIdx > 0 ? periods[pIdx - 1] : null;
