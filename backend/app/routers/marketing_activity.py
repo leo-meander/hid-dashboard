@@ -29,6 +29,7 @@ from app.database import SessionLocal, get_db
 from app.models.ads import AdsPerformance
 from app.models.ads_booking_match import AdsBookingMatch
 from app.models.branch import Branch
+from app.models.marketing_activity_cache import MarketingActivityCache
 from app.models.reservation import Reservation
 from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
 from app.services.ads_platform import branch_slug_for, get_client as _get_ads_client
@@ -243,9 +244,24 @@ def get_marketing_activity_summary(
         finally:
             session.close()
 
+    # Try cache first for current + prev period (avoids slow external API calls).
+    # Fall back to live APIs if cache hasn't been populated yet.
+    cached_cur = _cache_read(db, branch_id, d_from, d_to)
+    cached_prev = _cache_read(db, branch_id, p_from, p_to)
+
+    def _build_cur(s):
+        if cached_cur is not None:
+            return _build_overview_from_cache(s, branch_id, d_from, d_to, use_native, cached_cur)
+        return _build_overview(s, branch_id, d_from, d_to, use_native)
+
+    def _build_prev(s):
+        if cached_prev is not None:
+            return _build_overview_from_cache(s, branch_id, p_from, p_to, use_native, cached_prev)
+        return _build_overview(s, branch_id, p_from, p_to, use_native)
+
     with ThreadPoolExecutor(max_workers=3) as ex:
-        f_cur = ex.submit(_with_session, lambda s: _build_overview(s, branch_id, d_from, d_to, use_native))
-        f_prev = ex.submit(_with_session, lambda s: _build_overview(s, branch_id, p_from, p_to, use_native))
+        f_cur = ex.submit(_with_session, _build_cur)
+        f_prev = ex.submit(_with_session, _build_prev)
         f_crm = ex.submit(_with_session, lambda s: _build_crm_by_rate_plan(s, branch_id, d_from, d_to, use_native))
         overview_cur = f_cur.result()
         overview_prev = f_prev.result()
@@ -541,6 +557,222 @@ def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date
 
     result.sort(key=lambda x: -x["revenue"])
     return result
+
+
+# ── Activity cache helpers ────────────────────────────────────────────────────
+
+def _cache_read(
+    db: Session,
+    branch_id: Optional[UUID],
+    d_from: date,
+    d_to: date,
+) -> Optional[dict]:
+    """Return {channel: {bookings, revenue_vnd}} from cache for the given range.
+
+    Returns None if any (branch, year, month, channel) row is missing —
+    meaning the cache hasn't been populated yet for this period.
+    """
+    # Enumerate all (year, month) pairs in range
+    months = []
+    cur = date(d_from.year, d_from.month, 1)
+    end = date(d_to.year, d_to.month, 1)
+    while cur <= end:
+        months.append((cur.year, cur.month))
+        cur = date(cur.year + (cur.month // 12), cur.month % 12 + 1, 1)
+
+    branches_q = db.query(Branch).filter(Branch.is_active.is_(True))
+    if branch_id:
+        branches_q = branches_q.filter(Branch.id == branch_id)
+    branch_ids = [b.id for b in branches_q.all()]
+
+    q = db.query(
+        MarketingActivityCache.channel,
+        func.sum(MarketingActivityCache.bookings).label("bookings"),
+        func.sum(MarketingActivityCache.revenue_vnd).label("revenue_vnd"),
+        func.count(MarketingActivityCache.id).label("row_count"),
+    ).filter(
+        MarketingActivityCache.branch_id.in_(branch_ids),
+        MarketingActivityCache.year.in_([y for y, _ in months]),
+        MarketingActivityCache.month.in_([m for _, m in months]),
+    ).group_by(MarketingActivityCache.channel).all()
+
+    if not q:
+        return None
+
+    expected_rows = len(branch_ids) * len(months) * 2  # 2 channels
+    actual_rows = sum(r.row_count for r in q)
+    if actual_rows < expected_rows:
+        return None
+
+    return {
+        r.channel: {
+            "bookings": int(r.bookings or 0),
+            "revenue_vnd": float(r.revenue_vnd or 0),
+        }
+        for r in q
+    }
+
+
+def _cache_upsert(
+    db: Session,
+    branch_id: UUID,
+    year: int,
+    month: int,
+    channel: str,
+    bookings: int,
+    revenue_vnd: float,
+):
+    now = datetime.now(timezone.utc)
+    existing = db.query(MarketingActivityCache).filter(
+        MarketingActivityCache.branch_id == branch_id,
+        MarketingActivityCache.year == year,
+        MarketingActivityCache.month == month,
+        MarketingActivityCache.channel == channel,
+    ).first()
+    if existing:
+        existing.bookings = bookings
+        existing.revenue_vnd = revenue_vnd
+        existing.synced_at = now
+        existing.updated_at = now
+    else:
+        db.add(MarketingActivityCache(
+            branch_id=branch_id,
+            year=year,
+            month=month,
+            channel=channel,
+            bookings=bookings,
+            revenue_vnd=revenue_vnd,
+            synced_at=now,
+        ))
+
+
+def _build_overview_from_cache(
+    db: Session,
+    branch_id: Optional[UUID],
+    d_from: date,
+    d_to: date,
+    use_native: bool,
+    cached: dict,
+):
+    """Build overview dict using cached paid_ads/kol + live CRM from DB."""
+    # paid_ads from cache (always VND) — convert to native if needed
+    ads_c = cached.get("paid_ads", {})
+    ads_bookings = ads_c.get("bookings", 0)
+    ads_revenue_vnd = ads_c.get("revenue_vnd", 0.0)
+
+    kol_c = cached.get("kol", {})
+    kol_bookings = kol_c.get("bookings", 0)
+    kol_revenue_vnd = kol_c.get("revenue_vnd", 0.0)
+
+    if use_native and branch_id:
+        branch_obj = db.query(Branch).filter(Branch.id == branch_id).first()
+        cur = (branch_obj.currency or "VND").upper() if branch_obj else "VND"
+        rate = _get_rate_to_vnd(cur)
+        ads_revenue = _vnd_to_native(ads_revenue_vnd, cur, rate)
+        kol_revenue = _vnd_to_native(kol_revenue_vnd, cur, rate)
+    else:
+        ads_revenue = ads_revenue_vnd
+        kol_revenue = kol_revenue_vnd
+
+    # CRM always from DB (fast)
+    rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
+    crm_q = db.query(
+        func.count(Reservation.id).label("bookings"),
+        func.coalesce(func.sum(rev_col), 0).label("revenue"),
+    ).filter(
+        crm_reservation_filter(),
+        Reservation.reservation_date >= d_from,
+        Reservation.reservation_date <= d_to,
+        _status_filter(),
+        _revenue_source_filter(),
+    )
+    if branch_id:
+        crm_q = crm_q.filter(Reservation.branch_id == branch_id)
+    crm_row = crm_q.one()
+    crm_bookings = int(crm_row.bookings)
+    crm_revenue = float(crm_row.revenue)
+
+    ads_cost, kol_cost, crm_cost = _budget_actuals_costs(
+        db, branch_id, d_from.year, d_from.month, use_native,
+        month_to=d_to.month if d_to.year == d_from.year else 12,
+    )
+
+    ads_roas = round(ads_revenue / ads_cost, 2) if ads_cost > 0 else 0
+    kol_roas = round(kol_revenue / kol_cost, 2) if kol_cost > 0 else 0
+    crm_roas = round(crm_revenue / crm_cost, 2) if crm_cost > 0 else 0
+    total_revenue = ads_revenue + kol_revenue + crm_revenue
+    total_cost = ads_cost + kol_cost + crm_cost
+
+    return {
+        "paid_ads": {"bookings": ads_bookings, "revenue": ads_revenue, "cost": ads_cost, "roas": ads_roas},
+        "kol": {"bookings": kol_bookings, "revenue": kol_revenue, "cost": kol_cost, "roas": kol_roas},
+        "crm": {"bookings": crm_bookings, "revenue": crm_revenue, "cost": crm_cost, "roas": crm_roas},
+        "total": {
+            "bookings": ads_bookings + kol_bookings + crm_bookings,
+            "revenue": total_revenue,
+            "cost": total_cost,
+            "roas": round(total_revenue / total_cost, 2) if total_cost > 0 else 0,
+        },
+    }
+
+
+# ── Sync endpoint (called by GitHub Actions nightly cron) ─────────────────────
+
+@router.post("/sync-cache")
+def sync_marketing_activity_cache(
+    months_back: int = Query(2, ge=1, le=13),
+    db: Session = Depends(get_db),
+):
+    """Refresh marketing_activity_cache for recent months.
+
+    Fetches Paid Ads (Ads Platform API) and KOL (KOL Engine API) per branch
+    and upserts into the cache table. CRM and costs are read live from DB so
+    they are not cached here.
+
+    Called nightly by GitHub Actions — same pattern as /api/sync/run-migrations.
+    ``months_back`` controls how many months to backfill (default 2 = current + prev).
+    """
+    today = date.today()
+    months_to_sync = []
+    m = f"{today.year}-{today.month:02d}"
+    for _ in range(months_back):
+        yr, mo = int(m[:4]), int(m[5:])
+        months_to_sync.append((yr, mo))
+        m = _prev_month_str(m)
+
+    branches = db.query(Branch).filter(Branch.is_active.is_(True)).all()
+    synced = []
+    errors = []
+
+    for branch in branches:
+        for year, month in months_to_sync:
+            d_from, d_to = _month_range(f"{year}-{month:02d}")
+            label = f"{branch.name} {year}-{month:02d}"
+            try:
+                # Paid Ads — always store VND
+                ads_b, ads_r = _fetch_paid_ads_totals(
+                    db, branch.id, d_from, d_to, use_native=False,
+                )
+                _cache_upsert(db, branch.id, year, month, "paid_ads", ads_b, ads_r)
+
+                # KOL — always store VND (use_native=False)
+                kol_b, kol_r = _fetch_kol_totals(
+                    db, branch.id, d_from, d_to, use_native=False,
+                )
+                _cache_upsert(db, branch.id, year, month, "kol", kol_b, kol_r)
+
+                synced.append(label)
+            except Exception as exc:
+                log.error("sync_cache failed for %s: %s", label, exc)
+                errors.append({"label": label, "error": str(exc)})
+
+    db.commit()
+    return _envelope({
+        "synced": synced,
+        "errors": errors,
+        "months": [f"{y}-{m:02d}" for y, m in months_to_sync],
+        "branches": len(branches),
+    })
 
 
 # ── CRM Branch Comparison (campaign × branch and month × branch) ─────────────
