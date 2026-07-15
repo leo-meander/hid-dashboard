@@ -324,7 +324,16 @@ def _fetch_kol_totals_one_month(db, branch_id, branch_obj, hotel_id, year, month
         match = next((b for b in branches if b.get("hotel_id") == hotel_id), None)
         if not match:
             return 0, 0.0
-        return int(match.get("bookings") or 0), float(match.get("revenue") or 0)
+        bookings = int(match.get("bookings") or 0)
+        # KOL Engine always returns revenue_vnd; convert to native if needed.
+        revenue_vnd = float(match.get("revenue_vnd") or match.get("revenue") or 0)
+        if use_native and branch_obj:
+            cur = (branch_obj.currency or "VND").upper()
+            rate = _get_rate_to_vnd(cur)
+            revenue = _vnd_to_native(revenue_vnd, cur, rate)
+        else:
+            revenue = revenue_vnd
+        return bookings, revenue
 
     totals = data.get("totals") or {}
     bookings = int(totals.get("bookings") or 0)
@@ -430,6 +439,7 @@ def _build_overview(db, branch_id, d_from, d_to, use_native):
     # crm      → manual_actual_vnd entered via Budget Planner UI
     ads_cost, kol_cost, crm_cost = _budget_actuals_costs(
         db, branch_id, d_from.year, d_from.month, use_native,
+        month_to=d_to.month if d_to.year == d_from.year else 12,
     )
 
     ads_roas = round(ads_revenue / ads_cost, 2) if ads_cost > 0 else 0
@@ -449,35 +459,43 @@ def _build_overview(db, branch_id, d_from, d_to, use_native):
     }
 
 
-def _budget_actuals_costs(db, branch_id, year: int, month: int, use_native: bool):
+def _budget_actuals_costs(
+    db, branch_id, year: int, month: int, use_native: bool,
+    month_to: Optional[int] = None,
+):
     """Sum (paid_ads, kol, crm) cost from Budget Planner's ActualsCache.
 
     Aggregates across all active branches when ``branch_id`` is None;
     otherwise scoped to the single branch. Returns native currency totals
-    when ``use_native`` is True (single-branch view), VND otherwise."""
+    when ``use_native`` is True (single-branch view), VND otherwise.
+
+    Pass ``month_to`` to sum across a range (e.g. YTD Jan–Jul: month=1, month_to=7).
+    """
     q = db.query(Branch).filter(Branch.is_active.is_(True))
     if branch_id is not None:
         q = q.filter(Branch.id == branch_id)
     branches = q.all()
 
+    months = list(range(month, (month_to or month) + 1))
     cache = ActualsCache(db)
     ads_total = 0.0
     kol_total = 0.0
     crm_total = 0.0
     for b in branches:
-        ads_vnd = cache.get(b, year, month, "paid_ads")
-        kol_vnd = cache.get(b, year, month, "kol")
-        crm_vnd = cache.get(b, year, month, "crm")
-        if use_native:
-            cur = (b.currency or "VND").upper()
-            rate = _get_rate_to_vnd(cur)
-            ads_total += _vnd_to_native(ads_vnd, cur, rate)
-            kol_total += _vnd_to_native(kol_vnd, cur, rate)
-            crm_total += _vnd_to_native(crm_vnd, cur, rate)
-        else:
-            ads_total += ads_vnd
-            kol_total += kol_vnd
-            crm_total += crm_vnd
+        for mo in months:
+            ads_vnd = cache.get(b, year, mo, "paid_ads")
+            kol_vnd = cache.get(b, year, mo, "kol")
+            crm_vnd = cache.get(b, year, mo, "crm")
+            if use_native:
+                cur = (b.currency or "VND").upper()
+                rate = _get_rate_to_vnd(cur)
+                ads_total += _vnd_to_native(ads_vnd, cur, rate)
+                kol_total += _vnd_to_native(kol_vnd, cur, rate)
+                crm_total += _vnd_to_native(crm_vnd, cur, rate)
+            else:
+                ads_total += ads_vnd
+                kol_total += kol_vnd
+                crm_total += crm_vnd
     return ads_total, kol_total, crm_total
 
 
