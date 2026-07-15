@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.branch import Branch
+from app.services.persona_engine import build_all_personas
 from app.services.metrics_engine import (
     get_daily_metrics,
     get_ota_mix,
@@ -1408,6 +1409,14 @@ def tool_get_cancellation_leadtime(db: Session, inp: dict, default_branch: Optio
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
 
+def tool_get_guest_persona(db: Session, inp: dict, default_branch: Optional[str]) -> dict:
+    """Return the pre-built guest persona for one or all branches.
+    Delegates to persona_engine which already powers the Persona page."""
+    branch_id = _resolve_branch_id(inp.get("branch_id"), default_branch)
+    months = int(inp.get("months") or 12)
+    return build_all_personas(db, branch_id=branch_id, months=months)
+
+
 TOOL_HANDLERS = {
     "get_branches": tool_get_branches,
     "get_performance": tool_get_performance,
@@ -1424,6 +1433,7 @@ TOOL_HANDLERS = {
     "get_extension_channel": tool_get_extension_channel,
     "get_blogger_channel": tool_get_blogger_channel,
     "get_cancellation_leadtime": tool_get_cancellation_leadtime,
+    "get_guest_persona": tool_get_guest_persona,
 }
 
 

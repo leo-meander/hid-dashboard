@@ -248,6 +248,24 @@ def register_tools(mcp: FastMCP) -> None:
         })
 
     @mcp.tool()
+    def get_guest_persona(
+        branch_id: Optional[str] = None,
+        months: int = 12,
+    ) -> dict:
+        """Full guest persona for one or all branches: age group (18-24/25-34/…),
+        avg age, gender split (M/F %), top source countries, OTA vs Direct channel
+        mix, Room vs Dorm split, party size (solo/couple/group), avg pax, length
+        of stay, lead time, ADR, cancellation rate, cancellation lead time, and
+        demographic data coverage %.
+
+        Use when the user asks about guest persona, who our guests are, age of
+        guests, gender breakdown, typical traveller profile, target audience, or
+        any holistic 'who stays with us' question. Returns the same data as the
+        Persona page in the dashboard. Pass `branch_id` to get one branch;
+        omit for all branches. `months` controls the look-back window (default 12)."""
+        return _run("get_guest_persona", {"branch_id": branch_id, "months": months})
+
+    @mcp.tool()
     def get_marketing_activity(
         branch_id: Optional[str] = None,
         date_from: Optional[str] = None,
