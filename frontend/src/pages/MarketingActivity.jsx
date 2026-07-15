@@ -81,20 +81,45 @@ function KPICard({ label, value, sub, prev, prevLabel }) {
   );
 }
 
+function ytdBounds(year) {
+  const today = new Date();
+  const isCurrentYear = year === today.getFullYear();
+  const pad = (n) => String(n).padStart(2, "0");
+  const date_from = `${year}-01-01`;
+  const date_to = isCurrentYear
+    ? `${year}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
+    : `${year}-12-31`;
+  return { date_from, date_to };
+}
+
+function ytdPrevLabel(year) {
+  return `${year - 1} YTD`;
+}
+
 export default function MarketingActivity() {
   const { isAll, selected, currency: branchCurrency } = useBranch();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("overview");
+  const [viewMode, setViewMode] = useState("monthly"); // "monthly" | "ytd"
 
   const today = new Date();
   const currentMonthStr = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0");
   const [month, setMonth] = useState(currentMonthStr);
+  const [ytdYear, setYtdYear] = useState(today.getFullYear());
 
   const load = () => {
     setLoading(true);
-    const params = { month };
+    const params = {};
     if (!isAll && selected) params.branch_id = selected;
+
+    if (viewMode === "ytd") {
+      const { date_from, date_to } = ytdBounds(ytdYear);
+      params.date_from = date_from;
+      params.date_to = date_to;
+    } else {
+      params.month = month;
+    }
 
     getMarketingActivitySummary(params)
       .then(setData)
@@ -102,7 +127,7 @@ export default function MarketingActivity() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(load, [selected, isAll, month]);
+  useEffect(load, [selected, isAll, month, ytdYear, viewMode]);
 
   const cur = isAll ? "VND" : (data?.currency || branchCurrency || "VND");
   const overview = data?.overview;
@@ -116,15 +141,42 @@ export default function MarketingActivity() {
     { key: "email-stat", label: "Email Stat" },
   ];
 
-  // Format prev month label
-  const prevLabel = prevMonth ? new Date(prevMonth + "-01").toLocaleDateString("en", { month: "short", year: "numeric" }) : "";
+  // Format comparison label
+  const prevLabel = viewMode === "ytd"
+    ? ytdPrevLabel(ytdYear)
+    : (prevMonth ? new Date(prevMonth + "-01").toLocaleDateString("en", { month: "short", year: "numeric" }) : "");
+
+  const minYear = 2024;
+  const maxYear = today.getFullYear();
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-lg font-bold text-gray-900">Marketing Activity</h1>
-        <input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
-          className="border rounded px-3 py-1.5 text-sm" />
+        <div className="flex items-center gap-2">
+          {/* Monthly / YTD toggle */}
+          <div className="flex gap-0.5 bg-gray-100 rounded-lg p-1">
+            {[{ key: "monthly", label: "Monthly" }, { key: "ytd", label: "YTD" }].map((v) => (
+              <button key={v.key} onClick={() => setViewMode(v.key)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                  viewMode === v.key ? "bg-white text-gray-800 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                }`}>
+                {v.label}
+              </button>
+            ))}
+          </div>
+          {viewMode === "monthly" ? (
+            <input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
+              className="border rounded px-3 py-1.5 text-sm" />
+          ) : (
+            <select value={ytdYear} onChange={(e) => setYtdYear(Number(e.target.value))}
+              className="border rounded px-3 py-1.5 text-sm">
+              {Array.from({ length: maxYear - minYear + 1 }, (_, i) => maxYear - i).map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          )}
+        </div>
       </div>
 
       <div className="flex gap-1 border-b">
@@ -140,15 +192,19 @@ export default function MarketingActivity() {
 
       {tab === "email-stat" ? (
         // Email Stat fetches its own data — independent of the activity API
-        <EmailStatTab month={month} onViewRevenue={() => setTab("crm-rate-plans")} />
+        <EmailStatTab
+          month={viewMode === "ytd" ? null : month}
+          ytdBounds={viewMode === "ytd" ? ytdBounds(ytdYear) : null}
+          onViewRevenue={() => setTab("crm-rate-plans")}
+        />
       ) : loading ? (
         <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
       ) : !data ? (
         <div className="text-center text-gray-400 py-16 text-sm">No data available</div>
       ) : (
         <>
-          {tab === "overview" && <OverviewTab overview={overview} prevOverview={prevOverview} prevLabel={prevLabel} cur={cur} />}
-          {tab === "crm-rate-plans" && <CRMRatePlansTab rows={crmRatePlans} cur={cur} month={month} />}
+          {tab === "overview" && <OverviewTab overview={overview} prevOverview={prevOverview} prevLabel={prevLabel} cur={cur} isYtd={viewMode === "ytd"} ytdYear={ytdYear} />}
+          {tab === "crm-rate-plans" && <CRMRatePlansTab rows={crmRatePlans} cur={cur} month={viewMode === "ytd" ? currentMonthStr : month} />}
         </>
       )}
     </div>
@@ -156,13 +212,18 @@ export default function MarketingActivity() {
 }
 
 /* ── Overview Tab ──────────────────────────────────────────────────────────── */
-function OverviewTab({ overview, prevOverview, prevLabel, cur }) {
+function OverviewTab({ overview, prevOverview, prevLabel, cur, isYtd, ytdYear }) {
   if (!overview) return null;
   const { paid_ads, kol, crm, total } = overview;
   const prev = prevOverview?.total;
 
   return (
     <div className="space-y-6">
+      {isYtd && (
+        <p className="text-xs text-gray-500">
+          Year-to-date performance for <span className="font-semibold">{ytdYear}</span> (Jan 1 \u2013 today). Compared against the same period in {ytdYear - 1}.
+        </p>
+      )}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KPICard label="Total Bookings" value={fmtNum(total.bookings)} prev={prev?.bookings} prevLabel={prevLabel} />
         <KPICard label={`Total Revenue (${cur})`} value={fmtNum(total.revenue)} prev={prev?.revenue} prevLabel={prevLabel} />
@@ -523,7 +584,7 @@ function EmailKPI({ label, value, color = "text-gray-900" }) {
   );
 }
 
-function EmailStatTab({ month, onViewRevenue }) {
+function EmailStatTab({ month, ytdBounds: ytdB, onViewRevenue }) {
   const { currentBranch, isAll } = useBranch();
   const [summary, setSummary] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
@@ -537,8 +598,8 @@ function EmailStatTab({ month, onViewRevenue }) {
 
   useEffect(() => {
     setLoading(true);
-    const { date_from, date_to } = monthBounds(month);
-    const params = { date_from, date_to };
+    const bounds = ytdB || monthBounds(month);
+    const params = { date_from: bounds.date_from, date_to: bounds.date_to };
     if (ghlBranch) params.branch_name = ghlBranch;
 
     Promise.all([
@@ -554,15 +615,16 @@ function EmailStatTab({ month, onViewRevenue }) {
         setCampaigns([]);
       })
       .finally(() => setLoading(false));
-  }, [month, ghlBranch]);
+  }, [month, ytdB, ghlBranch]);
 
   if (loading) {
     return <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>;
   }
   if (!summary || summary.total_sent === 0) {
+    const periodLabel = ytdB ? `${ytdB.date_from.slice(0, 4)} YTD` : "this month";
     return (
       <div className="text-center text-gray-400 py-16 text-sm">
-        No email data for this month{ghlBranch ? ` (${ghlBranch})` : ""}.
+        No email data for {periodLabel}{ghlBranch ? ` (${ghlBranch})` : ""}.
       </div>
     );
   }
