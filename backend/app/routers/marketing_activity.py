@@ -191,25 +191,51 @@ def _prev_month_str(month_str: str) -> str:
 
 # ── Main endpoint ────────────────────────────────────────────────────────────
 
+def _ytd_range(year: int):
+    """Jan 1 → min(today, Dec 31) for the given year."""
+    today = date.today()
+    d_from = date(year, 1, 1)
+    d_to = date(year, 12, 31) if year < today.year else today
+    return d_from, d_to
+
+
+def _safe_replace_year(d: date, year: int) -> date:
+    """Replace year, clamping Feb 29 → Feb 28 for non-leap years."""
+    try:
+        return d.replace(year=year)
+    except ValueError:
+        return d.replace(year=year, day=28)
+
+
 @router.get("/summary")
 def get_marketing_activity_summary(
     branch_id: Optional[UUID] = Query(None),
     month: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     today = date.today()
-    current_month = month or f"{today.year}-{today.month:02d}"
-    prev_month = _prev_month_str(current_month)
 
-    d_from, d_to = _month_range(current_month)
-    p_from, p_to = _month_range(prev_month)
+    if date_from and date_to:
+        # YTD / custom range mode
+        from datetime import datetime as _dt
+        d_from = _dt.fromisoformat(date_from).date()
+        d_to = _dt.fromisoformat(date_to).date()
+        p_from = _safe_replace_year(d_from, d_from.year - 1)
+        p_to = _safe_replace_year(d_to, d_to.year - 1)
+        current_month = date_from[:4]   # year string used as label key
+        prev_month = str(d_from.year - 1)
+        is_range = True
+    else:
+        current_month = month or f"{today.year}-{today.month:02d}"
+        prev_month = _prev_month_str(current_month)
+        d_from, d_to = _month_range(current_month)
+        p_from, p_to = _month_range(prev_month)
+        is_range = False
 
     use_native = branch_id is not None
 
-    # Run the three independent blocks in parallel — each opens its own
-    # DB session so SQLAlchemy stays thread-safe. _build_overview is
-    # HTTP-heavy (3 Ads Platform + 1 KOL Engine call each), so wallclock
-    # collapses to roughly the slowest task instead of summing.
     def _with_session(fn):
         session = SessionLocal()
         try:
@@ -238,6 +264,7 @@ def get_marketing_activity_summary(
         "currency": currency,
         "month": current_month,
         "prev_month": prev_month,
+        "is_range": is_range,
     })
 
 
@@ -265,6 +292,46 @@ def _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native):
     return int(row.bookings or 0), float(row.revenue or 0)
 
 
+def _fetch_kol_totals_one_month(db, branch_id, branch_obj, hotel_id, year, month, use_native):
+    """Fetch KOL for a single (year, month) from the KOL Engine API.
+
+    Returns (bookings, revenue) in the appropriate currency.
+    Falls back to Cloudbeds on API failure.
+    """
+    d_from = date(year, month, 1)
+    d_to = date(year, month, calendar.monthrange(year, month)[1])
+
+    data = fetch_kol_revenue(
+        base_url=settings.KOL_ENGINE_URL,
+        org_slug=settings.KOL_TARGETS_ORG_SLUG,
+        api_key=settings.KOL_REVENUE_API_SECRET,
+        year=year,
+        month=month,
+        hotel_id=hotel_id,
+    )
+    if data is None:
+        log.warning(
+            "KOL revenue API unavailable for %s-%s — falling back to Cloudbeds",
+            year, month,
+        )
+        return _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native)
+
+    branches = data.get("branches") or []
+
+    if branch_id:
+        if not hotel_id:
+            return _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native)
+        match = next((b for b in branches if b.get("hotel_id") == hotel_id), None)
+        if not match:
+            return 0, 0.0
+        return int(match.get("bookings") or 0), float(match.get("revenue") or 0)
+
+    totals = data.get("totals") or {}
+    bookings = int(totals.get("bookings") or 0)
+    revenue = sum(float(b.get("revenue_vnd") or 0) for b in branches)
+    return bookings, revenue
+
+
 def _fetch_kol_totals(db, branch_id, d_from, d_to, use_native):
     """Pull KOL bookings/revenue from KOL Engine public API.
 
@@ -274,6 +341,7 @@ def _fetch_kol_totals(db, branch_id, d_from, d_to, use_native):
     already attributes to ads (cutoff 2026-05-01) — single source of truth.
 
     Falls back to local Cloudbeds aggregation on any API failure.
+    Supports multi-month ranges (YTD) by fetching each month in parallel.
     """
     branch_obj = None
     hotel_id = None
@@ -282,41 +350,42 @@ def _fetch_kol_totals(db, branch_id, d_from, d_to, use_native):
         if branch_obj:
             hotel_id = resolve_hotel_id_from_branch_name(branch_obj.name)
 
-    data = fetch_kol_revenue(
-        base_url=settings.KOL_ENGINE_URL,
-        org_slug=settings.KOL_TARGETS_ORG_SLUG,
-        api_key=settings.KOL_REVENUE_API_SECRET,
-        year=d_from.year,
-        month=d_from.month,
-        hotel_id=hotel_id,
-    )
-    if data is None:
-        log.warning(
-            "KOL revenue API unavailable for %s-%s — falling back to Cloudbeds",
-            d_from.year, d_from.month,
+    # Enumerate months in the range
+    months = []
+    cur = date(d_from.year, d_from.month, 1)
+    end = date(d_to.year, d_to.month, 1)
+    while cur <= end:
+        months.append((cur.year, cur.month))
+        if cur.month == 12:
+            cur = date(cur.year + 1, 1, 1)
+        else:
+            cur = date(cur.year, cur.month + 1, 1)
+
+    if len(months) == 1:
+        return _fetch_kol_totals_one_month(
+            db, branch_id, branch_obj, hotel_id, months[0][0], months[0][1], use_native,
         )
-        return _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native)
 
-    branches = data.get("branches") or []
-
-    if branch_id:
-        # Single-branch — match by hotel_id, return native revenue.
-        if not hotel_id:
-            log.warning(
-                "No KOL Engine hotel_id mapping for branch %s — falling back",
-                branch_obj.name if branch_obj else branch_id,
-            )
-            return _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native)
-        match = next((b for b in branches if b.get("hotel_id") == hotel_id), None)
-        if not match:
-            return 0, 0.0
-        return int(match.get("bookings") or 0), float(match.get("revenue") or 0)
-
-    # All branches — sum VND-equivalent.
-    totals = data.get("totals") or {}
-    bookings = int(totals.get("bookings") or 0)
-    revenue = sum(float(b.get("revenue_vnd") or 0) for b in branches)
-    return bookings, revenue
+    # Multi-month: fetch in parallel and sum
+    total_bookings = 0
+    total_revenue = 0.0
+    with ThreadPoolExecutor(max_workers=min(len(months), 6)) as ex:
+        futures = {
+            ex.submit(
+                _fetch_kol_totals_one_month,
+                db, branch_id, branch_obj, hotel_id, yr, mo, use_native,
+            ): (yr, mo)
+            for yr, mo in months
+        }
+        for future in as_completed(futures):
+            try:
+                b, r = future.result()
+                total_bookings += b
+                total_revenue += r
+            except Exception as exc:
+                yr, mo = futures[future]
+                log.warning("KOL month %s-%s failed: %s", yr, mo, exc)
+    return total_bookings, total_revenue
 
 
 # ── Overview KPIs ────────────────────────────────────────────────────────────
