@@ -956,6 +956,9 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
         WITH base AS (
             SELECT r.guest_country, r.guest_country_code, r.adults, r.nights,
                    r.room_type_category, r.grand_total_vnd,
+                   r.gender, r.date_of_birth,
+                   CASE WHEN r.date_of_birth IS NOT NULL
+                        THEN DATE_PART('year', AGE(r.date_of_birth))::int END AS age,
                    CASE WHEN r.reservation_date IS NOT NULL AND r.check_in_date IS NOT NULL
                         THEN (r.check_in_date - r.reservation_date) END AS lead_days
             FROM reservations r
@@ -984,7 +987,17 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
                COUNT(*) FILTER (WHERE lead_days BETWEEN 8 AND 30) AS lt_8_30,
                COUNT(*) FILTER (WHERE lead_days BETWEEN 31 AND 60) AS lt_31_60,
                COUNT(*) FILTER (WHERE lead_days > 60) AS lt_60_plus,
-               COUNT(*) FILTER (WHERE lead_days IS NULL OR lead_days < 0) AS lt_unknown
+               COUNT(*) FILTER (WHERE lead_days IS NULL OR lead_days < 0) AS lt_unknown,
+               COUNT(*) FILTER (WHERE gender = 'M') AS g_male,
+               COUNT(*) FILTER (WHERE gender = 'F') AS g_female,
+               COUNT(*) FILTER (WHERE gender IS NULL OR gender = 'N/A' OR gender = '') AS g_unknown,
+               AVG(age) FILTER (WHERE age BETWEEN 10 AND 100) AS age_avg,
+               COUNT(*) FILTER (WHERE age BETWEEN 18 AND 24) AS a_18_24,
+               COUNT(*) FILTER (WHERE age BETWEEN 25 AND 34) AS a_25_34,
+               COUNT(*) FILTER (WHERE age BETWEEN 35 AND 44) AS a_35_44,
+               COUNT(*) FILTER (WHERE age BETWEEN 45 AND 54) AS a_45_54,
+               COUNT(*) FILTER (WHERE age >= 55) AS a_55_plus,
+               COUNT(*) FILTER (WHERE age IS NULL OR age < 10 OR age > 100) AS a_unknown
         FROM base
         GROUP BY guest_country, guest_country_code
         ORDER BY bookings DESC
@@ -997,6 +1010,10 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
     out: list[dict] = []
     for r in rows:
         total = int(r[2]) or 1
+        # r[19]=g_male r[20]=g_female r[21]=g_unknown
+        # r[22]=age_avg r[23]=a_18_24 r[24]=a_25_34 r[25]=a_35_44 r[26]=a_45_54 r[27]=a_55_plus r[28]=a_unknown
+        age_unknown = int(r[28] or 0)
+        age_with_data = total - age_unknown
         out.append({
             "country": r[0],
             "country_code": r[1],
@@ -1022,6 +1039,20 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
                 "31_60_days": pct(int(r[16]), total),
                 "60_plus_days": pct(int(r[17]), total),
                 "unknown": pct(int(r[18]), total),
+            },
+            "gender_split_pct": {
+                "male": pct(int(r[19] or 0), total),
+                "female": pct(int(r[20] or 0), total),
+                "unknown": pct(int(r[21] or 0), total),
+            },
+            "age_avg": round(float(r[22]), 1) if r[22] is not None else None,
+            "age_distribution_pct": {
+                "18_24": pct(int(r[23] or 0), age_with_data) if age_with_data else 0.0,
+                "25_34": pct(int(r[24] or 0), age_with_data) if age_with_data else 0.0,
+                "35_44": pct(int(r[25] or 0), age_with_data) if age_with_data else 0.0,
+                "45_54": pct(int(r[26] or 0), age_with_data) if age_with_data else 0.0,
+                "55_plus": pct(int(r[27] or 0), age_with_data) if age_with_data else 0.0,
+                "data_coverage_pct": pct(age_with_data, total),
             },
         })
 
