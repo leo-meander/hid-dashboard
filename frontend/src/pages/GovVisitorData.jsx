@@ -27,7 +27,7 @@ function DeltaBadge({ value, size = "xs" }) {
 }
 
 function api(path, opts = {}) {
-  const token = localStorage.getItem("token");
+  const token = localStorage.getItem("hid_token");
   return fetch(path, {
     ...opts,
     headers: { ...opts.headers, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -365,7 +365,7 @@ function ManualAddForm({ destinations, years, defaultYear, onSaved }) {
       ...Object.fromEntries(MONTHS.map(m => [m, parseInt(form[m]) || 0])),
       total,
     };
-    const token = localStorage.getItem("token");
+    const token = localStorage.getItem("hid_token");
     try {
       const j = await fetch("/api/gov-visitor", {
         method: "POST",
