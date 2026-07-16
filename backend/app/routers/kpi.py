@@ -288,7 +288,15 @@ def kpi_summary_all(
     q = db.query(Branch).filter_by(is_active=True)
     if branch_id:
         q = q.filter(Branch.id == branch_id)
-    branches = q.all()
+    _ORDER = ("taipei", "1948", "oani", "osaka", "saigon")
+    def _rank(b):
+        n = b.name.lower()
+        for i, key in enumerate(_ORDER):
+            if key in n:
+                return i
+        return 99
+
+    branches = sorted(q.all(), key=_rank)
     results = []
 
     for branch in branches:
