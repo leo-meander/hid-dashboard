@@ -473,7 +473,9 @@ export default function TeamKPI() {
         </div>
       )}
 
-      {data && (
+      {data && (() => {
+        const visibleKpis = (data.kpis || []).filter(k => branchId ? !k.org_wide : k.org_wide);
+        return (
         <div className={"space-y-2 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-gray-700">Monthly KPI Grid</h2>
@@ -488,14 +490,22 @@ export default function TeamKPI() {
               </span>
             </div>
           </div>
+          {visibleKpis.length === 0 ? (
+            <div className="text-center py-8 text-sm text-gray-400">
+              {branchId
+                ? "No branch-specific KPIs for this role — select All to view."
+                : "Select a branch to view KPIs for this role."}
+            </div>
+          ) : (
           <KpiGrid
-            kpis={data.kpis || []}
+            kpis={visibleKpis}
             roleKey={role}
             branchId={branchId}
             year={year}
             autoActuals={data.auto_actuals}
             onRefresh={() => queryClient.invalidateQueries({ queryKey: ["team-kpi"] })}
           />
+          )}
 
           {!data.auto_actuals && (
             <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-xs text-blue-600">
@@ -504,7 +514,8 @@ export default function TeamKPI() {
             </div>
           )}
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
