@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import { getTeamKpiSummary, upsertTarget, upsertActual } from "../api/teamKpi";
@@ -330,6 +330,13 @@ export default function TeamKPI() {
 
   const branchId = selected !== "all" ? selected : null;
 
+  // Auto-select first branch on mount if "all" is active (all is low-priority here)
+  useEffect(() => {
+    if (selected === "all" && branches?.length) {
+      selectBranch(branches[0].id);
+    }
+  }, [branches]);
+
   const { data, isPending, isPlaceholderData, error } = useQuery({
     queryKey: ["team-kpi", role, year, branchId],
     queryFn: () => getTeamKpiSummary(role, year, branchId),
@@ -394,16 +401,6 @@ export default function TeamKPI() {
 
       {/* Branch selector */}
       <div className="flex flex-wrap gap-1.5">
-        <button
-          onClick={() => selectBranch("all")}
-          className={`px-3 py-1 rounded-full text-xs font-medium transition-colors border ${
-            selected === "all"
-              ? "bg-gray-800 text-white border-gray-800"
-              : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
-          }`}
-        >
-          All
-        </button>
         {branches?.map(b => (
           <button
             key={b.id}
@@ -417,6 +414,16 @@ export default function TeamKPI() {
             {b.name?.replace("MEANDER ", "")}
           </button>
         ))}
+        <button
+          onClick={() => selectBranch("all")}
+          className={`px-3 py-1 rounded-full text-xs font-medium transition-colors border ${
+            selected === "all"
+              ? "bg-gray-800 text-white border-gray-800"
+              : "bg-white text-gray-400 border-gray-200 hover:border-gray-400"
+          }`}
+        >
+          All
+        </button>
       </div>
 
       {error && (
