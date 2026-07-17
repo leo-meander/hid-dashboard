@@ -347,6 +347,14 @@ def kpi_yearly_grid(
         for b in branches
     ]
     branch_ids = [b.id for b in branches]
+    # Per-branch adjustments (same formula as home page forecast)
+    branch_adj = {
+        str(b.id): {
+            "deduct_mult": 1 - float(b.deduction_pct or 0) / 100,
+            "other_rev": float(b.other_revenue_native or 0),
+        }
+        for b in branches
+    }
 
     # 1. Query all KPI targets for the year
     targets = db.query(KPITarget).filter(
@@ -392,13 +400,17 @@ def kpi_yearly_grid(
             target = kpi.get("target", 0)
             override = kpi.get("override")
             cloudbeds_actual = actual_map.get((bid, mo), 0)
-            actual = override if override is not None else cloudbeds_actual
+            raw_actual = override if override is not None else cloudbeds_actual
+            adj = branch_adj.get(bid, {"deduct_mult": 1.0, "other_rev": 0.0})
+            # Apply same formula as home page: actual × (1 − deduct%) + other_revenue
+            actual = raw_actual * adj["deduct_mult"] + adj["other_rev"]
             hit_pct = round(actual / target * 100, 1) if target > 0 else None
 
             branch_data.append({
                 "branch_id": bid,
                 "target": target,
                 "actual": actual,
+                "raw_actual": raw_actual,
                 "cloudbeds_actual": cloudbeds_actual,
                 "is_override": override is not None,
                 "hit_pct": hit_pct,
