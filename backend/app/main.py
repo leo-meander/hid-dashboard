@@ -26,6 +26,7 @@ from app.routers import oauth
 from app.routers import alerts
 from app.routers import rate_plan_quota
 from app.routers import chat
+from app.routers import team_kpi
 from app.scheduler import setup_scheduler
 from app.database import SessionLocal
 from app.models.branch import Branch
@@ -124,6 +125,9 @@ app.include_router(rate_plan_quota.router, prefix="/api/rate-plan-quotas", tags=
 
 # HiD Assistant chatbox — Claude-powered Q&A over all dashboard data (Phase 1: read-only)
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat Assistant"])
+
+# Team KPI — personal KPI dashboard for growth team members
+app.include_router(team_kpi.router, prefix="/api/team-kpi", tags=["Team KPI"])
 
 # OAuth 2.1 authorization server for the MCP — claude.ai connector flow.
 # Mounted at root (no prefix) so `.well-known/*` paths land at the right place;
