@@ -456,7 +456,9 @@ function BranchCells({ data, currency, isTotal, month, onSave }) {
 
   const startEdit = () => {
     if (isTotal || !onSave) return;
-    setEditVal(data.actual > 0 ? String(Math.round(data.actual)) : "");
+    // Use raw (pre-adjustment) value for the override input
+    const rawVal = data.raw_actual ?? data.actual;
+    setEditVal(rawVal > 0 ? String(Math.round(rawVal)) : "");
     setEditing(true);
   };
 
@@ -481,7 +483,7 @@ function BranchCells({ data, currency, isTotal, month, onSave }) {
       <td
         className={`px-2 py-2 text-right tabular-nums ${bg} ${!isTotal ? "cursor-pointer hover:bg-indigo-50" : ""}`}
         onClick={startEdit}
-        title={!isTotal ? (data.is_override ? "Manually overridden (click to edit)" : "Click to override Cloudbeds value") : undefined}
+        title={!isTotal ? (data.is_override ? "Manually overridden (click to edit) \u00b7 Adjusted = raw \u00d7 (1\u2212deduct%) + other rev" : "Click to override \u00b7 Adjusted = raw \u00d7 (1\u2212deduct%) + other rev") : undefined}
       >
         {editing ? (
           <input
