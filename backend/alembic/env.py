@@ -12,6 +12,7 @@ from app.models import (  # noqa: F401
     BranchKeypoint, AdCopy, AdMaterial, AdApproval, AdName,
     AlertRule, AlertHistory, AlertNotificationLog,
 )
+from app.models.team_kpi import TeamKPITarget  # noqa: F401
 from app.database import Base
 
 config = context.config

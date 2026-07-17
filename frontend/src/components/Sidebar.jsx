@@ -40,6 +40,7 @@ const NAV = [
       { to: "/marketing-activity", label: "Marketing Activity", icon: "◈" },
       { to: "/budget-planner", label: "Budget Planner", icon: "₫" },
       { to: "/persona", label: "Persona", icon: "◉" },
+      { to: "/team-kpi", label: "Team KPI", icon: "◎" },
     ],
   },
   {

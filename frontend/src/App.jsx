@@ -53,6 +53,9 @@ import Alerts from "./pages/Alerts";
 // Rate Plan Quotas
 import RatePlanQuotas from "./pages/RatePlanQuotas";
 
+// Team KPI — personal KPI dashboard for growth team
+import TeamKPI from "./pages/TeamKPI";
+
 export default function App() {
   return (
     <AuthProvider>
@@ -131,6 +134,9 @@ function AppRoutes() {
 
             {/* Rate Plan Quotas */}
             <Route path="/rate-plan-quotas" element={<RatePlanQuotas />} />
+
+            {/* Team KPI */}
+            <Route path="/team-kpi" element={<TeamKPI />} />
 
             {/* Settings & Admin */}
             <Route path="/settings" element={<Settings />} />
