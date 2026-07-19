@@ -99,6 +99,7 @@ def upload_offline_conversion(
     refresh_token: str,
     conversion_action_single: str,
     conversion_action_both: str,
+    login_customer_id: str = "",
 ) -> dict:
     """
     Upload offline click conversion to Google Ads for the given reservation.
@@ -189,6 +190,10 @@ def upload_offline_conversion(
         "developer-token": developer_token,
         "Content-Type": "application/json",
     }
+    # MCC manager account — required when OAuth is authenticated as the MCC
+    # and the target customer_id is a sub-account underneath it.
+    if login_customer_id:
+        headers["login-customer-id"] = login_customer_id.replace("-", "")
 
     try:
         with httpx.Client(timeout=20) as client:

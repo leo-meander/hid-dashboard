@@ -125,19 +125,20 @@ def _process_reservation(property_id: str, reservation_id: str) -> None:
     if (
         cfg["google_ads_customer_id"]
         and cfg["google_ads_conversion_single"]
-        and settings.GOOGLE_ADS_DEVELOPER_TOKEN
+        and settings.GOOGLE_DEVELOPER_TOKEN
         and settings.GOOGLE_REFRESH_TOKEN
     ):
         try:
             gads_result = upload_offline_conversion(
                 reservation=reservation,
                 customer_id=cfg["google_ads_customer_id"],
-                developer_token=settings.GOOGLE_ADS_DEVELOPER_TOKEN,
+                developer_token=settings.GOOGLE_DEVELOPER_TOKEN,
                 client_id=settings.GOOGLE_CLIENT_ID,
                 client_secret=settings.GOOGLE_CLIENT_SECRET,
                 refresh_token=settings.GOOGLE_REFRESH_TOKEN,
                 conversion_action_single=cfg["google_ads_conversion_single"],
                 conversion_action_both=cfg["google_ads_conversion_both"],
+                login_customer_id=settings.GOOGLE_LOGIN_CUSTOMER_ID,
             )
             logger.info("Google Ads branch=%s case=%s success=%s", branch, gads_result.get("case"), gads_result.get("success"))
         except Exception as e:

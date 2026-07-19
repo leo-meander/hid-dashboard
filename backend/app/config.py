@@ -67,8 +67,10 @@ class Settings(BaseSettings):
     META_ACCESS_TOKEN_OSAKA: str = ""
 
     # Google Ads offline conversion — shared OAuth, per-branch customer/conversion IDs
-    GOOGLE_ADS_DEVELOPER_TOKEN: str = ""
     # Reuses GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN (same OAuth app)
+    # GOOGLE_DEVELOPER_TOKEN and GOOGLE_LOGIN_CUSTOMER_ID already set in env (MCC manager account)
+    GOOGLE_DEVELOPER_TOKEN: str = ""
+    GOOGLE_LOGIN_CUSTOMER_ID: str = ""
     GOOGLE_ADS_CUSTOMER_ID_1948: str = ""
     GOOGLE_ADS_CONVERSION_SINGLE_1948: str = ""   # email-only OR phone-only
     GOOGLE_ADS_CONVERSION_BOTH_1948: str = ""     # both email + phone
