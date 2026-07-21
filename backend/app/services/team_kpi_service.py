@@ -387,16 +387,16 @@ def build_monthly_summary(
         TeamKPITarget.role_key == role_key,
         TeamKPITarget.year == year,
     )
+    all_branches_view = not branch_id  # "All" tab — aggregate across branches
+
     if branch_id:
-        # per-branch KPIs: match exact branch OR org-wide (branch_id IS NULL)
+        # per-branch: match exact branch OR org-wide (branch_id IS NULL)
         q = q.filter(
             (TeamKPITarget.branch_id == branch_id) | (TeamKPITarget.branch_id.is_(None))
         )
-    else:
-        # "All" view: only org-wide targets (branch_id IS NULL) for aggregated display
-        q = q.filter(TeamKPITarget.branch_id.is_(None))
+    # All view: load every branch + org-wide so we can sum per-branch targets
 
-    targets_map: dict[tuple, float] = {}        # (kpi_key, month) → target value
+    targets_map: dict[tuple, float] = {}        # (kpi_key, month) → target value (summed for All)
     manual_actuals_map: dict[tuple, float] = {} # (kpi_key, month) → manual actual value
     for row in q.all():
         if row.target_value is None:
@@ -405,7 +405,15 @@ def build_monthly_summary(
             base_key = row.kpi_key[:-len("__actual")]
             manual_actuals_map[(base_key, row.month)] = float(row.target_value)
         else:
-            targets_map[(row.kpi_key, row.month)] = float(row.target_value)
+            key = (row.kpi_key, row.month)
+            if all_branches_view and row.branch_id is not None:
+                # sum per-branch targets for All view
+                targets_map[key] = targets_map.get(key, 0.0) + float(row.target_value)
+            elif all_branches_view and row.branch_id is None:
+                # org-wide target (e.g. kol_invited) — use as-is, don't double-add
+                targets_map.setdefault(key, float(row.target_value))
+            else:
+                targets_map[key] = float(row.target_value)
 
     # Fetch actuals
     actuals_yearly: dict[int, dict[str, dict]] = {}
@@ -430,13 +438,15 @@ def build_monthly_summary(
     if branch_id:
         branch_key = BRANCH_UUID_TO_KEY.get(str(branch_id))
 
-    # Native currency for this branch (JPY for osaka, TWD for taipei, VND otherwise)
-    native_currency = BRANCH_CURRENCY.get(branch_key or "", "VND")
+    # All view: always VND (mil VND) since mixing JPY/TWD/VND is meaningless
+    # Per-branch: use native currency for that branch
+    native_currency = "VND" if all_branches_view else BRANCH_CURRENCY.get(branch_key or "", "VND")
     currency_display = _CURRENCY_DISPLAY[native_currency]
-    # Rate: how many VND per 1 unit of native currency (used to convert VND→native)
     vnd_to_native_rate = (
         get_cached_rate(native_currency, "VND") if native_currency != "VND" else None
     )
+
+    _ALL_BRANCH_KEYS = ("saigon", "taipei", "1948", "oani", "osaka")
 
     kpis_out = []
     all_pcts: list[float] = []
@@ -472,17 +482,28 @@ def build_monthly_summary(
             actual = None
             if kpi_auto and not is_future:
                 month_actuals = actuals_yearly.get(m, {})
-                lookup_key = "all" if org_wide else (branch_key or "")
-                branch_data = month_actuals.get(lookup_key, {})
-                raw = branch_data.get(kpi_key)
-                # Merge Lark ads_material on top of paid_ads actuals
-                if raw is None and kpi_key == "ads_material" and lark_ads_material:
-                    lark_branch = lark_ads_material.get(m, {}).get(branch_key or "", {})
-                    raw = lark_branch.get("ads_material")
+                if org_wide:
+                    raw = month_actuals.get("all", {}).get(kpi_key)
+                elif all_branches_view:
+                    # Sum raw VND values across all branches
+                    total = 0.0
+                    found = False
+                    for bk in _ALL_BRANCH_KEYS:
+                        v = month_actuals.get(bk, {}).get(kpi_key)
+                        if v is None and kpi_key == "ads_material" and lark_ads_material:
+                            v = lark_ads_material.get(m, {}).get(bk, {}).get("ads_material")
+                        if v is not None:
+                            total += float(v)
+                            found = True
+                    raw = total if found else None
+                else:
+                    raw = month_actuals.get(branch_key or "", {}).get(kpi_key)
+                    # Merge Lark ads_material on top of paid_ads actuals
+                    if raw is None and kpi_key == "ads_material" and lark_ads_material:
+                        raw = lark_ads_material.get(m, {}).get(branch_key or "", {}).get("ads_material")
                 if raw is not None:
                     actual = float(raw)
                     if is_revenue and native_currency != "VND" and vnd_to_native_rate:
-                        # raw is in VND; convert to native currency
                         actual = round(actual / vnd_to_native_rate, decimals)
                     elif scale:
                         actual = round(actual / scale, decimals or 1)
