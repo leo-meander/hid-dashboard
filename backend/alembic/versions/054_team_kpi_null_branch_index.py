@@ -18,19 +18,19 @@ depends_on = None
 
 
 def upgrade():
-    # Drop the broken constraint
-    op.drop_constraint("uq_team_kpi_targets", "team_kpi_targets", type_="unique")
+    # Drop the broken constraint (may already be gone if applied manually)
+    op.execute("ALTER TABLE team_kpi_targets DROP CONSTRAINT IF EXISTS uq_team_kpi_targets")
 
     # Partial index: org-wide rows (branch_id IS NULL)
     op.execute("""
-        CREATE UNIQUE INDEX uq_team_kpi_org_wide
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_team_kpi_org_wide
         ON team_kpi_targets (role_key, year, month, kpi_key)
         WHERE branch_id IS NULL
     """)
 
     # Partial index: branch-specific rows (branch_id IS NOT NULL)
     op.execute("""
-        CREATE UNIQUE INDEX uq_team_kpi_branch
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_team_kpi_branch
         ON team_kpi_targets (role_key, branch_id, year, month, kpi_key)
         WHERE branch_id IS NOT NULL
     """)
