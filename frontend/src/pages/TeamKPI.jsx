@@ -203,16 +203,16 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
             {MONTHS.map(m => (
               <th key={m} className="px-1 py-2.5 font-semibold text-gray-600 text-center min-w-[52px]">{m}</th>
             ))}
-            <th className="px-2 py-2.5 font-semibold text-gray-700 text-center w-16">YTD</th>
-            <th className="px-2 py-2.5 font-semibold text-gray-700 text-center w-16">Avg %</th>
+            <th className="px-2 py-2.5 font-semibold text-gray-700 text-center w-16" title="Year-to-date actual — only months with a target set are included">YTD ⓘ</th>
+            <th className="px-2 py-2.5 font-semibold text-gray-700 text-center w-16" title="Average achievement % — only months with a target set are counted">Avg % ⓘ</th>
           </tr>
         </thead>
         <tbody>
           {kpis.map((kpi, ki) => {
-            const ytdActual = kpi.monthly
-              .filter(m => !m.is_future && m.actual !== null)
-              .reduce((s, m) => s + m.actual, 0);
-            const actPcts = kpi.monthly.filter(m => !m.is_future && m.pct !== null).map(m => m.pct);
+            // YTD and Avg% only count months that have a target set
+            const targetedMonths = kpi.monthly.filter(m => !m.is_future && m.has_target);
+            const ytdActual = targetedMonths.filter(m => m.actual !== null).reduce((s, m) => s + m.actual, 0);
+            const actPcts = targetedMonths.filter(m => m.pct !== null).map(m => m.pct);
             const avgPct = actPcts.length ? Math.round(actPcts.reduce((a, b) => a + b, 0) / actPcts.length * 10) / 10 : null;
             const avgColor = pctColor(avgPct, kpi.higher_is_better);
 
@@ -265,22 +265,23 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700">A</span>
                   </td>
                   {kpi.monthly.map(m => {
-                    const color = m.pct !== null ? pctColor(m.pct, kpi.higher_is_better) : null;
+                    const color = m.has_target && m.pct !== null ? pctColor(m.pct, kpi.higher_is_better) : null;
                     const cls = color ? COLOR_CLASSES[color] : null;
                     const isSaving = saving === `${kpi.key}-${m.month}-actual`;
 
                     if (autoActuals || kpi.auto_actuals) {
                       // Read-only actual from API
                       return (
-                        <td key={m.month} className={`px-1 py-1.5 text-center ${m.is_future ? "opacity-30" : ""} ${cls ? cls.bg : ""}`}>
+                        <td key={m.month} title={!m.has_target && m.actual !== null ? "No target set — excluded from YTD & Avg%" : undefined}
+                          className={`px-1 py-1.5 text-center ${m.is_future ? "opacity-30" : ""} ${cls ? cls.bg : ""}`}>
                           {m.actual !== null ? (
                             <div className="flex flex-col items-center gap-0.5">
-                              <span className={`font-semibold ${cls ? cls.text : "text-gray-700"}`}>
+                              <span className={`font-semibold ${cls ? cls.text : "text-gray-400"}`}>
                                 {typeof m.actual === "number"
                                   ? m.actual.toLocaleString(undefined, { maximumFractionDigits: kpi.decimals ?? 0 })
                                   : m.actual}
                               </span>
-                              {m.pct !== null && (
+                              {m.pct !== null && m.has_target && (
                                 <span className={`text-[10px] px-1 rounded ${cls ? cls.badge : ""}`}>{m.pct}%</span>
                               )}
                             </div>
