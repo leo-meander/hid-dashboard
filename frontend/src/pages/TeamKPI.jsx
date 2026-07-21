@@ -32,6 +32,23 @@ const COLOR_CLASSES = {
   red:    { bg: "bg-red-50",    text: "text-red-700",    badge: "bg-red-100 text-red-700",    ring: "#ef4444" },
 };
 
+// ── Tooltip ───────────────────────────────────────────────────────────────────
+
+function Tooltip({ text, children }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span className="relative inline-flex items-center" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      {children}
+      {show && (
+        <span className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 text-[11px] leading-relaxed bg-gray-900 text-white rounded-lg px-2.5 py-2 shadow-lg pointer-events-none whitespace-normal text-center">
+          {text}
+          <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900" />
+        </span>
+      )}
+    </span>
+  );
+}
+
 // ── Achievement ring (SVG) ────────────────────────────────────────────────────
 
 function AchievementRing({ pct, label, sub }) {
@@ -450,13 +467,25 @@ export default function TeamKPI() {
         <div className={"grid grid-cols-1 sm:grid-cols-2 gap-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {/* This month ring */}
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex items-center gap-6">
-            <AchievementRing
-              pct={data.current_month_pct}
-              label={curMonthLabel ? `${curMonthLabel} ${year}` : `${year}`}
-              sub="This month"
-            />
+            <div className="flex flex-col items-center gap-1">
+              <div className="relative">
+                <AchievementRing
+                  pct={data.current_month_pct}
+                  label={curMonthLabel ? `${curMonthLabel} ${year}` : `${year}`}
+                  sub="This month"
+                />
+              </div>
+              <Tooltip text={`Tháng này: trung bình % đạt của tất cả KPI trong tháng ${curMonthLabel || ""} (actual ÷ target × 100), tính trên các KPI có cả target lẫn actual.`}>
+                <span className="text-[10px] text-gray-400 underline decoration-dotted cursor-default">Cách tính ⓘ</span>
+              </Tooltip>
+            </div>
             <div className="flex-1 min-w-0">
-              <p className="text-xs text-gray-500 mb-3">YTD Average</p>
+              <div className="flex items-center gap-1 mb-3">
+                <p className="text-xs text-gray-500">YTD Average</p>
+                <Tooltip text="Trung bình % đạt của từng KPI qua các tháng đã qua — chỉ tính tháng có set target. Ví dụ: target từ T6 → chỉ T6 trở đi được tính vào YTD.">
+                  <span className="text-[10px] text-gray-400 cursor-default">ⓘ</span>
+                </Tooltip>
+              </div>
               <div className="flex items-end gap-2">
                 <span className={`text-3xl font-bold ${
                   data.overall_avg_pct !== null
@@ -480,7 +509,12 @@ export default function TeamKPI() {
 
           {/* YTD bars */}
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">YTD by KPI</p>
+            <div className="flex items-center gap-1 mb-3">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">YTD by KPI</p>
+              <Tooltip text="Mỗi bar = trung bình % đạt của KPI đó qua các tháng đã qua có target. Công thức: avg(actual ÷ target × 100) — chỉ tháng có cả target > 0 lẫn actual mới được tính.">
+                <span className="text-[10px] text-gray-400 cursor-default normal-case font-normal">ⓘ</span>
+              </Tooltip>
+            </div>
             <YtdBars kpis={data.kpis || []} />
           </div>
         </div>
