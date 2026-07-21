@@ -62,6 +62,14 @@ def debug_lark():
         result["fetch_error"] = str(exc)
         return {"success": False, "data": result, "error": str(exc)}
 
+    # Show raw Project field values from first 10 records
+    project_samples = []
+    for rec in records[:20]:
+        pv = rec.get("Project")
+        if pv:
+            project_samples.append(repr(pv))
+    result["project_field_samples"] = project_samples[:10]
+
     try:
         import datetime as _dt
         agg = _get_yearly_agg(_dt.datetime.utcnow().year)
