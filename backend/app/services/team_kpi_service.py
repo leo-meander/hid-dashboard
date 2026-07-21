@@ -1,13 +1,15 @@
 """Team KPI Service — aggregate actuals from upstream APIs for the Team KPI page.
 
 Phase 1:
-  KOL (Mel)       — KOL Engine public revenue API (fetch_kol_revenue)
-  Paid Ads (Mason) — Ads Platform get_spend_daily + full-year aggregation
+  KOL (Mel)        — marketing_activity_cache (channel=kol) for revenue;
+                     KOL Engine targets API for collaborated/posted counts
+  Paid Ads (Mason) — marketing_activity_cache (channel=paid_ads) for revenue;
+                     AdsPerformance table for ROAS
+  Designer (Nora)  — Lark Base API
+  CRM (Kin)        — Cloudbeds Reservation table (reservation_date, CRM filter)
 
 Phase 2 (future):
-  Designer (Nora)  — Lark Base API
-  CRM (Kin)        — Email marketing + CRM fill rate
-  PM (Nuha)        — Derived from branch KPI rates
+  PM (Nuha) — Derived from branch KPI rates
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.team_kpi import TeamKPITarget
 from app.services.currency import get_cached_rate
-from app.services.kol_engine import HOTEL_TO_BRANCH_KEY, fetch_kol_revenue
+from app.services.kol_engine import HOTEL_TO_BRANCH_KEY
 from app.services.upstream_actuals import BRANCH_TO_KOL_HOTEL_ID
 
 log = logging.getLogger(__name__)
@@ -66,7 +68,7 @@ ROLE_META = {
     "kol":       {"label": "KOL",       "person": "Mel",   "emoji": "🤝", "auto_actuals": True},
     "paid_ads":  {"label": "Paid Ads",  "person": "Mason", "emoji": "📢", "auto_actuals": True},
     "designer":  {"label": "Designer",  "person": "Nora",  "emoji": "🎨", "auto_actuals": True},
-    "crm":       {"label": "CRM",       "person": "Kin",   "emoji": "📊", "auto_actuals": False},
+    "crm":       {"label": "CRM",       "person": "Kin",   "emoji": "📊", "auto_actuals": True},
     "pm":        {"label": "PM",        "person": "Nuha",  "emoji": "🗂️", "auto_actuals": False},
 }
 
@@ -102,95 +104,99 @@ _kol_actuals_cache: dict[tuple, tuple[float, dict]] = {}
 _KOL_ACTUALS_TTL = 600  # 10 min
 
 
-def _get_kol_actuals_for_month(year: int, month: int) -> dict:
-    """Fetch KOL actuals for a single month from KOL Engine.
+def get_kol_actuals_yearly_db(
+    db: Session, year: int
+) -> dict[int, dict[str, dict]]:
+    """Return {month: {branch_key|'all': {kpi_key: value}}} for all 12 months.
 
-    Primary:   fetch_kol_revenue  → kol_revenue per branch + org kol_invited
-    Secondary: fetch_kol_targets  → collaborated, posted counts (merged in if available)
-
-    Returns dict keyed by branch_key (+ 'all' for org-wide).
-    All monetary values in VND. Targets API failure never breaks revenue.
+    Revenue (kol_revenue) comes from marketing_activity_cache (channel='kol'),
+    same source as the Marketing Activity page — avoids the live KOL Engine API.
+    Counts (collaborated, posted, ads_collab) come from the KOL Engine targets API;
+    failure is non-fatal (values default to 0).
+    kol_invited comes from the targets API totals; defaults to 0 on failure.
     """
-    from app.services.kol_engine import fetch_kol_targets
-
-    cache_key = (year, month)
+    cache_key = ("kol_db", year)
     cached = _kol_actuals_cache.get(cache_key)
     if cached and (time.time() - cached[0]) < _KOL_ACTUALS_TTL:
         return cached[1]
 
-    # ── Step 1: revenue API (always the primary source) ──────────────────────
-    data = fetch_kol_revenue(
-        base_url=settings.KOL_ENGINE_URL,
-        org_slug=settings.KOL_TARGETS_ORG_SLUG,
-        api_key=settings.KOL_REVENUE_API_SECRET,
-        year=year,
-        month=month,
+    from app.models.marketing_activity_cache import MarketingActivityCache
+    from app.models.branch import Branch
+
+    # Step 1: revenue from marketing_activity_cache per branch/month
+    rows = (
+        db.query(MarketingActivityCache, Branch.name)
+        .join(Branch, MarketingActivityCache.branch_id == Branch.id)
+        .filter(
+            MarketingActivityCache.year == year,
+            MarketingActivityCache.channel == "kol",
+        )
+        .all()
     )
-    result: dict[str, dict] = {}
-    if not data:
-        _kol_actuals_cache[cache_key] = (time.time(), result)
-        return result
 
-    totals = data.get("totals") or {}
-    inv = totals.get("invited_proactive")
-    result["all"] = {
-        "kol_invited": float(inv.get("actual") if isinstance(inv, dict) else (inv or 0)),
-        "kol_revenue": float(totals.get("revenue_vnd") or totals.get("revenue") or 0),
-    }
-
-    for br in data.get("branches") or []:
-        hotel_id = br.get("hotel_id") or br.get("id") or ""
-        branch_key = HOTEL_TO_BRANCH_KEY.get(hotel_id)
-        if not branch_key:
-            name = (br.get("hotel_name") or "").lower()
-            for k in ("saigon", "taipei", "1948", "oani", "osaka"):
-                if k in name:
-                    branch_key = k
-                    break
+    out: dict[int, dict[str, dict]] = {}
+    for mac, branch_name in rows:
+        name_lower = (branch_name or "").lower()
+        branch_key = None
+        for k in ("saigon", "taipei", "1948", "oani", "osaka"):
+            if k in name_lower:
+                branch_key = k
+                break
         if not branch_key:
             continue
-        result[branch_key] = {
-            "kol_revenue":      float(br.get("revenue_vnd") or 0),
+        month = mac.month
+        out.setdefault(month, {})[branch_key] = {
+            "kol_revenue":      float(mac.revenue_vnd or 0),
             "kol_collaborated": 0.0,
             "kol_posted":       0.0,
             "kol_ads_collab":   0.0,
         }
 
-    # ── Step 2: targets API — merge counts if available, never fatal ──────────
+    # Ensure every month up to today has an 'all' key (for kol_invited)
+    today = date.today()
+    cur_month = today.month if today.year == year else (12 if today.year > year else 0)
+    for m in range(1, min(cur_month + 1, 13)):
+        out.setdefault(m, {}).setdefault("all", {"kol_invited": 0.0, "kol_revenue": 0.0})
+
+    # Step 2: merge counts + kol_invited from targets API — never fatal
     try:
-        tgt_data = fetch_kol_targets(
-            base_url=settings.KOL_ENGINE_URL,
-            org_slug=settings.KOL_TARGETS_ORG_SLUG,
-            api_key=settings.KOL_PUBLIC_API_KEY,
-            year=year,
-            month=month,
-        )
-        if tgt_data:
+        from app.services.kol_engine import fetch_kol_targets
+        for m in range(1, min(cur_month + 1, 13)):
+            tgt_data = fetch_kol_targets(
+                base_url=settings.KOL_ENGINE_URL,
+                org_slug=settings.KOL_TARGETS_ORG_SLUG,
+                api_key=settings.KOL_PUBLIC_API_KEY,
+                year=year,
+                month=m,
+            )
+            if not tgt_data:
+                continue
+            # org-wide invited count
+            inv = (tgt_data.get("totals") or {}).get("invited_proactive")
+            inv_val = float(inv.get("actual") if isinstance(inv, dict) else (inv or 0))
+            out[m].setdefault("all", {})["kol_invited"] = inv_val
+
             for br in tgt_data.get("branches") or []:
                 hotel_id = br.get("hotel_id") or br.get("id") or ""
                 branch_key = HOTEL_TO_BRANCH_KEY.get(hotel_id)
-                if not branch_key or branch_key not in result:
+                if not branch_key:
+                    name = (br.get("hotel_name") or "").lower()
+                    for k in ("saigon", "taipei", "1948", "oani", "osaka"):
+                        if k in name:
+                            branch_key = k
+                            break
+                if not branch_key or branch_key not in out.get(m, {}):
                     continue
-                def _v(field):
-                    v = br.get(field)
+                def _v(field, _br=br):
+                    v = _br.get(field)
                     return float(v.get("actual") if isinstance(v, dict) else (v or 0))
-                result[branch_key]["kol_collaborated"] = _v("collaborated")
-                result[branch_key]["kol_posted"]       = _v("posted")
-                result[branch_key]["kol_ads_collab"]   = _v("ads_collab")
+                out[m][branch_key]["kol_collaborated"] = _v("collaborated")
+                out[m][branch_key]["kol_posted"]       = _v("posted")
+                out[m][branch_key]["kol_ads_collab"]   = _v("ads_collab")
     except Exception as exc:
-        log.warning("kol targets merge failed (counts will be 0): %s", exc)
+        log.warning("kol targets API merge failed (counts will be 0): %s", exc)
 
-    _kol_actuals_cache[cache_key] = (time.time(), result)
-    return result
-
-
-def get_kol_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
-    """Return {month: {branch_key|'all': {kpi_key: value}}} for all 12 months."""
-    today = date.today()
-    cur_month = today.month if today.year == year else (12 if today.year > year else 0)
-    out: dict[int, dict] = {}
-    for m in range(1, min(cur_month + 1, 13)):
-        out[m] = _get_kol_actuals_for_month(year, m)
+    _kol_actuals_cache[cache_key] = (time.time(), out)
     return out
 
 
@@ -279,6 +285,70 @@ def get_paid_ads_actuals_yearly(
     return out
 
 
+# ── CRM actuals ───────────────────────────────────────────────────────────────
+
+_crm_actuals_cache: dict[tuple, tuple[float, dict]] = {}
+_CRM_ACTUALS_TTL = 600  # 10 min
+
+
+def get_crm_actuals_yearly(
+    db: Session, year: int
+) -> dict[int, dict[str, dict]]:
+    """Return {month: {branch_key: {crm_revenue}}} for the year.
+
+    Reads from Cloudbeds Reservation table filtered by reservation_date (booking date)
+    and CRM rate-plan filter — same logic as Marketing Activity CRM section.
+    Revenue is raw grand_total_vnd; build_monthly_summary converts to native currency.
+    """
+    cache_key = ("crm", year)
+    cached = _crm_actuals_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _CRM_ACTUALS_TTL:
+        return cached[1]
+
+    from datetime import date as _date
+    from sqlalchemy import func as sqlfunc, extract
+    from app.models.reservation import Reservation
+    from app.models.branch import Branch
+    from app.services.crm_filters import crm_reservation_filter
+
+    _EXCLUDED_STATUSES = {"cancelled", "canceled", "no_show", "noshow", "no show", "no-show", "cancelled_by_guest"}
+    _EXCLUDED_SOURCES  = {"blogger", "house use", "houseuse", "special case", "work exchange"}
+
+    rows = (
+        db.query(
+            Branch.name,
+            extract("month", Reservation.reservation_date).label("month"),
+            sqlfunc.coalesce(sqlfunc.sum(Reservation.grand_total_vnd), 0).label("revenue"),
+        )
+        .join(Branch, Reservation.branch_id == Branch.id)
+        .filter(
+            crm_reservation_filter(),
+            extract("year", Reservation.reservation_date) == year,
+            ~sqlfunc.lower(sqlfunc.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
+            ~sqlfunc.lower(sqlfunc.coalesce(Reservation.source, "")).in_(list(_EXCLUDED_SOURCES)),
+        )
+        .group_by(Branch.name, extract("month", Reservation.reservation_date))
+        .all()
+    )
+
+    out: dict[int, dict[str, dict]] = {}
+    for branch_name, month, revenue in rows:
+        name_lower = (branch_name or "").lower()
+        branch_key = None
+        for k in ("saigon", "taipei", "1948", "oani", "osaka"):
+            if k in name_lower:
+                branch_key = k
+                break
+        if not branch_key:
+            continue
+        out.setdefault(int(month), {})[branch_key] = {
+            "crm_revenue": float(revenue),
+        }
+
+    _crm_actuals_cache[cache_key] = (time.time(), out)
+    return out
+
+
 # ── Core summary builder ──────────────────────────────────────────────────────
 
 def build_monthly_summary(
@@ -336,7 +406,7 @@ def build_monthly_summary(
     actuals_yearly: dict[int, dict[str, dict]] = {}
     lark_ads_material: dict[int, dict[str, dict]] = {}
     if auto and role_key == "kol":
-        actuals_yearly = get_kol_actuals_yearly(year)
+        actuals_yearly = get_kol_actuals_yearly_db(db, year)
     elif auto and role_key == "paid_ads":
         actuals_yearly = get_paid_ads_actuals_yearly(db, year)
         try:
@@ -347,6 +417,8 @@ def build_monthly_summary(
     elif auto and role_key == "designer":
         from app.services.lark_service import get_designer_actuals_yearly
         actuals_yearly = get_designer_actuals_yearly(year)
+    elif auto and role_key == "crm":
+        actuals_yearly = get_crm_actuals_yearly(db, year)
 
     # Determine branch key for actuals lookup
     branch_key = None
