@@ -105,6 +105,10 @@ _KOL_ACTUALS_TTL = 600  # 10 min
 def _get_kol_actuals_for_month(year: int, month: int) -> dict:
     """Fetch KOL actuals for a single month from KOL Engine.
 
+    Merges two API calls:
+      - fetch_kol_revenue  → kol_revenue (revenue_vnd per branch)
+      - fetch_kol_targets  → kol_collaborated, kol_posted, kol_invited (counts)
+
     Returns dict keyed by branch_key (+ 'all' for org-wide):
     {
       'all':    {kol_invited, kol_revenue},
@@ -113,33 +117,78 @@ def _get_kol_actuals_for_month(year: int, month: int) -> dict:
     }
     All monetary values in VND.
     """
+    from app.services.kol_engine import fetch_kol_targets
+
     cache_key = (year, month)
     cached = _kol_actuals_cache.get(cache_key)
     if cached and (time.time() - cached[0]) < _KOL_ACTUALS_TTL:
         return cached[1]
 
-    data = fetch_kol_revenue(
+    # ── Revenue API (kol_revenue per branch + org invited) ───────────────────
+    rev_data = fetch_kol_revenue(
         base_url=settings.KOL_ENGINE_URL,
         org_slug=settings.KOL_TARGETS_ORG_SLUG,
         api_key=settings.KOL_REVENUE_API_SECRET,
         year=year,
         month=month,
     )
+
+    # ── Targets API (collaborated, posted, invited_proactive counts) ──────────
+    tgt_data = fetch_kol_targets(
+        base_url=settings.KOL_ENGINE_URL,
+        org_slug=settings.KOL_TARGETS_ORG_SLUG,
+        api_key=settings.KOL_PUBLIC_API_KEY,
+        year=year,
+        month=month,
+    )
+
     result: dict[str, dict] = {}
-    if not data:
+
+    # Build targets lookup: hotel_id → {collaborated, posted, ads_collab}
+    tgt_by_hotel: dict[str, dict] = {}
+    if tgt_data:
+        tgt_totals = tgt_data.get("totals") or {}
+        # org-wide invited from targets totals
+        invited_val = tgt_totals.get("invited_proactive")
+        org_invited = float(
+            invited_val.get("actual") if isinstance(invited_val, dict) else (invited_val or 0)
+        )
+        for br in tgt_data.get("branches") or []:
+            h_id = br.get("hotel_id") or br.get("id") or ""
+            def _extract(field):
+                v = br.get(field)
+                if isinstance(v, dict):
+                    return float(v.get("actual") or 0)
+                return float(v or 0)
+            tgt_by_hotel[h_id] = {
+                "kol_collaborated": _extract("collaborated"),
+                "kol_posted":       _extract("posted"),
+                "kol_ads_collab":   _extract("ads_collab"),
+            }
+    else:
+        org_invited = 0.0
+
+    if not rev_data and not tgt_data:
         return result
 
-    totals = data.get("totals") or {}
+    # org-wide row
+    rev_totals = (rev_data or {}).get("totals") or {}
+    # invited from revenue totals as fallback when targets API unavailable
+    if not tgt_data:
+        raw_inv = rev_totals.get("invited_proactive")
+        org_invited = float(
+            raw_inv.get("actual") if isinstance(raw_inv, dict) else (raw_inv or 0)
+        )
     result["all"] = {
-        "kol_invited": float(totals.get("invited_proactive") or 0),
-        "kol_revenue":  float(totals.get("revenue_vnd") or totals.get("revenue") or 0),
+        "kol_invited": org_invited,
+        "kol_revenue": float(rev_totals.get("revenue_vnd") or rev_totals.get("revenue") or 0),
     }
 
-    for br in data.get("branches") or []:
+    # per-branch rows
+    for br in (rev_data or {}).get("branches") or []:
         hotel_id = br.get("hotel_id") or br.get("id") or ""
         branch_key = HOTEL_TO_BRANCH_KEY.get(hotel_id)
         if not branch_key:
-            # fallback: match by hotel_name substring
             name = (br.get("hotel_name") or "").lower()
             for k in ("saigon", "taipei", "1948", "oani", "osaka"):
                 if k in name:
@@ -147,11 +196,26 @@ def _get_kol_actuals_for_month(year: int, month: int) -> dict:
                     break
         if not branch_key:
             continue
+        counts = tgt_by_hotel.get(hotel_id) or {}
         result[branch_key] = {
             "kol_revenue":      float(br.get("revenue_vnd") or 0),
-            "kol_collaborated": float(br.get("collaborated") or 0),
-            "kol_posted":       float(br.get("posted") or 0),
-            "kol_ads_collab":   float(br.get("ads_allowed") or 0),
+            "kol_collaborated": counts.get("kol_collaborated", 0.0),
+            "kol_posted":       counts.get("kol_posted", 0.0),
+            "kol_ads_collab":   counts.get("kol_ads_collab", 0.0),
+        }
+
+    # Branches that appeared in targets but not revenue (edge case)
+    for br in (tgt_data or {}).get("branches") or []:
+        hotel_id = br.get("hotel_id") or br.get("id") or ""
+        branch_key = HOTEL_TO_BRANCH_KEY.get(hotel_id)
+        if not branch_key or branch_key in result:
+            continue
+        counts = tgt_by_hotel.get(hotel_id) or {}
+        result[branch_key] = {
+            "kol_revenue":      0.0,
+            "kol_collaborated": counts.get("kol_collaborated", 0.0),
+            "kol_posted":       counts.get("kol_posted", 0.0),
+            "kol_ads_collab":   counts.get("kol_ads_collab", 0.0),
         }
 
     _kol_actuals_cache[cache_key] = (time.time(), result)
