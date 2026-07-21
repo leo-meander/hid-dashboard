@@ -284,7 +284,7 @@ def get_paid_ads_actuals_yearly(
             "ads_revenue": revenue_vnd,
             "ads_spend":   spend,
             "roas":        roas,
-            "ads_material": 0,
+            "ads_material": None,  # filled from Lark in build_monthly_summary
         }
 
     _ads_actuals_cache[cache_key] = (time.time(), out)
