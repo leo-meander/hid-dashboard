@@ -200,66 +200,79 @@ _ads_actuals_cache: dict[tuple, tuple[float, dict]] = {}
 _ADS_ACTUALS_TTL = 600
 
 
-def get_paid_ads_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
-    """Return {month: {branch_key: {ads_revenue, roas, ads_material}}} for the year.
+def get_paid_ads_actuals_yearly(
+    db: Session, year: int
+) -> dict[int, dict[str, dict]]:
+    """Return {month: {branch_key: {ads_revenue, roas}}} for the year.
 
-    Uses Ads Platform get_spend_daily (valid_country_only=True) for a full-year
-    date range, then aggregates by month × branch_slug.
-    ads_revenue in mil VND. roas = revenue / spend (0 if no spend).
-    ads_material = 0 (placeholder; counted separately from AdCombos DB).
+    Reads from marketing_activity_cache (same source as Marketing Activity page).
+    ads_revenue is raw VND — build_monthly_summary converts to native currency.
+    roas is sourced from AdsPerformance aggregation via the cache's companion
+    query; falls back to 0 when unavailable.
     """
     cache_key = ("paid_ads", year)
     cached = _ads_actuals_cache.get(cache_key)
     if cached and (time.time() - cached[0]) < _ADS_ACTUALS_TTL:
         return cached[1]
 
-    if not settings.ADS_PLATFORM_API_KEY:
-        log.warning("ADS_PLATFORM_API_KEY not set; paid_ads actuals unavailable")
-        return {}
+    from app.models.marketing_activity_cache import MarketingActivityCache
+    from app.models.branch import Branch
 
-    try:
-        from app.services.ads_platform import AdsPlatformClient
-        client = AdsPlatformClient()
-        rows = client.get_spend_daily(
-            date_from=f"{year}-01-01",
-            date_to=f"{year}-12-31",
-            valid_country_only=True,
+    rows = (
+        db.query(MarketingActivityCache, Branch.name)
+        .join(Branch, MarketingActivityCache.branch_id == Branch.id)
+        .filter(
+            MarketingActivityCache.year == year,
+            MarketingActivityCache.channel == "paid_ads",
         )
+        .all()
+    )
+
+    # Also fetch ROAS from AdsPerformance for each branch/month
+    try:
+        from app.models.ads import AdsPerformance
+        from sqlalchemy import func as sqlfunc
+        roas_rows = (
+            db.query(
+                AdsPerformance.branch_id,
+                sqlfunc.extract("month", AdsPerformance.date_from).label("month"),
+                sqlfunc.sum(AdsPerformance.cost_vnd).label("spend"),
+                sqlfunc.sum(AdsPerformance.revenue_vnd).label("revenue"),
+            )
+            .filter(sqlfunc.extract("year", AdsPerformance.date_from) == year)
+            .group_by(AdsPerformance.branch_id, sqlfunc.extract("month", AdsPerformance.date_from))
+            .all()
+        )
+        roas_map: dict[tuple, float] = {}
+        for r in roas_rows:
+            bid = str(r.branch_id)
+            m = int(r.month)
+            spend = float(r.spend or 0)
+            rev = float(r.revenue or 0)
+            roas_map[(bid, m)] = round(rev / spend, 2) if spend > 0 else 0.0
     except Exception as exc:
-        log.warning("get_paid_ads_actuals_yearly: ads platform error: %s", exc)
-        return {}
-
-    # Aggregate spend+revenue per (month, branch_slug)
-    agg: dict[tuple, dict] = {}  # (month, branch_slug) → {spend, revenue}
-    for row in rows:
-        d = row.get("date") or ""
-        month = int(d[5:7]) if len(d) >= 7 else None
-        if not month:
-            continue
-        branch_slug = (row.get("branch") or "").lower().strip()
-        if not branch_slug:
-            continue
-        k = (month, branch_slug)
-        if k not in agg:
-            agg[k] = {"spend": 0.0, "revenue": 0.0}
-        agg[k]["spend"]   += float(row.get("spend")   or 0)
-        agg[k]["revenue"] += float(row.get("revenue") or 0)
-
-    # Normalise branch slug → branch_key
-    _slug_to_key = {"saigon": "saigon", "sai gon": "saigon",
-                    "taipei": "taipei", "tpe": "taipei",
-                    "1948": "1948", "oani": "oani", "osaka": "osaka"}
+        log.warning("paid_ads roas lookup failed: %s", exc)
+        roas_map = {}
 
     out: dict[int, dict[str, dict]] = {}
-    for (month, slug), vals in agg.items():
-        branch_key = _slug_to_key.get(slug) or slug
-        spend = vals["spend"]
-        revenue_vnd = vals["revenue"]  # platform returns VND
-        roas = round(revenue_vnd / spend, 2) if spend > 0 else 0.0
+    for mac, branch_name in rows:
+        # Map branch name → branch_key
+        name_lower = (branch_name or "").lower()
+        branch_key = None
+        for k in ("saigon", "taipei", "1948", "oani", "osaka"):
+            if k in name_lower:
+                branch_key = k
+                break
+        if not branch_key:
+            continue
+        month = mac.month
+        bid = str(mac.branch_id)
+        revenue_vnd = float(mac.revenue_vnd or 0)
+        roas = roas_map.get((bid, month), 0.0)
         out.setdefault(month, {})[branch_key] = {
-            "ads_revenue": revenue_vnd,  # raw VND; converted in build_monthly_summary
+            "ads_revenue": revenue_vnd,
             "roas":        roas,
-            "ads_material": 0,  # filled by caller from DB if needed
+            "ads_material": 0,
         }
 
     _ads_actuals_cache[cache_key] = (time.time(), out)
@@ -325,7 +338,7 @@ def build_monthly_summary(
     if auto and role_key == "kol":
         actuals_yearly = get_kol_actuals_yearly(year)
     elif auto and role_key == "paid_ads":
-        actuals_yearly = get_paid_ads_actuals_yearly(year)
+        actuals_yearly = get_paid_ads_actuals_yearly(db, year)
         try:
             from app.services.lark_service import get_ads_material_yearly
             lark_ads_material = get_ads_material_yearly(year)
