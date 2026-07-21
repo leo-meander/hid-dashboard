@@ -61,23 +61,25 @@ def _get_access_token(
         return None
 
 
-def _parse_conversion_time(date_created: Optional[str]) -> Optional[str]:
+def _parse_conversion_time(
+    date_created: Optional[str],
+    tz_offset_hours: int = 8,
+    extra_offset_hours: int = 1,
+) -> Optional[str]:
     """
-    Convert Cloudbeds dateCreated (Asia/Taipei, 'YYYY-MM-DD HH:mm') to
-    Google Ads format 'YYYY-MM-DD HH:mm:ss+TZ' (UTC−1 from Taipei = UTC+7).
-    Matches the Make formula: addHours(parseDate(..., 'Asia/Taipei'), -1).
-    Returns microseconds since epoch as string (the API accepts both formats,
-    but epoch is simpler to produce here).
+    Convert Cloudbeds dateCreated to Google Ads conversionDateTime format.
+
+    Mirrors Make formula: addHours(parseDate(date, branch_timezone), -extra_offset)
+      - tz_offset_hours: UTC offset of branch local time (8=Taipei, 9=Tokyo, 7=Saigon)
+      - extra_offset_hours: additional hours subtracted (Make's addHours value)
     """
     if not date_created:
         return None
     from datetime import datetime, timezone, timedelta
     try:
         local_dt = datetime.strptime(date_created[:16], "%Y-%m-%d %H:%M")
-        # Treat as UTC+8 (Asia/Taipei), then subtract 1 hour
-        utc_dt = local_dt - timedelta(hours=8) - timedelta(hours=1)
+        utc_dt = local_dt - timedelta(hours=tz_offset_hours) - timedelta(hours=extra_offset_hours)
         utc_dt = utc_dt.replace(tzinfo=timezone.utc)
-        # Google Ads accepts "yyyy-MM-dd HH:mm:ssz" or epoch microseconds
         return utc_dt.strftime("%Y-%m-%d %H:%M:%S+00:00")
     except (ValueError, TypeError):
         return None
@@ -100,13 +102,17 @@ def upload_offline_conversion(
     conversion_action_single: str,
     conversion_action_both: str,
     login_customer_id: str = "",
+    currency: str = "TWD",
+    tz_offset_hours: int = 8,
+    event_time_extra_offset: int = 1,
+    conversion_action_phone: str = "",
 ) -> dict:
     """
     Upload offline click conversion to Google Ads for the given reservation.
 
     Routing (mirrors Make.com flow):
       - email only → conversion_action_single
-      - phone only → conversion_action_single
+      - phone only → conversion_action_phone (falls back to conversion_action_single)
       - both       → conversion_action_both
 
     Returns {"success": bool, "case": str, "response": dict}.
@@ -127,7 +133,11 @@ def upload_offline_conversion(
         )
         return {"success": False, "case": "skipped_no_identifiers"}
 
-    conversion_time = _parse_conversion_time(reservation.get("dateCreated"))
+    conversion_time = _parse_conversion_time(
+        reservation.get("dateCreated"),
+        tz_offset_hours=tz_offset_hours,
+        extra_offset_hours=event_time_extra_offset,
+    )
     if not conversion_time:
         return {"success": False, "error": "invalid_conversion_time"}
 
@@ -138,6 +148,9 @@ def upload_offline_conversion(
 
     order_id = str(reservation.get("reservationID", ""))
     customer_id_clean = customer_id.replace("-", "")
+
+    # conversion_action_phone falls back to conversion_action_single when not set
+    phone_action = conversion_action_phone or conversion_action_single
 
     # Determine which conversion action and which user identifiers to use
     if phone_present and not email_invalid:
@@ -151,7 +164,7 @@ def upload_offline_conversion(
     elif phone_present and email_invalid:
         # Case B: phone only
         case = "phone_only"
-        action_id = conversion_action_single
+        action_id = phone_action
         user_identifiers = [{"hashedPhoneNumber": _sha256(phone)}]
     else:
         # Case A: email only
@@ -173,7 +186,7 @@ def upload_offline_conversion(
                 "conversionAction": conversion_action_resource,
                 "conversionDateTime": conversion_time,
                 "conversionValue": value,
-                "currencyCode": "TWD",
+                "currencyCode": currency,
                 "orderId": order_id,
                 "userIdentifiers": user_identifiers,
             }
@@ -199,18 +212,28 @@ def upload_offline_conversion(
         with httpx.Client(timeout=20) as client:
             resp = client.post(url, json=payload, headers=headers)
             result = resp.json() if resp.text else {}
-            if resp.status_code == 200:
-                logger.info(
-                    "Google Ads conversion uploaded reservation=%s case=%s",
-                    order_id, case,
-                )
-                return {"success": True, "case": case, "response": result}
-            else:
+            if resp.status_code != 200:
                 logger.warning(
-                    "Google Ads upload failed reservation=%s case=%s status=%d: %s",
-                    order_id, case, resp.status_code, resp.text[:300],
+                    "Google Ads upload HTTP error reservation=%s case=%s status=%d: %s",
+                    order_id, case, resp.status_code, resp.text[:400],
                 )
                 return {"success": False, "case": case, "status_code": resp.status_code, "response": result}
+
+            # partialFailure=True → HTTP 200 even on conversion-level errors;
+            # real errors land in partialFailureError or results[*].status
+            partial_err = result.get("partialFailureError")
+            if partial_err:
+                logger.warning(
+                    "Google Ads partial failure reservation=%s case=%s: %s",
+                    order_id, case, partial_err,
+                )
+                return {"success": False, "case": case, "partial_failure_error": partial_err, "response": result}
+
+            logger.info(
+                "Google Ads conversion uploaded reservation=%s case=%s results=%s",
+                order_id, case, result.get("results"),
+            )
+            return {"success": True, "case": case, "response": result}
     except Exception as e:
         logger.error("Google Ads upload error reservation=%s: %s", order_id, e)
         return {"success": False, "case": case, "error": str(e)}
