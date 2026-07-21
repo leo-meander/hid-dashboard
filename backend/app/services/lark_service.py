@@ -116,7 +116,7 @@ def _fetch_all_records() -> list[dict]:
         if page_token:
             params["page_token"] = page_token
         try:
-            resp = requests.get(url, headers=headers, params=params, timeout=15)
+            resp = requests.get(url, headers=headers, params=params, timeout=30)
             resp.raise_for_status()
             body = resp.json()
             data = body.get("data", {})
