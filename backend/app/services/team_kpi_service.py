@@ -85,6 +85,8 @@ BRANCH_UUID_TO_KEY: dict[str, str] = {v: k for k, v in BRANCH_KEY_TO_UUID.items(
 BRANCH_CURRENCY: dict[str, str] = {
     "osaka":  "JPY",
     "taipei": "TWD",
+    "1948":   "TWD",
+    "oani":   "TWD",
 }
 
 # How to display revenue in each currency
