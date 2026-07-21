@@ -27,6 +27,7 @@ from app.services.ghl_crm_service import upsert_contact_from_reservation
 from app.services.google_ads_service import upload_offline_conversion
 from app.services.meta_capi_service import send_purchase_event
 from app.services.tiktok_capi_service import send_complete_payment_event
+from app.services import webhook_log
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -81,7 +82,6 @@ def _process_reservation(property_id: str, reservation_id: str) -> None:
         logger.error("Could not fetch reservation %s — aborting", reservation_id)
         return
 
-    # Resolve branch from property ID
     branch = settings.cloudbeds_property_to_branch.get(str(property_id))
     if not branch:
         logger.error("Unknown propertyID=%s — no branch mapping", property_id)
@@ -90,6 +90,9 @@ def _process_reservation(property_id: str, reservation_id: str) -> None:
     cfg = settings.get_webhook_config_for_branch(branch)
     source = (reservation.get("source") or "").lower()
     is_website_source = any(kw in source for kw in WEBSITE_SOURCES)
+    guest_email = (reservation.get("guestEmail") or "").strip().lower()
+
+    ghl_log = meta_log = gads_log = tiktok_log = None
 
     # ── Flow 1: GHL CRM upsert ────────────────────────────────────────────────
     if cfg["ghl_location_id"] and cfg["ghl_api_key"]:
@@ -101,59 +104,72 @@ def _process_reservation(property_id: str, reservation_id: str) -> None:
                 branch=branch,
             )
             logger.info("GHL upsert branch=%s action=%s contact_id=%s", branch, result["action"], result["contact_id"])
+            ghl_log = {"success": result["action"] in ("created", "updated"), "action": result["action"]}
         except Exception as e:
             logger.error("GHL upsert error branch=%s reservation=%s: %s", branch, reservation_id, e)
+            ghl_log = {"success": False, "error": str(e)}
     else:
-        logger.info("GHL skipped branch=%s — no GHL config", branch)
+        ghl_log = {"success": None, "action": "skipped_no_config"}
 
     # ── Flow 2: Meta CAPI + Google Ads (non-website sources only) ────────────
     if is_website_source:
         logger.info("Meta/Google Ads skipped — source is Website (%s)", source)
-        return
-
-    if cfg["meta_pixel_id"] and cfg["meta_access_token"]:
-        try:
-            meta_result = send_purchase_event(
-                reservation=reservation,
-                pixel_id=cfg["meta_pixel_id"],
-                access_token=cfg["meta_access_token"],
-                currency=cfg["currency"],
-                tz_offset_hours=cfg["tz_offset_hours"],
-                event_time_extra_offset=cfg["event_time_extra_offset"],
-            )
-            logger.info("Meta CAPI branch=%s success=%s", branch, meta_result.get("success"))
-        except Exception as e:
-            logger.error("Meta CAPI error branch=%s reservation=%s: %s", branch, reservation_id, e)
+        meta_log = {"success": None, "action": "skipped_website_source"}
+        gads_log = {"success": None, "action": "skipped_website_source"}
     else:
-        logger.info("Meta CAPI skipped branch=%s — no pixel config", branch)
+        if cfg["meta_pixel_id"] and cfg["meta_access_token"]:
+            try:
+                meta_result = send_purchase_event(
+                    reservation=reservation,
+                    pixel_id=cfg["meta_pixel_id"],
+                    access_token=cfg["meta_access_token"],
+                    currency=cfg["currency"],
+                    tz_offset_hours=cfg["tz_offset_hours"],
+                    event_time_extra_offset=cfg["event_time_extra_offset"],
+                )
+                ok = meta_result.get("success", False)
+                logger.info("Meta CAPI branch=%s success=%s", branch, ok)
+                meta_log = {"success": ok, "error": meta_result.get("error")}
+            except Exception as e:
+                logger.error("Meta CAPI error branch=%s reservation=%s: %s", branch, reservation_id, e)
+                meta_log = {"success": False, "error": str(e)}
+        else:
+            meta_log = {"success": None, "action": "skipped_no_config"}
 
-    if (
-        cfg["google_ads_customer_id"]
-        and cfg["google_ads_conversion_single"]
-        and settings.GOOGLE_DEVELOPER_TOKEN
-        and settings.GOOGLE_REFRESH_TOKEN
-    ):
-        try:
-            gads_result = upload_offline_conversion(
-                reservation=reservation,
-                customer_id=cfg["google_ads_customer_id"],
-                developer_token=settings.GOOGLE_DEVELOPER_TOKEN,
-                client_id=settings.GOOGLE_CLIENT_ID,
-                client_secret=settings.GOOGLE_CLIENT_SECRET,
-                refresh_token=settings.GOOGLE_REFRESH_TOKEN,
-                conversion_action_single=cfg["google_ads_conversion_single"],
-                conversion_action_both=cfg["google_ads_conversion_both"],
-                login_customer_id=settings.GOOGLE_LOGIN_CUSTOMER_ID,
-                currency=cfg["currency"],
-                tz_offset_hours=cfg["tz_offset_hours"],
-                event_time_extra_offset=cfg["event_time_extra_offset"],
-                conversion_action_phone=cfg.get("google_ads_conversion_phone", ""),
-            )
-            logger.info("Google Ads branch=%s case=%s success=%s", branch, gads_result.get("case"), gads_result.get("success"))
-        except Exception as e:
-            logger.error("Google Ads error branch=%s reservation=%s: %s", branch, reservation_id, e)
-    else:
-        logger.info("Google Ads skipped branch=%s — no config", branch)
+        if (
+            cfg["google_ads_customer_id"]
+            and cfg["google_ads_conversion_single"]
+            and settings.GOOGLE_DEVELOPER_TOKEN
+            and settings.GOOGLE_REFRESH_TOKEN
+        ):
+            try:
+                gads_result = upload_offline_conversion(
+                    reservation=reservation,
+                    customer_id=cfg["google_ads_customer_id"],
+                    developer_token=settings.GOOGLE_DEVELOPER_TOKEN,
+                    client_id=settings.GOOGLE_CLIENT_ID,
+                    client_secret=settings.GOOGLE_CLIENT_SECRET,
+                    refresh_token=settings.GOOGLE_REFRESH_TOKEN,
+                    conversion_action_single=cfg["google_ads_conversion_single"],
+                    conversion_action_both=cfg["google_ads_conversion_both"],
+                    login_customer_id=settings.GOOGLE_LOGIN_CUSTOMER_ID,
+                    currency=cfg["currency"],
+                    tz_offset_hours=cfg["tz_offset_hours"],
+                    event_time_extra_offset=cfg["event_time_extra_offset"],
+                    conversion_action_phone=cfg.get("google_ads_conversion_phone", ""),
+                )
+                ok = gads_result.get("success", False)
+                logger.info("Google Ads branch=%s case=%s success=%s", branch, gads_result.get("case"), ok)
+                gads_log = {
+                    "success": ok,
+                    "case": gads_result.get("case"),
+                    "error": gads_result.get("error") or gads_result.get("partial_failure_error"),
+                }
+            except Exception as e:
+                logger.error("Google Ads error branch=%s reservation=%s: %s", branch, reservation_id, e)
+                gads_log = {"success": False, "error": str(e)}
+        else:
+            gads_log = {"success": None, "action": "skipped_no_config"}
 
     # ── TikTok Events API — Saigon only ──────────────────────────────────────
     if branch == "saigon" and cfg.get("tiktok_access_token") and cfg.get("tiktok_event_source_id"):
@@ -163,11 +179,26 @@ def _process_reservation(property_id: str, reservation_id: str) -> None:
                 access_token=cfg["tiktok_access_token"],
                 event_source_id=cfg["tiktok_event_source_id"],
             )
-            logger.info("TikTok CAPI branch=%s success=%s", branch, tt_result.get("success"))
+            ok = tt_result.get("success", False)
+            logger.info("TikTok CAPI branch=%s success=%s", branch, ok)
+            tiktok_log = {"success": ok, "error": tt_result.get("error")}
         except Exception as e:
             logger.error("TikTok CAPI error branch=%s reservation=%s: %s", branch, reservation_id, e)
+            tiktok_log = {"success": False, "error": str(e)}
     elif branch == "saigon":
         logger.info("TikTok CAPI skipped — no TIKTOK_ACCESS_TOKEN_SAIGON or TIKTOK_EVENT_SOURCE_ID_SAIGON")
+        tiktok_log = {"success": None, "action": "skipped_no_config"}
+
+    webhook_log.record(
+        reservation_id=reservation_id,
+        branch=branch,
+        guest_email=guest_email,
+        source=source,
+        ghl=ghl_log,
+        meta=meta_log,
+        google_ads=gads_log,
+        tiktok=tiktok_log,
+    )
 
 
 @router.post("/webhooks/cloudbeds")
@@ -204,3 +235,10 @@ async def cloudbeds_webhook(
     background_tasks.add_task(_process_reservation, property_id, reservation_id)
 
     return {"success": True, "message": "queued"}
+
+
+@router.get("/admin/webhook-events")
+async def get_webhook_events(branch: str | None = None, limit: int = 100) -> dict:
+    """Return recent webhook processing results from the in-memory ring buffer."""
+    events = webhook_log.get_events(branch=branch, limit=min(limit, 500))
+    return {"success": True, "data": events, "total": len(events)}
