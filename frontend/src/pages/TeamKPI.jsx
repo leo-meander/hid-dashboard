@@ -475,14 +475,14 @@ export default function TeamKPI() {
                   sub="This month"
                 />
               </div>
-              <Tooltip text={`Tháng này: trung bình % đạt của tất cả KPI trong tháng ${curMonthLabel || ""} (actual ÷ target × 100), tính trên các KPI có cả target lẫn actual.`}>
-                <span className="text-[10px] text-gray-400 underline decoration-dotted cursor-default">Cách tính ⓘ</span>
+              <Tooltip text={`This month: average achievement % across all KPIs for ${curMonthLabel || "this month"} — only KPIs with both a target and an actual are included. Formula: avg(actual ÷ target × 100).`}>
+                <span className="text-[10px] text-gray-400 underline decoration-dotted cursor-default">How it's calculated ⓘ</span>
               </Tooltip>
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1 mb-3">
                 <p className="text-xs text-gray-500">YTD Average</p>
-                <Tooltip text="Trung bình % đạt của từng KPI qua các tháng đã qua — chỉ tính tháng có set target. Ví dụ: target từ T6 → chỉ T6 trở đi được tính vào YTD.">
+                <Tooltip text="Average achievement % across all KPIs for past months — only months with a target set are counted. Example: if targets start from June, only June onward is included in YTD.">
                   <span className="text-[10px] text-gray-400 cursor-default">ⓘ</span>
                 </Tooltip>
               </div>
@@ -511,7 +511,7 @@ export default function TeamKPI() {
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
             <div className="flex items-center gap-1 mb-3">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">YTD by KPI</p>
-              <Tooltip text="Mỗi bar = trung bình % đạt của KPI đó qua các tháng đã qua có target. Công thức: avg(actual ÷ target × 100) — chỉ tháng có cả target > 0 lẫn actual mới được tính.">
+              <Tooltip text="Each bar = average achievement % for that KPI across past months with a target. Formula: avg(actual ÷ target × 100) — only months with both a target > 0 and an actual are counted.">
                 <span className="text-[10px] text-gray-400 cursor-default normal-case font-normal">ⓘ</span>
               </Tooltip>
             </div>
