@@ -38,7 +38,7 @@ KPI_DEFS: dict[str, list[dict]] = {
         {"key": "kol_revenue",     "label": "Revenue via KOL",        "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True},
         {"key": "kol_collaborated","label": "KOLs Collaborated",      "unit": "KOLs",   "org_wide": False, "higher_is_better": True},
         {"key": "kol_posted",      "label": "KOLs Posted",            "unit": "posts",  "org_wide": False, "higher_is_better": True},
-        {"key": "kol_ads_collab",  "label": "KOL Ads Collab",         "unit": "videos", "org_wide": False, "higher_is_better": True},
+        {"key": "kol_ads_collab",  "label": "KOL Ads Collab",         "unit": "KOLs",   "org_wide": False, "higher_is_better": True, "auto": False},
     ],
     "paid_ads": [
         {"key": "ads_material",    "label": "Variation Ads Material", "unit": "count",  "org_wide": False, "higher_is_better": True},
