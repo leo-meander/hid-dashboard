@@ -49,14 +49,24 @@ def _norm_branch(raw: str) -> Optional[str]:
 
 
 def _parse_branch_from_project(project_val) -> Optional[str]:
-    """Extract branch key from Project field value like '[1948] Ads'."""
+    """Extract branch key from Project field value.
+
+    Handles two formats from the linked table:
+      - '[1948] Ads', '[Sai Gon] KOL' → extract text inside []
+      - 'Osaka', 'Saigon' → bare name, match directly
+    """
     if not project_val:
         return None
     s = str(project_val)
+    # Try bracket format first: [Branch] ...
     m = _BRANCH_RE.search(s)
-    if not m:
-        return None
-    return _norm_branch(m.group(1))
+    if m:
+        return _norm_branch(m.group(1))
+    # Fallback: bare branch name — only accept known keys
+    _KNOWN = {"saigon", "taipei", "1948", "oani", "osaka"}
+    first = s.split(",")[0].strip()
+    key = _norm_branch(first)
+    return key if key in _KNOWN else None
 
 
 def _parse_month_year(val) -> Optional[tuple[int, int]]:
