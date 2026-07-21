@@ -42,7 +42,6 @@ KPI_DEFS: dict[str, list[dict]] = {
     ],
     "paid_ads": [
         {"key": "ads_material",    "label": "Variation Ads Material", "unit": "count",  "org_wide": False, "higher_is_better": True},
-        {"key": "ads_spend",       "label": "Ad Spend",               "unit": "mil VND","org_wide": False, "higher_is_better": False, "is_revenue": True},
         {"key": "roas",            "label": "ROAS",                   "unit": "×",      "org_wide": False, "higher_is_better": True,  "decimals": 2},
         {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True, "no_target": True},
     ],
