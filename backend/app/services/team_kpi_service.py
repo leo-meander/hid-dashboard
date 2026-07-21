@@ -8,8 +8,9 @@ Phase 1:
   Designer (Nora)  — Lark Base API
   CRM (Kin)        — Cloudbeds Reservation table (reservation_date, CRM filter)
 
-Phase 2 (future):
-  PM (Nuha) — Derived from branch KPI rates
+Phase 2:
+  PM (Nuha) — branch_kpi_rate from KPITarget+DailyMetrics (Revenue KPI hit%);
+              budget_utilisation from MarketingBudget actual/allocated
 """
 from __future__ import annotations
 
@@ -69,7 +70,7 @@ ROLE_META = {
     "paid_ads":  {"label": "Paid Ads",  "person": "Mason", "emoji": "📢", "auto_actuals": True},
     "designer":  {"label": "Designer",  "person": "Nora",  "emoji": "🎨", "auto_actuals": True},
     "crm":       {"label": "CRM",       "person": "Kin",   "emoji": "📊", "auto_actuals": True},
-    "pm":        {"label": "PM",        "person": "Nuha",  "emoji": "🗂️", "auto_actuals": False},
+    "pm":        {"label": "PM",        "person": "Nuha",  "emoji": "🗂️", "auto_actuals": True},
 }
 
 # Branch short-key → branch UUID (stable seed data)
@@ -354,6 +355,119 @@ def get_crm_actuals_yearly(
     return out
 
 
+# ── PM actuals ───────────────────────────────────────────────────────────────
+
+_pm_actuals_cache: dict[tuple, tuple[float, dict]] = {}
+_PM_ACTUALS_TTL = 600
+
+
+def get_pm_actuals_yearly(db: Session, year: int) -> dict[int, dict[str, dict]]:
+    """Return {month: {branch_key: {branch_kpi_rate, budget_utilisation}}}
+
+    branch_kpi_rate:   Revenue KPI hit% — same formula as Revenue KPI page:
+                       actual = (override or DailyMetrics.revenue_native)
+                                * (1 - deduction_pct) + other_revenue_native
+                       hit% = actual / target_revenue_native * 100
+    budget_utilisation: sum(actual_spend) / sum(allocated) * 100 across all
+                        budget channels (paid_ads + kol + crm) per branch/month.
+    """
+    cache_key = ("pm", year)
+    cached = _pm_actuals_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _PM_ACTUALS_TTL:
+        return cached[1]
+
+    from app.models.kpi import KPITarget
+    from app.models.branch import Branch
+    from app.models.daily_metrics import DailyMetrics
+    from app.models.marketing_budget import MarketingBudget
+    from sqlalchemy import func as sqlfunc, extract
+
+    # 1. Revenue KPI targets + overrides per branch/month
+    kpi_rows = (
+        db.query(KPITarget, Branch.name)
+        .join(Branch, KPITarget.branch_id == Branch.id)
+        .filter(KPITarget.year == year)
+        .all()
+    )
+    target_meta: dict[tuple, dict] = {}
+    for kpi, branch_name in kpi_rows:
+        name_lower = (branch_name or "").lower()
+        branch_key = None
+        for k in ("saigon", "taipei", "1948", "oani", "osaka"):
+            if k in name_lower:
+                branch_key = k
+                break
+        if not branch_key:
+            continue
+        deduct = float(kpi.deduction_pct or 0) / 100
+        target_meta[(branch_key, kpi.month)] = {
+            "target":      float(kpi.target_revenue_native or 0),
+            "override":    float(kpi.actual_revenue_override) if kpi.actual_revenue_override is not None else None,
+            "deduct_mult": 1.0 - deduct,
+            "other_rev":   float(kpi.other_revenue_native or 0),
+            "branch_id":   str(kpi.branch_id),
+        }
+
+    # 2. DailyMetrics actual revenue per branch/month (Cloudbeds source)
+    daily_rows = (
+        db.query(
+            DailyMetrics.branch_id,
+            extract("month", DailyMetrics.date).label("month"),
+            sqlfunc.coalesce(sqlfunc.sum(DailyMetrics.revenue_native), 0).label("revenue"),
+        )
+        .filter(extract("year", DailyMetrics.date) == year)
+        .group_by(DailyMetrics.branch_id, extract("month", DailyMetrics.date))
+        .all()
+    )
+    daily_map: dict[tuple, float] = {
+        (str(r.branch_id), int(r.month)): float(r.revenue) for r in daily_rows
+    }
+
+    # 3. MarketingBudget actual spend per branch/month (all channels summed)
+    budget_rows = (
+        db.query(
+            MarketingBudget.branch_id,
+            MarketingBudget.month,
+            sqlfunc.coalesce(sqlfunc.sum(MarketingBudget.allocated_vnd), 0).label("allocated"),
+            sqlfunc.coalesce(
+                sqlfunc.sum(
+                    sqlfunc.coalesce(MarketingBudget.manual_actual_vnd, MarketingBudget.cached_actual_vnd, 0)
+                ), 0
+            ).label("actual_spend"),
+        )
+        .filter(MarketingBudget.year == year)
+        .group_by(MarketingBudget.branch_id, MarketingBudget.month)
+        .all()
+    )
+    budget_map: dict[tuple, tuple] = {
+        (str(r.branch_id), r.month): (float(r.allocated), float(r.actual_spend))
+        for r in budget_rows
+    }
+
+    out: dict[int, dict[str, dict]] = {}
+    for (branch_key, month), meta in target_meta.items():
+        bid = meta["branch_id"]
+        target = meta["target"]
+        cloudbeds = daily_map.get((bid, month), 0.0)
+        raw = meta["override"] if meta["override"] is not None else cloudbeds
+        actual = raw * meta["deduct_mult"] + meta["other_rev"]
+        hit_pct = round(actual / target * 100, 1) if target > 0 else None
+
+        alloc, spent = budget_map.get((bid, month), (0.0, 0.0))
+        budget_pct = round(spent / alloc * 100, 1) if alloc > 0 else None
+
+        row: dict = {}
+        if hit_pct is not None:
+            row["branch_kpi_rate"] = hit_pct
+        if budget_pct is not None:
+            row["budget_utilisation"] = budget_pct
+        if row:
+            out.setdefault(month, {})[branch_key] = row
+
+    _pm_actuals_cache[cache_key] = (time.time(), out)
+    return out
+
+
 # ── Core summary builder ──────────────────────────────────────────────────────
 
 def build_monthly_summary(
@@ -432,6 +546,8 @@ def build_monthly_summary(
         actuals_yearly = get_designer_actuals_yearly(year)
     elif auto and role_key == "crm":
         actuals_yearly = get_crm_actuals_yearly(db, year)
+    elif auto and role_key == "pm":
+        actuals_yearly = get_pm_actuals_yearly(db, year)
 
     # Determine branch key for actuals lookup
     branch_key = None
