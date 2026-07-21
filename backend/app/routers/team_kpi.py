@@ -110,6 +110,7 @@ def upsert_target(body: UpsertTargetBody, db: Session = Depends(get_db)):
 
     branch_uuid = UUID(body.branch_id) if body.branch_id else None
 
+    index_name = "uq_team_kpi_org_wide" if branch_uuid is None else "uq_team_kpi_branch"
     stmt = (
         pg_insert(TeamKPITarget)
         .values(
@@ -121,7 +122,8 @@ def upsert_target(body: UpsertTargetBody, db: Session = Depends(get_db)):
             target_value=body.target_value,
         )
         .on_conflict_do_update(
-            constraint="uq_team_kpi_targets",
+            index_elements=_conflict_cols(branch_uuid),
+            index_where=_conflict_where(branch_uuid),
             set_={"target_value": body.target_value},
         )
     )
@@ -173,7 +175,8 @@ def upsert_actual(body: UpsertActualBody, db: Session = Depends(get_db)):
             target_value=body.actual_value,
         )
         .on_conflict_do_update(
-            constraint="uq_team_kpi_targets",
+            index_elements=_conflict_cols(branch_uuid),
+            index_where=_conflict_where(branch_uuid),
             set_={"target_value": body.actual_value},
         )
     )
@@ -183,6 +186,16 @@ def upsert_actual(body: UpsertActualBody, db: Session = Depends(get_db)):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _conflict_cols(branch_uuid):
+    if branch_uuid is None:
+        return ["role_key", "year", "month", "kpi_key"]
+    return ["role_key", "branch_id", "year", "month", "kpi_key"]
+
+def _conflict_where(branch_uuid):
+    from sqlalchemy import text
+    return text("branch_id IS NULL") if branch_uuid is None else text("branch_id IS NOT NULL")
+
 
 def _row_out(row: TeamKPITarget) -> dict:
     return {
