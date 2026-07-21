@@ -100,35 +100,102 @@ def _get_token() -> Optional[str]:
         return None
 
 
-def _fetch_all_records() -> list[dict]:
+_LARK_SEARCH_URL = "https://open.larksuite.com/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/search"
+
+
+def _fetch_all_records(cutoff_ms: Optional[int] = None) -> list[dict]:
+    """Fetch Lark Base records, optionally filtered by Date Created >= cutoff_ms.
+
+    Uses the /records/search endpoint with a server-side date filter to avoid
+    pulling the full table (which times out on large datasets). Falls back to
+    the plain GET /records endpoint if search fails.
+    """
     token = _get_token()
     if not token or not settings.LARK_BASE_APP_TOKEN or not settings.LARK_TASKS_TABLE_ID:
         return []
-    url = _LARK_RECORDS_URL.format(
+
+    # Default cutoff: Jan 1 of current year (ms timestamp)
+    if cutoff_ms is None:
+        import datetime as _dt
+        now = _dt.datetime.utcnow()
+        cutoff_ms = int(_dt.datetime(now.year, 1, 1).timestamp() * 1000)
+
+    search_url = _LARK_SEARCH_URL.format(
         app_token=settings.LARK_BASE_APP_TOKEN,
         table_id=settings.LARK_TASKS_TABLE_ID,
     )
-    headers = {"Authorization": f"Bearer {token}"}
-    records = []
-    page_token = None
-    while True:
-        params: dict = {"page_size": 500}
-        if page_token:
-            params["page_token"] = page_token
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=30)
+    list_url = _LARK_RECORDS_URL.format(
+        app_token=settings.LARK_BASE_APP_TOKEN,
+        table_id=settings.LARK_TASKS_TABLE_ID,
+    )
+    auth_headers = {"Authorization": f"Bearer {token}"}
+
+    def _search_pages() -> list[dict]:
+        records: list[dict] = []
+        page_token = None
+        # -1 day buffer same as Apps Script
+        server_cutoff = cutoff_ms - 86_400_000
+        while True:
+            params = {"page_size": 500}
+            if page_token:
+                params["page_token"] = page_token
+            body = {
+                "filter": {
+                    "conjunction": "and",
+                    "conditions": [{
+                        "field_name": "Date Created",
+                        "operator": "isGreater",
+                        "value": ["ExactDate", server_cutoff],
+                    }],
+                },
+                "automatic_fields": True,
+            }
+            resp = requests.post(
+                search_url, headers=auth_headers, params=params,
+                json=body, timeout=30,
+            )
             resp.raise_for_status()
-            body = resp.json()
-            data = body.get("data", {})
+            data = resp.json().get("data", {})
+            if resp.json().get("code", 0) != 0:
+                raise RuntimeError(f"Lark search error: {resp.json()}")
             for item in data.get("items", []):
                 records.append(item.get("fields", {}))
             if not data.get("has_more"):
                 break
             page_token = data.get("page_token")
-        except Exception as exc:
-            log.error("Lark records fetch failed: %s", exc)
-            break
-    return records
+        return records
+
+    def _list_pages() -> list[dict]:
+        records: list[dict] = []
+        page_token = None
+        while True:
+            params: dict = {"page_size": 500}
+            if page_token:
+                params["page_token"] = page_token
+            resp = requests.get(list_url, headers=auth_headers, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+            for item in data.get("items", []):
+                records.append(item.get("fields", {}))
+            if not data.get("has_more"):
+                break
+            page_token = data.get("page_token")
+        return records
+
+    try:
+        records = _search_pages()
+        log.info("Lark: fetched %d records via search (cutoff %d)", len(records), cutoff_ms)
+        return records
+    except Exception as exc:
+        log.warning("Lark search failed, falling back to list all: %s", exc)
+
+    try:
+        records = _list_pages()
+        log.info("Lark: fetched %d records via list-all (fallback)", len(records))
+        return records
+    except Exception as exc:
+        log.error("Lark list-all fallback also failed: %s", exc)
+        return []
 
 
 # ── In-memory cache (10 min TTL) ─────────────────────────────────────────────
