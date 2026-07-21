@@ -18,6 +18,7 @@ CRM_TAGS = (
     "Travel guide",
     "Grand Open",
     "Extension Promotion",
+    "WELCOME",
 )
 
 # Reserved for tags confirmed to appear only on rate_plan_name (no room_type packing).
