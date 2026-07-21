@@ -32,6 +32,50 @@ router = APIRouter()
 VALID_ROLES = set(ROLE_META.keys())
 
 
+# ── Lark debug ────────────────────────────────────────────────────────────────
+
+@router.get("/debug/lark")
+def debug_lark():
+    """Test Lark connectivity: auth → record fetch → field parse."""
+    from app.services.lark_service import _get_token, _fetch_all_records, _get_yearly_agg
+    from app.config import settings
+    result: dict = {}
+
+    result["config"] = {
+        "app_id_set":    bool(settings.LARK_APP_ID),
+        "secret_set":    bool(settings.LARK_APP_SECRET),
+        "app_token_set": bool(settings.LARK_BASE_APP_TOKEN),
+        "table_id_set":  bool(settings.LARK_TASKS_TABLE_ID),
+    }
+
+    token = _get_token()
+    result["auth"] = "ok" if token else "FAILED — check LARK_APP_ID / LARK_APP_SECRET"
+    if not token:
+        return {"success": False, "data": result, "error": "auth failed"}
+
+    try:
+        records = _fetch_all_records()
+        result["records_fetched"] = len(records)
+        if records:
+            result["sample_fields"] = list(records[0].keys())[:15]
+    except Exception as exc:
+        result["fetch_error"] = str(exc)
+        return {"success": False, "data": result, "error": str(exc)}
+
+    try:
+        import datetime as _dt
+        agg = _get_yearly_agg(_dt.datetime.utcnow().year)
+        result["branches_found"] = [k for k in agg.keys()]
+        result["sample_agg"] = {
+            branch: {str(m): counts for m, counts in months.items()}
+            for branch, months in agg.items()
+        }
+    except Exception as exc:
+        result["agg_error"] = str(exc)
+
+    return {"success": True, "data": result, "error": None}
+
+
 # ── Roles metadata ────────────────────────────────────────────────────────────
 
 @router.get("/roles")
