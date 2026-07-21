@@ -1,8 +1,9 @@
 /**
  * CountryDetail — drill-down with YoY comparison chart
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
@@ -23,38 +24,33 @@ export default function CountryDetail() {
   const { code } = useParams();
   const currentYear = new Date().getFullYear();
 
-  const [year,       setYear]       = useState(currentYear);
-  const [yoyData,    setYoyData]    = useState([]);
-  const [rankData,   setRankData]   = useState(null);
-  const [loading,    setLoading]    = useState(true);
-  const [loadingRank, setLoadingRank] = useState(true);
+  const [year, setYear] = useState(currentYear);
 
-  // Load YoY trend data
-  useEffect(() => {
-    setLoading(true);
-    axios.get(`/api/countries/${code}/trend?year=${year}`)
-      .then((r) => setYoyData(r.data.data || []))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [code, year]);
+  const { data: yoyData, isPending: loading } = useQuery({
+    queryKey: ["country-trend", code, year],
+    queryFn: () =>
+      axios.get(`/api/countries/${code}/trend?year=${year}`).then((r) => r.data.data || []),
+    placeholderData: keepPreviousData,
+  });
 
-  // Load ranking info for this country
-  useEffect(() => {
-    setLoadingRank(true);
-    axios.get(`/api/countries/ranking?year=${year}`)
-      .then((r) => {
-        const all = r.data.data || [];
-        const found = all.find((c) => c.country_code === code);
-        setRankData(found || null);
-      })
-      .catch(console.error)
-      .finally(() => setLoadingRank(false));
-  }, [code, year]);
+  const { data: rankData, isPending: loadingRank } = useQuery({
+    queryKey: ["country-ranking", code, year],
+    queryFn: () =>
+      axios
+        .get(`/api/countries/ranking?year=${year}`)
+        .then((r) => {
+          const all = r.data.data || [];
+          return all.find((c) => c.country_code === code) || null;
+        }),
+    placeholderData: keepPreviousData,
+  });
+
+  const yoyRows = yoyData ?? [];
 
   // Build month-by-month comparison chart data
   const chartData = MONTHS.map((m, i) => {
-    const prevYear = yoyData.find((d) => d.year === year - 1 && d.month === i + 1);
-    const thisYear = yoyData.find((d) => d.year === year     && d.month === i + 1);
+    const prevYear = yoyRows.find((d) => d.year === year - 1 && d.month === i + 1);
+    const thisYear = yoyRows.find((d) => d.year === year     && d.month === i + 1);
     return {
       month: m,
       [year - 1]: prevYear?.count || 0,
@@ -64,8 +60,8 @@ export default function CountryDetail() {
     };
   });
 
-  const totalThis = yoyData.filter((d) => d.year === year).reduce((s, d) => s + d.count, 0);
-  const totalPrev = yoyData.filter((d) => d.year === year - 1).reduce((s, d) => s + d.count, 0);
+  const totalThis = yoyRows.filter((d) => d.year === year).reduce((s, d) => s + d.count, 0);
+  const totalPrev = yoyRows.filter((d) => d.year === year - 1).reduce((s, d) => s + d.count, 0);
   const yoyChange = totalPrev > 0 ? (totalThis - totalPrev) / totalPrev : null;
 
   const countryName = rankData?.country || code;
@@ -132,7 +128,7 @@ export default function CountryDetail() {
         <p className="text-sm font-semibold text-gray-700 mb-3">
           Monthly Bookings — {year - 1} vs {year}
         </p>
-        {loading ? (
+        {loading && !yoyData ? (
           <div className="h-52 flex items-center justify-center text-gray-400 animate-pulse">Loading…</div>
         ) : (
           <ResponsiveContainer width="100%" height={240}>
@@ -154,7 +150,7 @@ export default function CountryDetail() {
         <p className="text-sm font-semibold text-gray-700 mb-3">
           Monthly Revenue — {year - 1} vs {year}
         </p>
-        {loading ? (
+        {loading && !yoyData ? (
           <div className="h-52 flex items-center justify-center text-gray-400 animate-pulse">Loading…</div>
         ) : (
           <ResponsiveContainer width="100%" height={240}>

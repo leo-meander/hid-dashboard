@@ -1,7 +1,8 @@
 /**
  * KOL Management — aggregated from reservations (room_type KOL_ pattern)
  */
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import { useBranch } from "../context/BranchContext";
 import SyncBadge from "../components/SyncBadge";
@@ -272,10 +273,7 @@ function EditModal({ row, branches, onClose, onSaved }) {
 
 export default function KOL() {
   const { branches, selected, isAll } = useBranch();
-
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [lastRefresh, setLastRefresh] = useState(null);
+  const queryClient = useQueryClient();
 
   const [search, setSearch] = useState("");
   const [filterBranch, setFilterBranch] = useState("all");
@@ -285,6 +283,16 @@ export default function KOL() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const fileRef = useRef(null);
+
+  const { data: rows = [], isPending, dataUpdatedAt } = useQuery({
+    queryKey: ["kol-summary", selected, isAll],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (!isAll && selected) params.set("branch_id", selected);
+      return axios.get("/api/kol/summary?" + params).then((r) => r.data.data || []);
+    },
+    placeholderData: keepPreviousData,
+  });
 
   const handleImportCSV = async (e) => {
     const file = e.target.files?.[0];
@@ -298,7 +306,7 @@ export default function KOL() {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setImportResult(res.data.data);
-      load();
+      queryClient.invalidateQueries({ queryKey: ["kol-summary"] });
     } catch (err) {
       setImportResult({ error: err.response?.data?.detail || err.message });
     } finally {
@@ -306,22 +314,6 @@ export default function KOL() {
       if (fileRef.current) fileRef.current.value = "";
     }
   };
-
-  const load = () => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    if (!isAll && selected) params.set("branch_id", selected);
-    axios
-      .get("/api/kol/summary?" + params)
-      .then((r) => {
-        setRows(r.data.data || []);
-        setLastRefresh(new Date());
-      })
-      .catch(() => setRows([]))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, [selected, isAll]);
 
   // ── filters ──────────────────────────────────────────────────────────
 
@@ -343,6 +335,8 @@ export default function KOL() {
   const totalCost     = filtered.reduce((s, r) => s + (r.cost_vnd || 0), 0);
   const expiryAlerts  = filtered.filter((r) => r.expiry_days != null && r.expiry_days <= 30);
 
+  const lastRefreshTime = dataUpdatedAt ? new Date(dataUpdatedAt) : null;
+
   // ─────────────────────────────────────────────────────────────────────
 
   return (
@@ -362,10 +356,10 @@ export default function KOL() {
             className="px-3 py-2 text-sm rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 disabled:opacity-50 flex items-center gap-1.5">
             {importing ? "Importing…" : "Import CSV"}
           </button>
-          <button onClick={load} disabled={loading}
+          <button onClick={() => queryClient.invalidateQueries({ queryKey: ["kol-summary"] })} disabled={isPending && !rows.length}
             className="px-3 py-2 text-sm rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-600 disabled:opacity-50 flex items-center gap-1.5">
-            <span className={loading ? "animate-spin inline-block" : ""}>↻</span>
-            {loading ? "Loading…" : "Refresh"}
+            <span className={isPending && !rows.length ? "animate-spin inline-block" : ""}>↻</span>
+            {isPending && !rows.length ? "Loading…" : "Refresh"}
           </button>
         </div>
       </div>
@@ -407,7 +401,7 @@ export default function KOL() {
       )}
 
       {/* summary cards */}
-      {!loading && rows.length > 0 && (
+      {!(isPending && !rows.length) && rows.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <SummaryCard label="KOLs Found" value={filtered.length} sub={rows.length !== filtered.length ? `of ${rows.length}` : "from reservations"} color="indigo" />
           <SummaryCard label="Organic Bookings" value={fmt(totalBookings)} sub="non-cancelled" color="green" />
@@ -431,16 +425,16 @@ export default function KOL() {
           <option value="all">All Statuses</option>
           {allStatuses.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
-        {lastRefresh && (
+        {lastRefreshTime && (
           <span className="text-xs text-gray-400 ml-auto">
-            Last refreshed {lastRefresh.toLocaleTimeString()}
+            Last refreshed {lastRefreshTime.toLocaleTimeString()}
           </span>
         )}
       </div>
 
       {/* table */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        {loading ? (
+        {isPending && !rows.length ? (
           <div className="p-10 text-center text-gray-400 animate-pulse">Loading KOL data…</div>
         ) : filtered.length === 0 ? (
           <div className="p-10 text-center text-gray-400">
@@ -538,7 +532,10 @@ export default function KOL() {
           row={editRow}
           branches={branches}
           onClose={() => setEditRow(null)}
-          onSaved={() => { setEditRow(null); load(); }}
+          onSaved={() => {
+            setEditRow(null);
+            queryClient.invalidateQueries({ queryKey: ["kol-summary"] });
+          }}
         />
       )}
     </div>

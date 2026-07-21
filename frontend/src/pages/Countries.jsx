@@ -1,9 +1,10 @@
 /**
  * Countries — ranking table with Hot / Warm / Cold tiers
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import CountryBadge from "../components/CountryBadge";
 import SyncBadge from "../components/SyncBadge";
 
@@ -13,20 +14,18 @@ export default function Countries() {
   const currentYear = new Date().getFullYear();
   const [year,      setYear]      = useState(currentYear);
   const [month,     setMonth]     = useState(""); // "" = full year
-  const [countries, setCountries] = useState([]);
-  const [loading,   setLoading]   = useState(true);
   const [search,    setSearch]    = useState("");
   const [tierFilter, setTierFilter] = useState("All");
 
-  useEffect(() => {
-    setLoading(true);
-    const params = new URLSearchParams({ year });
-    if (month) params.set("month", month);
-    axios.get(`/api/countries/ranking?${params}`)
-      .then((r) => setCountries(r.data.data || []))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [year, month]);
+  const { data: countries = [], isPending } = useQuery({
+    queryKey: ["countries-ranking", year, month],
+    queryFn: () => {
+      const params = new URLSearchParams({ year });
+      if (month) params.set("month", month);
+      return axios.get(`/api/countries/ranking?${params}`).then((r) => r.data.data || []);
+    },
+    placeholderData: keepPreviousData,
+  });
 
   const filtered = countries.filter((c) => {
     const matchSearch = !search ||
@@ -105,7 +104,7 @@ export default function Countries() {
       </div>
 
       {/* Table */}
-      {loading ? (
+      {isPending && !countries.length ? (
         <div className="text-gray-400 animate-pulse">Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="bg-white rounded-xl border p-8 text-center text-gray-400">

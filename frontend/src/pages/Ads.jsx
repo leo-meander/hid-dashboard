@@ -1,7 +1,8 @@
 /**
  * Paid Ads Performance — Phase 3
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import SyncBadge from "../components/SyncBadge";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
@@ -40,9 +41,7 @@ const EMPTY_FORM = {
 export default function Ads() {
   const { branches, currentBranch, isAll, selected } = useBranch();
   const currency = currentBranch?.currency || currentBranch?.native_currency || "VND";
-  const [summary, setSummary] = useState([]);
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [filterChannel, setFilterChannel] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
@@ -64,24 +63,28 @@ export default function Ads() {
     return { from: null, to: null };
   };
 
-  const load = () => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    if (!isAll && selected) params.set('branch_id', selected);
-    if (filterChannel) params.set('channel', filterChannel);
-    const { from, to } = getDateRange(datePreset);
-    if (from) params.set('date_from', from);
-    if (to) params.set('date_to', to);
-    Promise.all([
-      axios.get('/api/ads/summary?' + params),
-      axios.get('/api/ads?' + params),
-    ])
-      .then(([sRes, rRes]) => { setSummary(sRes.data.data || []); setRows(rRes.data.data || []); })
-      .catch(() => { setSummary([]); setRows([]); })
-      .finally(() => setLoading(false));
-  };
+  const { data: pageData, isPending } = useQuery({
+    queryKey: ["ads-summary", selected, filterChannel, datePreset],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (!isAll && selected) params.set('branch_id', selected);
+      if (filterChannel) params.set('channel', filterChannel);
+      const { from, to } = getDateRange(datePreset);
+      if (from) params.set('date_from', from);
+      if (to) params.set('date_to', to);
+      return Promise.all([
+        axios.get('/api/ads/summary?' + params),
+        axios.get('/api/ads?' + params),
+      ]).then(([sRes, rRes]) => ({
+        summary: sRes.data.data || [],
+        rows: rRes.data.data || [],
+      }));
+    },
+    placeholderData: keepPreviousData,
+  });
 
-  useEffect(() => { load(); }, [selected, filterChannel, datePreset]);
+  const summary = pageData?.summary ?? [];
+  const rows = pageData?.rows ?? [];
 
   const openNew = () => { setForm({ ...EMPTY_FORM, branch_id: currentBranch?.id || "" }); setEditId(null); setShowForm(true); };
   const openEdit = (row) => {
@@ -110,12 +113,17 @@ export default function Ads() {
     };
     try {
       editId ? await axios.put("/api/ads/" + editId, payload) : await axios.post("/api/ads", payload);
-      setShowForm(false); load();
+      setShowForm(false);
+      queryClient.invalidateQueries({ queryKey: ["ads-summary"] });
     } catch (e) { alert("Save failed: " + (e.response?.data?.detail || e.message)); }
     finally { setSaving(false); }
   };
 
-  const del = async (id) => { if (!confirm("Delete?")) return; await axios.delete("/api/ads/" + id); load(); };
+  const del = async (id) => {
+    if (!confirm("Delete?")) return;
+    await axios.delete("/api/ads/" + id);
+    queryClient.invalidateQueries({ queryKey: ["ads-summary"] });
+  };
 
   const syncAdsPlatform = async () => {
     setSyncing(true);
@@ -129,7 +137,7 @@ export default function Ads() {
         `• ${d.synced_budgets} budget plans\n` +
         `• ${d.synced_booking_matches} booking matches`
       );
-      load();
+      queryClient.invalidateQueries({ queryKey: ["ads-summary"] });
     } catch (e) { alert("Sync failed: " + (e.response?.data?.detail || e.message)); }
     finally { setSyncing(false); }
   };
@@ -222,7 +230,7 @@ export default function Ads() {
         ))}
       </div>
 
-      {loading ? (
+      {isPending && !pageData ? (
         <div className="bg-white rounded-xl border p-8 text-center text-gray-400 animate-pulse">Loading…</div>
       ) : tab === "summary" ? (
         <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">

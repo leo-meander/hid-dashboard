@@ -1,4 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { useBranch } from "../context/BranchContext";
 import { getUpcomingWindows } from "../api/holidayIntel";
@@ -767,31 +769,27 @@ function BranchSection({ branch, holidays }) {
 
 export default function CountryIntel() {
   const { selected, isAll } = useBranch();
-  const [data, setData] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [channel, setChannel] = useState("");
 
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-    const params = new URLSearchParams();
-    if (!isAll) params.set("branch_id", selected);
-    fetch(`/api/insights/country-intel?${params}`)
-      .then((r) => r.json())
-      .then((j) => {
-        if (j.success) setData(j.data);
-        else setError(j.error || "Failed to load");
-      })
-      .catch(() => setError("Network error"))
-      .finally(() => setLoading(false));
-  }, [selected, isAll]);
+  const { data = [], isPending, isError, error: queryError } = useQuery({
+    queryKey: ["country-intel", selected, isAll],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (!isAll) params.set("branch_id", selected);
+      const r = await fetch(`/api/insights/country-intel?${params}`);
+      const j = await r.json();
+      if (!j.success) throw new Error(j.error || "Failed to load");
+      return j.data;
+    },
+    placeholderData: keepPreviousData,
+  });
 
-  // Upcoming holiday alerts (full list for tags, top 5 for banner)
-  const [allHolidays, setAllHolidays] = useState([]);
-  useEffect(() => {
-    getUpcomingWindows().then(d => setAllHolidays(d || [])).catch(() => {});
-  }, []);
+  const { data: allHolidays = [] } = useQuery({
+    queryKey: ["upcoming-holidays"],
+    queryFn: () => getUpcomingWindows().then((d) => d || []),
+    placeholderData: keepPreviousData,
+  });
+
   const holidayAlerts = allHolidays.slice(0, 5);
 
   const allItems = data.flatMap((b) => [
@@ -834,7 +832,7 @@ export default function CountryIntel() {
         </div>
       )}
 
-      {!loading && data.length > 0 && (
+      {data.length > 0 && (
         <div className="grid grid-cols-4 gap-3">
           <div className="bg-white rounded-lg border p-4">
             <div className="text-2xl font-bold text-green-600">{fullyCovered}</div>
@@ -857,16 +855,16 @@ export default function CountryIntel() {
         </div>
       )}
 
-      {loading && (
+      {isPending && !data.length && (
         <div className="flex items-center justify-center h-40 text-gray-400 text-sm">Loading…</div>
       )}
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded p-4 text-red-600 text-sm">{error}</div>
+      {isError && (
+        <div className="bg-red-50 border border-red-200 rounded p-4 text-red-600 text-sm">{queryError?.message}</div>
       )}
-      {!loading && !error && data.length === 0 && (
+      {!isPending && !isError && data.length === 0 && (
         <div className="text-center py-16 text-gray-400">No reservation data found.</div>
       )}
-      {!loading && !error && data.map((branch) => (
+      {!isError && data.map((branch) => (
         <BranchSection key={branch.branch_id} branch={branch} holidays={allHolidays} />
       ))}
     </div>

@@ -8,7 +8,7 @@
  * each card surfaces coverage and the headline omits demographic claims until
  * coverage is meaningful (handled server-side).
  */
-import { useEffect, useState } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import {
   PieChart, Pie, Cell,
   BarChart, Bar,
@@ -305,18 +305,16 @@ function Empty({ label }) {
 
 export default function Persona() {
   const { isAll, selected, branches, selectBranch, canSelectAll } = useBranch();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    setLoading(true);
-    const params = { months: 12 };
-    if (!isAll && selected) params.branch_id = selected;
-    getPersonas(params)
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  }, [isAll, selected]);
+  const { data, isPending } = useQuery({
+    queryKey: ["guest-persona", isAll, selected],
+    queryFn: () => {
+      const params = { months: 12 };
+      if (!isAll && selected) params.branch_id = selected;
+      return getPersonas(params);
+    },
+    placeholderData: keepPreviousData,
+  });
 
   const personas = data?.personas || [];
 
@@ -331,7 +329,7 @@ export default function Persona() {
         </div>
       </div>
 
-      {loading ? (
+      {isPending && !data ? (
         <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Building personas…</div>
       ) : !personas.length ? (
         <div className="text-center text-gray-400 py-16 text-sm">No data available.</div>

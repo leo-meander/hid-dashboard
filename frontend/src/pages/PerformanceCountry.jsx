@@ -4,6 +4,7 @@
  * + Branch Compare: side-by-side country data across multiple branches.
  */
 import { useEffect, useState, useMemo, useRef } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import {
   AreaChart, Area,
@@ -41,8 +42,6 @@ function fmtPct(val) {
 
 export default function PerformanceCountry() {
   const { isAll, selected, branches } = useBranch();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [view, setView] = useState("monthly"); // weekly | monthly | share | compare | branch
   const [filterCountry, setFilterCountry] = useState("");
   const [dateType, setDateType] = useState("check_in"); // check_in | booked
@@ -50,8 +49,6 @@ export default function PerformanceCountry() {
   // Share % view state — distribution of a metric across countries per period.
   const [shareMetric, setShareMetric] = useState("reservations"); // reservations | revenue
   const [shareGranularity, setShareGranularity] = useState("monthly"); // monthly | weekly
-  const [shareData, setShareData] = useState(null);
-  const [shareLoading, setShareLoading] = useState(true);
   const [shareSelected, setShareSelected] = useState([]); // country names ticked for trend
 
   // Trend table sort state. sortKey is one of:
@@ -64,15 +61,11 @@ export default function PerformanceCountry() {
   const now = new Date();
   const [cmpYear, setCmpYear] = useState(now.getFullYear());
   const [cmpMonth, setCmpMonth] = useState(now.getMonth() + 1);
-  const [cmpData, setCmpData] = useState(null);
-  const [cmpLoading, setCmpLoading] = useState(false);
 
   // Branch compare state — multi-select
   const [selectedBranches, setSelectedBranches] = useState([]);
   const [branchYear, setBranchYear] = useState(now.getFullYear());
   const [branchMonth, setBranchMonth] = useState(now.getMonth() + 1);
-  const [branchDataMap, setBranchDataMap] = useState({}); // { branchId: apiData }
-  const [branchLoading, setBranchLoading] = useState(false);
 
   // When entering branch view, auto-select current branch if on a specific one
   useEffect(() => {
@@ -81,77 +74,63 @@ export default function PerformanceCountry() {
     }
   }, [view, isAll, selected]);
 
-  // Load trend data (weekly/monthly)
-  const loadTrend = () => {
-    setLoading(true);
-    const params = { view, limit: 500, date_type: dateType };
-    if (!isAll && selected) params.branch_id = selected;
+  // Trend query (weekly / monthly views)
+  const { data, isPending: trendPending } = useQuery({
+    queryKey: ["country-trend", view, selected, isAll, dateType],
+    queryFn: () => {
+      const params = { view, limit: 500, date_type: dateType };
+      if (!isAll && selected) params.branch_id = selected;
+      return axios.get("/api/metrics/country-reservations", { params }).then((r) => r.data.data);
+    },
+    enabled: view === "weekly" || view === "monthly",
+    placeholderData: keepPreviousData,
+  });
 
-    axios.get("/api/metrics/country-reservations", { params })
-      .then((r) => setData(r.data.data))
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  };
+  // Share % query
+  const { data: shareData, isPending: sharePending } = useQuery({
+    queryKey: ["country-share", shareGranularity, selected, isAll, dateType],
+    queryFn: () => {
+      const params = { view: shareGranularity, limit: 500, date_type: dateType };
+      if (!isAll && selected) params.branch_id = selected;
+      return axios.get("/api/metrics/country-reservations", { params }).then((r) => r.data.data);
+    },
+    enabled: view === "share",
+    placeholderData: keepPreviousData,
+  });
 
-  // Load Share % data — same endpoint as the trend view, but driven by the
-  // tab's own granularity toggle (independent of the weekly/monthly buttons).
-  const loadShare = () => {
-    setShareLoading(true);
-    const params = { view: shareGranularity, limit: 500, date_type: dateType };
-    if (!isAll && selected) params.branch_id = selected;
+  // YoY compare query
+  const { data: cmpData, isPending: cmpPending } = useQuery({
+    queryKey: ["country-yoy", cmpYear, cmpMonth, selected, isAll, dateType],
+    queryFn: () => {
+      const params = { year: cmpYear, month: cmpMonth, date_type: dateType };
+      if (!isAll && selected) params.branch_id = selected;
+      return axios.get("/api/metrics/country-yoy-insights", { params }).then((r) => r.data.data);
+    },
+    enabled: view === "compare",
+    placeholderData: keepPreviousData,
+  });
 
-    axios.get("/api/metrics/country-reservations", { params })
-      .then((r) => setShareData(r.data.data))
-      .catch(() => setShareData(null))
-      .finally(() => setShareLoading(false));
-  };
-
-  // Load YoY compare data
-  const loadCompare = () => {
-    setCmpLoading(true);
-    const params = { year: cmpYear, month: cmpMonth, date_type: dateType };
-    if (!isAll && selected) params.branch_id = selected;
-
-    axios.get("/api/metrics/country-yoy-insights", { params })
-      .then((r) => setCmpData(r.data.data))
-      .catch(() => setCmpData(null))
-      .finally(() => setCmpLoading(false));
-  };
-
-  // Load branch compare data — fetch each selected branch in parallel
-  const loadBranchCompare = () => {
-    if (selectedBranches.length === 0) {
-      setBranchDataMap({});
-      return;
-    }
-    setBranchLoading(true);
-    const requests = selectedBranches.map((bid) =>
-      axios.get("/api/metrics/country-yoy-insights", {
-        params: { year: branchYear, month: branchMonth, branch_id: bid, date_type: dateType },
-      }).then((r) => ({ bid, data: r.data.data }))
-        .catch(() => ({ bid, data: null }))
-    );
-
-    Promise.all(requests)
-      .then((results) => {
+  // Branch compare query — fetch each selected branch in parallel
+  const { data: branchQueryData, isPending: branchPending } = useQuery({
+    queryKey: ["country-branch", selectedBranches, branchYear, branchMonth, dateType],
+    queryFn: () => {
+      const requests = selectedBranches.map((bid) =>
+        axios.get("/api/metrics/country-yoy-insights", {
+          params: { year: branchYear, month: branchMonth, branch_id: bid, date_type: dateType },
+        }).then((r) => ({ bid, data: r.data.data }))
+          .catch(() => ({ bid, data: null }))
+      );
+      return Promise.all(requests).then((results) => {
         const map = {};
         for (const r of results) map[r.bid] = r.data;
-        setBranchDataMap(map);
-      })
-      .finally(() => setBranchLoading(false));
-  };
+        return map;
+      });
+    },
+    enabled: view === "branch" && selectedBranches.length > 0,
+    placeholderData: keepPreviousData,
+  });
 
-  useEffect(() => {
-    if (view === "compare") {
-      loadCompare();
-    } else if (view === "branch") {
-      loadBranchCompare();
-    } else if (view === "share") {
-      loadShare();
-    } else {
-      loadTrend();
-    }
-  }, [selected, isAll, view, cmpYear, cmpMonth, branchYear, branchMonth, selectedBranches, dateType, shareGranularity]);
+  const branchDataMap = branchQueryData || {};
 
   const periods = data?.periods || [];
   const allCountries = data?.countries || [];
@@ -265,8 +244,8 @@ export default function PerformanceCountry() {
     : view === "branch"
     ? `${MONTHS[branchMonth - 1]} ${branchYear} — Branch Comparison`
     : view === "share"
-    ? `% share of ${shareMetric === "revenue" ? "revenue" : "reservations"} \u2014 last 7 ${shareGranularity === "monthly" ? "months" : "weeks"}`
-    : `All countries \u2014 last 7 ${view === "monthly" ? "months" : "weeks"}`;
+    ? `% share of ${shareMetric === "revenue" ? "revenue" : "reservations"} — last 7 ${shareGranularity === "monthly" ? "months" : "weeks"}`
+    : `All countries — last 7 ${view === "monthly" ? "months" : "weeks"}`;
 
   // Country filter options differ per view
   const countryFilterOptions = useMemo(() => {
@@ -357,7 +336,7 @@ export default function PerformanceCountry() {
 
       {/* ── Share % View ── */}
       {view === "share" ? (
-        shareLoading ? (
+        sharePending && !shareData ? (
           <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
         ) : !shareData || (shareData.countries || []).length === 0 ? (
           <div className="text-center text-gray-400 py-16 text-sm">No data available.</div>
@@ -395,7 +374,7 @@ export default function PerformanceCountry() {
               );
             })}
           </div>
-          {branchLoading ? (
+          {branchPending && !branchQueryData ? (
             <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
           ) : selectedBranches.length === 0 ? (
             <div className="text-center text-gray-400 py-16 text-sm">Select at least one branch to compare.</div>
@@ -412,7 +391,7 @@ export default function PerformanceCountry() {
         </>
       ) : view === "compare" ? (
         /* ── YoY Compare View ── */
-        cmpLoading ? (
+        cmpPending && !cmpData ? (
           <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
         ) : !cmpData || cmpData.countries?.length === 0 ? (
           <div className="text-center text-gray-400 py-16 text-sm">No data available.</div>
@@ -421,7 +400,7 @@ export default function PerformanceCountry() {
         )
       ) : (
         /* ── Trend View (Weekly / Monthly) ── */
-        loading ? (
+        trendPending && !data ? (
           <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
         ) : !data || countries.length === 0 ? (
           <div className="text-center text-gray-400 py-16 text-sm">No data available.</div>
@@ -1079,7 +1058,7 @@ function PctChange({ current, previous, label }) {
   return (
     <div className="flex items-center gap-1.5 mt-1">
       <span className={"text-xs font-medium " + cls}>
-        {isUp ? "\u25B2" : pct < 0 ? "\u25BC" : ""}{Math.abs(pct).toFixed(1)}%
+        {isUp ? "▲" : pct < 0 ? "▼" : ""}{Math.abs(pct).toFixed(1)}%
       </span>
       <span className="text-xs text-gray-400">vs {label}</span>
     </div>
@@ -1087,7 +1066,7 @@ function PctChange({ current, previous, label }) {
 }
 
 
-/* \u2500\u2500 CountryCombobox \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+/* ── CountryCombobox ───────────────────────────────────────────────────────────
  * Searchable replacement for the old <select> filter. Needed because backfilling
  * NULL guest_country to "Unknown" surfaced 50+ countries that used to be hidden,
  * making a plain dropdown unwieldy.
@@ -1162,11 +1141,11 @@ function CountryCombobox({ value, onChange, options }) {
           className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs px-1"
           title="Clear"
         >
-          \u00D7
+          ×
         </button>
       ) : (
         <span className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none text-xs">
-          \u25BE
+          ▾
         </span>
       )}
 

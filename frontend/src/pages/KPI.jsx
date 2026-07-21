@@ -1,7 +1,8 @@
 /**
  * KPI Page — editable predicted OCC% (room/dorm split) + current & next month forecasts
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import KPICard from "../components/KPICard";
 import SyncBadge from "../components/SyncBadge";
@@ -19,20 +20,21 @@ export default function KPI() {
   const now = new Date();
   const [year,  setYear]  = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
-  const [data,  setData]  = useState([]);
-  const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState({});
 
-  const fetchData = () => {
-    setLoading(true);
-    const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
-    axios.get(`/api/kpi/summary?year=${year}&month=${month}${bParam}`)
-      .then((r) => setData(r.data.data || []))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
+  const queryClient = useQueryClient();
 
-  useEffect(() => { fetchData(); }, [year, month, selected, isAll]);
+  const { data: rawData, isPending } = useQuery({
+    queryKey: ["kpi-summary", year, month, selected, isAll],
+    queryFn: () => {
+      const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
+      return axios.get(`/api/kpi/summary?year=${year}&month=${month}${bParam}`)
+        .then((r) => r.data.data || []);
+    },
+    placeholderData: keepPreviousData,
+  });
+
+  const data = rawData ?? [];
 
   const handleOccChange = (branchId, field, val) => {
     setEditing((prev) => ({ ...prev, [branchId]: { ...prev[branchId], [field]: val } }));
@@ -50,7 +52,7 @@ export default function KPI() {
       delete n[branchId];
       return n;
     });
-    fetchData();
+    queryClient.invalidateQueries({ queryKey: ["kpi-summary"] });
   };
 
   const hasSplit = (b) => b.total_room_count > 0 && b.total_dorm_count > 0;
@@ -115,9 +117,9 @@ export default function KPI() {
         </div>
       </div>
 
-      {loading ? (
+      {isPending && !data.length ? (
         <div className="text-center py-12">
-          <div className="text-gray-400 animate-pulse text-lg">Loading\u2026</div>
+          <div className="text-gray-400 animate-pulse text-lg">Loading…</div>
           <p className="text-xs text-gray-300 mt-2">Please wait ~30s on first load (data is cached for 3 hours)</p>
         </div>
       ) : data.length === 0 ? (

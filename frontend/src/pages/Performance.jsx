@@ -1,9 +1,10 @@
 /**
  * Performance Hub — links to sub-pages + KPI Target vs Actual grid (editable)
  */
-import { useEffect, useState, useCallback } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 
 // ── Period helpers ──────────────────────────────────────────────────────────
@@ -56,20 +57,18 @@ const PERIOD_OPTIONS = [
 
 function KPIAchievement({ branchId }) {
   const [period, setPeriod] = useState("90d");
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    const { from, to } = getPeriodRange(period);
-    setLoading(true);
-    const params = `date_from=${from}&date_to=${to}` + (branchId ? `&branch_id=${branchId}` : "");
-    axios.get("/api/kpi/period-achievement?" + params)
-      .then(r => {
+  const { data, isPending } = useQuery({
+    queryKey: ["kpi-achievement", period, branchId],
+    queryFn: () => {
+      const { from, to } = getPeriodRange(period);
+      const params = `date_from=${from}&date_to=${to}` + (branchId ? `&branch_id=${branchId}` : "");
+      return axios.get("/api/kpi/period-achievement?" + params).then(r => {
         const rows = r.data.data || [];
         if (branchId) {
-          setData(rows[0] || null);
+          return rows[0] || null;
         } else {
-          if (!rows.length) { setData(null); return; }
+          if (!rows.length) return null;
           // Branches use different currencies — roll up the group total in VND,
           // the common denominator stored alongside every native amount.
           const agg = {
@@ -88,12 +87,12 @@ function KPIAchievement({ branchId }) {
             agg.daily_goal_vnd = agg.target_revenue_vnd / agg.total_days;
             agg.daily_actual_vnd = agg.actual_revenue_vnd / agg.total_days;
           }
-          setData(agg);
+          return agg;
         }
-      })
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  }, [period, branchId]);
+      });
+    },
+    placeholderData: keepPreviousData,
+  });
 
   const fmtDate = (s) => {
     const d = new Date(s + "T00:00:00");
@@ -101,7 +100,7 @@ function KPIAchievement({ branchId }) {
   };
 
   const pct = data?.achievement_pct;
-  const pctDisplay = pct != null ? (pct * 100).toFixed(1) + "%" : "\u2014";
+  const pctDisplay = pct != null ? (pct * 100).toFixed(1) + "%" : "—";
   const pctColor =
     pct == null ? "text-gray-400" :
     pct >= 1.0  ? "text-green-600" :
@@ -118,18 +117,18 @@ function KPIAchievement({ branchId }) {
 
   const cur = data?.currency || (data?.branches?.[0]?.currency) || "";
   const fmtVal = (v) => {
-    if (v == null) return "\u2014";
+    if (v == null) return "—";
     const sym = CURRENCY_SYMBOLS[cur] || cur || "";
     return sym + new Intl.NumberFormat("en").format(Math.round(v));
   };
 
   const fmtBranch = (v, c) => {
-    if (v == null) return "\u2014";
+    if (v == null) return "—";
     const sym = CURRENCY_SYMBOLS[c] || c || "";
     return sym + new Intl.NumberFormat("en").format(Math.round(v));
   };
 
-  const fmtVnd = (v) => (v == null ? "\u2014" : "\u20ab" + new Intl.NumberFormat("en").format(Math.round(v)));
+  const fmtVnd = (v) => (v == null ? "—" : "₫" + new Intl.NumberFormat("en").format(Math.round(v)));
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
@@ -168,7 +167,7 @@ function KPIAchievement({ branchId }) {
       </div>
 
       <div className="px-5 py-5">
-        {loading ? (
+        {isPending && !data ? (
           <div className="text-center py-4 text-gray-400 animate-pulse">Loading...</div>
         ) : !data ? (
           <div className="text-center py-4 text-gray-400">No data available</div>
@@ -209,7 +208,7 @@ function KPIAchievement({ branchId }) {
             </div>
             {data.branches.map(row => {
               const rPct = row.achievement_pct;
-              const rPctDisplay = rPct != null ? (rPct * 100).toFixed(1) + "%" : "\u2014";
+              const rPctDisplay = rPct != null ? (rPct * 100).toFixed(1) + "%" : "—";
               const rPctColor =
                 rPct == null ? "text-gray-400" :
                 rPct >= 1.0  ? "text-green-600" :
@@ -246,7 +245,7 @@ function KPIAchievement({ branchId }) {
                   </div>
                   <p className="text-xs text-gray-400">
                     Daily Goal {fmtBranch(row.daily_goal, row.currency)}
-                    {" \u00b7 "}
+                    {" · "}
                     Daily Actual {fmtBranch(row.daily_actual, row.currency)}
                     {dailyDiff != null && (
                       <span className={Number(dailyDiff) >= 0 ? "text-green-600 ml-1" : "text-red-500 ml-1"}>
@@ -276,7 +275,7 @@ function KPIAchievement({ branchId }) {
             </div>
             <p className="text-xs text-gray-400">
               Daily Goal {fmtVal(data.daily_goal)}
-              {" \u00b7 "}
+              {" · "}
               Daily Actual {fmtVal(data.daily_actual)}
               {data.daily_goal > 0 && (() => {
                 const diff = ((data.daily_actual - data.daily_goal) / data.daily_goal * 100).toFixed(1);
@@ -295,16 +294,16 @@ function KPIAchievement({ branchId }) {
 }
 
 const CARDS = [
-  { to: "/performance/daily", title: "Daily Brief", desc: "OCC%, Revenue, ADR, RevPAR per branch", color: "bg-indigo-50 border-indigo-200", icon: "\uD83D\uDCC5" },
-  { to: "/performance/weekly", title: "Weekly Brief", desc: "Revenue trend, cancellation %, OTA mix", color: "bg-emerald-50 border-emerald-200", icon: "\uD83D\uDCCA" },
-  { to: "/performance/monthly", title: "Monthly Brief", desc: "OCC/Revenue/ADR/RevPAR + country breakdown", color: "bg-amber-50 border-amber-200", icon: "\uD83D\uDDD3\uFE0F" },
-  { to: "/performance/ota", title: "OTA Channel Mix", desc: "OTA vs Direct split by bookings and revenue", color: "bg-rose-50 border-rose-200", icon: "\uD83D\uDD00" },
+  { to: "/performance/daily", title: "Daily Brief", desc: "OCC%, Revenue, ADR, RevPAR per branch", color: "bg-indigo-50 border-indigo-200", icon: "📅" },
+  { to: "/performance/weekly", title: "Weekly Brief", desc: "Revenue trend, cancellation %, OTA mix", color: "bg-emerald-50 border-emerald-200", icon: "📊" },
+  { to: "/performance/monthly", title: "Monthly Brief", desc: "OCC/Revenue/ADR/RevPAR + country breakdown", color: "bg-amber-50 border-amber-200", icon: "🗓️" },
+  { to: "/performance/ota", title: "OTA Channel Mix", desc: "OTA vs Direct split by bookings and revenue", color: "bg-rose-50 border-rose-200", icon: "🔀" },
 ];
 
 const MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function fmtNum(val) {
-  if (val == null || val === 0) return "\u2014";
+  if (val == null || val === 0) return "—";
   return new Intl.NumberFormat("en").format(Math.round(val));
 }
 
@@ -327,20 +326,17 @@ export default function Performance() {
   const { isAll, selected, currentBranch } = useBranch();
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(currentYear);
-  const [grid, setGrid] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
 
-  const load = useCallback(() => {
-    setLoading(true);
-    const params = { year };
-    if (!isAll && selected) params.branch_id = selected;
-    axios.get("/api/kpi/yearly-grid", { params })
-      .then((r) => setGrid(r.data.data))
-      .catch(() => setGrid(null))
-      .finally(() => setLoading(false));
-  }, [year, selected, isAll]);
-
-  useEffect(load, [load]);
+  const { data: grid, isPending } = useQuery({
+    queryKey: ["kpi-yearly-grid", year, selected, isAll],
+    queryFn: () => {
+      const params = { year };
+      if (!isAll && selected) params.branch_id = selected;
+      return axios.get("/api/kpi/yearly-grid", { params }).then(r => r.data.data);
+    },
+    placeholderData: keepPreviousData,
+  });
 
   const branches = grid?.branches || [];
   const months = grid?.months || [];
@@ -352,7 +348,7 @@ export default function Performance() {
       year,
       month,
       actual_revenue: value,
-    }).then(() => load());
+    }).then(() => queryClient.invalidateQueries({ queryKey: ["kpi-yearly-grid"] }));
   };
 
   return (
@@ -390,7 +386,7 @@ export default function Performance() {
           </select>
         </div>
 
-        {loading ? (
+        {isPending && !grid ? (
           <div className="text-center text-gray-400 py-12 text-sm animate-pulse">Loading...</div>
         ) : !grid || branches.length === 0 ? (
           <div className="text-center text-gray-400 py-12 text-sm">No KPI data available for {year}.</div>
@@ -478,12 +474,12 @@ function BranchCells({ data, currency, isTotal, month, onSave }) {
   return (
     <>
       <td className={`px-2 py-2 text-right tabular-nums border-l border-gray-100 ${bg}`}>
-        {data.target > 0 ? sym + fmtNum(data.target) : <span className="text-gray-300">{"\u2014"}</span>}
+        {data.target > 0 ? sym + fmtNum(data.target) : <span className="text-gray-300">{"—"}</span>}
       </td>
       <td
         className={`px-2 py-2 text-right tabular-nums ${bg} ${!isTotal ? "cursor-pointer hover:bg-indigo-50" : ""}`}
         onClick={startEdit}
-        title={!isTotal ? (data.is_override ? "Manually overridden (click to edit) \u00b7 Adjusted = raw \u00d7 (1\u2212deduct%) + other rev" : "Click to override \u00b7 Adjusted = raw \u00d7 (1\u2212deduct%) + other rev") : undefined}
+        title={!isTotal ? (data.is_override ? "Manually overridden (click to edit) · Adjusted = raw × (1−deduct%) + other rev" : "Click to override · Adjusted = raw × (1−deduct%) + other rev") : undefined}
       >
         {editing ? (
           <input
@@ -497,7 +493,7 @@ function BranchCells({ data, currency, isTotal, month, onSave }) {
           />
         ) : (
           <span className={data.is_override ? "border-b border-dashed border-indigo-400" : ""}>
-            {data.actual > 0 ? sym + fmtNum(data.actual) : <span className="text-gray-300">{"\u2014"}</span>}
+            {data.actual > 0 ? sym + fmtNum(data.actual) : <span className="text-gray-300">{"—"}</span>}
           </span>
         )}
       </td>
@@ -507,7 +503,7 @@ function BranchCells({ data, currency, isTotal, month, onSave }) {
             {data.hit_pct.toFixed(1)}%
           </span>
         ) : (
-          <span className="text-gray-300">{"\u2014"}</span>
+          <span className="text-gray-300">{"—"}</span>
         )}
       </td>
     </>
