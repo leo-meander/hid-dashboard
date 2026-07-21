@@ -25,10 +25,13 @@ from app.config import settings
 
 log = logging.getLogger(__name__)
 
-_LARK_AUTH_URL = "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal"
+_LARK_AUTH_URL    = "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal"
 _LARK_RECORDS_URL = "https://open.larksuite.com/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+_LARK_FIELDS_URL  = "https://open.larksuite.com/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
 
 _token_cache: dict = {}
+_link_map_cache: dict = {}   # record_id → display name for linked tables
+_LINK_MAP_TTL = 3600         # 1 hour — project names rarely change
 
 # Branch prefix patterns from Project field → branch_key
 # Matches [1948], [Sai Gon], [Taipei], [Oani], [Osaka], [Saigon], [SGN]
@@ -101,6 +104,107 @@ def _get_token() -> Optional[str]:
 
 
 _LARK_SEARCH_URL = "https://open.larksuite.com/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/search"
+
+
+def _get_link_map() -> dict:
+    """Build map of record_id → display name for linked tables (e.g. Project field).
+
+    Mirrors Apps Script buildLinkMap_():
+    1. Fetch field definitions for the tasks table
+    2. For each linked-record field, fetch all records from the linked table
+    3. Map record_id → first field value (primary = display name like "[1948] Ads")
+
+    Result is cached 1 hour — project names don't change often.
+    """
+    global _link_map_cache
+    cached = _link_map_cache.get("data")
+    if cached and (time.time() - _link_map_cache.get("ts", 0)) < _LINK_MAP_TTL:
+        return cached
+
+    token = _get_token()
+    if not token or not settings.LARK_BASE_APP_TOKEN or not settings.LARK_TASKS_TABLE_ID:
+        return {}
+
+    auth_h = {"Authorization": f"Bearer {token}"}
+    result: dict[str, str] = {}
+
+    try:
+        # Step 1: get field definitions to find linked-record fields
+        fields_url = _LARK_FIELDS_URL.format(
+            app_token=settings.LARK_BASE_APP_TOKEN,
+            table_id=settings.LARK_TASKS_TABLE_ID,
+        )
+        resp = requests.get(fields_url, headers=auth_h, params={"page_size": 100}, timeout=15)
+        resp.raise_for_status()
+        fields_data = resp.json().get("data", {})
+        linked_table_ids: set[str] = set()
+        for fld in fields_data.get("items", []):
+            prop = fld.get("property") or {}
+            linked_tid = prop.get("table_id")
+            if linked_tid:
+                linked_table_ids.add(linked_tid)
+
+        # Step 2: for each linked table, fetch records and map id → primary name
+        for ltid in linked_table_ids:
+            try:
+                page_token = None
+                while True:
+                    params: dict = {"page_size": 500}
+                    if page_token:
+                        params["page_token"] = page_token
+                    recs_url = _LARK_RECORDS_URL.format(
+                        app_token=settings.LARK_BASE_APP_TOKEN,
+                        table_id=ltid,
+                    )
+                    r = requests.get(recs_url, headers=auth_h, params=params, timeout=15)
+                    r.raise_for_status()
+                    d = r.json().get("data", {})
+                    for item in d.get("items", []):
+                        rid = item.get("record_id", "")
+                        fields = item.get("fields", {})
+                        # Primary field = first key with a non-empty string value
+                        for v in fields.values():
+                            if isinstance(v, str) and v.strip():
+                                result[rid] = v.strip()
+                                break
+                    if not d.get("has_more"):
+                        break
+                    page_token = d.get("page_token")
+            except Exception as exc:
+                log.warning("Lark link map: failed to fetch linked table %s: %s", ltid, exc)
+
+        log.info("Lark link map: resolved %d linked records", len(result))
+    except Exception as exc:
+        log.warning("Lark link map build failed: %s", exc)
+
+    _link_map_cache["data"] = result
+    _link_map_cache["ts"] = time.time()
+    return result
+
+
+def _resolve_project(raw_val) -> str:
+    """Resolve a Project field value to its display name.
+
+    Lark linked-record fields return {'link_record_ids': ['recXXX', ...]} or
+    a list of such objects. Resolve IDs via _get_link_map() to get the text
+    name like '[1948] Ads'.
+    """
+    if not raw_val:
+        return ""
+    if isinstance(raw_val, str):
+        return raw_val  # already plain text (e.g. in older API versions)
+    link_map = _get_link_map()
+    ids: list[str] = []
+    if isinstance(raw_val, dict):
+        ids = raw_val.get("link_record_ids") or []
+    elif isinstance(raw_val, list):
+        for item in raw_val:
+            if isinstance(item, dict):
+                ids += item.get("link_record_ids") or []
+                if item.get("record_id"):
+                    ids.append(item["record_id"])
+    names = [link_map.get(rid, "") for rid in ids if rid]
+    return ", ".join(n for n in names if n)
 
 
 def _fetch_all_records(cutoff_ms: Optional[int] = None) -> list[dict]:
@@ -223,7 +327,7 @@ def _get_yearly_agg(year: int) -> dict:
     agg: dict[str, dict[int, dict]] = {}
 
     for rec in records:
-        project = rec.get("Project") or ""
+        project = _resolve_project(rec.get("Project"))
         branch_key = _parse_branch_from_project(project)
         if not branch_key:
             continue

@@ -62,13 +62,14 @@ def debug_lark():
         result["fetch_error"] = str(exc)
         return {"success": False, "data": result, "error": str(exc)}
 
-    # Show raw Project field values from first 10 records
+    # Show resolved Project names from first 20 records
+    from app.services.lark_service import _resolve_project
     project_samples = []
     for rec in records[:20]:
         pv = rec.get("Project")
-        if pv:
-            project_samples.append(repr(pv))
-    result["project_field_samples"] = project_samples[:10]
+        resolved = _resolve_project(pv) if pv else ""
+        project_samples.append({"raw": repr(pv)[:80], "resolved": resolved})
+    result["project_field_samples"] = project_samples
 
     try:
         import datetime as _dt
