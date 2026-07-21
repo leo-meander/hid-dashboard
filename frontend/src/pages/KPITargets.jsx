@@ -2,7 +2,8 @@
  * KPI Targets — set monthly revenue targets + predicted OCC% per branch
  * Table: rows = branches, columns = months (Jan–Dec)
  */
-import { useEffect, useState, useCallback } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -34,22 +35,20 @@ function cellKey(branchId, month) {
 export default function KPITargets() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
-  const [branches, setBranches] = useState([]);
-  const [targetsMap, setTargetsMap] = useState({}); // { "branchId_month": target }
   const [edits, setEdits] = useState({});            // { "branchId_month": { rev, occ } }
   const [saving, setSaving] = useState({});          // { branchId: true }
-  const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
+
+  const queryClient = useQueryClient();
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3000);
   };
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    setEdits({});
-    try {
+  const { data: pageData, isPending } = useQuery({
+    queryKey: ["kpi-targets", year],
+    queryFn: async () => {
       const [brRes, tgRes] = await Promise.all([
         axios.get("/api/branches"),
         axios.get(`/api/kpi/targets?year=${year}`),
@@ -63,16 +62,16 @@ export default function KPITargets() {
         map[cellKey(t.branch_id, t.month)] = t;
       }
 
-      setBranches(branchList.filter((b) => b.is_active !== false));
-      setTargetsMap(map);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  }, [year]);
+      return {
+        branches: branchList.filter((b) => b.is_active !== false),
+        targetsMap: map,
+      };
+    },
+    placeholderData: keepPreviousData,
+  });
 
-  useEffect(() => { loadData(); }, [loadData]);
+  const branches = pageData?.branches ?? [];
+  const targetsMap = pageData?.targetsMap ?? {};
 
   const handleRevChange = (branchId, month, currency, rawInput) => {
     const key = cellKey(branchId, month);
@@ -127,7 +126,8 @@ export default function KPITargets() {
     try {
       await Promise.all(calls);
       showToast(`Saved ${branch.name}`);
-      await loadData();
+      setEdits({});
+      queryClient.invalidateQueries({ queryKey: ["kpi-targets", year] });
     } catch (e) {
       showToast("Save failed: " + (e.response?.data?.detail || e.message), "error");
     } finally {
@@ -180,7 +180,7 @@ export default function KPITargets() {
         </div>
       )}
 
-      {loading ? (
+      {isPending && !pageData ? (
         <div className="text-gray-400 animate-pulse py-8 text-center">Loading…</div>
       ) : (
         <div className="space-y-6">

@@ -3,7 +3,8 @@
  * Shows both Workflow campaigns (automated) and Bulk campaigns (one-time blasts).
  * Uses BranchSelector (top bar) for branch filtering.
  */
-import { useEffect, useState, useMemo } from "react";
+import { useState, useMemo } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import {
   getEmailSummary,
@@ -79,11 +80,6 @@ export default function EmailMarketing() {
   const [tab, setTab] = useState("overview");
   const [typeFilter, setTypeFilter] = useState("");
 
-  const [loading, setLoading] = useState(true);
-  const [summary, setSummary] = useState(null);
-  const [daily, setDaily] = useState([]);
-  const [campaigns, setCampaigns] = useState([]);
-
   const ghlBranch = useMemo(() => isAll ? null : branchToGHL(currentBranch?.name), [currentBranch, isAll]);
 
   const params = useMemo(() => {
@@ -93,29 +89,31 @@ export default function EmailMarketing() {
     return p;
   }, [dateFrom, dateTo, typeFilter, ghlBranch]);
 
-  useEffect(() => {
-    setLoading(true);
-
-    if (tab === "overview") {
+  const { data: overviewData, isPending: overviewPending } = useQuery({
+    queryKey: ["email-overview", params],
+    queryFn: () =>
       Promise.all([
         getEmailSummary(params),
         getEmailDaily(params),
         getEmailByCampaign(params),
-      ])
-        .then(([s, d, c]) => {
-          setSummary(s);
-          setDaily(d || []);
-          setCampaigns(c || []);
-        })
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    } else if (tab === "campaigns") {
-      getEmailByCampaign(params)
-        .then(c => setCampaigns(c || []))
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    }
-  }, [tab, params]);
+      ]).then(([s, d, c]) => ({ summary: s, daily: d || [], campaigns: c || [] })),
+    enabled: tab === "overview",
+    placeholderData: keepPreviousData,
+  });
+
+  const { data: campaignsData, isPending: campaignsPending } = useQuery({
+    queryKey: ["email-campaigns", params],
+    queryFn: () => getEmailByCampaign(params).then(c => c || []),
+    enabled: tab === "campaigns",
+    placeholderData: keepPreviousData,
+  });
+
+  const isPending = tab === "overview" ? overviewPending : campaignsPending;
+  const summary = overviewData?.summary;
+  const daily = overviewData?.daily ?? [];
+  const campaigns = tab === "overview"
+    ? (overviewData?.campaigns ?? [])
+    : (campaignsData ?? []);
 
   return (
     <div className="space-y-6">
@@ -164,7 +162,7 @@ export default function EmailMarketing() {
         </div>
       </div>
 
-      {loading ? (
+      {isPending && !overviewData && !campaignsData ? (
         <div className="text-gray-400 animate-pulse">Loading...</div>
       ) : tab === "overview" ? (
         <OverviewTab summary={summary} daily={daily} campaigns={campaigns} />

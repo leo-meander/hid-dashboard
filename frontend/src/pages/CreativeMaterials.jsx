@@ -2,8 +2,9 @@
  * CreativeMaterials — Visual assets + KOL videos component library.
  * Conditional fields for KOL vs non-KOL materials.
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import { listMaterials, createMaterial, getMaterial } from "../api/materials";
 import { listAngles } from "../api/angles";
@@ -27,9 +28,7 @@ const EMPTY = {
 export default function CreativeMaterials() {
   const { selected, isAll } = useBranch();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [rows, setRows] = useState([]);
-  const [angles, setAngles] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
@@ -47,17 +46,21 @@ export default function CreativeMaterials() {
     setSearchParams(p);
   };
 
-  const load = () => {
-    setLoading(true);
-    const p = { ...f };
-    if (!isAll && selected) p.branch_id = selected;
-    Object.keys(p).forEach(k => { if (!p[k]) delete p[k]; });
-    if (p.paid_ads_eligible) p.paid_ads_eligible = p.paid_ads_eligible === "true";
-    Promise.all([listMaterials(p), listAngles({ branch_id: !isAll ? selected : undefined })])
-      .then(([m, a]) => { setRows(m); setAngles(a); })
-      .finally(() => setLoading(false));
-  };
-  useEffect(load, [selected, searchParams.toString()]);
+  const { data: pageData, isPending } = useQuery({
+    queryKey: ["creative-materials", selected, isAll, searchParams.toString()],
+    queryFn: () => {
+      const p = { ...f };
+      if (!isAll && selected) p.branch_id = selected;
+      Object.keys(p).forEach(k => { if (!p[k]) delete p[k]; });
+      if (p.paid_ads_eligible) p.paid_ads_eligible = p.paid_ads_eligible === "true";
+      return Promise.all([listMaterials(p), listAngles({ branch_id: !isAll ? selected : undefined })])
+        .then(([m, a]) => ({ rows: m, angles: a }));
+    },
+    placeholderData: keepPreviousData,
+  });
+
+  const rows = pageData?.rows ?? [];
+  const angles = pageData?.angles ?? [];
 
   const openDetail = (id) => getMaterial(id).then(setDetail);
 
@@ -77,7 +80,11 @@ export default function CreativeMaterials() {
     if (!data.usage_rights_until) delete data.usage_rights_until;
     if (!data.assigned_to) delete data.assigned_to;
     if (!data.order_status) delete data.order_status;
-    createMaterial(data).then(() => { setShowForm(false); setForm(EMPTY); load(); }).finally(() => setSaving(false));
+    createMaterial(data).then(() => {
+      setShowForm(false);
+      setForm(EMPTY);
+      queryClient.invalidateQueries({ queryKey: ["creative-materials"] });
+    }).finally(() => setSaving(false));
   };
 
   return (
@@ -111,7 +118,7 @@ export default function CreativeMaterials() {
         </select>
       </div>
 
-      {loading ? <div className="text-gray-400 text-sm animate-pulse">Loading...</div> :
+      {isPending && !pageData ? <div className="text-gray-400 text-sm animate-pulse">Loading...</div> :
        rows.length === 0 ? <div className="text-gray-400 text-sm">No materials found.</div> : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {rows.map(m => (

@@ -10,6 +10,7 @@
  * native-currency display, simple month tables.
  */
 import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 import SyncBadge from "../components/SyncBadge";
 import {
@@ -183,35 +184,33 @@ export default function BudgetPlanner() {
 
 /* ── Yearly Plan Tab ──────────────────────────────────────────────────────── */
 function YearlyPlanTab({ branchId, year }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [total, setTotal] = useState("");
   const [pcts, setPcts] = useState(Array(12).fill("8.33"));
   const [saving, setSaving] = useState(false);
 
-  const load = () => {
-    setLoading(true);
-    getYearlyPlan({ branch_id: branchId, year })
-      .then((d) => {
-        setData(d);
-        setTotal(String(Math.round(d.total_vnd || 0)));
-        const arr = Array(12).fill("8.33");
-        for (const m of d.months || []) {
-          arr[m.month - 1] = String(m.pct);
-        }
-        setPcts(arr);
-      })
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  };
-  useEffect(load, [branchId, year]);
+  const { data, isPending } = useQuery({
+    queryKey: ["budget-yearly-plan", branchId, year],
+    queryFn: () => getYearlyPlan({ branch_id: branchId, year }),
+    placeholderData: keepPreviousData,
+  });
 
-  if (loading || !data) {
+  useEffect(() => {
+    if (!data) return;
+    setTotal(String(Math.round(data.total_vnd || 0)));
+    const arr = Array(12).fill("8.33");
+    for (const m of data.months || []) {
+      arr[m.month - 1] = String(m.pct);
+    }
+    setPcts(arr);
+  }, [data]);
+
+  if (isPending && !data) {
     return <div className="text-center text-gray-400 py-12 text-sm animate-pulse">Loading…</div>;
   }
 
-  const cur = data.currency || "VND";
-  const rate = data.rate_to_vnd || 1;
+  const cur = data?.currency || "VND";
+  const rate = data?.rate_to_vnd || 1;
   const totalNum = Number(total) || 0;
   const sumPct = pcts.reduce((s, p) => s + (Number(p) || 0), 0);
   const sumOK = Math.abs(sumPct - 100) < 0.5;
@@ -238,7 +237,7 @@ function YearlyPlanTab({ branchId, year }) {
         monthly_pcts,
         cascade_to_channels: true,
       });
-      load();
+      queryClient.invalidateQueries({ queryKey: ["budget-yearly-plan", branchId, year] });
     } finally {
       setSaving(false);
     }
@@ -334,43 +333,43 @@ function YearlyPlanTab({ branchId, year }) {
 
 /* ── Channel Splits Tab ───────────────────────────────────────────────────── */
 function ChannelSplitsTab({ branchId, year }) {
-  const [data, setData] = useState(null);
-  const [yearly, setYearly] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [draft, setDraft] = useState({});
   const [savingMonth, setSavingMonth] = useState(null);
   const [applyAll, setApplyAll] = useState({ paid_ads: "", kol: "", crm: "" });
 
-  const load = () => {
-    setLoading(true);
-    getChannelSplits({ branch_id: branchId, year })
-      .then((d) => {
-        setData(d);
-        const init = {};
-        for (const m of d.months) {
-          init[m.month] = {
-            total: String(Math.round(m.total_native || 0)),
-            paid_ads_pct: String(m.paid_ads_pct || 0),
-            kol_pct: String(m.kol_pct || 0),
-            crm_pct: String(m.crm_pct || 0),
-          };
-        }
-        setDraft(init);
-      })
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-    // Actual spend (per-channel allocate vs actual) for the bars below.
-    getYearlyBudget({ branch_id: branchId, year })
-      .then(setYearly)
-      .catch(() => setYearly(null));
-  };
-  useEffect(load, [branchId, year]);
+  const { data, isPending: splitsPending } = useQuery({
+    queryKey: ["budget-channel-splits", branchId, year],
+    queryFn: () => getChannelSplits({ branch_id: branchId, year }),
+    placeholderData: keepPreviousData,
+  });
 
-  if (loading || !data) {
+  const { data: yearly } = useQuery({
+    queryKey: ["budget-yearly", branchId, year],
+    queryFn: () => getYearlyBudget({ branch_id: branchId, year }),
+    placeholderData: keepPreviousData,
+  });
+
+  useEffect(() => {
+    if (!data) return;
+    const init = {};
+    for (const m of data.months) {
+      init[m.month] = {
+        total: String(Math.round(m.total_native || 0)),
+        paid_ads_pct: String(m.paid_ads_pct || 0),
+        kol_pct: String(m.kol_pct || 0),
+        crm_pct: String(m.crm_pct || 0),
+      };
+    }
+    setDraft(init);
+  }, [data]);
+
+  if (splitsPending && !data) {
     return <div className="text-center text-gray-400 py-12 text-sm animate-pulse">Loading…</div>;
   }
-  const cur = data.currency || "VND";
-  const rate = data.rate_to_vnd || 1;
+
+  const cur = data?.currency || "VND";
+  const rate = data?.rate_to_vnd || 1;
 
   const sumPct = (m) => {
     const d = draft[m] || {};
@@ -391,7 +390,8 @@ function ChannelSplitsTab({ branchId, year }) {
     setSavingMonth(m);
     try {
       await upsertBudgetBulk(items);
-      load();
+      queryClient.invalidateQueries({ queryKey: ["budget-channel-splits", branchId, year] });
+      queryClient.invalidateQueries({ queryKey: ["budget-yearly", branchId, year] });
     } finally {
       setSavingMonth(null);
     }
@@ -418,7 +418,8 @@ function ChannelSplitsTab({ branchId, year }) {
       }
     }
     await upsertBudgetBulk(items);
-    load();
+    queryClient.invalidateQueries({ queryKey: ["budget-channel-splits", branchId, year] });
+    queryClient.invalidateQueries({ queryKey: ["budget-yearly", branchId, year] });
   };
 
   return (
@@ -571,23 +572,20 @@ function ChannelSplitsTab({ branchId, year }) {
 
 /* ── Monthly Tab ──────────────────────────────────────────────────────────── */
 function MonthlyTab({ branchId, year, month }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
 
-  const load = () => {
-    setLoading(true);
-    getMonthlyBudget({ branch_id: branchId, year, month })
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  };
-  useEffect(load, [branchId, year, month]);
+  const { data, isPending } = useQuery({
+    queryKey: ["budget-monthly", branchId, year, month],
+    queryFn: () => getMonthlyBudget({ branch_id: branchId, year, month }),
+    placeholderData: keepPreviousData,
+  });
 
-  if (loading || !data) {
+  if (isPending && !data) {
     return <div className="text-center text-gray-400 py-12 text-sm animate-pulse">Loading…</div>;
   }
-  const cur = data.currency || "VND";
-  const total = data.total;
+
+  const cur = data?.currency || "VND";
+  const total = data?.total;
 
   return (
     <div className="bg-white rounded-lg border p-5 space-y-4">
@@ -640,7 +638,7 @@ function MonthlyTab({ branchId, year, month }) {
             branchId={branchId}
             year={year}
             month={month}
-            onSaved={load}
+            onSaved={() => queryClient.invalidateQueries({ queryKey: ["budget-monthly", branchId, year, month] })}
           />
         ))}
       </div>
@@ -827,21 +825,17 @@ function YtdPaceBar({ months, year, currency, title = "YTD pace" }) {
 
 /* ── Yearly Tab ───────────────────────────────────────────────────────────── */
 function YearlyTab({ branchId, year }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { data, isPending } = useQuery({
+    queryKey: ["budget-yearly", branchId, year],
+    queryFn: () => getYearlyBudget({ branch_id: branchId, year }),
+    placeholderData: keepPreviousData,
+  });
 
-  useEffect(() => {
-    setLoading(true);
-    getYearlyBudget({ branch_id: branchId, year })
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  }, [branchId, year]);
-
-  if (loading || !data) {
+  if (isPending && !data) {
     return <div className="text-center text-gray-400 py-12 text-sm animate-pulse">Loading…</div>;
   }
-  const cur = data.currency || "VND";
+
+  const cur = data?.currency || "VND";
 
   return (
     <div className="bg-white rounded-lg border p-5 space-y-4">

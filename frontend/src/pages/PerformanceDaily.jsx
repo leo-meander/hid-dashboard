@@ -1,7 +1,8 @@
 /**
  * Daily Brief — OCC%, Revenue, ADR, RevPAR per branch with color bands
  */
-import { useEffect, useState, useMemo } from "react";
+import { useState, useMemo } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import TrendChart from "../components/TrendChart";
 import SyncBadge from "../components/SyncBadge";
@@ -38,10 +39,7 @@ export default function PerformanceDaily() {
     const d = new Date(); d.setDate(d.getDate() - 13);
     return d.toISOString().slice(0, 10);
   });
-  const [dateTo,   setDateTo]   = useState(today);
-  const [metrics,  setMetrics]  = useState([]);
-  const [events,   setEvents]   = useState([]);
-  const [loading,  setLoading]  = useState(true);
+  const [dateTo, setDateTo] = useState(today);
 
   // branch lookup map: id → { name, currency }
   const branchMap = useMemo(() => {
@@ -52,20 +50,23 @@ export default function PerformanceDaily() {
     return m;
   }, [branches]);
 
-  useEffect(() => {
-    setLoading(true);
-    const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
-    Promise.all([
-      axios.get(`/api/metrics/daily?date_from=${dateFrom}&date_to=${dateTo}${bParam}`),
-      axios.get(`/api/events?date_from=${dateFrom}&date_to=${dateTo}${bParam}`),
-    ])
-      .then(([mRes, eRes]) => {
-        setMetrics(mRes.data.data || []);
-        setEvents(eRes.data.data || []);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [dateFrom, dateTo, selected, isAll]);
+  const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
+
+  const { data: pageData, isPending } = useQuery({
+    queryKey: ["performance-daily", dateFrom, dateTo, selected, isAll],
+    queryFn: () =>
+      Promise.all([
+        axios.get(`/api/metrics/daily?date_from=${dateFrom}&date_to=${dateTo}${bParam}`),
+        axios.get(`/api/events?date_from=${dateFrom}&date_to=${dateTo}${bParam}`),
+      ]).then(([mRes, eRes]) => ({
+        metrics: mRes.data.data || [],
+        events: eRes.data.data || [],
+      })),
+    placeholderData: keepPreviousData,
+  });
+
+  const metrics = pageData?.metrics ?? [];
+  const events = pageData?.events ?? [];
 
   const branchIds = useMemo(
     () => [...new Set(metrics.map((m) => m.branch_id))].sort(),
@@ -124,7 +125,7 @@ export default function PerformanceDaily() {
         </div>
       )}
 
-      {loading ? (
+      {isPending && !pageData ? (
         <div className="text-gray-400 animate-pulse">Loading…</div>
       ) : metrics.length === 0 ? (
         <div className="bg-white rounded-xl border p-8 text-center text-gray-400">

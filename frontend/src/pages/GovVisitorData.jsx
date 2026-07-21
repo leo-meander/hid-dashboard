@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useAuth } from "../context/AuthContext";
 import SyncBadge from "../components/SyncBadge";
 
@@ -37,37 +38,37 @@ function api(path, opts = {}) {
 export default function GovVisitorData() {
   const { isAdmin } = useAuth();
   const fileRef = useRef(null);
+  const queryClient = useQueryClient();
 
-  const [allData, setAllData] = useState([]);
-  const [destinations, setDestinations] = useState([]);
-  const [years, setYears] = useState([]);
   const [selectedDest, setSelectedDest] = useState("");
   const [selectedYear, setSelectedYear] = useState(null);
   const [compareYear, setCompareYear] = useState(null);
   const [viewMode, setViewMode] = useState("raw");
   const [importYear, setImportYear] = useState(2025);
-  const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState(null);
 
-  const loadAll = (keepYear = false) => {
-    setLoading(true);
-    Promise.all([
-      api("/api/gov-visitor/destinations").then(j => j.success ? j.data : []),
-      api("/api/gov-visitor/years").then(j => j.success ? j.data : []),
-      api("/api/gov-visitor").then(j => j.success ? j.data : []),
-    ]).then(([dests, yrs, data]) => {
-      setDestinations(dests);
-      setYears(yrs);
-      setAllData(data);
-      if (!keepYear && yrs.length > 0) {
-        setSelectedYear(yrs[0]);
-        setCompareYear(yrs[1] ?? null);
-      }
-    }).finally(() => setLoading(false));
-  };
+  const { data: pageData, isPending } = useQuery({
+    queryKey: ["gov-visitor-data"],
+    queryFn: () =>
+      Promise.all([
+        api("/api/gov-visitor/destinations").then(j => j.success ? j.data : []),
+        api("/api/gov-visitor/years").then(j => j.success ? j.data : []),
+        api("/api/gov-visitor").then(j => j.success ? j.data : []),
+      ]).then(([destinations, years, allData]) => ({ destinations, years, allData })),
+    placeholderData: keepPreviousData,
+  });
 
-  useEffect(() => { loadAll(); }, []);
+  const destinations = pageData?.destinations ?? [];
+  const years = pageData?.years ?? [];
+  const allData = pageData?.allData ?? [];
+
+  useEffect(() => {
+    if (selectedYear == null && years.length > 0) {
+      setSelectedYear(years[0]);
+      setCompareYear(years[1] ?? null);
+    }
+  }, [years, selectedYear]);
 
   const handleUpload = async () => {
     const file = fileRef.current?.files?.[0];
@@ -81,7 +82,7 @@ export default function GovVisitorData() {
       const j = await api("/api/gov-visitor/import", { method: "POST", body: fd });
       if (j.success) {
         setMsg({ type: "ok", text: `Imported ${j.data.imported_rows} rows (${j.data.year}) · ${j.data.destinations.join(", ")}` });
-        loadAll(true);
+        queryClient.invalidateQueries({ queryKey: ["gov-visitor-data"] });
       } else {
         setMsg({ type: "err", text: j.error || "Import failed" });
       }
@@ -100,7 +101,7 @@ export default function GovVisitorData() {
     const j = await api(`/api/gov-visitor?${params}`, { method: "DELETE" });
     if (j.success) {
       setMsg({ type: "ok", text: `Deleted ${j.data.deleted_count} rows for ${label}` });
-      loadAll(true);
+      queryClient.invalidateQueries({ queryKey: ["gov-visitor-data"] });
     }
   };
 
@@ -130,6 +131,10 @@ export default function GovVisitorData() {
 
   if (!isAdmin) {
     return <div className="text-center py-16 text-gray-400">Admin access required.</div>;
+  }
+
+  if (isPending && !pageData) {
+    return <div className="flex items-center justify-center h-40 text-gray-400 text-sm">Loading...</div>;
   }
 
   return (
@@ -190,7 +195,7 @@ export default function GovVisitorData() {
         destinations={destinations}
         years={years}
         defaultYear={selectedYear}
-        onSaved={() => loadAll(true)}
+        onSaved={() => queryClient.invalidateQueries({ queryKey: ["gov-visitor-data"] })}
       />
 
       {/* Filters + view mode */}
@@ -242,16 +247,14 @@ export default function GovVisitorData() {
         </div>
       </div>
 
-      {loading && <div className="flex items-center justify-center h-40 text-gray-400 text-sm">Loading...</div>}
-
-      {!loading && allData.length === 0 && (
+      {allData.length === 0 && (
         <div className="text-center py-16 text-gray-400">
           No government visitor data yet. Import an Excel file to get started.
         </div>
       )}
 
       {/* RAW / MOM view */}
-      {!loading && viewMode !== "yoy" && rawGroups.map(({ dest, year, rows }) => (
+      {viewMode !== "yoy" && rawGroups.map(({ dest, year, rows }) => (
         <RawTable
           key={`${dest}-${year}`}
           dest={dest}
@@ -263,7 +266,7 @@ export default function GovVisitorData() {
       ))}
 
       {/* YoY view */}
-      {!loading && viewMode === "yoy" && Object.entries(yoyGroups)
+      {viewMode === "yoy" && Object.entries(yoyGroups)
         .filter(([dest]) => !selectedDest || dest === selectedDest)
         .filter(([, { curRows, priorRows }]) => curRows.length > 0 || priorRows.length > 0)
         .sort(([a], [b]) => a.localeCompare(b))

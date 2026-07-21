@@ -15,7 +15,8 @@
  * the per-branch drill-down. Deep-link via /report?view=full[&branch=ID]
  * — used by the email's "Branch quick-jump" chips.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import { useAuth } from "../context/AuthContext";
 
@@ -194,47 +195,37 @@ function parseReportHtml(htmlText) {
 // ── Settings tab content ────────────────────────────────────────────────────
 
 function SettingsTab({ toast, setToast }) {
+  const queryClient = useQueryClient();
   const [testEmail, setTestEmail] = useState("");
-  const [members, setMembers] = useState([]);
   const [selectedMemberIds, setSelectedMemberIds] = useState([]);
-  const [membersLoading, setMembersLoading] = useState(false);
   const [sending, setSending] = useState(false);
 
   const [schedule, setSchedule] = useState(null);
-  const [scheduleLoading, setScheduleLoading] = useState(false);
   const [newRecipient, setNewRecipient] = useState("");
   const [savingSchedule, setSavingSchedule] = useState(false);
 
-  const [emailConfig, setEmailConfig] = useState(null);
-  const [configLoading, setConfigLoading] = useState(false);
+  const { data: members = [], isPending: membersLoading } = useQuery({
+    queryKey: ["report-members"],
+    queryFn: () => axios.get("/api/auth/users").then(r => r.data.data || []),
+    placeholderData: keepPreviousData,
+  });
 
-  const loadSchedule = () => {
-    setScheduleLoading(true);
-    axios.get("/api/report/schedule")
-      .then(r => setSchedule(r.data.data))
-      .catch(() => {})
-      .finally(() => setScheduleLoading(false));
-  };
-  const loadMembers = () => {
-    setMembersLoading(true);
-    axios.get("/api/auth/users")
-      .then(r => setMembers(r.data.data || []))
-      .catch(() => setMembers([]))
-      .finally(() => setMembersLoading(false));
-  };
-  const loadEmailConfig = () => {
-    setConfigLoading(true);
-    axios.get("/api/report/email-config")
-      .then(r => setEmailConfig(r.data.data))
-      .catch(() => setEmailConfig(null))
-      .finally(() => setConfigLoading(false));
-  };
+  const { data: scheduleData, isPending: scheduleLoading } = useQuery({
+    queryKey: ["report-schedule"],
+    queryFn: () => axios.get("/api/report/schedule").then(r => r.data.data),
+    placeholderData: keepPreviousData,
+  });
 
+  const { data: emailConfig, isPending: configLoading } = useQuery({
+    queryKey: ["report-email-config"],
+    queryFn: () => axios.get("/api/report/email-config").then(r => r.data.data),
+    placeholderData: keepPreviousData,
+  });
+
+  // Sync fetched schedule into local editable state
   useEffect(() => {
-    loadSchedule();
-    loadMembers();
-    loadEmailConfig();
-  }, []);
+    if (scheduleData) setSchedule(scheduleData);
+  }, [scheduleData]);
 
   const toggleMember = (id) => setSelectedMemberIds(prev =>
     prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
@@ -275,6 +266,7 @@ function SettingsTab({ toast, setToast }) {
         recipients: schedule.recipients,
       });
       setSchedule(r.data.data);
+      queryClient.invalidateQueries({ queryKey: ["report-schedule"] });
       setToast({ message: "Schedule saved successfully", type: "success" });
     } catch (e) {
       setToast({ message: e.response?.data?.detail || "Failed to save schedule", type: "error" });
@@ -301,12 +293,15 @@ function SettingsTab({ toast, setToast }) {
       <div className="bg-white rounded-xl border border-gray-200 p-5">
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold text-gray-800 text-sm">Automated Cron Config (Zeabur env)</h3>
-          <button onClick={loadEmailConfig} className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">
+          <button
+            onClick={() => queryClient.invalidateQueries({ queryKey: ["report-email-config"] })}
+            className="text-xs text-indigo-600 hover:text-indigo-700 font-medium"
+          >
             Refresh
           </button>
         </div>
 
-        {configLoading ? (
+        {configLoading && !emailConfig ? (
           <div className="text-xs text-gray-400 animate-pulse">Loading...</div>
         ) : emailConfig ? (
           <div className="space-y-3">
@@ -386,7 +381,7 @@ function SettingsTab({ toast, setToast }) {
           </div>
 
           <div className="border border-gray-200 rounded-lg max-h-72 overflow-y-auto mb-3">
-            {membersLoading ? (
+            {membersLoading && !members.length ? (
               <div className="p-3 text-xs text-gray-400 animate-pulse">Loading members...</div>
             ) : members.length === 0 ? (
               <div className="p-3 text-xs text-gray-400">No members found</div>
@@ -457,7 +452,7 @@ function SettingsTab({ toast, setToast }) {
             This panel only matters if you also want the FastAPI process to schedule sends.
           </p>
 
-          {scheduleLoading ? (
+          {scheduleLoading && !schedule ? (
             <div className="text-sm text-gray-400 animate-pulse">Loading schedule...</div>
           ) : schedule ? (
             <div className="space-y-4">
@@ -1171,46 +1166,63 @@ function makeTableSortable(table) {
 
 function WeeklyReportTab({ initialBranch, onBranchChange }) {
   const { user: currentUser } = useAuth();
-  const [reportLoading, setReportLoading] = useState(false);
-  const [reportError, setReportError] = useState(null);
-  const [parsed, setParsed] = useState(null);
-  const [loadedAt, setLoadedAt] = useState(null);
+  const queryClient = useQueryClient();
   const [selectedBranch, setSelectedBranch] = useState(initialBranch || "all");
 
   // Week filter: "current" means live cache; YYYY-MM-DD means archive snapshot.
   const [selectedWeek, setSelectedWeek] = useState("current");
-  const [archives, setArchives] = useState([]);
 
   // Active week_start for comment scope (always a real date — `current` is
   // resolved to this Monday).
   const activeWeekStart = selectedWeek === "current" ? fmtIsoDate(thisMonday()) : selectedWeek;
 
-  // Preloaded comments for the whole week — single fetch, then drawer
-  // reads from this in-memory cache so opening a thread is instant.
-  // (Previous design hit /comments on every drawer open — perceptibly
-  // slow when clicking through cells.)
-  const [allComments, setAllComments] = useState([]);
   const [drawer, setDrawer] = useState(null);
   const [allCommentsOpen, setAllCommentsOpen] = useState(false);
   const reportContainerRef = useRef(null);
 
-  const loadArchives = useCallback(async () => {
-    try {
-      const r = await axios.get("/api/report/archives");
-      setArchives(r.data.data || []);
-    } catch (e) {
-      console.error("Failed to load archives", e);
-    }
-  }, []);
+  const { data: archives = [] } = useQuery({
+    queryKey: ["report-archives"],
+    queryFn: () => axios.get("/api/report/archives").then(r => r.data.data || []),
+    placeholderData: keepPreviousData,
+  });
 
-  const loadAllComments = useCallback(async (weekStart) => {
-    try {
-      const r = await axios.get("/api/report/comments", { params: { week_start: weekStart } });
-      setAllComments(r.data.data || []);
-    } catch (e) {
-      console.error("Failed to load comments", e);
+  const { data: allComments = [] } = useQuery({
+    queryKey: ["report-comments", activeWeekStart],
+    queryFn: () => axios.get("/api/report/comments", { params: { week_start: activeWeekStart } }).then(r => r.data.data || []),
+    placeholderData: keepPreviousData,
+  });
+
+  const reportQuery = useQuery({
+    queryKey: ["report-preview", selectedWeek],
+    queryFn: async () => {
+      const url = selectedWeek === "current"
+        ? "/api/report/preview"
+        : `/api/report/archives/${selectedWeek}/preview`;
+      const r = await fetch(url);
+      if (!r.ok) {
+        if (r.status === 404 && selectedWeek !== "current") {
+          throw new Error(`No archive saved for the week of ${fmtWeekLabel(selectedWeek)}.`);
+        }
+        throw new Error(`Failed to load report (HTTP ${r.status})`);
+      }
+      const text = await r.text();
+      return parseReportHtml(text);
+    },
+    placeholderData: keepPreviousData,
+  });
+
+  const parsed = reportQuery.data;
+  const reportLoading = reportQuery.isPending;
+  const reportError = reportQuery.error?.message ?? null;
+  const loadedAt = reportQuery.dataUpdatedAt ? new Date(reportQuery.dataUpdatedAt) : null;
+
+  // Correct selected branch when a new report doesn't include it
+  useEffect(() => {
+    if (parsed && selectedBranch !== "all" && !parsed.branches.find(b => b.id === selectedBranch)) {
+      setSelectedBranch("all");
+      onBranchChange?.("all");
     }
-  }, []);
+  }, [parsed, selectedBranch, onBranchChange]);
 
   // Counts derived from allComments (open threads + action-item flag per cell).
   // Recomputed cheaply on any change — no extra API call.
@@ -1225,40 +1237,6 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
     });
     return map;
   }, [allComments]);
-
-  const loadReport = useCallback(async () => {
-    setReportLoading(true);
-    setReportError(null);
-    try {
-      const url = selectedWeek === "current"
-        ? "/api/report/preview"
-        : `/api/report/archives/${selectedWeek}/preview`;
-      const r = await fetch(url);
-      if (!r.ok) {
-        if (r.status === 404 && selectedWeek !== "current") {
-          throw new Error(`No archive saved for the week of ${fmtWeekLabel(selectedWeek)}.`);
-        }
-        throw new Error(`Failed to load report (HTTP ${r.status})`);
-      }
-      const text = await r.text();
-      const p = parseReportHtml(text);
-      setParsed(p);
-      setLoadedAt(new Date());
-      if (selectedBranch !== "all" && !p.branches.find(b => b.id === selectedBranch)) {
-        setSelectedBranch("all");
-        onBranchChange?.("all");
-      }
-    } catch (e) {
-      setReportError(e.message || "Failed to load report");
-    } finally {
-      setReportLoading(false);
-    }
-  }, [selectedWeek, selectedBranch, onBranchChange]);
-
-  // Initial load
-  useEffect(() => { loadArchives(); }, [loadArchives]);
-  useEffect(() => { loadReport(); }, [loadReport]);
-  useEffect(() => { loadAllComments(activeWeekStart); }, [activeWeekStart, loadAllComments]);
 
   const selectBranch = (id) => {
     setSelectedBranch(id);
@@ -1512,11 +1490,11 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
             Open raw preview ↗
           </a>
           <button
-            onClick={loadReport}
-            disabled={reportLoading}
+            onClick={() => queryClient.invalidateQueries({ queryKey: ["report-preview", selectedWeek] })}
+            disabled={reportQuery.isFetching}
             className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50"
           >
-            {reportLoading ? "Loading..." : "Refresh"}
+            {reportQuery.isFetching ? "Loading..." : "Refresh"}
           </button>
         </div>
       </div>
@@ -1534,11 +1512,14 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
       )}
 
       {/* Error state */}
-      {reportError && !reportLoading && (
+      {reportError && !reportQuery.isFetching && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-5 text-center">
           <p className="text-sm text-red-700 font-medium mb-1">Failed to load report</p>
           <p className="text-xs text-red-600">{reportError}</p>
-          <button onClick={loadReport} className="mt-3 px-4 py-1.5 bg-red-600 text-white text-xs rounded-lg hover:bg-red-700">
+          <button
+            onClick={() => queryClient.invalidateQueries({ queryKey: ["report-preview", selectedWeek] })}
+            className="mt-3 px-4 py-1.5 bg-red-600 text-white text-xs rounded-lg hover:bg-red-700"
+          >
             Retry
           </button>
         </div>
@@ -1627,7 +1608,7 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
             (c.branch_id || null) === (drawer.branchId || null)
           )}
           onClose={() => setDrawer(null)}
-          onChanged={() => loadAllComments(activeWeekStart)}
+          onChanged={() => queryClient.invalidateQueries({ queryKey: ["report-comments", activeWeekStart] })}
         />
       )}
     </div>

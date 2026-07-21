@@ -2,7 +2,8 @@
  * Marketing Activity — Consolidated view of Paid Ads, KOL, and CRM performance.
  * Month-based filter with MoM comparison.
  */
-import { useEffect, useState, useMemo } from "react";
+import { useState, useMemo } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 import { getMarketingActivitySummary, getCRMBranchComparison } from "../api/marketingActivity";
 import { getEmailSummary, getEmailByCampaign } from "../api/emailMarketing";
@@ -34,7 +35,7 @@ function fmtNum(val) {
 }
 
 function fmtMoney(val, cur) {
-  if (val == null) return "\u2014";
+  if (val == null) return "—";
   const sym = CURRENCY_SYMBOLS[cur] || "";
   return sym + new Intl.NumberFormat("en").format(Math.round(val));
 }
@@ -51,13 +52,13 @@ function ChangeBadge({ current, previous }) {
   const cls = isUp ? "text-green-600" : pct < 0 ? "text-red-600" : "text-gray-500";
   return (
     <span className={"text-xs font-medium " + cls}>
-      {isUp ? "\u25B2" : pct < 0 ? "\u25BC" : ""}{Math.abs(pct).toFixed(1)}%
+      {isUp ? "▲" : pct < 0 ? "▼" : ""}{Math.abs(pct).toFixed(1)}%
     </span>
   );
 }
 
 function RoasBadge({ value }) {
-  if (value == null || value === 0) return <span className="text-gray-400">{"\u2014"}</span>;
+  if (value == null || value === 0) return <span className="text-gray-400">{"—"}</span>;
   const cls =
     value >= 3 ? "text-green-700 bg-green-50"
     : value >= 1.5 ? "text-yellow-700 bg-yellow-50"
@@ -98,8 +99,6 @@ function ytdPrevLabel(year) {
 
 export default function MarketingActivity() {
   const { isAll, selected, currency: branchCurrency } = useBranch();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("overview");
   const [viewMode, setViewMode] = useState("monthly"); // "monthly" | "ytd"
 
@@ -108,26 +107,22 @@ export default function MarketingActivity() {
   const [month, setMonth] = useState(currentMonthStr);
   const [ytdYear, setYtdYear] = useState(today.getFullYear());
 
-  const load = () => {
-    setLoading(true);
-    const params = {};
-    if (!isAll && selected) params.branch_id = selected;
-
-    if (viewMode === "ytd") {
-      const { date_from, date_to } = ytdBounds(ytdYear);
-      params.date_from = date_from;
-      params.date_to = date_to;
-    } else {
-      params.month = month;
-    }
-
-    getMarketingActivitySummary(params)
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(load, [selected, isAll, month, ytdYear, viewMode]);
+  const { data, isPending } = useQuery({
+    queryKey: ["marketing-activity", selected, isAll, month, ytdYear, viewMode],
+    queryFn: () => {
+      const params = {};
+      if (!isAll && selected) params.branch_id = selected;
+      if (viewMode === "ytd") {
+        const { date_from, date_to } = ytdBounds(ytdYear);
+        params.date_from = date_from;
+        params.date_to = date_to;
+      } else {
+        params.month = month;
+      }
+      return getMarketingActivitySummary(params);
+    },
+    placeholderData: keepPreviousData,
+  });
 
   const cur = isAll ? "VND" : (data?.currency || branchCurrency || "VND");
   const overview = data?.overview;
@@ -197,7 +192,7 @@ export default function MarketingActivity() {
           ytdBounds={viewMode === "ytd" ? ytdBounds(ytdYear) : null}
           onViewRevenue={() => setTab("crm-rate-plans")}
         />
-      ) : loading ? (
+      ) : isPending && !data ? (
         <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
       ) : !data ? (
         <div className="text-center text-gray-400 py-16 text-sm">No data available</div>
@@ -221,14 +216,14 @@ function OverviewTab({ overview, prevOverview, prevLabel, cur, isYtd, ytdYear })
     <div className="space-y-6">
       {isYtd && (
         <p className="text-xs text-gray-500">
-          Year-to-date performance for <span className="font-semibold">{ytdYear}</span> (Jan 1 \u2013 today). Compared against the same period in {ytdYear - 1}.
+          Year-to-date performance for <span className="font-semibold">{ytdYear}</span> (Jan 1 – today). Compared against the same period in {ytdYear - 1}.
         </p>
       )}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KPICard label="Total Bookings" value={fmtNum(total.bookings)} prev={prev?.bookings} prevLabel={prevLabel} />
         <KPICard label={`Total Revenue (${cur})`} value={fmtNum(total.revenue)} prev={prev?.revenue} prevLabel={prevLabel} />
         <KPICard label={`Total Cost (${cur})`} value={fmtNum(total.cost)} prev={prev?.cost} prevLabel={prevLabel} />
-        <KPICard label="Blended ROAS" value={total.roas ? total.roas.toFixed(2) + "x" : "\u2014"} />
+        <KPICard label="Blended ROAS" value={total.roas ? total.roas.toFixed(2) + "x" : "—"} />
       </div>
 
       <div className="bg-white rounded-lg border overflow-hidden">
@@ -255,11 +250,11 @@ function OverviewTab({ overview, prevOverview, prevLabel, cur, isYtd, ytdYear })
                 </td>
                 <td className="px-4 py-3 text-right">{fmtNum(d.bookings)}</td>
                 <td className="px-4 py-3 text-right">{fmtNum(d.revenue)}</td>
-                <td className="px-4 py-3 text-right">{hasCost ? fmtNum(d.cost) : <span className="text-gray-400">{"\u2014"}</span>}</td>
+                <td className="px-4 py-3 text-right">{hasCost ? fmtNum(d.cost) : <span className="text-gray-400">{"—"}</span>}</td>
                 <td className="px-4 py-3 text-right">
                   {d.roas ? <RoasBadge value={d.roas} /> :
                     hasCost && d.cost > 0 ? <RoasBadge value={d.revenue / d.cost} /> :
-                    <span className="text-gray-400">{"\u2014"}</span>}
+                    <span className="text-gray-400">{"—"}</span>}
                 </td>
                 {prevOverview && (
                   <td className="px-4 py-3 text-right">
@@ -494,17 +489,13 @@ function ComparisonMatrix({ title, subtitle, branches, rows, rowLabel, metric })
 
 function CRMBranchComparison({ month }) {
   const { branches: allowedBranches } = useBranch();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [metric, setMetric] = useState("revenue");
 
-  useEffect(() => {
-    setLoading(true);
-    getCRMBranchComparison({ month, months_back: 6 })
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  }, [month]);
+  const { data, isPending } = useQuery({
+    queryKey: ["crm-branch-comparison", month],
+    queryFn: () => getCRMBranchComparison({ month, months_back: 6 }),
+    placeholderData: keepPreviousData,
+  });
 
   // Only show branches this user is allowed to see, in the backend's display order.
   const branches = useMemo(() => {
@@ -513,7 +504,7 @@ function CRMBranchComparison({ month }) {
     return data.branches.filter((b) => allowedIds.size === 0 || allowedIds.has(b.branch_id));
   }, [data, allowedBranches]);
 
-  if (loading) {
+  if (isPending && !data) {
     return <div className="text-center text-gray-400 py-12 text-sm animate-pulse">Loading...</div>;
   }
   if (!data || branches.length === 0) {
@@ -586,9 +577,6 @@ function EmailKPI({ label, value, color = "text-gray-900" }) {
 
 function EmailStatTab({ month, ytdBounds: ytdB, onViewRevenue }) {
   const { currentBranch, isAll } = useBranch();
-  const [summary, setSummary] = useState(null);
-  const [campaigns, setCampaigns] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
 
   const ghlBranch = useMemo(
@@ -596,28 +584,24 @@ function EmailStatTab({ month, ytdBounds: ytdB, onViewRevenue }) {
     [currentBranch, isAll]
   );
 
-  useEffect(() => {
-    setLoading(true);
-    const bounds = ytdB || monthBounds(month);
-    const params = { date_from: bounds.date_from, date_to: bounds.date_to };
-    if (ghlBranch) params.branch_name = ghlBranch;
+  const { data: emailData, isPending } = useQuery({
+    queryKey: ["email-stat", month, ytdB, ghlBranch],
+    queryFn: () => {
+      const bounds = ytdB || monthBounds(month);
+      const params = { date_from: bounds.date_from, date_to: bounds.date_to };
+      if (ghlBranch) params.branch_name = ghlBranch;
+      return Promise.all([
+        getEmailSummary(params),
+        getEmailByCampaign(params),
+      ]).then(([summary, campaigns]) => ({ summary, campaigns: campaigns || [] }));
+    },
+    placeholderData: keepPreviousData,
+  });
 
-    Promise.all([
-      getEmailSummary(params),
-      getEmailByCampaign(params),
-    ])
-      .then(([s, c]) => {
-        setSummary(s);
-        setCampaigns(c || []);
-      })
-      .catch(() => {
-        setSummary(null);
-        setCampaigns([]);
-      })
-      .finally(() => setLoading(false));
-  }, [month, ytdB, ghlBranch]);
+  const summary = emailData?.summary;
+  const campaigns = emailData?.campaigns || [];
 
-  if (loading) {
+  if (isPending && !emailData) {
     return <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>;
   }
   if (!summary || summary.total_sent === 0) {

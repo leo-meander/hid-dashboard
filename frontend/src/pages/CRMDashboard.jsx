@@ -2,7 +2,8 @@
  * CRM Dashboard — Revenue & Booking analytics for CRM room types.
  * Queries reservations where room_type contains "CRM".
  */
-import { useEffect, useState, useMemo } from "react";
+import { useState, useMemo } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import {
   getCRMSummary,
@@ -48,15 +49,6 @@ export default function CRMDashboard() {
   const [dateTo, setDateTo] = useState(today);
   const [tab, setTab] = useState("overview");
 
-  const [loading, setLoading] = useState(true);
-  const [summary, setSummary] = useState(null);
-  const [daily, setDaily] = useState([]);
-  const [monthly, setMonthly] = useState([]);
-  const [byBranch, setByBranch] = useState([]);
-  const [bySource, setBySource] = useState([]);
-  const [roomTypes, setRoomTypes] = useState([]);
-  const [reservations, setReservations] = useState({ items: [], total: 0 });
-
   const branchMap = useMemo(() => {
     const m = {};
     for (const b of branches) {
@@ -71,39 +63,46 @@ export default function CRMDashboard() {
     return p;
   }, [dateFrom, dateTo, selected, isAll]);
 
-  // Fetch data based on active tab
-  useEffect(() => {
-    setLoading(true);
-
-    if (tab === "overview") {
+  const { data: overviewData, isPending: overviewPending } = useQuery({
+    queryKey: ["crm-overview", params],
+    queryFn: () =>
       Promise.all([
         getCRMSummary(params),
         getCRMDaily(params),
         getCRMByBranch({ date_from: dateFrom, date_to: dateTo }),
         getCRMBySource(params),
         getCRMRoomTypes(params),
-      ])
-        .then(([s, d, b, src, rt]) => {
-          setSummary(s);
-          setDaily(d || []);
-          setByBranch(b || []);
-          setBySource(src || []);
-          setRoomTypes(rt || []);
-        })
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    } else if (tab === "monthly") {
-      getCRMMonthly(params)
-        .then(d => setMonthly(d || []))
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    } else if (tab === "reservations") {
-      getCRMReservations({ ...params, limit: 100 })
-        .then(d => setReservations(d || { items: [], total: 0 }))
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    }
-  }, [tab, params, dateFrom, dateTo]);
+      ]).then(([s, d, b, src, rt]) => ({ summary: s, daily: d || [], byBranch: b || [], bySource: src || [], roomTypes: rt || [] })),
+    enabled: tab === "overview",
+    placeholderData: keepPreviousData,
+  });
+
+  const { data: monthlyData, isPending: monthlyPending } = useQuery({
+    queryKey: ["crm-monthly", params],
+    queryFn: () => getCRMMonthly(params).then(d => d || []),
+    enabled: tab === "monthly",
+    placeholderData: keepPreviousData,
+  });
+
+  const { data: reservationsData, isPending: reservationsPending } = useQuery({
+    queryKey: ["crm-reservations", params],
+    queryFn: () => getCRMReservations({ ...params, limit: 100 }).then(d => d || { items: [], total: 0 }),
+    enabled: tab === "reservations",
+    placeholderData: keepPreviousData,
+  });
+
+  const isPending =
+    (tab === "overview" && overviewPending && !overviewData) ||
+    (tab === "monthly" && monthlyPending && !monthlyData) ||
+    (tab === "reservations" && reservationsPending && !reservationsData);
+
+  const summary = overviewData?.summary;
+  const daily = overviewData?.daily ?? [];
+  const byBranch = overviewData?.byBranch ?? [];
+  const bySource = overviewData?.bySource ?? [];
+  const roomTypes = overviewData?.roomTypes ?? [];
+  const monthly = monthlyData ?? [];
+  const reservations = reservationsData ?? { items: [], total: 0 };
 
   return (
     <div className="space-y-6">
@@ -137,7 +136,7 @@ export default function CRMDashboard() {
         ))}
       </div>
 
-      {loading ? (
+      {isPending ? (
         <div className="text-gray-400 animate-pulse">Loading...</div>
       ) : tab === "overview" ? (
         <OverviewTab
