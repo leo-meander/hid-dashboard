@@ -4,6 +4,7 @@
  * Single branch selected → KPI card + OCC heatmap
  */
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 import KPICard from "../components/KPICard";
@@ -18,22 +19,22 @@ const MONTH_NAME = now.toLocaleString("en-US", { month: "long", year: "numeric" 
 
 
 function fmt(value, currency) {
-  if (value == null) return "\u2014";
+  if (value == null) return "—";
   const sym = CURRENCY_SYMBOLS[currency] || currency || "";
   return sym + new Intl.NumberFormat("en").format(Math.round(value));
 }
 
 function fmtPlain(value) {
-  if (value == null) return "\u2014";
+  if (value == null) return "—";
   return new Intl.NumberFormat("en").format(Math.round(value));
 }
 
 function fmtPctRound(p) {
-  if (p == null) return "\u2014";
+  if (p == null) return "—";
   return Math.round(p * 100) + "%";
 }
 
-// Hover tooltip \u2014 uses fixed positioning so it isn't clipped by the
+// Hover tooltip — uses fixed positioning so it isn't clipped by the
 // table's overflow-x-auto wrapper. Positions itself above the trigger.
 function HoverTooltip({ children, content, className = "" }) {
   const [show, setShow] = useState(false);
@@ -210,7 +211,7 @@ function adjustedBreakdown(row, type) {
 }
 
 function AchievementBadge({ value }) {
-  if (value == null) return <span className="text-gray-400">{"\u2014"}</span>;
+  if (value == null) return <span className="text-gray-400">{"—"}</span>;
   const cls =
     value >= 100 ? "text-green-700 bg-green-50" :
     value >= 80  ? "text-yellow-700 bg-yellow-50" :
@@ -333,9 +334,9 @@ function AllBranchesTable({ data, loading }) {
     };
   }, [rows]);
 
-  if (loading) return (
+  if (loading && !data.length) return (
     <div className="bg-white rounded-xl border p-8 text-center">
-      <div className="text-gray-400 animate-pulse text-lg">Loading\u2026</div>
+      <div className="text-gray-400 animate-pulse text-lg">Loading…</div>
       <p className="text-xs text-gray-300 mt-2">Loading data…</p>
     </div>
   );
@@ -490,7 +491,7 @@ function AllBranchesTable({ data, loading }) {
                       )}
                     </div>
                   </td>
-                  {/* Adjusted forecast \u2014 blue if \u2265100% of target, red if below */}
+                  {/* Adjusted forecast — blue if ≥100% of target, red if below */}
                   <td className="px-3 py-3.5 text-center">
                     {row.adjusted_forecast != null
                       ? (() => {
@@ -513,7 +514,7 @@ function AllBranchesTable({ data, loading }) {
                             </HoverTooltip>
                           );
                         })()
-                      : <span className="text-gray-300">{"\u2014"}</span>}
+                      : <span className="text-gray-300">{"—"}</span>}
                   </td>
                   {/* Next month actual booked revenue */}
                   <td className="px-3 py-3.5 text-center">
@@ -543,7 +544,7 @@ function AllBranchesTable({ data, loading }) {
                             return null;
                           })()}
                         </div>
-                      : <span className="text-gray-300">{"\u2014"}</span>}
+                      : <span className="text-gray-300">{"—"}</span>}
                   </td>
                   {/* Next month forecast — blue if ≥100% of target, red if below */}
                   <td className="px-3 py-3.5 text-center">
@@ -602,7 +603,7 @@ function AllBranchesTable({ data, loading }) {
                         </div>
                           );
                         })()
-                      : <span className="text-gray-300">{"\u2014"}</span>}
+                      : <span className="text-gray-300">{"—"}</span>}
                   </td>
                 </tr>
               );
@@ -639,66 +640,59 @@ function AllBranchesTable({ data, loading }) {
 }
 
 function SingleBranchView({ branch }) {
-  const [kpi, setKpi]         = useState(null);
-  const [countries, setCountries] = useState([]);
-  const [occData, setOccData] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState(null);
-
-  useEffect(() => {
-    if (!branch) return;
-    setLoading(true);
-    Promise.all([
+  const { data: pageData, isPending, error } = useQuery({
+    queryKey: ["home-single-branch", branch?.id],
+    queryFn: () => Promise.all([
       axios.get("/api/kpi/summary/" + branch.id + "?year=" + YEAR + "&month=" + MONTH),
       axios.get("/api/countries/ranking?top_n=5&branch_id=" + branch.id),
       axios.get("/api/metrics/daily?branch_id=" + branch.id + "&days=30"),
-    ])
-      .then(([kpiRes, cRes, occRes]) => {
-        setKpi(kpiRes.data.data || kpiRes.data);
-        setCountries(cRes.data.data || []);
-        setOccData(occRes.data.data || []);
-      })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [branch && branch.id]);
+    ]).then(([kpiRes, cRes, occRes]) => ({
+      kpi: kpiRes.data.data || kpiRes.data,
+      countries: cRes.data.data || [],
+      occData: occRes.data.data || [],
+    })),
+    enabled: !!branch,
+    placeholderData: keepPreviousData,
+  });
 
-  if (loading) return (
+  const kpi = pageData?.kpi;
+  const occData = pageData?.occData || [];
+
+  if (isPending && !pageData) return (
     <div className="p-8 text-center">
-      <div className="text-gray-400 animate-pulse text-lg">Loading\u2026</div>
+      <div className="text-gray-400 animate-pulse text-lg">Loading…</div>
       <p className="text-xs text-gray-300 mt-2">Loading data…</p>
     </div>
   );
-  if (error)   return <div className="p-8 text-red-500">Error: {error}</div>;
+  if (error) return <div className="p-8 text-red-500">Error: {error.message}</div>;
 
   return (
     <div className="space-y-6">
       {kpi && (
         <KPICard
-          label={branch.name + " \u2014 Revenue"}
+          label={branch.name + " — Revenue"}
           actual={kpi.actual_revenue_native}
           target={kpi.target_revenue_native}
           currency={branch.currency || branch.native_currency}
           forecast={{ occ: kpi.occ_forecast_native }}
         />
       )}
-      <OCCHeatmap data={occData} title={branch.name + " \u2014 Daily OCC% (30 days)"} />
+      <OCCHeatmap data={occData} title={branch.name + " — Daily OCC% (30 days)"} />
     </div>
   );
 }
 
 export default function Home() {
   const { isAll, currentBranch } = useBranch();
-  const [allData, setAllData]       = useState([]);
-  const [allLoading, setAllLoading] = useState(false);
 
-  useEffect(() => {
-    if (!isAll) return;
-    setAllLoading(true);
-    axios.get("/api/kpi/summary?year=" + YEAR + "&month=" + MONTH + "&months=current,next")
-      .then(r => setAllData(r.data.data || []))
-      .catch(() => setAllData([]))
-      .finally(() => setAllLoading(false));
-  }, [isAll]);
+  const { data: allData = [], isPending: allLoading } = useQuery({
+    queryKey: ["home-all-branches", YEAR, MONTH],
+    queryFn: () =>
+      axios.get("/api/kpi/summary?year=" + YEAR + "&month=" + MONTH + "&months=current,next")
+        .then(r => r.data.data || []),
+    enabled: isAll,
+    placeholderData: keepPreviousData,
+  });
 
   return (
     <div className="space-y-5">

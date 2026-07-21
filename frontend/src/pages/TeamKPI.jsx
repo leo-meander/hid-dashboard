@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useRef } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import { getTeamKpiSummary, upsertTarget, upsertActual } from "../api/teamKpi";
 
@@ -325,27 +326,15 @@ export default function TeamKPI() {
   const { branches, selected, selectBranch } = useBranch();
   const [role, setRole] = useState("kol");
   const [year, setYear] = useState(CURRENT_YEAR);
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const queryClient = useQueryClient();
 
   const branchId = selected !== "all" ? selected : null;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const d = await getTeamKpiSummary(role, year, branchId);
-      setData(d);
-    } catch (e) {
-      setError(e?.response?.data?.detail || e.message || "Failed to load");
-    } finally {
-      setLoading(false);
-    }
-  }, [role, year, branchId, refreshKey]);
-
-  useEffect(() => { load(); }, [load]);
+  const { data, isPending, error } = useQuery({
+    queryKey: ["team-kpi", role, year, branchId],
+    queryFn: () => getTeamKpiSummary(role, year, branchId),
+    placeholderData: keepPreviousData,
+  });
 
   const roleMeta = ROLES.find(r => r.key === role);
   const cur = data?.current_month;
@@ -373,11 +362,11 @@ export default function TeamKPI() {
             >›</button>
           </div>
           <button
-            onClick={() => setRefreshKey(k => k + 1)}
+            onClick={() => queryClient.invalidateQueries({ queryKey: ["team-kpi"] })}
             title="Refresh"
             className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
           >
-            <svg className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className={`w-4 h-4 ${isPending ? "animate-spin" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
           </button>
@@ -432,7 +421,7 @@ export default function TeamKPI() {
 
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">
-          {error}
+          {error?.response?.data?.detail || error.message || "Failed to load"}
         </div>
       )}
 
@@ -478,7 +467,7 @@ export default function TeamKPI() {
       )}
 
       {/* KPI grid */}
-      {loading && !data && (
+      {isPending && !data && (
         <div className="bg-white rounded-xl border border-gray-200 p-12 flex justify-center">
           <div className="w-6 h-6 border-2 border-gray-300 border-t-gray-800 rounded-full animate-spin" />
         </div>
@@ -505,7 +494,7 @@ export default function TeamKPI() {
             branchId={branchId}
             year={year}
             autoActuals={data.auto_actuals}
-            onRefresh={() => setRefreshKey(k => k + 1)}
+            onRefresh={() => queryClient.invalidateQueries({ queryKey: ["team-kpi"] })}
           />
 
           {!data.auto_actuals && (

@@ -2,7 +2,8 @@
  * Ad Angles — WIN/TEST/LOSE based on TOF Sales campaign performance.
  * Verdict: Only TOF Sales combos count. Benchmark = AVG ROAS of branch.
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 import SyncBadge from "../components/SyncBadge";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
@@ -49,26 +50,23 @@ export default function Angles() {
   const { currentBranch, selected, isAll } = useBranch();
   const currency = currentBranch?.currency || currentBranch?.native_currency || "VND";
   const sym = CURRENCY_SYMBOLS[currency] || "";
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  const load = () => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    if (!isAll && selected) params.set("branch_id", selected);
-    if (filterStatus) params.set("status", filterStatus);
-    axios.get("/api/angles?" + params)
-      .then(r => setRows(r.data.data || []))
-      .catch(() => setRows([]))
-      .finally(() => setLoading(false));
-  };
+  const queryClient = useQueryClient();
 
-  useEffect(() => { load(); }, [selected, isAll, filterStatus]);
+  const { data: rows = [], isPending } = useQuery({
+    queryKey: ["angles", selected, isAll, filterStatus],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (!isAll && selected) params.set("branch_id", selected);
+      if (filterStatus) params.set("status", filterStatus);
+      return axios.get("/api/angles?" + params).then(r => r.data.data || []);
+    },
+  });
 
   const openNew = () => { setForm({ ...EMPTY, branch_id: currentBranch?.id || "" }); setEditId(null); setShowForm(true); };
   const openEdit = (row) => {
@@ -80,12 +78,17 @@ export default function Angles() {
     setSaving(true);
     try {
       editId ? await axios.put("/api/angles/" + editId, form) : await axios.post("/api/angles", form);
-      setShowForm(false); load();
+      setShowForm(false);
+      queryClient.invalidateQueries({ queryKey: ["angles"] });
     } catch (e) { alert("Save failed: " + (e.response?.data?.detail || e.message)); }
     finally { setSaving(false); }
   };
 
-  const del = async (id) => { if (!confirm("Delete angle?")) return; await axios.delete("/api/angles/" + id); load(); };
+  const del = async (id) => {
+    if (!confirm("Delete angle?")) return;
+    await axios.delete("/api/angles/" + id);
+    queryClient.invalidateQueries({ queryKey: ["angles"] });
+  };
 
   const grouped = {
     WIN:  rows.filter(r => r.status === "WIN"),
@@ -126,7 +129,7 @@ export default function Angles() {
       </div>
 
       {/* Cards grid */}
-      {loading ? (
+      {isPending && !rows.length ? (
         <div className="p-8 text-center text-gray-400 animate-pulse">Loading…</div>
       ) : displayRows.length === 0 ? (
         <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No angles yet. Click "+ New Angle" to start.</div>

@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import { useAuth } from "../context/AuthContext";
 import {
@@ -165,82 +166,65 @@ function RuleRow({ rule, onUpdate }) {
 export default function Alerts() {
   const { selected: selectedBranch } = useBranch();
   const { isAdmin } = useAuth();
+  const queryClient = useQueryClient();
   const [tab, setTab] = useState("today");       // today | history | rules
-  const [alerts, setAlerts] = useState([]);
-  const [summary, setSummary] = useState({ critical: 0, warning: 0, info: 0, total: 0 });
   const [sevFilter, setSevFilter] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [evaluating, setEvaluating] = useState(false);
 
   // History state
-  const [history, setHistory] = useState({ items: [], total: 0 });
   const [historyPage, setHistoryPage] = useState(0);
-
-  // Rules state
-  const [rules, setRules] = useState([]);
 
   const branchParam = selectedBranch === "all" ? {} : { branch_id: selectedBranch };
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [todayData, summaryData] = await Promise.all([
+  const { data: todayData, isPending: todayPending } = useQuery({
+    queryKey: ["alerts-today", selectedBranch, sevFilter],
+    queryFn: () =>
+      Promise.all([
         getAlertsToday({ ...branchParam, ...(sevFilter ? { severity: sevFilter } : {}) }),
         getAlertsSummary(branchParam),
-      ]);
-      setAlerts(todayData || []);
-      setSummary(summaryData || { critical: 0, warning: 0, info: 0, total: 0 });
-    } catch (e) {
-      console.error("Failed to load alerts:", e);
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedBranch, sevFilter]);
+      ]).then(([alertsRes, summaryRes]) => ({ alerts: alertsRes, summary: summaryRes })),
+    placeholderData: keepPreviousData,
+  });
+  const alerts = todayData?.alerts || [];
+  const summary = todayData?.summary || { critical: 0, warning: 0, info: 0, total: 0 };
+  const isPending = todayPending && !todayData;
 
-  useEffect(() => { load(); }, [load]);
+  const { data: historyData } = useQuery({
+    queryKey: ["alerts-history", selectedBranch, historyPage],
+    queryFn: () => getAlertsHistory({ ...branchParam, limit: 50, offset: historyPage * 50 }),
+    enabled: tab === "history",
+    placeholderData: keepPreviousData,
+  });
+  const history = historyData || { items: [], total: 0 };
 
-  const loadHistory = useCallback(async () => {
-    try {
-      const data = await getAlertsHistory({ ...branchParam, limit: 50, offset: historyPage * 50 });
-      setHistory(data || { items: [], total: 0 });
-    } catch (e) {
-      console.error("Failed to load history:", e);
-    }
-  }, [selectedBranch, historyPage]);
-
-  useEffect(() => { if (tab === "history") loadHistory(); }, [tab, loadHistory]);
-
-  const loadRules = useCallback(async () => {
-    try {
-      const data = await getAlertRules();
-      setRules(data || []);
-    } catch (e) {
-      console.error("Failed to load rules:", e);
-    }
-  }, []);
-
-  useEffect(() => { if (tab === "rules") loadRules(); }, [tab, loadRules]);
+  const { data: rulesData } = useQuery({
+    queryKey: ["alert-rules"],
+    queryFn: getAlertRules,
+    enabled: tab === "rules",
+    placeholderData: keepPreviousData,
+  });
+  const rules = rulesData || [];
 
   const handleAcknowledge = async (id) => {
     await acknowledgeAlert(id);
-    load();
+    queryClient.invalidateQueries({ queryKey: ["alerts-today"] });
   };
 
   const handleResolve = async (id) => {
     await resolveAlert(id);
-    load();
+    queryClient.invalidateQueries({ queryKey: ["alerts-today"] });
   };
 
   const handleRuleUpdate = async (ruleId, data) => {
     await updateAlertRule(ruleId, data);
-    loadRules();
+    queryClient.invalidateQueries({ queryKey: ["alert-rules"] });
   };
 
   const handleEvaluateNow = async () => {
     setEvaluating(true);
     try {
       await evaluateNow();
-      await load();
+      queryClient.invalidateQueries({ queryKey: ["alerts-today"] });
     } catch (e) {
       console.error("Evaluation failed:", e);
     } finally {
@@ -313,7 +297,7 @@ export default function Alerts() {
       {/* Tab Content */}
       {tab === "today" && (
         <div>
-          {loading ? (
+          {isPending ? (
             <div className="text-center py-12 text-gray-400 text-sm animate-pulse">Loading alerts...</div>
           ) : alerts.length === 0 ? (
             <div className="text-center py-12">

@@ -1,8 +1,9 @@
 /**
  * CreativeCopies — Copy component library. Derived verdict from combos.
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import { listCopies, createCopy, getCopy } from "../api/copies";
 import { listAngles } from "../api/angles";
@@ -21,10 +22,8 @@ const EMPTY = {
 
 export default function CreativeCopies() {
   const { selected, isAll } = useBranch();
+  const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [rows, setRows] = useState([]);
-  const [angles, setAngles] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
@@ -42,16 +41,22 @@ export default function CreativeCopies() {
     setSearchParams(p);
   };
 
-  const load = () => {
-    setLoading(true);
-    const p = { ...f };
-    if (!isAll && selected) p.branch_id = selected;
-    Object.keys(p).forEach(k => { if (!p[k]) delete p[k]; });
-    Promise.all([listCopies(p), listAngles({ branch_id: !isAll ? selected : undefined })])
-      .then(([c, a]) => { setRows(c); setAngles(a); })
-      .finally(() => setLoading(false));
-  };
-  useEffect(load, [selected, searchParams.toString()]);
+  const { data: pageData, isPending } = useQuery({
+    queryKey: ["creative-copies", selected, isAll, searchParams.toString()],
+    queryFn: () => {
+      const p = { ...f };
+      if (!isAll && selected) p.branch_id = selected;
+      Object.keys(p).forEach(k => { if (!p[k]) delete p[k]; });
+      return Promise.all([
+        listCopies(p),
+        listAngles({ branch_id: !isAll ? selected : undefined }),
+      ]).then(([c, a]) => ({ rows: c, angles: a }));
+    },
+    placeholderData: keepPreviousData,
+  });
+
+  const rows = pageData?.rows ?? [];
+  const angles = pageData?.angles ?? [];
 
   const openDetail = (id) => getCopy(id).then(setDetail);
 
@@ -61,7 +66,11 @@ export default function CreativeCopies() {
     if (!data.branch_id && selected && !isAll) data.branch_id = selected;
     if (!data.angle_id) delete data.angle_id;
     data.tags = data.tags ? data.tags.split(",").map(t => t.trim()).filter(Boolean) : undefined;
-    createCopy(data).then(() => { setShowForm(false); setForm(EMPTY); load(); }).finally(() => setSaving(false));
+    createCopy(data).then(() => {
+      setShowForm(false);
+      setForm(EMPTY);
+      queryClient.invalidateQueries({ queryKey: ["creative-copies"] });
+    }).finally(() => setSaving(false));
   };
 
   return (
@@ -91,7 +100,7 @@ export default function CreativeCopies() {
         ))}
       </div>
 
-      {loading ? <div className="text-gray-400 text-sm animate-pulse">Loading...</div> :
+      {isPending && !pageData ? <div className="text-gray-400 text-sm animate-pulse">Loading...</div> :
        rows.length === 0 ? <div className="text-gray-400 text-sm">No copies found.</div> : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {rows.map(c => (

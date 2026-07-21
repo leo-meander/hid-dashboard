@@ -2,7 +2,8 @@
  * Monthly Brief — KPI cards, revenue/OCC/ADR+RevPAR trends, per-branch table,
  * YoY comparison, country breakdown. Multi-year support.
  */
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import {
   BarChart, Bar, LineChart, Line,
@@ -173,23 +174,20 @@ export default function PerformanceMonthly() {
   const now = new Date();
   const [yearFrom, setYearFrom] = useState(now.getFullYear() - 1);
   const [yearTo,   setYearTo]   = useState(now.getFullYear());
-  const [monthly,  setMonthly]  = useState([]);
-  const [loading,  setLoading]  = useState(true);
-
   const branchMap = useMemo(() => {
     const m = {};
     for (const b of branches) m[b.id] = b;
     return m;
   }, [branches]);
 
-  useEffect(() => {
-    setLoading(true);
-    const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
-    axios.get(`/api/metrics/monthly?year_from=${yearFrom}&year_to=${yearTo}${bParam}`)
-      .then((r) => setMonthly(r.data.data || []))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [yearFrom, yearTo, selected, isAll]);
+  const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
+  const { data: monthly = [], isPending } = useQuery({
+    queryKey: ["performance-monthly", yearFrom, yearTo, selected, isAll],
+    queryFn: () =>
+      axios.get(`/api/metrics/monthly?year_from=${yearFrom}&year_to=${yearTo}${bParam}`)
+        .then((r) => r.data.data || []),
+    placeholderData: keepPreviousData,
+  });
 
   /* ── KPI: current month vs prior month ── */
   const kpis = useMemo(() => {
@@ -371,7 +369,7 @@ export default function PerformanceMonthly() {
         {yearPicker}
       </div>
 
-      {loading ? (
+      {isPending && !monthly.length ? (
         <div className="text-gray-400 animate-pulse">Loading...</div>
       ) : (
         <>

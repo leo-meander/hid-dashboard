@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useMemo } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import {
   listQuotas,
@@ -422,31 +423,21 @@ function QuotaForm({ initial, onSave, onCancel }) {
 
 /* ── Page ───────────────────────────────────────────────────────────────── */
 export default function RatePlanQuotas() {
-  const [quotas, setQuotas] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
   const [editing, setEditing] = useState(null);     // quota object or {} for new
   const [error, setError] = useState(null);
 
-  const load = useCallback(async () => {
-    try {
-      const data = await listQuotas();
-      setQuotas(data || []);
-      setError(null);
-    } catch (e) {
-      setError(e?.response?.data?.detail || e.message || "Load failed");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
+  const { data, isPending } = useQuery({
+    queryKey: ["rate-plan-quotas"],
+    queryFn: listQuotas,
+    placeholderData: keepPreviousData,
     // Page-level poll: pick up new counts from the 30-min cron without a
     // manual refresh. 60s is fine — counts only change on cron tick anyway.
-    const t = setInterval(load, 60_000);
-    return () => clearInterval(t);
-  }, [load]);
+    refetchInterval: 60_000,
+  });
+
+  const quotas = data || [];
 
   const handleSave = async (form) => {
     if (editing && editing.id) {
@@ -455,20 +446,20 @@ export default function RatePlanQuotas() {
       await createQuota(form);
     }
     setEditing(null);
-    await load();
+    queryClient.invalidateQueries({ queryKey: ["rate-plan-quotas"] });
   };
 
   const handleDelete = async (quota) => {
     if (!confirm(`Delete quota for "${quota.display_name || quota.rate_plan_name}"?`)) return;
     await deleteQuota(quota.id);
-    await load();
+    queryClient.invalidateQueries({ queryKey: ["rate-plan-quotas"] });
   };
 
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
       await refreshQuotas();
-      await load();
+      queryClient.invalidateQueries({ queryKey: ["rate-plan-quotas"] });
     } catch (e) {
       setError(e?.response?.data?.detail || e.message || "Refresh failed");
     } finally {
@@ -504,7 +495,7 @@ export default function RatePlanQuotas() {
         </div>
       )}
 
-      {loading ? (
+      {isPending && !data ? (
         <div className="text-gray-500 text-sm">Loading…</div>
       ) : quotas.length === 0 ? (
         <div className="border border-dashed border-gray-300 rounded-lg p-12 text-center">
