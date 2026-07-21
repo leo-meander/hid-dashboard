@@ -510,6 +510,10 @@ def build_monthly_summary(
         )
     # All view: load every branch + org-wide so we can sum per-branch targets
 
+    # For is_pct KPIs in the PM role, targets may have been entered as fractions
+    # (e.g. 0.9 = 90%) instead of percentage values (90). Normalize on load.
+    _pct_keys = {d["key"] for d in defs if d.get("is_pct")} if role_key == "pm" else set()
+
     targets_map: dict[tuple, float] = {}        # (kpi_key, month) → target value (summed for All)
     manual_actuals_map: dict[tuple, float] = {} # (kpi_key, month) → manual actual value
     for row in q.all():
@@ -520,14 +524,18 @@ def build_monthly_summary(
             manual_actuals_map[(base_key, row.month)] = float(row.target_value)
         else:
             key = (row.kpi_key, row.month)
+            raw_val = float(row.target_value)
+            # Normalize PM is_pct targets entered as fractions (≤ 2.0 → × 100)
+            if row.kpi_key in _pct_keys and raw_val <= 2.0:
+                raw_val = round(raw_val * 100, 1)
             if all_branches_view and row.branch_id is not None:
                 # sum per-branch targets for All view
-                targets_map[key] = targets_map.get(key, 0.0) + float(row.target_value)
+                targets_map[key] = targets_map.get(key, 0.0) + raw_val
             elif all_branches_view and row.branch_id is None:
                 # org-wide target (e.g. kol_invited) — use as-is, don't double-add
-                targets_map.setdefault(key, float(row.target_value))
+                targets_map.setdefault(key, raw_val)
             else:
-                targets_map[key] = float(row.target_value)
+                targets_map[key] = raw_val
 
     # Fetch actuals
     actuals_yearly: dict[int, dict[str, dict]] = {}
