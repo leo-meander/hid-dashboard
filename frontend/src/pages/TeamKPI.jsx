@@ -216,9 +216,11 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
             const avgPct = actPcts.length ? Math.round(actPcts.reduce((a, b) => a + b, 0) / actPcts.length * 10) / 10 : null;
             const avgColor = pctColor(avgPct, kpi.higher_is_better);
 
+            const rowSpan = kpi.no_target ? 1 : 2;
             return (
               <>
-                {/* TARGET row */}
+                {/* TARGET row — hidden for no_target KPIs */}
+                {!kpi.no_target && (
                 <tr className={`border-t border-gray-100 ${ki > 0 ? "border-t-2 border-gray-200" : ""}`}>
                   <td className="sticky left-0 bg-white px-4 py-1.5 font-semibold text-gray-800 border-r border-gray-200 z-10" rowSpan={2}>
                     <div>{kpi.label}</div>
@@ -247,8 +249,18 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                   </td>
                   <td className="px-2 py-1.5 text-center text-gray-400">—</td>
                 </tr>
+                )}
                 {/* ACTUAL row */}
-                <tr className="border-b border-gray-200">
+                <tr className={`border-b border-gray-200 ${kpi.no_target && ki > 0 ? "border-t-2 border-gray-200" : ""}`}>
+                  {kpi.no_target && (
+                    <>
+                      <td className="sticky left-0 bg-white px-4 py-1.5 font-semibold text-gray-800 border-r border-gray-200 z-10">
+                        <div>{kpi.label}</div>
+                        {kpi.org_wide && <span className="text-[10px] text-blue-500 font-normal">org-wide</span>}
+                      </td>
+                      <td className="px-2 py-1.5 text-center text-gray-400">{kpi.unit}</td>
+                    </>
+                  )}
                   <td className="px-2 py-1.5 text-center">
                     <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700">A</span>
                   </td>

@@ -42,8 +42,9 @@ KPI_DEFS: dict[str, list[dict]] = {
     ],
     "paid_ads": [
         {"key": "ads_material",    "label": "Variation Ads Material", "unit": "count",  "org_wide": False, "higher_is_better": True},
+        {"key": "ads_spend",       "label": "Ad Spend",               "unit": "mil VND","org_wide": False, "higher_is_better": False, "is_revenue": True},
         {"key": "roas",            "label": "ROAS",                   "unit": "×",      "org_wide": False, "higher_is_better": True,  "decimals": 2},
-        {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True},
+        {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True, "no_target": True},
     ],
     "designer": [
         {"key": "design_assets",   "label": "Design Assets Completed","unit": "designs","org_wide": False, "higher_is_better": True},
@@ -249,16 +250,19 @@ def get_paid_ads_actuals_yearly(
             .group_by(AdsPerformance.branch_id, sqlfunc.extract("month", AdsPerformance.date_from))
             .all()
         )
-        roas_map: dict[tuple, float] = {}
+        roas_map:  dict[tuple, float] = {}
+        spend_map: dict[tuple, float] = {}
         for r in roas_rows:
             bid = str(r.branch_id)
             m = int(r.month)
             spend = float(r.spend or 0)
             rev = float(r.revenue or 0)
-            roas_map[(bid, m)] = round(rev / spend, 2) if spend > 0 else 0.0
+            roas_map[(bid, m)]  = round(rev / spend, 2) if spend > 0 else 0.0
+            spend_map[(bid, m)] = spend
     except Exception as exc:
         log.warning("paid_ads roas lookup failed: %s", exc)
         roas_map = {}
+        spend_map = {}
 
     out: dict[int, dict[str, dict]] = {}
     for mac, branch_name in rows:
@@ -275,8 +279,10 @@ def get_paid_ads_actuals_yearly(
         bid = str(mac.branch_id)
         revenue_vnd = float(mac.revenue_vnd or 0)
         roas = roas_map.get((bid, month), 0.0)
+        spend = spend_map.get((bid, month), 0.0)
         out.setdefault(month, {})[branch_key] = {
             "ads_revenue": revenue_vnd,
+            "ads_spend":   spend,
             "roas":        roas,
             "ads_material": 0,
         }
@@ -455,12 +461,13 @@ def build_monthly_summary(
         # Unit: revenue KPIs show branch-native currency; others use static unit
         kpi_unit = currency_display["unit"] if is_revenue else (defn.get("unit_display") or defn["unit"])
 
-        kpi_auto = auto and defn.get("auto", True)  # per-KPI override via auto: False
+        kpi_auto   = auto and defn.get("auto", True)   # per-KPI override via auto: False
+        no_target  = defn.get("no_target", False)       # display-only: suppress target editing
 
         monthly = []
         for m in range(1, 13):
             is_future = (m > cur_month)
-            target = targets_map.get((kpi_key, m))
+            target = None if no_target else targets_map.get((kpi_key, m))
 
             # Actual: from upstream API (auto roles) or manual DB entry (non-auto)
             actual = None
@@ -508,7 +515,8 @@ def build_monthly_summary(
             "decimals": decimals,
             "higher_is_better": higher,
             "org_wide": org_wide,
-            "auto_actuals": auto,
+            "auto_actuals": kpi_auto,
+            "no_target": no_target,
             "monthly": monthly,
         })
 
