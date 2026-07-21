@@ -1,19 +1,22 @@
-"""Lark Base API client — fetches task records for Designer KPI auto-actuals.
+"""Lark Base API client — fetches task records for Designer & Paid Ads KPI actuals.
 
-KPIs derived from tasks where PIC contains "Nora":
-  design_assets    → sum of Ads-only_Number of images (Completed tasks, branch-filtered)
-  videos_delivered → sum of Ads-only_Number of video  (Completed tasks, branch-filtered)
-  delivery_rate    → % Completed tasks with On-time vs Original = "On-time"
+Mirrors exactly what the Google Apps Script does:
+  - Branch from 'Project' field: "[1948] Ads" -> "1948", "[Sai Gon] Ads" -> "saigon"
+  - Month from 'Date Created' field (ms timestamp)
+  - Status must be 'Completed' (case-insensitive)
+  - No PIC filter — all tasks with a branch prefix count
 
-Branch detected from task name prefix: [1948], [Taipei], [Oani], [Osaka], [Saigon]/[SGN]/[Sai Gon]
-Month detected from Complete date (fallback: Deadline).
+KPIs derived:
+  Designer (Nora):  design_assets    = Ads-only_Number of images
+                    videos_delivered = Ads-only_Number of video
+  Paid Ads (Mason): ads_material     = images + videos
 """
 from __future__ import annotations
 
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import requests
@@ -25,27 +28,61 @@ log = logging.getLogger(__name__)
 _LARK_AUTH_URL = "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal"
 _LARK_RECORDS_URL = "https://open.larksuite.com/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
 
-_token_cache: dict = {}  # {token, expires_at}
+_token_cache: dict = {}
 
-# Branch prefix patterns → branch_key
-_BRANCH_PATTERNS = [
-    (re.compile(r"\[1948\]", re.IGNORECASE), "1948"),
-    (re.compile(r"\[taipei\]", re.IGNORECASE), "taipei"),
-    (re.compile(r"\[oani\]", re.IGNORECASE), "oani"),
-    (re.compile(r"\[osaka\]", re.IGNORECASE), "osaka"),
-    (re.compile(r"\[saigon\]|\[sgn\]|\[sai\s*gon\]", re.IGNORECASE), "saigon"),
-]
+# Branch prefix patterns from Project field → branch_key
+# Matches [1948], [Sai Gon], [Taipei], [Oani], [Osaka], [Saigon], [SGN]
+_BRANCH_RE = re.compile(r"\[([^\]]+)\]")
+
+def _norm_branch(raw: str) -> Optional[str]:
+    """Normalize branch name: lowercase + strip spaces, then map to branch key."""
+    s = raw.lower().replace(" ", "").strip()
+    if s == "1948":    return "1948"
+    if s == "taipei":  return "taipei"
+    if s == "oani":    return "oani"
+    if s == "osaka":   return "osaka"
+    if s in ("saigon", "sgn", "saigòn"): return "saigon"
+    return None
+
+
+def _parse_branch_from_project(project_val) -> Optional[str]:
+    """Extract branch key from Project field value like '[1948] Ads'."""
+    if not project_val:
+        return None
+    s = str(project_val)
+    m = _BRANCH_RE.search(s)
+    if not m:
+        return None
+    return _norm_branch(m.group(1))
+
+
+def _parse_month_year(val) -> Optional[tuple[int, int]]:
+    """Parse 'Date Created' field (ms timestamp or ISO string) → (year, month)."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        try:
+            dt = datetime.fromtimestamp(val / 1000, tz=timezone.utc)
+            return dt.year, dt.month
+        except Exception:
+            return None
+    if isinstance(val, str) and val.strip():
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(val.strip()[:19], fmt)
+                return dt.year, dt.month
+            except ValueError:
+                continue
+    return None
 
 
 def _get_token() -> Optional[str]:
     if not (settings.LARK_APP_ID and settings.LARK_APP_SECRET):
         log.warning("LARK_APP_ID / LARK_APP_SECRET not configured")
         return None
-
     now = time.time()
     if _token_cache.get("token") and _token_cache.get("expires_at", 0) > now + 60:
         return _token_cache["token"]
-
     try:
         resp = requests.post(
             _LARK_AUTH_URL,
@@ -55,9 +92,8 @@ def _get_token() -> Optional[str]:
         resp.raise_for_status()
         body = resp.json()
         token = body.get("tenant_access_token")
-        expires_in = body.get("expire", 7200)
         _token_cache["token"] = token
-        _token_cache["expires_at"] = now + expires_in
+        _token_cache["expires_at"] = now + body.get("expire", 7200)
         return token
     except Exception as exc:
         log.error("Lark auth failed: %s", exc)
@@ -65,11 +101,9 @@ def _get_token() -> Optional[str]:
 
 
 def _fetch_all_records() -> list[dict]:
-    """Fetch all records from LARK_TASKS_TABLE_ID with pagination."""
     token = _get_token()
     if not token or not settings.LARK_BASE_APP_TOKEN or not settings.LARK_TASKS_TABLE_ID:
         return []
-
     url = _LARK_RECORDS_URL.format(
         app_token=settings.LARK_BASE_APP_TOKEN,
         table_id=settings.LARK_TASKS_TABLE_ID,
@@ -77,7 +111,6 @@ def _fetch_all_records() -> list[dict]:
     headers = {"Authorization": f"Bearer {token}"}
     records = []
     page_token = None
-
     while True:
         params: dict = {"page_size": 500}
         if page_token:
@@ -95,104 +128,91 @@ def _fetch_all_records() -> list[dict]:
         except Exception as exc:
             log.error("Lark records fetch failed: %s", exc)
             break
-
     return records
-
-
-def _parse_date(val) -> Optional[datetime]:
-    """Parse Lark date field (ms timestamp or ISO string)."""
-    if val is None:
-        return None
-    if isinstance(val, (int, float)):
-        try:
-            return datetime.utcfromtimestamp(val / 1000)
-        except Exception:
-            return None
-    if isinstance(val, str):
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-            try:
-                return datetime.strptime(val[:19], fmt)
-            except ValueError:
-                continue
-    return None
-
-
-def _detect_branch(task_name: str) -> Optional[str]:
-    for pattern, key in _BRANCH_PATTERNS:
-        if pattern.search(task_name):
-            return key
-    return None
-
-
-def _pic_is_nora(pic_val) -> bool:
-    """Return True if Nora is in the PIC field (string or list)."""
-    if not pic_val:
-        return False
-    if isinstance(pic_val, list):
-        return any("nora" in str(p).lower() for p in pic_val)
-    return "nora" in str(pic_val).lower()
 
 
 # ── In-memory cache (10 min TTL) ─────────────────────────────────────────────
 
-_designer_cache: dict = {}  # year → (fetched_at, data)
-_DESIGNER_TTL = 600
+_lark_cache: dict = {}  # year → (fetched_at, data)
+_LARK_TTL = 600
 
 
-def get_designer_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
-    """Return {month: {branch_key: {design_assets, videos_delivered, delivery_rate}}}."""
-    cached = _designer_cache.get(year)
-    if cached and (time.time() - cached[0]) < _DESIGNER_TTL:
+def _get_yearly_agg(year: int) -> dict:
+    """
+    Return aggregated counts per (year, month, branch_key):
+    {branch_key: {month: {images, videos}}}
+
+    Only counts tasks where:
+      - Project field contains a [Branch] prefix
+      - Status == 'completed' (case-insensitive)
+      - Date Created falls in `year`
+      - images > 0 or videos > 0 (matches script: skip if both 0)
+    """
+    cached = _lark_cache.get(year)
+    if cached and (time.time() - cached[0]) < _LARK_TTL:
         return cached[1]
 
     records = _fetch_all_records()
-    if not records:
-        return {}
-
-    # Accumulator: (month, branch_key) → {images, videos, on_time, total}
-    agg: dict[tuple, dict] = {}
+    agg: dict[str, dict[int, dict]] = {}
 
     for rec in records:
-        pic = rec.get("PIC") or rec.get("pIC") or ""
-        if not _pic_is_nora(pic):
-            continue
-
-        status = str(rec.get("Status") or "").strip()
-        if status != "Completed":
-            continue
-
-        task_name = str(rec.get("Task") or "")
-        branch_key = _detect_branch(task_name)
+        project = rec.get("Project") or ""
+        branch_key = _parse_branch_from_project(project)
         if not branch_key:
             continue
 
-        # Month from Complete date, fallback to Deadline
-        dt = _parse_date(rec.get("Complete date")) or _parse_date(rec.get("Deadline"))
-        if not dt or dt.year != year:
+        status = str(rec.get("Status") or "").lower().strip()
+        if status != "completed":
             continue
-        month = dt.month
 
-        n_images = float(rec.get("Ads-only_Number of images") or 0)
-        n_videos = float(rec.get("Ads-only_Number of video") or 0)
-        on_time = str(rec.get("On-time vs Original") or "").strip() == "On-time"
+        ym = _parse_month_year(rec.get("Date Created"))
+        if not ym or ym[0] != year:
+            continue
 
-        k = (month, branch_key)
-        if k not in agg:
-            agg[k] = {"images": 0.0, "videos": 0.0, "on_time": 0, "total": 0}
-        agg[k]["images"] += n_images
-        agg[k]["videos"] += n_videos
-        agg[k]["total"] += 1
-        if on_time:
-            agg[k]["on_time"] += 1
+        _, month = ym
+        images = float(rec.get("Ads-only_Number of images") or 0)
+        videos = float(rec.get("Ads-only_Number of video") or 0)
+        if images == 0 and videos == 0:
+            continue  # skip tasks with no asset counts (matches script behaviour)
 
+        if branch_key not in agg:
+            agg[branch_key] = {}
+        if month not in agg[branch_key]:
+            agg[branch_key][month] = {"images": 0.0, "videos": 0.0}
+        agg[branch_key][month]["images"] += images
+        agg[branch_key][month]["videos"] += videos
+
+    _lark_cache[year] = (time.time(), agg)
+    return agg
+
+
+def get_designer_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
+    """
+    Return {month: {branch_key: {design_assets, videos_delivered}}}
+    design_assets    = images
+    videos_delivered = videos
+    """
+    agg = _get_yearly_agg(year)
     out: dict[int, dict[str, dict]] = {}
-    for (month, branch_key), vals in agg.items():
-        delivery = round(vals["on_time"] / vals["total"] * 100, 1) if vals["total"] else None
-        out.setdefault(month, {})[branch_key] = {
-            "design_assets":    round(vals["images"]),
-            "videos_delivered": round(vals["videos"]),
-            "delivery_rate":    delivery,
-        }
+    for branch_key, months in agg.items():
+        for month, counts in months.items():
+            out.setdefault(month, {})[branch_key] = {
+                "design_assets":    round(counts["images"]),
+                "videos_delivered": round(counts["videos"]),
+            }
+    return out
 
-    _designer_cache[year] = (time.time(), out)
+
+def get_ads_material_yearly(year: int) -> dict[int, dict[str, dict]]:
+    """
+    Return {month: {branch_key: {ads_material}}}
+    ads_material = images + videos  (matches Paid Ads script: source='both')
+    """
+    agg = _get_yearly_agg(year)
+    out: dict[int, dict[str, dict]] = {}
+    for branch_key, months in agg.items():
+        for month, counts in months.items():
+            out.setdefault(month, {})[branch_key] = {
+                "ads_material": round(counts["images"] + counts["videos"]),
+            }
     return out

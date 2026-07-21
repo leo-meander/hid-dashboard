@@ -45,8 +45,8 @@ KPI_DEFS: dict[str, list[dict]] = {
     "designer": [
         {"key": "design_assets",   "label": "Design Assets Completed","unit": "designs","org_wide": False, "higher_is_better": True},
         {"key": "videos_delivered","label": "Videos Delivered",       "unit": "videos", "org_wide": False, "higher_is_better": True},
-        {"key": "delivery_rate",   "label": "On-Time Delivery Rate",  "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True},
-        {"key": "design_ideas",    "label": "Design Ideas",           "unit": "ideas",  "org_wide": False, "higher_is_better": True},
+        {"key": "delivery_rate",   "label": "On-Time Delivery Rate",  "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True, "auto": False},
+        {"key": "design_ideas",    "label": "Design Ideas",           "unit": "ideas",  "org_wide": False, "higher_is_better": True,  "auto": False},
     ],
     "crm": [
         {"key": "data_fill_rate",  "label": "Data Fill-Rate",         "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True},
@@ -280,10 +280,16 @@ def build_monthly_summary(
 
     # Fetch actuals
     actuals_yearly: dict[int, dict[str, dict]] = {}
+    lark_ads_material: dict[int, dict[str, dict]] = {}
     if auto and role_key == "kol":
         actuals_yearly = get_kol_actuals_yearly(year)
     elif auto and role_key == "paid_ads":
         actuals_yearly = get_paid_ads_actuals_yearly(year)
+        try:
+            from app.services.lark_service import get_ads_material_yearly
+            lark_ads_material = get_ads_material_yearly(year)
+        except Exception as exc:
+            log.warning("lark ads_material unavailable: %s", exc)
     elif auto and role_key == "designer":
         from app.services.lark_service import get_designer_actuals_yearly
         actuals_yearly = get_designer_actuals_yearly(year)
@@ -305,6 +311,8 @@ def build_monthly_summary(
         scale = defn.get("scale")
         higher = defn.get("higher_is_better", True)
 
+        kpi_auto = auto and defn.get("auto", True)  # per-KPI override via auto: False
+
         monthly = []
         for m in range(1, 13):
             is_future = (m > cur_month)
@@ -312,16 +320,20 @@ def build_monthly_summary(
 
             # Actual: from upstream API (auto roles) or manual DB entry (non-auto)
             actual = None
-            if auto and not is_future:
+            if kpi_auto and not is_future:
                 month_actuals = actuals_yearly.get(m, {})
                 lookup_key = "all" if org_wide else (branch_key or "")
                 branch_data = month_actuals.get(lookup_key, {})
                 raw = branch_data.get(kpi_key)
+                # Merge Lark ads_material on top of paid_ads actuals
+                if raw is None and kpi_key == "ads_material" and lark_ads_material:
+                    lark_branch = lark_ads_material.get(m, {}).get(branch_key or "", {})
+                    raw = lark_branch.get("ads_material")
                 if raw is not None:
                     actual = float(raw)
                     if scale:
                         actual = round(actual / scale, decimals or 1)
-            elif not auto and not is_future:
+            if actual is None and not is_future:
                 actual = manual_actuals_map.get((kpi_key, m))
 
             pct = None
