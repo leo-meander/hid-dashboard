@@ -1,23 +1,23 @@
 """
-Cloudbeds inbound webhook router.
+Cloudbeds reservation fan-out router + polling job.
 
-Receives reservation events from Cloudbeds and fans out to:
-  1. GHL CRM — upsert contact (Flow 1: CB New Customer → GHL)
-  2. Meta CAPI — Purchase event (Flow 2, non-Website sources)
-  3. Google Ads — offline conversion upload (Flow 2, non-Website sources)
+Fan-out targets (per reservation):
+  1. GHL CRM — upsert contact
+  2. Meta CAPI — Purchase event (non-Website sources)
+  3. Google Ads — offline conversion upload (non-Website sources)
+  4. TikTok Events API — Saigon only
 
-Endpoint: POST /api/webhooks/cloudbeds
-
-Cloudbeds sends a webhook body with at minimum:
-  { "propertyID": "...", "reservationID": "...", "type": "reservation/new", ... }
-
-To register: go to Cloudbeds → Settings → Webhooks → New Webhook,
-set URL to https://<your-hid>/api/webhooks/cloudbeds, select
-"New Reservation" event, copy the secret into CLOUDBEDS_WEBHOOK_SECRET.
+Trigger modes:
+  A. Polling — APScheduler job runs every 10 min, calls getReservations for
+     each branch, deduplicates via in-memory seen-set, fans out new ones.
+  B. Webhook (optional) — POST /api/webhooks/cloudbeds if Cloudbeds ever
+     supports push webhooks for this property.
 """
 import hashlib
 import hmac
 import logging
+from collections import deque
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
@@ -33,55 +33,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 CLOUDBEDS_API_BASE = "https://hotels.cloudbeds.com/api/v1.3"
-
-# Sources that should NOT be forwarded to Meta/Google Ads (booking engine / direct website)
 WEBSITE_SOURCES = {"website", "booking engine"}
 
-
-def _verify_signature(raw_body: bytes, signature: str | None) -> bool:
-    """Verify Cloudbeds HMAC-SHA256 webhook signature. Skip if no secret configured."""
-    secret = settings.CLOUDBEDS_WEBHOOK_SECRET
-    if not secret:
-        return True  # secret not configured → accept all (dev mode)
-    if not signature:
-        return False
-    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(f"sha256={expected}", signature)
+# Dedup: remember the last 2000 reservation IDs we processed so the 10-min
+# polling window overlap never double-fires the same reservation.
+_seen_reservation_ids: deque = deque(maxlen=2000)
+_seen_set: set = set()
 
 
-def _fetch_reservation(property_id: str, reservation_id: str) -> dict | None:
-    """Call Cloudbeds /v1.3/getReservation and return the data dict."""
-    api_key = settings.get_api_key_for_property(str(property_id))
-    if not api_key:
-        logger.error("No Cloudbeds API key for propertyID=%s", property_id)
-        return None
-    try:
-        with httpx.Client(timeout=20) as client:
-            resp = client.get(
-                f"{CLOUDBEDS_API_BASE}/getReservation",
-                headers={"Authorization": f"Bearer {api_key}"},
-                params={"propertyID": str(property_id), "reservationID": str(reservation_id)},
-            )
-            resp.raise_for_status()
-            body = resp.json()
-            if not body.get("success"):
-                logger.error("Cloudbeds getReservation failed: %s", body.get("message"))
-                return None
-            return body.get("data")
-    except Exception as e:
-        logger.error("Error fetching reservation %s from Cloudbeds: %s", reservation_id, e)
-        return None
+def _mark_seen(reservation_id: str) -> bool:
+    """Return True if already seen (duplicate). Otherwise mark and return False."""
+    if reservation_id in _seen_set:
+        return True
+    _seen_reservation_ids.append(reservation_id)
+    _seen_set.add(reservation_id)
+    # Keep set in sync with bounded deque
+    if len(_seen_reservation_ids) == 2000:
+        oldest = _seen_reservation_ids[0]
+        _seen_set.discard(oldest)
+    return False
 
 
-def _process_reservation(property_id: str, reservation_id: str) -> None:
-    """Background task: fetch reservation details and fan out to GHL + Meta + Google Ads."""
-    logger.info("Processing Cloudbeds webhook property=%s reservation=%s", property_id, reservation_id)
+# ── Core fan-out (shared by polling + webhook paths) ─────────────────────────
 
-    reservation = _fetch_reservation(property_id, reservation_id)
-    if not reservation:
-        logger.error("Could not fetch reservation %s — aborting", reservation_id)
-        return
-
+def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
+    """Process one reservation: fan out to GHL, Meta, Google Ads, TikTok."""
     branch = settings.cloudbeds_property_to_branch.get(str(property_id))
     if not branch:
         logger.error("Unknown propertyID=%s — no branch mapping", property_id)
@@ -94,7 +70,7 @@ def _process_reservation(property_id: str, reservation_id: str) -> None:
 
     ghl_log = meta_log = gads_log = tiktok_log = None
 
-    # ── Flow 1: GHL CRM upsert ────────────────────────────────────────────────
+    # ── GHL CRM upsert ───────────────────────────────────────────────────────
     if cfg["ghl_location_id"] and cfg["ghl_api_key"]:
         try:
             result = upsert_contact_from_reservation(
@@ -111,9 +87,9 @@ def _process_reservation(property_id: str, reservation_id: str) -> None:
     else:
         ghl_log = {"success": None, "action": "skipped_no_config"}
 
-    # ── Flow 2: Meta CAPI + Google Ads (non-website sources only) ────────────
+    # ── Meta CAPI + Google Ads (non-website sources only) ────────────────────
     if is_website_source:
-        logger.info("Meta/Google Ads skipped — source is Website (%s)", source)
+        logger.info("Meta/Google Ads skipped — website source (%s)", source)
         meta_log = {"success": None, "action": "skipped_website_source"}
         gads_log = {"success": None, "action": "skipped_website_source"}
     else:
@@ -186,7 +162,6 @@ def _process_reservation(property_id: str, reservation_id: str) -> None:
             logger.error("TikTok CAPI error branch=%s reservation=%s: %s", branch, reservation_id, e)
             tiktok_log = {"success": False, "error": str(e)}
     elif branch == "saigon":
-        logger.info("TikTok CAPI skipped — no TIKTOK_ACCESS_TOKEN_SAIGON or TIKTOK_EVENT_SOURCE_ID_SAIGON")
         tiktok_log = {"success": None, "action": "skipped_no_config"}
 
     webhook_log.record(
@@ -201,22 +176,116 @@ def _process_reservation(property_id: str, reservation_id: str) -> None:
     )
 
 
+def _process_reservation(property_id: str, reservation_id: str) -> None:
+    """Fetch a single reservation from Cloudbeds then fan out."""
+    logger.info("Processing reservation property=%s reservation=%s", property_id, reservation_id)
+    api_key = settings.get_api_key_for_property(str(property_id))
+    if not api_key:
+        logger.error("No Cloudbeds API key for propertyID=%s", property_id)
+        return
+    try:
+        with httpx.Client(timeout=20) as client:
+            resp = client.get(
+                f"{CLOUDBEDS_API_BASE}/getReservation",
+                headers={"Authorization": f"Bearer {api_key}"},
+                params={"propertyID": str(property_id), "reservationID": str(reservation_id)},
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            if not body.get("success"):
+                logger.error("getReservation failed: %s", body.get("message"))
+                return
+            reservation = body.get("data")
+    except Exception as e:
+        logger.error("Error fetching reservation %s: %s", reservation_id, e)
+        return
+    if reservation:
+        _fan_out(property_id, reservation_id, reservation)
+
+
+# ── Polling job (called by APScheduler every 10 min) ─────────────────────────
+
+def poll_new_reservations() -> None:
+    """
+    Poll all branches for reservations created in the last 15 minutes.
+    Skips any reservation already in the dedup set.
+    """
+    now_utc = datetime.now(timezone.utc)
+    from_dt = now_utc - timedelta(minutes=15)
+    date_from = from_dt.strftime("%Y-%m-%d %H:%M:%S")
+    date_to = now_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+    branches = [
+        (settings.CB_PROPERTY_ID_SAIGON, settings.CB_API_KEY_SAIGON),
+        (settings.CB_PROPERTY_ID_TAIPEI, settings.CB_API_KEY_TAIPEI),
+        (settings.CB_PROPERTY_ID_1948, settings.CB_API_KEY_1948),
+        (settings.CB_PROPERTY_ID_OANI, settings.CB_API_KEY_OANI),
+        (settings.CB_PROPERTY_ID_OSAKA, settings.CB_API_KEY_OSAKA),
+    ]
+
+    for property_id, api_key in branches:
+        if not property_id or not api_key:
+            continue
+        try:
+            with httpx.Client(timeout=20) as client:
+                resp = client.get(
+                    f"{CLOUDBEDS_API_BASE}/getReservations",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    params={
+                        "propertyID": property_id,
+                        "dateCreatedFrom": date_from,
+                        "dateCreatedTo": date_to,
+                        "includeGuestList": "true",
+                        "pageSize": 50,
+                    },
+                )
+                body = resp.json()
+                if not body.get("success"):
+                    logger.warning("getReservations failed property=%s: %s", property_id, body.get("message"))
+                    continue
+
+                reservations = body.get("data") or []
+                if isinstance(reservations, dict):
+                    reservations = list(reservations.values())
+
+                new_count = 0
+                for res in reservations:
+                    rid = str(res.get("reservationID", ""))
+                    if not rid or _mark_seen(rid):
+                        continue
+                    new_count += 1
+                    logger.info("Poll: new reservation=%s property=%s", rid, property_id)
+                    _fan_out(property_id, rid, res)
+
+                if new_count:
+                    logger.info("Poll property=%s: processed %d new reservations", property_id, new_count)
+
+        except Exception as e:
+            logger.error("Poll error property=%s: %s", property_id, e)
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+def _verify_signature(raw_body: bytes, signature: str | None) -> bool:
+    secret = settings.CLOUDBEDS_WEBHOOK_SECRET
+    if not secret:
+        return True
+    if not signature:
+        return False
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(f"sha256={expected}", signature)
+
+
 @router.post("/webhooks/cloudbeds")
 async def cloudbeds_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
     x_cloudbeds_signature: str | None = Header(default=None),
 ) -> dict:
-    """
-    Receive a Cloudbeds reservation webhook and fan out to GHL/Meta/Google Ads.
-    Always returns 200 immediately; processing happens in the background.
-    """
+    """Optional push webhook endpoint — used if Cloudbeds supports it."""
     raw_body = await request.body()
-
     if not _verify_signature(raw_body, x_cloudbeds_signature):
-        logger.warning("Cloudbeds webhook signature mismatch — rejected")
         raise HTTPException(status_code=401, detail="Invalid signature")
-
     try:
         payload = await request.json()
     except Exception:
@@ -224,16 +293,12 @@ async def cloudbeds_webhook(
 
     property_id = str(payload.get("propertyID") or payload.get("property_id") or "")
     reservation_id = str(payload.get("reservationID") or payload.get("reservation_id") or "")
-
     if not property_id or not reservation_id:
-        logger.warning("Cloudbeds webhook missing propertyID or reservationID: %s", payload)
         return {"success": True, "message": "skipped — missing IDs"}
-
-    event_type = payload.get("type") or payload.get("event") or ""
-    logger.info("Cloudbeds webhook received type=%s property=%s reservation=%s", event_type, property_id, reservation_id)
+    if _mark_seen(reservation_id):
+        return {"success": True, "message": "already processed"}
 
     background_tasks.add_task(_process_reservation, property_id, reservation_id)
-
     return {"success": True, "message": "queued"}
 
 
