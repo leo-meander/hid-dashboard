@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.team_kpi import TeamKPITarget
+from app.services.currency import get_cached_rate
 from app.services.kol_engine import HOTEL_TO_BRANCH_KEY, fetch_kol_revenue
 from app.services.upstream_actuals import BRANCH_TO_KOL_HOTEL_ID
 
@@ -32,7 +33,7 @@ log = logging.getLogger(__name__)
 KPI_DEFS: dict[str, list[dict]] = {
     "kol": [
         {"key": "kol_invited",     "label": "KOLs Invited",          "unit": "KOLs",   "org_wide": True,  "higher_is_better": True},
-        {"key": "kol_revenue",     "label": "Revenue via KOL",        "unit": "VND",    "org_wide": False, "higher_is_better": True,  "scale": 1e6, "unit_display": "mil VND"},
+        {"key": "kol_revenue",     "label": "Revenue via KOL",        "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True},
         {"key": "kol_collaborated","label": "KOLs Collaborated",      "unit": "KOLs",   "org_wide": False, "higher_is_better": True},
         {"key": "kol_posted",      "label": "KOLs Posted",            "unit": "posts",  "org_wide": False, "higher_is_better": True},
         {"key": "kol_ads_collab",  "label": "KOL Ads Collab",         "unit": "videos", "org_wide": False, "higher_is_better": True},
@@ -40,7 +41,7 @@ KPI_DEFS: dict[str, list[dict]] = {
     "paid_ads": [
         {"key": "ads_material",    "label": "Variation Ads Material", "unit": "count",  "org_wide": False, "higher_is_better": True},
         {"key": "roas",            "label": "ROAS",                   "unit": "×",      "org_wide": False, "higher_is_better": True,  "decimals": 2},
-        {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "decimals": 1},
+        {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True},
     ],
     "designer": [
         {"key": "design_assets",   "label": "Design Assets Completed","unit": "designs","org_wide": False, "higher_is_better": True},
@@ -51,7 +52,7 @@ KPI_DEFS: dict[str, list[dict]] = {
     "crm": [
         {"key": "data_fill_rate",  "label": "Data Fill-Rate",         "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True},
         {"key": "crm_campaigns",   "label": "CRM Campaigns Sent",     "unit": "campaigns","org_wide": False,"higher_is_better": True},
-        {"key": "crm_revenue",     "label": "Revenue from CRM",       "unit": "VND",    "org_wide": False, "higher_is_better": True},
+        {"key": "crm_revenue",     "label": "Revenue from CRM",       "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True},
     ],
     "pm": [
         {"key": "team_activities",      "label": "Team Activities",         "unit": "activities","org_wide": True, "higher_is_better": True},
@@ -79,6 +80,19 @@ BRANCH_KEY_TO_UUID: dict[str, str] = {v: k for k, v in {
 }.items()}
 
 BRANCH_UUID_TO_KEY: dict[str, str] = {v: k for k, v in BRANCH_KEY_TO_UUID.items()}
+
+# Branches that use a non-VND currency; defaults to VND for all others
+BRANCH_CURRENCY: dict[str, str] = {
+    "osaka":  "JPY",
+    "taipei": "TWD",
+}
+
+# How to display revenue in each currency
+_CURRENCY_DISPLAY: dict[str, dict] = {
+    "VND": {"unit": "mil VND", "scale": 1_000_000, "decimals": 1},
+    "JPY": {"unit": "JPY",     "scale": 1,          "decimals": 0},
+    "TWD": {"unit": "TWD",     "scale": 1,          "decimals": 0},
+}
 
 # ── KOL actuals ─────────────────────────────────────────────────────────────
 
@@ -214,9 +228,8 @@ def get_paid_ads_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
         spend = vals["spend"]
         revenue_vnd = vals["revenue"]  # platform returns VND
         roas = round(revenue_vnd / spend, 2) if spend > 0 else 0.0
-        ads_rev_mil = round(revenue_vnd / 1e6, 1)
         out.setdefault(month, {})[branch_key] = {
-            "ads_revenue": ads_rev_mil,
+            "ads_revenue": revenue_vnd,  # raw VND; converted in build_monthly_summary
             "roas":        roas,
             "ads_material": 0,  # filled by caller from DB if needed
         }
@@ -299,6 +312,14 @@ def build_monthly_summary(
     if branch_id:
         branch_key = BRANCH_UUID_TO_KEY.get(str(branch_id))
 
+    # Native currency for this branch (JPY for osaka, TWD for taipei, VND otherwise)
+    native_currency = BRANCH_CURRENCY.get(branch_key or "", "VND")
+    currency_display = _CURRENCY_DISPLAY[native_currency]
+    # Rate: how many VND per 1 unit of native currency (used to convert VND→native)
+    vnd_to_native_rate = (
+        get_cached_rate(native_currency, "VND") if native_currency != "VND" else None
+    )
+
     kpis_out = []
     all_pcts: list[float] = []
     cur_pcts: list[float] = []
@@ -307,9 +328,19 @@ def build_monthly_summary(
         kpi_key = defn["key"]
         org_wide = defn.get("org_wide", False)
         is_pct = defn.get("is_pct", False)
-        decimals = defn.get("decimals", 0)
-        scale = defn.get("scale")
+        is_revenue = defn.get("is_revenue", False)
         higher = defn.get("higher_is_better", True)
+
+        # Revenue KPIs use dynamic scale/decimals based on branch currency
+        if is_revenue:
+            decimals = currency_display["decimals"]
+            scale = currency_display["scale"]
+        else:
+            decimals = defn.get("decimals", 0)
+            scale = defn.get("scale")
+
+        # Unit: revenue KPIs show branch-native currency; others use static unit
+        kpi_unit = currency_display["unit"] if is_revenue else (defn.get("unit_display") or defn["unit"])
 
         kpi_auto = auto and defn.get("auto", True)  # per-KPI override via auto: False
 
@@ -331,7 +362,10 @@ def build_monthly_summary(
                     raw = lark_branch.get("ads_material")
                 if raw is not None:
                     actual = float(raw)
-                    if scale:
+                    if is_revenue and native_currency != "VND" and vnd_to_native_rate:
+                        # raw is in VND; convert to native currency
+                        actual = round(actual / vnd_to_native_rate, decimals)
+                    elif scale:
                         actual = round(actual / scale, decimals or 1)
             if actual is None and not is_future:
                 actual = manual_actuals_map.get((kpi_key, m))
@@ -356,7 +390,7 @@ def build_monthly_summary(
         kpis_out.append({
             "key": kpi_key,
             "label": defn["label"],
-            "unit": defn.get("unit_display") or defn["unit"],
+            "unit": kpi_unit,
             "is_pct": is_pct,
             "decimals": decimals,
             "higher_is_better": higher,
