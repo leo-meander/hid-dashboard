@@ -46,7 +46,7 @@ export default function KPITargets() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const { data: pageData, isPending } = useQuery({
+  const { data: pageData, isPending, isPlaceholderData } = useQuery({
     queryKey: ["kpi-targets", year],
     queryFn: async () => {
       const [brRes, tgRes] = await Promise.all([
@@ -183,7 +183,7 @@ export default function KPITargets() {
       {isPending && !pageData ? (
         <div className="text-gray-400 animate-pulse py-8 text-center">Loading…</div>
       ) : (
-        <div className="space-y-6">
+        <div className={"space-y-6 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {branches.map((branch) => {
             const currency = branch.currency || branch.native_currency || "VND";
             const symbol = CURRENCY_SYMBOL[currency] || currency;

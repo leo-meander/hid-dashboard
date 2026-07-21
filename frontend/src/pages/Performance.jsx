@@ -58,7 +58,7 @@ const PERIOD_OPTIONS = [
 function KPIAchievement({ branchId }) {
   const [period, setPeriod] = useState("90d");
 
-  const { data, isPending } = useQuery({
+  const { data, isPending, isPlaceholderData } = useQuery({
     queryKey: ["kpi-achievement", period, branchId],
     queryFn: () => {
       const { from, to } = getPeriodRange(period);
@@ -166,7 +166,7 @@ function KPIAchievement({ branchId }) {
         Other Revenue is a monthly figure prorated by day, so it scales with the selected range.
       </div>
 
-      <div className="px-5 py-5">
+      <div className={"px-5 py-5 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
         {isPending && !data ? (
           <div className="text-center py-4 text-gray-400 animate-pulse">Loading...</div>
         ) : !data ? (
@@ -328,7 +328,7 @@ export default function Performance() {
   const [year, setYear] = useState(currentYear);
   const queryClient = useQueryClient();
 
-  const { data: grid, isPending } = useQuery({
+  const { data: grid, isPending, isPlaceholderData } = useQuery({
     queryKey: ["kpi-yearly-grid", year, selected, isAll],
     queryFn: () => {
       const params = { year };
@@ -391,7 +391,7 @@ export default function Performance() {
         ) : !grid || branches.length === 0 ? (
           <div className="text-center text-gray-400 py-12 text-sm">No KPI data available for {year}.</div>
         ) : (
-          <div className="bg-white rounded-lg border overflow-x-auto">
+          <div className={"bg-white rounded-lg border overflow-x-auto transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
             <table className="w-full text-sm border-collapse">
               <thead>
                 <tr className="bg-gray-900 text-white">

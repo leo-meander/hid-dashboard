@@ -181,7 +181,7 @@ export default function PerformanceMonthly() {
   }, [branches]);
 
   const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
-  const { data: monthly = [], isPending } = useQuery({
+  const { data: monthly = [], isPending, isPlaceholderData } = useQuery({
     queryKey: ["performance-monthly", yearFrom, yearTo, selected, isAll],
     queryFn: () =>
       axios.get(`/api/metrics/monthly?year_from=${yearFrom}&year_to=${yearTo}${bParam}`)
@@ -372,7 +372,7 @@ export default function PerformanceMonthly() {
       {isPending && !monthly.length ? (
         <div className="text-gray-400 animate-pulse">Loading...</div>
       ) : (
-        <>
+        <div className={"space-y-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {/* KPI Summary Cards */}
           {kpis && (
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -635,7 +635,7 @@ export default function PerformanceMonthly() {
               </div>
             );
           })()}
-        </>
+        </div>
       )}
     </div>
   );

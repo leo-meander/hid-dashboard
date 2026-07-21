@@ -48,7 +48,7 @@ export default function GovVisitorData() {
   const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState(null);
 
-  const { data: pageData, isPending } = useQuery({
+  const { data: pageData, isPending, isPlaceholderData } = useQuery({
     queryKey: ["gov-visitor-data"],
     queryFn: () =>
       Promise.all([
@@ -138,7 +138,7 @@ export default function GovVisitorData() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className={"space-y-5 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <div>
         <h1 className="text-xl font-bold text-gray-900">Government Visitor Data</h1>
         <p className="text-sm text-gray-500 mt-0.5">

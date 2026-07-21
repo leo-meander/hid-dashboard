@@ -89,7 +89,7 @@ export default function EmailMarketing() {
     return p;
   }, [dateFrom, dateTo, typeFilter, ghlBranch]);
 
-  const { data: overviewData, isPending: overviewPending } = useQuery({
+  const { data: overviewData, isPending: overviewPending, isPlaceholderData: overviewPlaceholder } = useQuery({
     queryKey: ["email-overview", params],
     queryFn: () =>
       Promise.all([
@@ -101,7 +101,7 @@ export default function EmailMarketing() {
     placeholderData: keepPreviousData,
   });
 
-  const { data: campaignsData, isPending: campaignsPending } = useQuery({
+  const { data: campaignsData, isPending: campaignsPending, isPlaceholderData: campaignsPlaceholder } = useQuery({
     queryKey: ["email-campaigns", params],
     queryFn: () => getEmailByCampaign(params).then(c => c || []),
     enabled: tab === "campaigns",
@@ -165,16 +165,16 @@ export default function EmailMarketing() {
       {isPending && !overviewData && !campaignsData ? (
         <div className="text-gray-400 animate-pulse">Loading...</div>
       ) : tab === "overview" ? (
-        <OverviewTab summary={summary} daily={daily} campaigns={campaigns} />
+        <OverviewTab summary={summary} daily={daily} campaigns={campaigns} isPlaceholderData={overviewPlaceholder} />
       ) : (
-        <CampaignsTab campaigns={campaigns} />
+        <CampaignsTab campaigns={campaigns} isPlaceholderData={campaignsPlaceholder} />
       )}
     </div>
   );
 }
 
 /* ── Overview Tab ────────────────────────────────────────────────────────── */
-function OverviewTab({ summary, daily, campaigns }) {
+function OverviewTab({ summary, daily, campaigns, isPlaceholderData }) {
   if (!summary || summary.total_sent === 0) {
     return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No email data for this range.</div>;
   }
@@ -196,7 +196,7 @@ function OverviewTab({ summary, daily, campaigns }) {
   const bulkSent = bulkCampaigns.reduce((s, c) => s + c.sent, 0);
 
   return (
-    <div className="space-y-6">
+    <div className={"space-y-6 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
         {kpis.map(k => (
@@ -256,11 +256,15 @@ function OverviewTab({ summary, daily, campaigns }) {
 }
 
 /* ── Campaigns Tab ───────────────────────────────────────────────────────── */
-function CampaignsTab({ campaigns }) {
+function CampaignsTab({ campaigns, isPlaceholderData }) {
   if (campaigns.length === 0) {
     return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No campaign data.</div>;
   }
-  return <CampaignTable campaigns={campaigns} title={null} />;
+  return (
+    <div className={"transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
+      <CampaignTable campaigns={campaigns} title={null} />
+    </div>
+  );
 }
 
 /* ── Shared Campaign Table ───────────────────────────────────────────────── */

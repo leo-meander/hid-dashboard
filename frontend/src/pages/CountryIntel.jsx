@@ -771,7 +771,7 @@ export default function CountryIntel() {
   const { selected, isAll } = useBranch();
   const [channel, setChannel] = useState("");
 
-  const { data = [], isPending, isError, error: queryError } = useQuery({
+  const { data = [], isPending, isError, error: queryError, isPlaceholderData } = useQuery({
     queryKey: ["country-intel", selected, isAll],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -784,7 +784,7 @@ export default function CountryIntel() {
     placeholderData: keepPreviousData,
   });
 
-  const { data: allHolidays = [] } = useQuery({
+  const { data: allHolidays = [], isPlaceholderData: isPlaceholderDataHolidays } = useQuery({
     queryKey: ["upcoming-holidays"],
     queryFn: () => getUpcomingWindows().then((d) => d || []),
     placeholderData: keepPreviousData,
@@ -802,7 +802,7 @@ export default function CountryIntel() {
   const fullyCovered = allItems.filter((c) => !c.kol_gap && !c.ads_gap).length;
 
   return (
-    <div className="space-y-5">
+    <div className={"space-y-5 transition-opacity duration-150 " + (isPlaceholderData || isPlaceholderDataHolidays ? "opacity-40 pointer-events-none" : "")}>
       <div>
         <h1 className="text-xl font-bold text-gray-900">Country Intelligence</h1>
         <p className="text-sm text-gray-500 mt-0.5">

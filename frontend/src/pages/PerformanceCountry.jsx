@@ -75,7 +75,7 @@ export default function PerformanceCountry() {
   }, [view, isAll, selected]);
 
   // Trend query (weekly / monthly views)
-  const { data, isPending: trendPending } = useQuery({
+  const { data, isPending: trendPending, isPlaceholderData: trendIsPlaceholder } = useQuery({
     queryKey: ["country-trend", view, selected, isAll, dateType],
     queryFn: () => {
       const params = { view, limit: 500, date_type: dateType };
@@ -87,7 +87,7 @@ export default function PerformanceCountry() {
   });
 
   // Share % query
-  const { data: shareData, isPending: sharePending } = useQuery({
+  const { data: shareData, isPending: sharePending, isPlaceholderData: shareIsPlaceholder } = useQuery({
     queryKey: ["country-share", shareGranularity, selected, isAll, dateType],
     queryFn: () => {
       const params = { view: shareGranularity, limit: 500, date_type: dateType };
@@ -99,7 +99,7 @@ export default function PerformanceCountry() {
   });
 
   // YoY compare query
-  const { data: cmpData, isPending: cmpPending } = useQuery({
+  const { data: cmpData, isPending: cmpPending, isPlaceholderData: cmpIsPlaceholder } = useQuery({
     queryKey: ["country-yoy", cmpYear, cmpMonth, selected, isAll, dateType],
     queryFn: () => {
       const params = { year: cmpYear, month: cmpMonth, date_type: dateType };
@@ -111,7 +111,7 @@ export default function PerformanceCountry() {
   });
 
   // Branch compare query — fetch each selected branch in parallel
-  const { data: branchQueryData, isPending: branchPending } = useQuery({
+  const { data: branchQueryData, isPending: branchPending, isPlaceholderData: branchIsPlaceholder } = useQuery({
     queryKey: ["country-branch", selectedBranches, branchYear, branchMonth, dateType],
     queryFn: () => {
       const requests = selectedBranches.map((bid) =>
@@ -341,16 +341,18 @@ export default function PerformanceCountry() {
         ) : !shareData || (shareData.countries || []).length === 0 ? (
           <div className="text-center text-gray-400 py-16 text-sm">No data available.</div>
         ) : (
-          <ShareView
-            data={shareData}
-            metric={shareMetric}
-            setMetric={setShareMetric}
-            granularity={shareGranularity}
-            setGranularity={setShareGranularity}
-            filterCountry={filterCountry}
-            selected={shareSelected}
-            setSelected={setShareSelected}
-          />
+          <div className={"transition-opacity duration-150 " + (shareIsPlaceholder ? "opacity-40 pointer-events-none" : "")}>
+            <ShareView
+              data={shareData}
+              metric={shareMetric}
+              setMetric={setShareMetric}
+              granularity={shareGranularity}
+              setGranularity={setShareGranularity}
+              filterCountry={filterCountry}
+              selected={shareSelected}
+              setSelected={setShareSelected}
+            />
+          </div>
         )
       ) : view === "branch" ? (
         <>
@@ -379,6 +381,7 @@ export default function PerformanceCountry() {
           ) : selectedBranches.length === 0 ? (
             <div className="text-center text-gray-400 py-16 text-sm">Select at least one branch to compare.</div>
           ) : (
+            <div className={"transition-opacity duration-150 " + (branchIsPlaceholder ? "opacity-40 pointer-events-none" : "")}>
             <BranchCompareView
               branches={branches}
               selectedBranches={selectedBranches}
@@ -387,6 +390,7 @@ export default function PerformanceCountry() {
               year={branchYear}
               month={branchMonth}
             />
+          </div>
           )}
         </>
       ) : view === "compare" ? (
@@ -396,7 +400,9 @@ export default function PerformanceCountry() {
         ) : !cmpData || cmpData.countries?.length === 0 ? (
           <div className="text-center text-gray-400 py-16 text-sm">No data available.</div>
         ) : (
-          <CompareView data={cmpData} filterCountry={filterCountry} />
+          <div className={"transition-opacity duration-150 " + (cmpIsPlaceholder ? "opacity-40 pointer-events-none" : "")}>
+            <CompareView data={cmpData} filterCountry={filterCountry} />
+          </div>
         )
       ) : (
         /* ── Trend View (Weekly / Monthly) ── */
@@ -405,7 +411,7 @@ export default function PerformanceCountry() {
         ) : !data || countries.length === 0 ? (
           <div className="text-center text-gray-400 py-16 text-sm">No data available.</div>
         ) : (
-          <>
+          <div className={"transition-opacity duration-150 " + (trendIsPlaceholder ? "opacity-40 pointer-events-none" : "")}>
             {/* KPI Summary */}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <div className="bg-white rounded-lg border p-4">
@@ -558,7 +564,7 @@ export default function PerformanceCountry() {
                 </tbody>
               </table>
             </div>
-          </>
+          </div>
         )
       )}
     </div>

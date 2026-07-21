@@ -63,7 +63,7 @@ export default function Ads() {
     return { from: null, to: null };
   };
 
-  const { data: pageData, isPending } = useQuery({
+  const { data: pageData, isPending, isPlaceholderData } = useQuery({
     queryKey: ["ads-summary", selected, filterChannel, datePreset],
     queryFn: () => {
       const params = new URLSearchParams();
@@ -233,7 +233,7 @@ export default function Ads() {
       {isPending && !pageData ? (
         <div className="bg-white rounded-xl border p-8 text-center text-gray-400 animate-pulse">Loading…</div>
       ) : tab === "summary" ? (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+        <div className={"bg-white rounded-xl border border-gray-200 overflow-x-auto transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {summary.length === 0 ? <div className="p-8 text-center text-gray-400">No data yet. Add campaigns to see summary.</div> : (
             <table className="w-full text-sm">
               <thead><tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide text-left">
@@ -260,7 +260,7 @@ export default function Ads() {
           )}
         </div>
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+        <div className={"bg-white rounded-xl border border-gray-200 overflow-x-auto transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {rows.length === 0 ? <div className="p-8 text-center text-gray-400">No campaigns yet.</div> : (
             <table className="w-full text-sm">
               <thead><tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide text-left">

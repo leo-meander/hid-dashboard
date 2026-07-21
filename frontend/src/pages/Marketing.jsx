@@ -42,7 +42,7 @@ export default function Marketing() {
   const [saving, setSaving] = useState(false);
   const [filterType, setFilterType] = useState("");
 
-  const { data: rows, isPending } = useQuery({
+  const { data: rows, isPending, isPlaceholderData } = useQuery({
     queryKey: ["marketing-activities", selected, filterType],
     queryFn: () => {
       const params = new URLSearchParams();
@@ -138,7 +138,7 @@ export default function Marketing() {
         ) : (rows || []).length === 0 ? (
           <div className="p-8 text-center text-gray-400">No activities yet. Click "+ Add Activity" to start.</div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className={"overflow-x-auto transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide text-left">

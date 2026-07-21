@@ -49,7 +49,7 @@ export default function PerformanceOTA() {
   const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
   const mParam = mode === "monthly" ? `&months=${months}` : "";
 
-  const { data, isPending } = useQuery({
+  const { data, isPending, isPlaceholderData } = useQuery({
     queryKey: ["ota-rates-trend", mode, months, dateType, selected, isAll],
     queryFn: () =>
       axios.get(`/api/metrics/rates-trend?mode=${mode}&date_type=${dateType}${bParam}${mParam}`)
@@ -126,7 +126,9 @@ export default function PerformanceOTA() {
       ) : !data || data.channels.length === 0 ? (
         <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No data for this period.</div>
       ) : (
-        <RatesPivotTable periods={data.periods} channels={data.channels} />
+        <div className={"transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
+          <RatesPivotTable periods={data.periods} channels={data.channels} />
+        </div>
       )}
     </div>
   );

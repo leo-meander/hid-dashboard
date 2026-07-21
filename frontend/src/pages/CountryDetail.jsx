@@ -26,14 +26,14 @@ export default function CountryDetail() {
 
   const [year, setYear] = useState(currentYear);
 
-  const { data: yoyData, isPending: loading } = useQuery({
+  const { data: yoyData, isPending: loading, isPlaceholderData: isYoyPlaceholder } = useQuery({
     queryKey: ["country-trend", code, year],
     queryFn: () =>
       axios.get(`/api/countries/${code}/trend?year=${year}`).then((r) => r.data.data || []),
     placeholderData: keepPreviousData,
   });
 
-  const { data: rankData, isPending: loadingRank } = useQuery({
+  const { data: rankData, isPending: loadingRank, isPlaceholderData: isRankPlaceholder } = useQuery({
     queryKey: ["country-ranking", code, year],
     queryFn: () =>
       axios
@@ -100,7 +100,7 @@ export default function CountryDetail() {
 
       {/* Summary KPI cards */}
       {!loadingRank && rankData && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className={"grid grid-cols-2 md:grid-cols-4 gap-4 transition-opacity duration-150 " + (isRankPlaceholder ? "opacity-40 pointer-events-none" : "")}>
           {[
             { label: "Score", value: (rankData.score * 100).toFixed(0), suffix: "/100" },
             {
@@ -122,6 +122,9 @@ export default function CountryDetail() {
           ))}
         </div>
       )}
+
+      {/* YoY charts + table */}
+      <div className={"transition-opacity duration-150 " + (isYoyPlaceholder ? "opacity-40 pointer-events-none" : "")}>
 
       {/* YoY Booking Count chart */}
       <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
@@ -215,6 +218,8 @@ export default function CountryDetail() {
           </tbody>
         </table>
       </div>
+
+      </div>{/* end yoy dim wrapper */}
     </div>
   );
 }
