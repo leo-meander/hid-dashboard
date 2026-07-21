@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     # the two endpoints rotate independently.
     KOL_REVENUE_API_SECRET: str = ""
     HID_API_SECRET: str = ""
+
+    # Lark Base — Designer task tracking
+    LARK_APP_ID: str = ""
+    LARK_APP_SECRET: str = ""
+    LARK_BASE_APP_TOKEN: str = ""
+    LARK_TASKS_TABLE_ID: str = ""
     GHL_BASE_URL: str = "https://services.leadconnectorhq.com"
     # Legacy single-location (kept for backward compat)
     GHL_LOCATION_ID: str = ""

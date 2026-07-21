@@ -64,7 +64,7 @@ KPI_DEFS: dict[str, list[dict]] = {
 ROLE_META = {
     "kol":       {"label": "KOL",       "person": "Mel",   "emoji": "🤝", "auto_actuals": True},
     "paid_ads":  {"label": "Paid Ads",  "person": "Mason", "emoji": "📢", "auto_actuals": True},
-    "designer":  {"label": "Designer",  "person": "Nora",  "emoji": "🎨", "auto_actuals": False},
+    "designer":  {"label": "Designer",  "person": "Nora",  "emoji": "🎨", "auto_actuals": True},
     "crm":       {"label": "CRM",       "person": "Kin",   "emoji": "📊", "auto_actuals": False},
     "pm":        {"label": "PM",        "person": "Nuha",  "emoji": "🗂️", "auto_actuals": False},
 }
@@ -284,6 +284,9 @@ def build_monthly_summary(
         actuals_yearly = get_kol_actuals_yearly(year)
     elif auto and role_key == "paid_ads":
         actuals_yearly = get_paid_ads_actuals_yearly(year)
+    elif auto and role_key == "designer":
+        from app.services.lark_service import get_designer_actuals_yearly
+        actuals_yearly = get_designer_actuals_yearly(year)
 
     # Determine branch key for actuals lookup
     branch_key = None
