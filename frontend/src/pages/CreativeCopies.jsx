@@ -41,7 +41,7 @@ export default function CreativeCopies() {
     setSearchParams(p);
   };
 
-  const { data: pageData, isPending } = useQuery({
+  const { data: pageData, isPending, isPlaceholderData } = useQuery({
     queryKey: ["creative-copies", selected, isAll, searchParams.toString()],
     queryFn: () => {
       const p = { ...f };
@@ -102,7 +102,7 @@ export default function CreativeCopies() {
 
       {isPending && !pageData ? <div className="text-gray-400 text-sm animate-pulse">Loading...</div> :
        rows.length === 0 ? <div className="text-gray-400 text-sm">No copies found.</div> : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className={"grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {rows.map(c => (
             <div key={c.id} onClick={() => openDetail(c.id)}
               className="border rounded-lg p-4 bg-white hover:shadow-md cursor-pointer">

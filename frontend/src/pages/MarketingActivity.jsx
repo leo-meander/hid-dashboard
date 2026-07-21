@@ -107,7 +107,7 @@ export default function MarketingActivity() {
   const [month, setMonth] = useState(currentMonthStr);
   const [ytdYear, setYtdYear] = useState(today.getFullYear());
 
-  const { data, isPending } = useQuery({
+  const { data, isPending, isPlaceholderData } = useQuery({
     queryKey: ["marketing-activity", selected, isAll, month, ytdYear, viewMode],
     queryFn: () => {
       const params = {};
@@ -197,10 +197,10 @@ export default function MarketingActivity() {
       ) : !data ? (
         <div className="text-center text-gray-400 py-16 text-sm">No data available</div>
       ) : (
-        <>
+        <div className={"transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {tab === "overview" && <OverviewTab overview={overview} prevOverview={prevOverview} prevLabel={prevLabel} cur={cur} isYtd={viewMode === "ytd"} ytdYear={ytdYear} />}
           {tab === "crm-rate-plans" && <CRMRatePlansTab rows={crmRatePlans} cur={cur} month={viewMode === "ytd" ? currentMonthStr : month} />}
-        </>
+        </div>
       )}
     </div>
   );
@@ -491,7 +491,7 @@ function CRMBranchComparison({ month }) {
   const { branches: allowedBranches } = useBranch();
   const [metric, setMetric] = useState("revenue");
 
-  const { data, isPending } = useQuery({
+  const { data, isPending, isPlaceholderData } = useQuery({
     queryKey: ["crm-branch-comparison", month],
     queryFn: () => getCRMBranchComparison({ month, months_back: 6 }),
     placeholderData: keepPreviousData,
@@ -515,7 +515,7 @@ function CRMBranchComparison({ month }) {
   const hasMonth = (data.by_month || []).length > 0;
 
   return (
-    <div className="space-y-4">
+    <div className={"space-y-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <div className="flex items-center justify-between flex-wrap gap-3">
         <p className="text-sm text-gray-500">
           CRM performance compared across branches. Revenue in VND for cross-branch parity.
@@ -584,7 +584,7 @@ function EmailStatTab({ month, ytdBounds: ytdB, onViewRevenue }) {
     [currentBranch, isAll]
   );
 
-  const { data: emailData, isPending } = useQuery({
+  const { data: emailData, isPending, isPlaceholderData } = useQuery({
     queryKey: ["email-stat", month, ytdB, ghlBranch],
     queryFn: () => {
       const bounds = ytdB || monthBounds(month);
@@ -621,7 +621,7 @@ function EmailStatTab({ month, ytdBounds: ytdB, onViewRevenue }) {
     : campaigns;
 
   return (
-    <div className="space-y-6">
+    <div className={"space-y-6 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <p className="text-xs text-gray-400">
         Workflow rows show LIFETIME totals (GHL doesn&apos;t expose per-day deltas);
         bulk rows are filtered to the selected month by schedule date.

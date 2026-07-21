@@ -52,7 +52,7 @@ export default function PerformanceDaily() {
 
   const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
 
-  const { data: pageData, isPending } = useQuery({
+  const { data: pageData, isPending, isPlaceholderData } = useQuery({
     queryKey: ["performance-daily", dateFrom, dateTo, selected, isAll],
     queryFn: () =>
       Promise.all([
@@ -132,7 +132,7 @@ export default function PerformanceDaily() {
           No data for this range.
         </div>
       ) : (
-        <>
+        <div className={"space-y-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {/* OCC Trend Chart */}
           <TrendChart
             title="Daily OCC % by Branch"
@@ -196,7 +196,7 @@ export default function PerformanceDaily() {
               </tbody>
             </table>
           </div>
-        </>
+        </div>
       )}
     </div>
   );

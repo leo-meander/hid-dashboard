@@ -63,7 +63,7 @@ export default function CRMDashboard() {
     return p;
   }, [dateFrom, dateTo, selected, isAll]);
 
-  const { data: overviewData, isPending: overviewPending } = useQuery({
+  const { data: overviewData, isPending: overviewPending, isPlaceholderData: overviewIsPlaceholder } = useQuery({
     queryKey: ["crm-overview", params],
     queryFn: () =>
       Promise.all([
@@ -77,14 +77,14 @@ export default function CRMDashboard() {
     placeholderData: keepPreviousData,
   });
 
-  const { data: monthlyData, isPending: monthlyPending } = useQuery({
+  const { data: monthlyData, isPending: monthlyPending, isPlaceholderData: monthlyIsPlaceholder } = useQuery({
     queryKey: ["crm-monthly", params],
     queryFn: () => getCRMMonthly(params).then(d => d || []),
     enabled: tab === "monthly",
     placeholderData: keepPreviousData,
   });
 
-  const { data: reservationsData, isPending: reservationsPending } = useQuery({
+  const { data: reservationsData, isPending: reservationsPending, isPlaceholderData: reservationsIsPlaceholder } = useQuery({
     queryKey: ["crm-reservations", params],
     queryFn: () => getCRMReservations({ ...params, limit: 100 }).then(d => d || { items: [], total: 0 }),
     enabled: tab === "reservations",
@@ -146,18 +146,19 @@ export default function CRMDashboard() {
           bySource={bySource}
           roomTypes={roomTypes}
           branchMap={branchMap}
+          isPlaceholderData={overviewIsPlaceholder}
         />
       ) : tab === "monthly" ? (
-        <MonthlyTab monthly={monthly} />
+        <MonthlyTab monthly={monthly} isPlaceholderData={monthlyIsPlaceholder} />
       ) : (
-        <ReservationsTab reservations={reservations} branchMap={branchMap} />
+        <ReservationsTab reservations={reservations} branchMap={branchMap} isPlaceholderData={reservationsIsPlaceholder} />
       )}
     </div>
   );
 }
 
 /* ── Overview Tab ─────────────────────────────────────────────────────────── */
-function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap }) {
+function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap, isPlaceholderData }) {
   if (!summary) {
     return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No CRM data for this range.</div>;
   }
@@ -172,7 +173,7 @@ function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap 
   ];
 
   return (
-    <div className="space-y-6">
+    <div className={"space-y-6 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {kpis.map(k => (
@@ -304,7 +305,7 @@ function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap 
 }
 
 /* ── Monthly Tab ──────────────────────────────────────────────────────────── */
-function MonthlyTab({ monthly }) {
+function MonthlyTab({ monthly, isPlaceholderData }) {
   if (monthly.length === 0) {
     return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No monthly CRM data.</div>;
   }
@@ -316,7 +317,7 @@ function MonthlyTab({ monthly }) {
   }));
 
   return (
-    <div className="space-y-6">
+    <div className={"space-y-6 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <TrendChart
           title="Monthly Revenue"
@@ -372,7 +373,7 @@ function MonthlyTab({ monthly }) {
 }
 
 /* ── Reservations Tab ─────────────────────────────────────────────────────── */
-function ReservationsTab({ reservations, branchMap }) {
+function ReservationsTab({ reservations, branchMap, isPlaceholderData }) {
   const { items, total } = reservations;
 
   if (items.length === 0) {
@@ -387,7 +388,7 @@ function ReservationsTab({ reservations, branchMap }) {
   };
 
   return (
-    <div className="space-y-3">
+    <div className={"space-y-3 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <p className="text-sm text-gray-500">{total} total reservations</p>
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
         <table className="w-full text-sm">

@@ -640,7 +640,7 @@ function AllBranchesTable({ data, loading }) {
 }
 
 function SingleBranchView({ branch }) {
-  const { data: pageData, isPending, error } = useQuery({
+  const { data: pageData, isPending, isPlaceholderData, error } = useQuery({
     queryKey: ["home-single-branch", branch?.id],
     queryFn: () => Promise.all([
       axios.get("/api/kpi/summary/" + branch.id + "?year=" + YEAR + "&month=" + MONTH),
@@ -667,7 +667,7 @@ function SingleBranchView({ branch }) {
   if (error) return <div className="p-8 text-red-500">Error: {error.message}</div>;
 
   return (
-    <div className="space-y-6">
+    <div className={`space-y-6 transition-opacity duration-150 ${isPlaceholderData ? "opacity-40 pointer-events-none" : "opacity-100"}`}>
       {kpi && (
         <KPICard
           label={branch.name + " — Revenue"}

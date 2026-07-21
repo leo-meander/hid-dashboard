@@ -184,7 +184,7 @@ export default function PerformanceWeekly() {
     return targetBranches.map((b) => b.id);
   }, [branches, selected, isAll]);
 
-  const { data: pageData, isPending } = useQuery({
+  const { data: pageData, isPending, isPlaceholderData } = useQuery({
     queryKey: ["performance-weekly", targetBranchIds],
     queryFn: () => {
       const weeklyFetches = targetBranchIds.map((id) =>
@@ -359,6 +359,9 @@ export default function PerformanceWeekly() {
           <SyncBadge timestamp={lastSynced} />
         </p>
       </div>
+
+      {/* Data content — dimmed while serving stale/placeholder data */}
+      <div className={"space-y-6 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
 
       {/* KPI Summary Cards */}
       {kpis && (
@@ -554,6 +557,8 @@ export default function PerformanceWeekly() {
           </div>
         </div>
       )}
+
+      </div>{/* end dimming wrapper */}
     </div>
   );
 }

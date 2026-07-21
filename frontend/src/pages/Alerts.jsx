@@ -176,7 +176,7 @@ export default function Alerts() {
 
   const branchParam = selectedBranch === "all" ? {} : { branch_id: selectedBranch };
 
-  const { data: todayData, isPending: todayPending } = useQuery({
+  const { data: todayData, isPending: todayPending, isPlaceholderData: todayIsPlaceholder } = useQuery({
     queryKey: ["alerts-today", selectedBranch, sevFilter],
     queryFn: () =>
       Promise.all([
@@ -189,7 +189,7 @@ export default function Alerts() {
   const summary = todayData?.summary || { critical: 0, warning: 0, info: 0, total: 0 };
   const isPending = todayPending && !todayData;
 
-  const { data: historyData } = useQuery({
+  const { data: historyData, isPlaceholderData: historyIsPlaceholder } = useQuery({
     queryKey: ["alerts-history", selectedBranch, historyPage],
     queryFn: () => getAlertsHistory({ ...branchParam, limit: 50, offset: historyPage * 50 }),
     enabled: tab === "history",
@@ -197,7 +197,7 @@ export default function Alerts() {
   });
   const history = historyData || { items: [], total: 0 };
 
-  const { data: rulesData } = useQuery({
+  const { data: rulesData, isPlaceholderData: rulesIsPlaceholder } = useQuery({
     queryKey: ["alert-rules"],
     queryFn: getAlertRules,
     enabled: tab === "rules",
@@ -305,7 +305,7 @@ export default function Alerts() {
               <p className="text-gray-500 text-sm">No alerts — all metrics within normal range</p>
             </div>
           ) : (
-            <div>
+            <div className={"transition-opacity duration-150 " + (todayIsPlaceholder ? "opacity-40 pointer-events-none" : "")}>
               {alerts.map(a => (
                 <AlertCard
                   key={a.id}
@@ -320,7 +320,7 @@ export default function Alerts() {
       )}
 
       {tab === "history" && (
-        <div>
+        <div className={"transition-opacity duration-150 " + (historyIsPlaceholder ? "opacity-40 pointer-events-none" : "")}>
           {history.items.length === 0 ? (
             <p className="text-center py-8 text-gray-400 text-sm">No historical alerts</p>
           ) : (
@@ -387,7 +387,7 @@ export default function Alerts() {
       )}
 
       {tab === "rules" && (
-        <div className="overflow-x-auto">
+        <div className={"overflow-x-auto transition-opacity duration-150 " + (rulesIsPlaceholder ? "opacity-40 pointer-events-none" : "")}>
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b">

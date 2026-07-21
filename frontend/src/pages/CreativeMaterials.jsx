@@ -46,7 +46,7 @@ export default function CreativeMaterials() {
     setSearchParams(p);
   };
 
-  const { data: pageData, isPending } = useQuery({
+  const { data: pageData, isPending, isPlaceholderData } = useQuery({
     queryKey: ["creative-materials", selected, isAll, searchParams.toString()],
     queryFn: () => {
       const p = { ...f };
@@ -120,7 +120,7 @@ export default function CreativeMaterials() {
 
       {isPending && !pageData ? <div className="text-gray-400 text-sm animate-pulse">Loading...</div> :
        rows.length === 0 ? <div className="text-gray-400 text-sm">No materials found.</div> : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className={"grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {rows.map(m => (
             <div key={m.id} onClick={() => openDetail(m.id)}
               className="border rounded-lg p-4 bg-white hover:shadow-md cursor-pointer">

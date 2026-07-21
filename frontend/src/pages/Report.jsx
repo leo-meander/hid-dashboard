@@ -204,19 +204,19 @@ function SettingsTab({ toast, setToast }) {
   const [newRecipient, setNewRecipient] = useState("");
   const [savingSchedule, setSavingSchedule] = useState(false);
 
-  const { data: members = [], isPending: membersLoading } = useQuery({
+  const { data: members = [], isPending: membersLoading, isPlaceholderData: membersIsPlaceholderData } = useQuery({
     queryKey: ["report-members"],
     queryFn: () => axios.get("/api/auth/users").then(r => r.data.data || []),
     placeholderData: keepPreviousData,
   });
 
-  const { data: scheduleData, isPending: scheduleLoading } = useQuery({
+  const { data: scheduleData, isPending: scheduleLoading, isPlaceholderData: scheduleIsPlaceholderData } = useQuery({
     queryKey: ["report-schedule"],
     queryFn: () => axios.get("/api/report/schedule").then(r => r.data.data),
     placeholderData: keepPreviousData,
   });
 
-  const { data: emailConfig, isPending: configLoading } = useQuery({
+  const { data: emailConfig, isPending: configLoading, isPlaceholderData: configIsPlaceholderData } = useQuery({
     queryKey: ["report-email-config"],
     queryFn: () => axios.get("/api/report/email-config").then(r => r.data.data),
     placeholderData: keepPreviousData,
@@ -290,7 +290,7 @@ function SettingsTab({ toast, setToast }) {
   return (
     <div className="space-y-5">
       {/* Cron config status (read-only — driven by Zeabur env) */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
+      <div className={"bg-white rounded-xl border border-gray-200 p-5 transition-opacity duration-150 " + (configIsPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold text-gray-800 text-sm">Automated Cron Config (Zeabur env)</h3>
           <button
@@ -361,7 +361,7 @@ function SettingsTab({ toast, setToast }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* Send Now */}
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className={"bg-white rounded-xl border border-gray-200 p-5 transition-opacity duration-150 " + (membersIsPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           <div className="flex items-center justify-between mb-3">
             <div>
               <h3 className="font-semibold text-gray-800 text-sm">Send Now</h3>
@@ -445,7 +445,7 @@ function SettingsTab({ toast, setToast }) {
         </div>
 
         {/* In-process schedule */}
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className={"bg-white rounded-xl border border-gray-200 p-5 transition-opacity duration-150 " + (scheduleIsPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           <h3 className="font-semibold text-gray-800 text-sm mb-1">In-process Schedule (legacy)</h3>
           <p className="text-[11px] text-gray-500 mb-4">
             Production cron is GitHub Actions at <code>0 0 * * 1</code> UTC (Mon 07:00 ICT) using <code>EMAIL_RECIPIENTS</code> above.
@@ -1573,7 +1573,7 @@ function WeeklyReportTab({ initialBranch, onBranchChange }) {
           {/* Rendered HTML — wrapped in a container that strips email-specific
               body padding so it fits the dashboard layout. The HTML uses
               inline styles so it renders correctly without extra CSS. */}
-          <div className="bg-gray-50 rounded-xl p-1 border border-gray-200">
+          <div className={"bg-gray-50 rounded-xl p-1 border border-gray-200 transition-opacity duration-150 " + (reportQuery.isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
             <div
               ref={reportContainerRef}
               onClick={onReportClick}

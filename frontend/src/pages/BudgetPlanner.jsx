@@ -189,7 +189,7 @@ function YearlyPlanTab({ branchId, year }) {
   const [pcts, setPcts] = useState(Array(12).fill("8.33"));
   const [saving, setSaving] = useState(false);
 
-  const { data, isPending } = useQuery({
+  const { data, isPending, isPlaceholderData } = useQuery({
     queryKey: ["budget-yearly-plan", branchId, year],
     queryFn: () => getYearlyPlan({ branch_id: branchId, year }),
     placeholderData: keepPreviousData,
@@ -244,7 +244,7 @@ function YearlyPlanTab({ branchId, year }) {
   };
 
   return (
-    <div className="bg-white rounded-lg border p-5 space-y-4">
+    <div className={"bg-white rounded-lg border p-5 space-y-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <div>
         <h2 className="font-semibold text-gray-900">Yearly plan editor</h2>
         <p className="text-xs text-gray-500 mt-0.5">
@@ -338,13 +338,13 @@ function ChannelSplitsTab({ branchId, year }) {
   const [savingMonth, setSavingMonth] = useState(null);
   const [applyAll, setApplyAll] = useState({ paid_ads: "", kol: "", crm: "" });
 
-  const { data, isPending: splitsPending } = useQuery({
+  const { data, isPending: splitsPending, isPlaceholderData } = useQuery({
     queryKey: ["budget-channel-splits", branchId, year],
     queryFn: () => getChannelSplits({ branch_id: branchId, year }),
     placeholderData: keepPreviousData,
   });
 
-  const { data: yearly } = useQuery({
+  const { data: yearly, isPlaceholderData: isPlaceholderDataYearly } = useQuery({
     queryKey: ["budget-yearly", branchId, year],
     queryFn: () => getYearlyBudget({ branch_id: branchId, year }),
     placeholderData: keepPreviousData,
@@ -423,7 +423,7 @@ function ChannelSplitsTab({ branchId, year }) {
   };
 
   return (
-    <div className="bg-white rounded-lg border">
+    <div className={"bg-white rounded-lg border transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <div className="p-5 border-b">
         <h2 className="font-semibold text-gray-900">
           {data.branch_name.replace(/^MEANDER\s+/i, "")} — {year} channel splits
@@ -435,7 +435,7 @@ function ChannelSplitsTab({ branchId, year }) {
       </div>
 
       {yearly && (
-        <div className="p-5 border-b space-y-5">
+        <div className={"p-5 border-b space-y-5 transition-opacity duration-150 " + (isPlaceholderDataYearly ? "opacity-40 pointer-events-none" : "")}>
           <div>
             <h3 className="font-semibold text-gray-900">Actual spend</h3>
             <p className="text-xs text-gray-500 mt-0.5">
@@ -574,7 +574,7 @@ function ChannelSplitsTab({ branchId, year }) {
 function MonthlyTab({ branchId, year, month }) {
   const queryClient = useQueryClient();
 
-  const { data, isPending } = useQuery({
+  const { data, isPending, isPlaceholderData } = useQuery({
     queryKey: ["budget-monthly", branchId, year, month],
     queryFn: () => getMonthlyBudget({ branch_id: branchId, year, month }),
     placeholderData: keepPreviousData,
@@ -588,7 +588,7 @@ function MonthlyTab({ branchId, year, month }) {
   const total = data?.total;
 
   return (
-    <div className="bg-white rounded-lg border p-5 space-y-4">
+    <div className={"bg-white rounded-lg border p-5 space-y-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <div>
         <h2 className="font-semibold text-gray-900">{data.branch_name.replace(/^MEANDER\s+/i, "")}</h2>
         <p className="text-xs text-gray-400 mt-0.5">
@@ -825,7 +825,7 @@ function YtdPaceBar({ months, year, currency, title = "YTD pace" }) {
 
 /* ── Yearly Tab ───────────────────────────────────────────────────────────── */
 function YearlyTab({ branchId, year }) {
-  const { data, isPending } = useQuery({
+  const { data, isPending, isPlaceholderData } = useQuery({
     queryKey: ["budget-yearly", branchId, year],
     queryFn: () => getYearlyBudget({ branch_id: branchId, year }),
     placeholderData: keepPreviousData,
@@ -838,7 +838,7 @@ function YearlyTab({ branchId, year }) {
   const cur = data?.currency || "VND";
 
   return (
-    <div className="bg-white rounded-lg border p-5 space-y-4">
+    <div className={"bg-white rounded-lg border p-5 space-y-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <FullYearBar
         title={data.branch_name.replace(/^MEANDER\s+/i, "")}
         actual={data.total_actual_native}
