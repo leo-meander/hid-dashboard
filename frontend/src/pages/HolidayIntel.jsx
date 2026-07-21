@@ -131,14 +131,14 @@ export default function HolidayIntel() {
   const [expandedMonth, setExpandedMonth] = useState(null);   // null = show all, 1-12 = filter
 
   // ── Load initial data ─────────────────────────────────────────────
-  const { data: matrix, isPending: matrixPending } = useQuery({
+  const { data: matrix, isPending: matrixPending, isPlaceholderData: matrixPlaceholder } = useQuery({
     queryKey: ["holiday-season-matrix"],
     queryFn: () => getSeasonMatrix(),
     placeholderData: keepPreviousData,
   });
 
   // ── Load holiday detail when a country is expanded ────────────────
-  const { data: expandedHolidays } = useQuery({
+  const { data: expandedHolidays, isPlaceholderData: holidaysPlaceholder } = useQuery({
     queryKey: ["holiday-country-detail", expandedCountry],
     queryFn: () => getCountryHolidays(expandedCountry),
     enabled: !!expandedCountry,
@@ -200,7 +200,7 @@ export default function HolidayIntel() {
           <h2 className="text-lg font-semibold text-gray-800">Season Heatmap</h2>
           <CountrySearch value={visibleCountries} onChange={setVisibleCountries} />
         </div>
-        <div className="overflow-x-auto">
+        <div className={"overflow-x-auto transition-opacity duration-150 " + (matrixPlaceholder ? "opacity-40 pointer-events-none" : "")}>
           <table className="w-full text-xs border-collapse">
             <thead>
               <tr>
@@ -265,7 +265,7 @@ export default function HolidayIntel() {
                               </div>
 
                               {/* Holiday cards */}
-                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
+                              <div className={"grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 transition-opacity duration-150 " + (holidaysPlaceholder ? "opacity-40 pointer-events-none" : "")}>
                                 {filteredHolidays.map(h => (
                                   <div key={h.id} className="bg-white border border-gray-200 rounded-lg p-2.5">
                                     <div className="flex items-start justify-between mb-1">

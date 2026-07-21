@@ -24,7 +24,7 @@ export default function KPI() {
 
   const queryClient = useQueryClient();
 
-  const { data: rawData, isPending } = useQuery({
+  const { data: rawData, isPending, isPlaceholderData } = useQuery({
     queryKey: ["kpi-summary", year, month, selected, isAll],
     queryFn: () => {
       const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
@@ -127,7 +127,7 @@ export default function KPI() {
           No data. Add branches and set KPI targets first.
         </div>
       ) : (
-        <div className="space-y-4">
+        <div className={"space-y-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {data.map((b) => {
             const split = hasSplit(b);
             return (

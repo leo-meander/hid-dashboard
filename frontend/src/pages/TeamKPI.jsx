@@ -330,7 +330,7 @@ export default function TeamKPI() {
 
   const branchId = selected !== "all" ? selected : null;
 
-  const { data, isPending, error } = useQuery({
+  const { data, isPending, isPlaceholderData, error } = useQuery({
     queryKey: ["team-kpi", role, year, branchId],
     queryFn: () => getTeamKpiSummary(role, year, branchId),
     placeholderData: keepPreviousData,
@@ -427,7 +427,7 @@ export default function TeamKPI() {
 
       {/* Summary cards row */}
       {data && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className={"grid grid-cols-1 sm:grid-cols-2 gap-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {/* This month ring */}
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex items-center gap-6">
             <AchievementRing
@@ -474,7 +474,7 @@ export default function TeamKPI() {
       )}
 
       {data && (
-        <div className="space-y-2">
+        <div className={"space-y-2 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-gray-700">Monthly KPI Grid</h2>
             <div className="flex items-center gap-3 text-xs text-gray-400">

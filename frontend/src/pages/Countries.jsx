@@ -17,7 +17,7 @@ export default function Countries() {
   const [search,    setSearch]    = useState("");
   const [tierFilter, setTierFilter] = useState("All");
 
-  const { data: countries = [], isPending } = useQuery({
+  const { data: countries = [], isPending, isPlaceholderData } = useQuery({
     queryKey: ["countries-ranking", year, month],
     queryFn: () => {
       const params = new URLSearchParams({ year });
@@ -111,7 +111,7 @@ export default function Countries() {
           No countries found.
         </div>
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+        <div className={"bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">

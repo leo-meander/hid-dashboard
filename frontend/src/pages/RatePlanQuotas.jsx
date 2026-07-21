@@ -428,7 +428,7 @@ export default function RatePlanQuotas() {
   const [editing, setEditing] = useState(null);     // quota object or {} for new
   const [error, setError] = useState(null);
 
-  const { data, isPending } = useQuery({
+  const { data, isPending, isPlaceholderData } = useQuery({
     queryKey: ["rate-plan-quotas"],
     queryFn: listQuotas,
     placeholderData: keepPreviousData,
@@ -506,7 +506,7 @@ export default function RatePlanQuotas() {
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className={"grid grid-cols-1 md:grid-cols-2 gap-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {quotas.map(q => (
             <QuotaCard key={q.id} quota={q}
                        onEdit={(qq) => setEditing(qq)}

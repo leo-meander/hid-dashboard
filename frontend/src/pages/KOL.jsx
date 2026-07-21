@@ -284,7 +284,7 @@ export default function KOL() {
   const [importResult, setImportResult] = useState(null);
   const fileRef = useRef(null);
 
-  const { data: rows = [], isPending, dataUpdatedAt } = useQuery({
+  const { data: rows = [], isPending, isPlaceholderData, dataUpdatedAt } = useQuery({
     queryKey: ["kol-summary", selected, isAll],
     queryFn: () => {
       const params = new URLSearchParams();
@@ -433,7 +433,7 @@ export default function KOL() {
       </div>
 
       {/* table */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className={"bg-white rounded-xl border border-gray-200 overflow-hidden transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
         {isPending && !rows.length ? (
           <div className="p-10 text-center text-gray-400 animate-pulse">Loading KOL data…</div>
         ) : filtered.length === 0 ? (
