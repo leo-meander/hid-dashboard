@@ -523,6 +523,8 @@ def build_monthly_summary(
     # For is_pct KPIs in the PM role, targets may have been entered as fractions
     # (e.g. 0.9 = 90%) instead of percentage values (90). Normalize on load.
     _pct_keys = {d["key"] for d in defs if d.get("is_pct")} if role_key == "pm" else set()
+    # CRM revenue targets entered in bil VND (e.g. 0.056) instead of mil VND (56). Normalize on load.
+    _bil_vnd_keys = {"crm_revenue"} if role_key == "crm" else set()
     # Revenue KPI keys — targets stored in native currency units, need FX conversion for All view
     _revenue_keys = {d["key"] for d in defs if d.get("is_revenue")}
 
@@ -542,6 +544,9 @@ def build_monthly_summary(
             # Normalize PM is_pct targets entered as fractions (≤ 2.0 → × 100)
             if row.kpi_key in _pct_keys and raw_val <= 2.0:
                 raw_val = round(raw_val * 100, 1)
+            # Normalize CRM revenue targets entered in bil VND (< 1) → mil VND (× 1000)
+            if row.kpi_key in _bil_vnd_keys and raw_val < 1.0:
+                raw_val = round(raw_val * 1000, 3)
             if all_branches_view and row.branch_id is not None:
                 # For revenue KPIs: convert branch target to mil VND before summing
                 # (branches store targets in native currency: mil VND, TWD, or JPY)
