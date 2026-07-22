@@ -39,6 +39,12 @@ PIC_NAME_MAP: dict[str, str] = {
     # "recuJabgFnVMiH": ???   2 tasks — PMGC, Design post
 }
 
+# Optional project keyword filter per PIC (case-insensitive substring match on resolved project name).
+# If a PIC is not listed here, all projects are counted.
+PIC_PROJECT_FILTER: dict[str, str] = {
+    "recuOULUU1hNZe": "ads",   # Mason: Ads projects only
+}
+
 _LARK_AUTH_URL    = "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal"
 _LARK_RECORDS_URL = "https://open.larksuite.com/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
 _LARK_FIELDS_URL  = "https://open.larksuite.com/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
@@ -539,6 +545,13 @@ def get_task_overview_yearly(year: int) -> dict:
         pic_id: Optional[str] = ids[0] if ids else None
         if not pic_id:
             continue
+
+        # Apply per-PIC project filter if configured
+        project_kw = PIC_PROJECT_FILTER.get(pic_id)
+        if project_kw:
+            resolved_proj = _resolve_project(rec.get("Project"))
+            if project_kw.lower() not in resolved_proj.lower():
+                continue
 
         status = str(rec.get("Status") or "").lower().strip()
         is_completed = status == "completed"
