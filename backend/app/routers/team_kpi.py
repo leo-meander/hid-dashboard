@@ -34,6 +34,38 @@ VALID_ROLES = set(ROLE_META.keys())
 
 # ── Lark debug ────────────────────────────────────────────────────────────────
 
+@router.get("/debug/ads-tasks-jul")
+def debug_ads_tasks_jul():
+    """Show raw PIC field for completed Ads tasks in Jun/Jul 2026."""
+    from app.services.lark_service import _fetch_all_records, _parse_month_year, _resolve_project
+    records = _fetch_all_records()
+    samples = []
+    for rec in records:
+        project = _resolve_project(rec.get("Project"))
+        if "ads" not in project.lower():
+            continue
+        status = str(rec.get("Status") or "").lower().strip()
+        if status != "completed":
+            continue
+        ym = _parse_month_year(rec.get("Date Created"))
+        if not ym or ym[0] != 2026 or ym[1] not in (6, 7):
+            continue
+        task_raw = rec.get("Task")
+        task_text = ""
+        if isinstance(task_raw, list) and task_raw:
+            task_text = task_raw[0].get("text", "")[:40] if isinstance(task_raw[0], dict) else str(task_raw[0])[:40]
+        pic_raw = rec.get("PIC")
+        samples.append({
+            "task": task_text,
+            "project": project,
+            "pic_raw": repr(pic_raw)[:120],
+            "pic_type": type(pic_raw).__name__,
+        })
+        if len(samples) >= 15:
+            break
+    return {"success": True, "data": {"count": len(samples), "samples": samples}, "error": None}
+
+
 @router.get("/debug/kol-targets")
 def debug_kol_targets(year: int = Query(2026), month: int = Query(7)):
     """Expose raw KOL Engine targets API response for one month."""
