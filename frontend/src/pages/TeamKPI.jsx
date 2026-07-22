@@ -508,37 +508,79 @@ function TaskOverview({ year }) {
   const filtered = picFilter === "all" ? allPeople : allPeople.filter(p => p.pic_id === picFilter);
   const displayMonths = monthFilter === 0 ? MONTH_NAMES.map((_, i) => i + 1) : [monthFilter];
 
-  // ── Chart data: filtered same as table ────────────────────────────────────
-  const chartData = filtered.map(p => {
+  // ── Per-person monthly scores for heatmap + trend ────────────────────────
+  const peopleMonthly = filtered.map(p => {
+    const monthScores = MONTH_NAMES.map((_, i) => {
+      const m = i + 1;
+      const row = p.months[String(m)] ?? p.months[m] ?? null;
+      return computeScore(row);
+    });
     const rows = Object.entries(p.months).filter(([k]) => !isNaN(Number(k))).map(([, v]) => v);
     const agg = aggregateRows(rows);
-    return { name: p.name, agg, score: computeScore(agg), open: p.open_workload };
-  }).filter(d => d.agg);
+    return { name: p.name, monthScores, agg, score: computeScore(agg), open: p.open_workload };
+  });
 
-  const maxTasks = Math.max(...chartData.map(d => d.agg?.total_tasks ?? 0), 1);
+  // Score → heatmap bg color
+  function heatColor(score) {
+    if (score === null) return { bg: "#f9fafb", text: "#d1d5db" };
+    if (score >= 9)   return { bg: "#dcfce7", text: "#15803d" };
+    if (score >= 8)   return { bg: "#d1fae5", text: "#065f46" };
+    if (score >= 7)   return { bg: "#dbeafe", text: "#1d4ed8" };
+    if (score >= 5.5) return { bg: "#fef9c3", text: "#854d0e" };
+    return { bg: "#fee2e2", text: "#b91c1c" };
+  }
+
+  // SVG trend line for one person
+  function TrendLine({ scores }) {
+    const W = 280, H = 56, PAD = 6;
+    const valid = scores.map((s, i) => s !== null ? { i, s } : null).filter(Boolean);
+    if (valid.length < 2) return <span className="text-[10px] text-gray-300 italic">no data</span>;
+    const minS = 0, maxS = 10;
+    const xOf = (i) => PAD + (i / 11) * (W - PAD * 2);
+    const yOf = (s) => H - PAD - ((s - minS) / (maxS - minS)) * (H - PAD * 2);
+    const pts = valid.map(v => `${xOf(v.i)},${yOf(v.s)}`).join(" ");
+    // threshold lines
+    const y9 = yOf(9), y8 = yOf(8), y7 = yOf(7), y55 = yOf(5.5);
+    return (
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 56 }}>
+        {/* threshold bands */}
+        <rect x={0} y={y9}  width={W} height={y8 - y9}   fill="#dcfce7" opacity="0.5" />
+        <rect x={0} y={y8}  width={W} height={y7 - y8}   fill="#d1fae5" opacity="0.4" />
+        <rect x={0} y={y7}  width={W} height={y55 - y7}  fill="#dbeafe" opacity="0.4" />
+        <rect x={0} y={y55} width={W} height={H - y55}   fill="#fee2e2" opacity="0.3" />
+        {/* line */}
+        <polyline points={pts} fill="none" stroke="#6366f1" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+        {/* dots */}
+        {valid.map(v => (
+          <circle key={v.i} cx={xOf(v.i)} cy={yOf(v.s)} r="3"
+            fill={heatColor(v.s).bg} stroke={heatColor(v.s).text} strokeWidth="1.5" />
+        ))}
+        {/* month labels */}
+        {MONTH_NAMES.map((m, i) => (
+          <text key={m} x={xOf(i)} y={H - 1} textAnchor="middle" fontSize="7" fill="#9ca3af">{m}</text>
+        ))}
+      </svg>
+    );
+  }
 
   return (
     <div className="space-y-5">
 
       {/* ── Summary scorecards ── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        {chartData.map(d => {
+        {peopleMonthly.map(d => {
           const rCls = ratingClasses(d.score);
-          const score = d.score;
           const onTimeRate = d.agg?.on_time_rate ?? 0;
-          const ringPct = onTimeRate;
           const ringColor = onTimeRate >= 90 ? "#22c55e" : onTimeRate >= 70 ? "#eab308" : "#ef4444";
-          const radius = 28;
-          const circ = 2 * Math.PI * radius;
-          const filled = Math.min(ringPct / 100, 1) * circ;
+          const radius = 28, circ = 2 * Math.PI * radius;
+          const filled = Math.min(onTimeRate / 100, 1) * circ;
           return (
             <div key={d.name} className="bg-white rounded-xl border border-gray-200 p-3 flex flex-col items-center gap-2">
               <p className="text-xs font-semibold text-gray-700">{d.name}</p>
-              {/* Mini ring: on-time rate */}
               <div className="relative w-16 h-16">
                 <svg className="w-full h-full -rotate-90" viewBox="0 0 72 72">
                   <circle cx="36" cy="36" r={radius} fill="none" stroke="#e5e7eb" strokeWidth="7" />
-                  {ringPct > 0 && (
+                  {onTimeRate > 0 && (
                     <circle cx="36" cy="36" r={radius} fill="none" stroke={ringColor} strokeWidth="7"
                       strokeDasharray={`${filled} ${circ}`} strokeLinecap="round" />
                   )}
@@ -547,35 +589,82 @@ function TaskOverview({ year }) {
                   <span className="text-[11px] font-bold text-gray-800">{onTimeRate > 0 ? `${onTimeRate.toFixed(0)}%` : "—"}</span>
                 </div>
               </div>
-              <div className="text-[10px] text-gray-400">On-time</div>
-              {score !== null && (
+              <div className="text-[10px] text-gray-400">On-time rate</div>
+              {d.score !== null && (
                 <span className={`px-2 py-0.5 rounded-full text-[10px] ${rCls}`}>
-                  {score.toFixed(1)} · {ratingLabel(score)}
+                  {d.score.toFixed(1)} · {ratingLabel(d.score)}
                 </span>
               )}
-              <div className="text-[10px] text-gray-400">{d.agg.total_tasks} tasks · {d.open} open</div>
+              <div className="text-[10px] text-gray-400">{d.agg?.total_tasks ?? 0} tasks · {d.open} open</div>
             </div>
           );
         })}
       </div>
 
-      {/* ── Task volume chart ── */}
+      {/* ── Score heatmap: person × month ── */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4 overflow-x-auto">
+        <p className="text-xs font-semibold text-gray-600 mb-3">Performance Score — Heatmap</p>
+        <table className="text-[11px] border-collapse w-full min-w-[520px]">
+          <thead>
+            <tr>
+              <th className="text-left text-gray-400 font-medium pb-2 pr-3 w-16">Person</th>
+              {MONTH_NAMES.map(m => (
+                <th key={m} className="text-center text-gray-400 font-medium pb-2 px-0.5 w-10">{m}</th>
+              ))}
+              <th className="text-center text-gray-400 font-medium pb-2 pl-2">Annual</th>
+            </tr>
+          </thead>
+          <tbody>
+            {peopleMonthly.map(d => (
+              <tr key={d.name}>
+                <td className="pr-3 py-1 font-medium text-gray-700 whitespace-nowrap">{d.name}</td>
+                {d.monthScores.map((score, i) => {
+                  const { bg, text } = heatColor(score);
+                  return (
+                    <td key={i} className="px-0.5 py-1 text-center">
+                      <div className="rounded text-[10px] font-semibold py-1 px-0.5" style={{ backgroundColor: bg, color: text, minWidth: 32 }}>
+                        {score !== null ? score.toFixed(1) : "·"}
+                      </div>
+                    </td>
+                  );
+                })}
+                <td className="pl-2 py-1 text-center">
+                  {(() => { const { bg, text } = heatColor(d.score); return (
+                    <div className="rounded text-[10px] font-bold py-1 px-1" style={{ backgroundColor: bg, color: text }}>
+                      {d.score !== null ? d.score.toFixed(1) : "—"}
+                    </div>
+                  );})()}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {/* legend */}
+        <div className="flex items-center gap-3 mt-3 flex-wrap">
+          {[["≥9 Excellent","#dcfce7","#15803d"],["≥8 Good","#d1fae5","#065f46"],["≥7 Fair","#dbeafe","#1d4ed8"],["≥5.5 Pass","#fef9c3","#854d0e"],["<5.5 Fail","#fee2e2","#b91c1c"],["No data","#f9fafb","#d1d5db"]].map(([label, bg, color]) => (
+            <span key={label} className="flex items-center gap-1 text-[10px]">
+              <span className="w-4 h-3 rounded inline-block" style={{ backgroundColor: bg }} />
+              <span style={{ color }}>{label}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Monthly score trend lines ── */}
       <div className="bg-white rounded-xl border border-gray-200 p-4">
-        <p className="text-xs font-semibold text-gray-600 mb-3">Task Volume by Person (Annual)</p>
-        <div className="space-y-2">
-          {chartData.map(d => (
-            <div key={d.name} className="flex items-center gap-2">
-              <span className="text-xs text-gray-600 w-16 flex-shrink-0 truncate">{d.name}</span>
-              <div className="flex-1 flex items-center gap-2">
-                <div className="flex-1 h-5 bg-gray-100 rounded overflow-hidden">
-                  <div className="h-full flex items-center">
-                    <div className="h-3 rounded-r bg-indigo-400 transition-all"
-                      style={{ width: `${Math.max((d.agg.total_tasks / maxTasks) * 100, 2)}%` }} />
-                  </div>
-                </div>
-                <span className="text-xs text-gray-700 w-8 text-right">{d.agg.total_tasks}</span>
-                <span className="text-[10px] text-gray-400 w-10 text-right">{d.agg.completed} done</span>
+        <p className="text-xs font-semibold text-gray-600 mb-3">Score Trend by Month</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {peopleMonthly.map(d => (
+            <div key={d.name} className="border border-gray-100 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-medium text-gray-700">{d.name}</span>
+                {d.score !== null && (
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] ${ratingClasses(d.score)}`}>
+                    Avg {d.score.toFixed(1)}
+                  </span>
+                )}
               </div>
+              <TrendLine scores={d.monthScores} />
             </div>
           ))}
         </div>
