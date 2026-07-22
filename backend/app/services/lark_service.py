@@ -393,7 +393,7 @@ def get_designer_actuals_yearly(year: int, nora_name: str = "Nora") -> dict[int,
     """
     Return {month: {branch_key: {design_assets, videos_delivered}}}
     Counts ALL completed tasks assigned to Nora (all projects, incl. uncategorized),
-    grouped by Deadline month. Each completed task = 1 design asset.
+    grouped by Date Created month (consistent with _get_yearly_agg). Each completed task = 1 design asset.
     Branch derived from Project name if available; falls back to 'all'.
     """
     records = _fetch_all_records()
@@ -412,7 +412,7 @@ def get_designer_actuals_yearly(year: int, nora_name: str = "Nora") -> dict[int,
         if status != "completed":
             continue
 
-        ym = _parse_month_year(rec.get("Deadline"))
+        ym = _parse_month_year(rec.get("Date Created"))
         if not ym or ym[0] != year:
             continue
         _, month = ym
