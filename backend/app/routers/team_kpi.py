@@ -82,6 +82,24 @@ def debug_lark():
     except Exception as exc:
         result["agg_error"] = str(exc)
 
+    # Delivery rate debug: show sample fields for Nora's records
+    nora_samples = []
+    for rec in records:
+        pic = rec.get("PIC") or rec.get("Assignee") or rec.get("pic") or ""
+        pic_str = str(pic)
+        if "nora" in pic_str.lower():
+            nora_samples.append({
+                "PIC_raw":    pic_str[:80],
+                "Status":     str(rec.get("Status") or "")[:40],
+                "Deadline":   str(rec.get("Deadline") or "")[:40],
+                "Complete date": str(rec.get("Complete date") or rec.get("Completion date") or "")[:40],
+                "OnTime":     str(rec.get("On-time vs Original") or "")[:40],
+            })
+        if len(nora_samples) >= 5:
+            break
+    result["nora_sample_records"] = nora_samples
+    result["all_field_names"] = list(records[0].keys()) if records else []
+
     return {"success": True, "data": result, "error": None}
 
 
