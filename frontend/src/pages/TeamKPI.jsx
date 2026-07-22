@@ -508,8 +508,8 @@ function TaskOverview({ year }) {
   const filtered = picFilter === "all" ? allPeople : allPeople.filter(p => p.pic_id === picFilter);
   const displayMonths = monthFilter === 0 ? MONTH_NAMES.map((_, i) => i + 1) : [monthFilter];
 
-  // ── Chart data: per-person annual aggregates ──────────────────────────────
-  const chartData = allPeople.map(p => {
+  // ── Chart data: filtered same as table ────────────────────────────────────
+  const chartData = filtered.map(p => {
     const rows = Object.entries(p.months).filter(([k]) => !isNaN(Number(k))).map(([, v]) => v);
     const agg = aggregateRows(rows);
     return { name: p.name, agg, score: computeScore(agg), open: p.open_workload };
