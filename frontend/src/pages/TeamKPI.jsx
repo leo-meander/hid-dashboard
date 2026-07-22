@@ -536,7 +536,7 @@ export default function TeamKPI() {
       )}
 
       {data && (() => {
-        const visibleKpis = (data.kpis || []).filter(k => branchId ? !k.org_wide : k.org_wide);
+        const visibleKpis = (data.kpis || []).filter(k => branchId ? !k.org_wide : true);
         return (
         <div className={"space-y-2 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           <div className="flex items-center justify-between">
