@@ -49,7 +49,7 @@ KPI_DEFS: dict[str, list[dict]] = {
     "designer": [
         {"key": "design_assets",   "label": "Design Assets Completed","unit": "designs","org_wide": False, "higher_is_better": True},
         {"key": "videos_delivered","label": "Videos Delivered",       "unit": "videos", "org_wide": False, "higher_is_better": True},
-        {"key": "delivery_rate",   "label": "On-Time Delivery Rate",  "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True, "auto": False},
+        {"key": "delivery_rate",   "label": "On-Time Delivery Rate",  "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True},
         {"key": "design_ideas",    "label": "Design Ideas",           "unit": "ideas",  "org_wide": False, "higher_is_better": True,  "auto": False},
     ],
     "crm": [
@@ -463,6 +463,16 @@ def get_pm_actuals_yearly(db: Session, year: int) -> dict[int, dict[str, dict]]:
             row["budget_utilisation"] = budget_pct
         if row:
             out.setdefault(month, {})[branch_key] = row
+
+    # Merge task_completion_rate from Lark (org-wide → stored under 'all' key)
+    try:
+        from app.services.lark_service import get_task_completion_rate_yearly
+        tcr = get_task_completion_rate_yearly(year)
+        for month, data in tcr.items():
+            for bucket, vals in data.items():
+                out.setdefault(month, {}).setdefault(bucket, {}).update(vals)
+    except Exception as exc:
+        log.warning("task_completion_rate from Lark unavailable: %s", exc)
 
     _pm_actuals_cache[cache_key] = (time.time(), out)
     return out

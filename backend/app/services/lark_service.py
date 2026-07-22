@@ -367,11 +367,12 @@ def _get_yearly_agg(year: int) -> dict:
     return agg
 
 
-def get_designer_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
+def get_designer_actuals_yearly(year: int, nora_name: str = "Nora") -> dict[int, dict[str, dict]]:
     """
-    Return {month: {branch_key: {design_assets, videos_delivered}}}
-    design_assets    = images
-    videos_delivered = videos
+    Return {month: {branch_key: {design_assets, videos_delivered, delivery_rate}}}
+    design_assets    = images (Ads-only_Number of images)
+    videos_delivered = videos (Ads-only_Number of video)
+    delivery_rate    = % of Nora's completed tasks (by Deadline month) that are On-time vs Original
     """
     agg = _get_yearly_agg(year)
     out: dict[int, dict[str, dict]] = {}
@@ -381,6 +382,85 @@ def get_designer_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
                 "design_assets":    round(counts["images"]),
                 "videos_delivered": round(counts["videos"]),
             }
+
+    # Merge delivery_rate from Nora's tasks
+    delivery = get_delivery_rate_yearly(year, nora_name)
+    for month, branches in delivery.items():
+        for branch_key, vals in branches.items():
+            out.setdefault(month, {}).setdefault(branch_key, {}).update(vals)
+
+    return out
+
+
+def get_delivery_rate_yearly(year: int, pic_name: str = "Nora") -> dict[int, dict[str, dict]]:
+    """
+    Return {month: {branch_key: {delivery_rate}}}
+    delivery_rate = % of completed tasks assigned to pic_name with Deadline in that
+    month where 'On-time vs Original' == 'On-time'.
+    """
+    records = _fetch_all_records()
+    counts: dict[tuple, dict] = {}  # (month, branch_key) → {on_time, total}
+
+    for rec in records:
+        pic_val = rec.get("PIC") or ""
+        pic_str = pic_val if isinstance(pic_val, str) else str(pic_val)
+        if pic_name.lower() not in pic_str.lower():
+            continue
+
+        status = str(rec.get("Status") or "").lower().strip()
+        if status != "completed":
+            continue
+
+        ym = _parse_month_year(rec.get("Deadline"))
+        if not ym or ym[0] != year:
+            continue
+        _, month = ym
+
+        project = _resolve_project(rec.get("Project"))
+        branch_key = _parse_branch_from_project(project)
+        if not branch_key:
+            continue
+
+        key = (month, branch_key)
+        if key not in counts:
+            counts[key] = {"on_time": 0, "total": 0}
+        counts[key]["total"] += 1
+        on_time_val = str(rec.get("On-time vs Original") or "").strip().lower()
+        if on_time_val == "on-time":
+            counts[key]["on_time"] += 1
+
+    out: dict[int, dict[str, dict]] = {}
+    for (month, branch_key), c in counts.items():
+        rate = round(c["on_time"] / c["total"] * 100, 1) if c["total"] > 0 else None
+        out.setdefault(month, {})[branch_key] = {"delivery_rate": rate}
+    return out
+
+
+def get_task_completion_rate_yearly(year: int) -> dict[int, dict[str, dict]]:
+    """
+    Return {month: {'all': {task_completion_rate}}}
+    task_completion_rate = % of tasks with Deadline in that month that are Completed.
+    """
+    records = _fetch_all_records()
+    counts: dict[int, dict] = {}  # month → {total, completed}
+
+    for rec in records:
+        ym = _parse_month_year(rec.get("Deadline"))
+        if not ym or ym[0] != year:
+            continue
+        _, month = ym
+
+        status = str(rec.get("Status") or "").lower().strip()
+        if month not in counts:
+            counts[month] = {"total": 0, "completed": 0}
+        counts[month]["total"] += 1
+        if status == "completed":
+            counts[month]["completed"] += 1
+
+    out: dict[int, dict[str, dict]] = {}
+    for month, c in counts.items():
+        rate = round(c["completed"] / c["total"] * 100, 1) if c["total"] > 0 else None
+        out[month] = {"all": {"task_completion_rate": rate}}
     return out
 
 
