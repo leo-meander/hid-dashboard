@@ -100,6 +100,14 @@ def debug_lark():
     }
     result["all_field_names"] = list(records[0].keys()) if records else []
 
+    # Sample raw "On-time vs Original" values to debug on-time detection
+    ot_samples = []
+    for rec in records[:50]:
+        v = rec.get("On-time vs Original")
+        if v is not None:
+            ot_samples.append(repr(v)[:60])
+    result["on_time_field_samples"] = list(dict.fromkeys(ot_samples))[:10]
+
     return {"success": True, "data": result, "error": None}
 
 

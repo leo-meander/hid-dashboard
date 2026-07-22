@@ -563,8 +563,45 @@ function TaskOverview({ year }) {
     );
   }
 
+  const SCORE_TOOLTIP = "Score = On-time rate ×0.35 + Cycle efficiency ×0.25 + Overdue ×0.25 + Reopen ×0.15 (scale 0–10). Reopen not yet tracked → fixed at 10.";
+
   return (
     <div className="space-y-5">
+
+      {/* ── Filters — top ── */}
+      <div className="flex flex-wrap items-center gap-4 bg-white border border-gray-200 rounded-xl px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500 font-medium">Person:</span>
+          <div className="flex flex-wrap gap-1.5">
+            <button onClick={() => setPicFilter("all")}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${picFilter === "all" ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
+              All
+            </button>
+            {allPeople.map(p => (
+              <button key={p.pic_id} onClick={() => setPicFilter(p.pic_id)}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${picFilter === p.pic_id ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
+                {p.name}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="w-px h-5 bg-gray-200" />
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500 font-medium">Month:</span>
+          <div className="flex flex-wrap gap-1.5">
+            <button onClick={() => setMonthFilter(0)}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${monthFilter === 0 ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
+              All
+            </button>
+            {MONTH_NAMES.map((m, i) => (
+              <button key={m} onClick={() => setMonthFilter(i + 1)}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${monthFilter === i + 1 ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
 
       {/* ── Summary scorecards ── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
@@ -670,42 +707,6 @@ function TaskOverview({ year }) {
         </div>
       </div>
 
-      {/* ── Filters ── */}
-      <div className="flex flex-wrap items-center gap-4">
-        {/* PIC filter */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-500 font-medium">Person:</span>
-          <div className="flex flex-wrap gap-1.5">
-            <button onClick={() => setPicFilter("all")}
-              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${picFilter === "all" ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
-              All
-            </button>
-            {allPeople.map(p => (
-              <button key={p.pic_id} onClick={() => setPicFilter(p.pic_id)}
-                className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${picFilter === p.pic_id ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
-                {p.name}
-              </button>
-            ))}
-          </div>
-        </div>
-        {/* Month filter */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-500 font-medium">Month:</span>
-          <div className="flex flex-wrap gap-1.5">
-            <button onClick={() => setMonthFilter(0)}
-              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${monthFilter === 0 ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
-              All
-            </button>
-            {MONTH_NAMES.map((m, i) => (
-              <button key={m} onClick={() => setMonthFilter(i + 1)}
-                className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${monthFilter === i + 1 ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
-                {m}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
       {/* ── Detail table ── */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
         <table className="min-w-full text-xs border-collapse">
@@ -720,7 +721,11 @@ function TaskOverview({ year }) {
               <th className={thCls + " text-right"}>Avg Estimate</th>
               <th className={thCls + " text-right"}>Cycle/Est.</th>
               <th className={thCls + " text-right"}>Overdue</th>
-              <th className={thCls + " text-right"}>Score</th>
+              <th className={thCls + " text-right"}>
+                <Tooltip text={SCORE_TOOLTIP}>
+                  <span className="border-b border-dashed border-gray-400 cursor-help">Score</span>
+                </Tooltip>
+              </th>
               <th className={thCls}>Rating</th>
             </tr>
           </thead>
@@ -787,7 +792,13 @@ function TaskOverview({ year }) {
                         </span>
                       ) : "—"}
                     </td>
-                    <td className={tdCls + " text-right font-semibold"}>{score ?? "—"}</td>
+                    <td className={tdCls + " text-right font-semibold"}>
+                      {score !== null ? (
+                        <Tooltip text={row ? `On-time: ${fmtNum(row.on_time_rate)}% →×0.35 | Cycle: ${fmtNum(row.cycle_ratio,2)}× →×0.25 | Overdue: ${row.overdue_count ?? 0} →×0.25 | Reopen: 10 →×0.15` : SCORE_TOOLTIP}>
+                          <span className="border-b border-dashed border-gray-300 cursor-help">{score}</span>
+                        </Tooltip>
+                      ) : "—"}
+                    </td>
                     <td className={tdCls}>
                       {score !== null ? (
                         <span className={`px-1.5 py-0.5 rounded text-[10px] ${rCls}`}>{ratingLabel(score)}</span>
