@@ -513,6 +513,8 @@ def build_monthly_summary(
     # For is_pct KPIs in the PM role, targets may have been entered as fractions
     # (e.g. 0.9 = 90%) instead of percentage values (90). Normalize on load.
     _pct_keys = {d["key"] for d in defs if d.get("is_pct")} if role_key == "pm" else set()
+    # Revenue KPI keys — targets stored in native currency units, need FX conversion for All view
+    _revenue_keys = {d["key"] for d in defs if d.get("is_revenue")}
 
     targets_map: dict[tuple, float] = {}        # (kpi_key, month) → target value (summed for All)
     manual_actuals_map: dict[tuple, float] = {} # (kpi_key, month) → manual actual value
@@ -531,8 +533,20 @@ def build_monthly_summary(
             if row.kpi_key in _pct_keys and raw_val <= 2.0:
                 raw_val = round(raw_val * 100, 1)
             if all_branches_view and row.branch_id is not None:
+                # For revenue KPIs: convert branch target to mil VND before summing
+                # (branches store targets in native currency: mil VND, TWD, or JPY)
+                if row.kpi_key in _revenue_keys:
+                    bk_curr = BRANCH_CURRENCY.get(BRANCH_UUID_TO_KEY.get(str(row.branch_id), ""), "VND")
+                    if bk_curr == "VND":
+                        vnd_val = raw_val * 1_000_000  # mil VND → VND
+                    else:
+                        rate = get_cached_rate(bk_curr, "VND") or 1.0
+                        vnd_val = raw_val / rate  # native → VND
+                    sum_val = vnd_val / 1_000_000  # back to mil VND for display
+                else:
+                    sum_val = raw_val
                 # sum per-branch targets for All view
-                targets_map[key] = targets_map.get(key, 0.0) + raw_val
+                targets_map[key] = targets_map.get(key, 0.0) + sum_val
                 # also keep per-branch copy for computed-target lookups
                 bk = BRANCH_UUID_TO_KEY.get(str(row.branch_id))
                 if bk:
