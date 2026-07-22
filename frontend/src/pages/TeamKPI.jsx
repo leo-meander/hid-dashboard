@@ -604,34 +604,29 @@ function TaskOverview({ year }) {
       </div>
 
       {/* ── Scoring legend ── */}
-      <div className="rounded-xl border border-indigo-100 bg-indigo-50 overflow-hidden text-xs">
-        <div className="bg-indigo-700 text-white px-4 py-2 font-semibold tracking-wide text-[11px] uppercase">
-          Scoring Formula — MEANDER Group · Team Marketing/Growth · {year}
-        </div>
-        <div className="flex flex-wrap items-stretch divide-x divide-indigo-100">
+      <div className="rounded-xl border border-gray-200 bg-white overflow-hidden text-xs">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 border-b border-gray-100">
           {/* Weights */}
-          <div className="flex items-center gap-0 flex-shrink-0">
-            <div className="px-3 py-2 bg-indigo-100 text-indigo-700 font-semibold text-[10px] uppercase tracking-wide self-stretch flex items-center">Weights</div>
-            {[["On-time","35%","#ef4444"],["Cycle","25%","#ef4444"],["Overdue","25%","#ef4444"],["Reopen","15%","#ef4444"],["Total","100%","#15803d"]].map(([label, pct, color]) => (
-              <div key={label} className="px-3 py-2 text-center border-l border-indigo-100 flex-shrink-0">
-                <div className="font-medium text-gray-700">{label}</div>
-                <div className="font-bold text-[13px]" style={{ color }}>{pct}</div>
-              </div>
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Weights</span>
+            {[["On-time","35%"],["Cycle","25%"],["Overdue","25%"],["Reopen","15%"]].map(([label, pct]) => (
+              <span key={label} className="text-[11px] text-gray-600">{label} <span className="font-semibold text-gray-800">{pct}</span></span>
             ))}
           </div>
+          <div className="w-px h-4 bg-gray-200 hidden sm:block" />
           {/* Rating scale */}
-          <div className="flex items-center gap-0 flex-1 flex-wrap">
-            <div className="px-3 py-2 bg-indigo-100 text-indigo-700 font-semibold text-[10px] uppercase tracking-wide self-stretch flex items-center flex-shrink-0">Rating</div>
-            {[["≥ 9","Excellent","#15803d","#dcfce7"],["8 – 8.9","Good","#065f46","#d1fae5"],["7 – 7.9","Fair","#1d4ed8","#dbeafe"],["5.5 – 6.9","Pass","#854d0e","#fef9c3"],["< 5.5","Fail","#b91c1c","#fee2e2"]].map(([range, label, color, bg]) => (
-              <div key={label} className="px-3 py-2 flex items-center gap-1.5 border-l border-indigo-100 flex-shrink-0">
-                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold" style={{ backgroundColor: bg, color }}>{range}</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Rating</span>
+            {[["≥ 9","Excellent","#15803d","#dcfce7"],["8–8.9","Good","#065f46","#d1fae5"],["7–7.9","Fair","#1d4ed8","#dbeafe"],["5.5–6.9","Pass","#854d0e","#fef9c3"],["< 5.5","Fail","#b91c1c","#fee2e2"]].map(([range, label, color, bg]) => (
+              <span key={label} className="flex items-center gap-1 text-[11px]">
+                <span className="px-1.5 py-0.5 rounded font-semibold text-[10px]" style={{ backgroundColor: bg, color }}>{range}</span>
                 <span className="text-gray-500">{label}</span>
-              </div>
+              </span>
             ))}
           </div>
         </div>
-        <div className="px-4 py-1.5 bg-white border-t border-indigo-100 text-[10px] text-gray-400">
-          Period grouped by task <strong>Deadline</strong> month · Workload (open tasks) tracked only — not scored · Reopen not yet available in Lark
+        <div className="px-4 py-2 text-[10px] text-gray-400">
+          Period grouped by task <strong className="text-gray-500">Deadline</strong> month · Workload tracked only — not scored · Reopen not yet available in Lark
         </div>
       </div>
 
