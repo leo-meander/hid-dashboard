@@ -56,14 +56,12 @@ def debug_kol_targets(year: int = Query(2026), month: int = Query(7)):
 @router.get("/debug/nora-tasks")
 def debug_nora_tasks():
     """Show ALL Nora completed tasks with parsed deadline month."""
-    from app.services.lark_service import _fetch_all_records, _NORA_PIC_ID, _parse_month_year
+    from app.services.lark_service import _fetch_all_records, _NORA_KEYS, _extract_pic_key, _parse_month_year
     import datetime as _dt
     records = _fetch_all_records()
     all_nora = []
     for rec in records:
-        pic_raw = rec.get("PIC") or {}
-        ids = pic_raw.get("link_record_ids", []) if isinstance(pic_raw, dict) else []
-        if _NORA_PIC_ID not in ids:
+        if _extract_pic_key(rec.get("PIC")) not in _NORA_KEYS:
             continue
         status = str(rec.get("Status") or "").lower().strip()
         deadline_raw = rec.get("Deadline")

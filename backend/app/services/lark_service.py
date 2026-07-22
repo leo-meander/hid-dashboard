@@ -26,18 +26,26 @@ from app.config import settings
 
 log = logging.getLogger(__name__)
 
-# ── PIC name mapping (record_id → display name) ───────────────────────────────
+# ── PIC name mapping (record_id OR email → display name) ─────────────────────
+# Lark PIC field can be either a linked-record type (returns link_record_ids)
+# or a Person/User type (returns a list of {id, name, email} objects).
+# Both formats are handled by _extract_pic_key(); always normalize to one key.
 PIC_NAME_MAP: dict[str, str] = {
-    "recuOULUU1hNZe": "Mason",      # 141 tasks — Ads
-    "recuOUM6YA5NP7": "Nora",       # 29 tasks  — Design
-    "recvfBvofwVG5z": "Mel",        # 117 tasks — KOL/XHS social
-    "recuOUECycRmpy": "Nuha",       # 61 tasks  — PM (CVs, probation reviews)
-    "recuGw12iUnRNJ": "Kin",        # 40 tasks  — Data/CRM (Forecast, OTA tracking)
-    # Unidentified (kept as "User XXXX" in UI until confirmed):
-    # "recv6JxUlC2N9p": ???  81 tasks — KOL videos + Image Design (Mel alt? other?)
-    # "recuE05GOBewVj": ???  14 tasks — Bi-weekly Meeting Update
-    # "recuJabgFnVMiH": ???   2 tasks — PMGC, Design post
+    # linked-record IDs
+    "recuOULUU1hNZe": "Mason",
+    "recuOUM6YA5NP7": "Nora",
+    "recvfBvofwVG5z":  "Mel",
+    "recuOUECycRmpy": "Nuha",
+    "recuGw12iUnRNJ":  "Kin",
+    # email fallback (Person-type field)
+    "mason@staymeander.com":  "Mason",
+    "nora@staymeander.com":   "Nora",
+    "mel@staymeander.com":    "Mel",
+    "nuha@staymeander.com":   "Nuha",
+    "kin@staymeander.com":    "Kin",
 }
+
+_NORA_KEYS = {"recuOUM6YA5NP7", "nora@staymeander.com"}
 
 # Optional project keyword filter per PIC (case-insensitive substring match on resolved project name).
 # If a PIC is not listed here, all projects are counted.
@@ -56,6 +64,34 @@ _LINK_MAP_TTL = 3600         # 1 hour — project names rarely change
 # Branch prefix patterns from Project field → branch_key
 # Matches [1948], [Sai Gon], [Taipei], [Oani], [Osaka], [Saigon], [SGN]
 _BRANCH_RE = re.compile(r"\[([^\]]+)\]")
+
+def _extract_pic_key(pic_raw) -> Optional[str]:
+    """Return a stable PIC key from either a linked-record or Person-type field.
+
+    Linked-record: {"link_record_ids": ["recXXX"]} → returns first record ID.
+    Person type:   [{"email": "nora@staymeander.com", ...}]  → returns email.
+    Returns None if the field is empty or unrecognised.
+    """
+    if not pic_raw:
+        return None
+    # Linked-record dict
+    if isinstance(pic_raw, dict):
+        ids = pic_raw.get("link_record_ids") or []
+        return ids[0] if ids else None
+    # Person-type list
+    if isinstance(pic_raw, list):
+        for item in pic_raw:
+            if isinstance(item, dict):
+                # linked-record item inside list
+                rec_ids = item.get("link_record_ids") or []
+                if rec_ids:
+                    return rec_ids[0]
+                # Person item
+                email = (item.get("email") or "").strip().lower()
+                if email:
+                    return email
+    return None
+
 
 def _norm_branch(raw: str) -> Optional[str]:
     """Normalize branch name: lowercase + strip spaces, then map to branch key."""
@@ -410,10 +446,8 @@ def get_designer_actuals_yearly(year: int, nora_name: str = "Nora") -> dict[int,
     agg: dict = defaultdict(lambda: defaultdict(lambda: {"images": 0, "videos": 0}))
 
     for rec in records:
-        # Filter to Nora by PIC record ID
-        pic_raw = rec.get("PIC") or {}
-        ids = pic_raw.get("link_record_ids", []) if isinstance(pic_raw, dict) else []
-        if _NORA_PIC_ID not in ids:
+        pic_key = _extract_pic_key(rec.get("PIC"))
+        if pic_key not in _NORA_KEYS:
             continue
 
         status = str(rec.get("Status") or "").lower().strip()
@@ -573,13 +607,7 @@ def get_task_overview_yearly(year: int) -> dict:
     no_deadline: dict[str, int] = defaultdict(int)
 
     for rec in records:
-        # Extract PIC id
-        pic_raw = rec.get("PIC")
-        if isinstance(pic_raw, dict):
-            ids = pic_raw.get("link_record_ids", [])
-        else:
-            ids = []
-        pic_id: Optional[str] = ids[0] if ids else None
+        pic_id: Optional[str] = _extract_pic_key(rec.get("PIC"))
         if not pic_id:
             continue
 
