@@ -55,10 +55,11 @@ def debug_kol_targets(year: int = Query(2026), month: int = Query(7)):
 
 @router.get("/debug/nora-tasks")
 def debug_nora_tasks():
-    """Show raw Deadline field values from Nora's completed tasks."""
-    from app.services.lark_service import _fetch_all_records, _NORA_PIC_ID
+    """Show ALL Nora completed tasks with parsed deadline month."""
+    from app.services.lark_service import _fetch_all_records, _NORA_PIC_ID, _parse_month_year
+    import datetime as _dt
     records = _fetch_all_records()
-    samples = []
+    all_nora = []
     for rec in records:
         pic_raw = rec.get("PIC") or {}
         ids = pic_raw.get("link_record_ids", []) if isinstance(pic_raw, dict) else []
@@ -66,19 +67,26 @@ def debug_nora_tasks():
             continue
         status = str(rec.get("Status") or "").lower().strip()
         deadline_raw = rec.get("Deadline")
+        created_raw = rec.get("Date Created")
+        ym_deadline = _parse_month_year(deadline_raw)
+        ym_created = _parse_month_year(created_raw)
         task_raw = rec.get("Task")
         task_text = ""
         if isinstance(task_raw, list) and task_raw:
-            task_text = task_raw[0].get("text", "")[:40] if isinstance(task_raw[0], dict) else str(task_raw[0])[:40]
-        samples.append({
+            task_text = task_raw[0].get("text", "")[:50] if isinstance(task_raw[0], dict) else str(task_raw[0])[:50]
+        all_nora.append({
             "task": task_text,
             "status": status,
-            "deadline_raw": repr(deadline_raw)[:80],
-            "deadline_type": type(deadline_raw).__name__,
+            "deadline_parsed": f"{ym_deadline[0]}-{ym_deadline[1]:02d}" if ym_deadline else None,
+            "created_parsed": f"{ym_created[0]}-{ym_created[1]:02d}" if ym_created else None,
+            "deadline_raw": repr(deadline_raw)[:60],
         })
-        if len(samples) >= 20:
-            break
-    return {"success": True, "data": {"nora_task_count": len(samples), "samples": samples}, "error": None}
+    completed = [r for r in all_nora if r["status"] == "completed"]
+    return {"success": True, "data": {
+        "total_nora_tasks": len(all_nora),
+        "completed_count": len(completed),
+        "completed": completed,
+    }, "error": None}
 
 
 @router.get("/debug/lark")
