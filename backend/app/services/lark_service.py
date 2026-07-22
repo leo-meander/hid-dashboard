@@ -387,27 +387,56 @@ def _get_yearly_agg(year: int) -> dict:
     return agg
 
 
+_NORA_PIC_ID = "recuOUM6YA5NP7"
+
 def get_designer_actuals_yearly(year: int, nora_name: str = "Nora") -> dict[int, dict[str, dict]]:
     """
-    Return {month: {branch_key: {design_assets, videos_delivered, delivery_rate}}}
-    design_assets    = images (Ads-only_Number of images)
-    videos_delivered = videos (Ads-only_Number of video)
-    delivery_rate    = % of Nora's completed tasks (by Deadline month) that are On-time vs Original
+    Return {month: {branch_key: {design_assets, videos_delivered}}}
+    Counts ALL completed tasks assigned to Nora (all projects, incl. uncategorized),
+    grouped by Deadline month. Each completed task = 1 design asset.
+    Branch derived from Project name if available; falls back to 'all'.
     """
-    agg = _get_yearly_agg(year)
+    records = _fetch_all_records()
+    # {month: {branch_key: {images, videos}}}
+    from collections import defaultdict
+    agg: dict = defaultdict(lambda: defaultdict(lambda: {"images": 0, "videos": 0}))
+
+    for rec in records:
+        # Filter to Nora by PIC record ID
+        pic_raw = rec.get("PIC") or {}
+        ids = pic_raw.get("link_record_ids", []) if isinstance(pic_raw, dict) else []
+        if _NORA_PIC_ID not in ids:
+            continue
+
+        status = str(rec.get("Status") or "").lower().strip()
+        if status != "completed":
+            continue
+
+        ym = _parse_month_year(rec.get("Deadline"))
+        if not ym or ym[0] != year:
+            continue
+        _, month = ym
+
+        # Use branch from project if available, else 'all'
+        project = _resolve_project(rec.get("Project"))
+        branch_key = _parse_branch_from_project(project) or "all"
+
+        images = float(rec.get("Ads-only_Number of images") or 0)
+        videos = float(rec.get("Ads-only_Number of video") or 0)
+        # For non-Ads tasks these fields are 0 — count the task itself as 1 asset
+        if images == 0 and videos == 0:
+            images = 1
+
+        agg[month][branch_key]["images"] += images
+        agg[month][branch_key]["videos"] += videos
+
     out: dict[int, dict[str, dict]] = {}
-    for branch_key, months in agg.items():
-        for month, counts in months.items():
+    for month, branches in agg.items():
+        for branch_key, counts in branches.items():
             out.setdefault(month, {})[branch_key] = {
                 "design_assets":    round(counts["images"]),
                 "videos_delivered": round(counts["videos"]),
             }
-
-    # Merge delivery_rate from Nora's tasks
-    delivery = get_delivery_rate_yearly(year, nora_name)
-    for month, branches in delivery.items():
-        for branch_key, vals in branches.items():
-            out.setdefault(month, {}).setdefault(branch_key, {}).update(vals)
 
     return out
 
@@ -545,13 +574,6 @@ def get_task_overview_yearly(year: int) -> dict:
         pic_id: Optional[str] = ids[0] if ids else None
         if not pic_id:
             continue
-
-        # Apply per-PIC project filter if configured
-        project_kw = PIC_PROJECT_FILTER.get(pic_id)
-        if project_kw:
-            resolved_proj = _resolve_project(rec.get("Project"))
-            if project_kw.lower() not in resolved_proj.lower():
-                continue
 
         status = str(rec.get("Status") or "").lower().strip()
         is_completed = status == "completed"
