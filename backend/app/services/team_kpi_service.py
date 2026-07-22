@@ -556,10 +556,12 @@ def build_monthly_summary(
                         rate = get_cached_rate(bk_curr, "VND") or 1.0
                         vnd_val = raw_val * rate  # native × VND/native → VND
                     sum_val = vnd_val / 1_000_000  # back to mil VND for display
+                    targets_map[key] = targets_map.get(key, 0.0) + sum_val
+                elif row.kpi_key in _pct_keys:
+                    # is_pct targets: take the first branch value (all branches share same target %)
+                    targets_map.setdefault(key, raw_val)
                 else:
-                    sum_val = raw_val
-                # sum per-branch targets for All view
-                targets_map[key] = targets_map.get(key, 0.0) + sum_val
+                    targets_map[key] = targets_map.get(key, 0.0) + raw_val
                 # also keep per-branch copy for computed-target lookups
                 bk = BRANCH_UUID_TO_KEY.get(str(row.branch_id))
                 if bk:
@@ -681,17 +683,23 @@ def build_monthly_summary(
                     tot_spend = sum(float(month_actuals.get(bk, {}).get("ads_spend")   or 0) for bk in _ALL_BRANCH_KEYS)
                     raw = round(tot_rev / tot_spend, 2) if tot_spend > 0 else None
                 elif all_branches_view:
-                    # Sum raw VND values across all branches
+                    # is_pct KPIs (e.g. data_fill_rate): average across branches
+                    # all other KPIs: sum across branches
                     total = 0.0
-                    found = False
+                    count = 0
                     for bk in _ALL_BRANCH_KEYS:
                         v = month_actuals.get(bk, {}).get(kpi_key)
                         if v is None and kpi_key == "ads_material" and lark_ads_material:
                             v = lark_ads_material.get(m, {}).get(bk, {}).get("ads_material")
                         if v is not None:
                             total += float(v)
-                            found = True
-                    raw = total if found else None
+                            count += 1
+                    if count == 0:
+                        raw = None
+                    elif is_pct:
+                        raw = round(total / count, 2)
+                    else:
+                        raw = total
                 else:
                     raw = month_actuals.get(branch_key or "", {}).get(kpi_key)
                     # Merge Lark ads_material on top of paid_ads actuals
