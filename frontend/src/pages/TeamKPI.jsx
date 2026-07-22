@@ -500,41 +500,25 @@ function TaskOverview({ year }) {
     return <div className="text-center py-8 text-sm text-gray-400">No task data available for {year}.</div>;
   }
 
-  // Sort by name; unknown PIDs ("User XXXX") go last
-  const allPeople = [...data].sort((a, b) => {
-    const aUnk = a.name.startsWith("User ");
-    const bUnk = b.name.startsWith("User ");
-    if (aUnk !== bUnk) return aUnk ? 1 : -1;
-    return a.name.localeCompare(b.name);
-  });
+  // Only show mapped PICs (skip "User XXXX" unknowns)
+  const allPeople = [...data]
+    .filter(p => !p.name.startsWith("User "))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   const filtered = picFilter === "all" ? allPeople : allPeople.filter(p => p.pic_id === picFilter);
   const displayMonths = monthFilter === 0 ? MONTH_NAMES.map((_, i) => i + 1) : [monthFilter];
 
-  // ── Chart data: per-person annual aggregates ───────────────────────────────
+  // ── Chart data: per-person annual aggregates ──────────────────────────────
   const chartData = allPeople.map(p => {
     const rows = Object.entries(p.months).filter(([k]) => !isNaN(Number(k))).map(([, v]) => v);
     const agg = aggregateRows(rows);
-    return { name: p.name.startsWith("User ") ? p.pic_id.slice(-6) : p.name, agg, score: computeScore(agg), open: p.open_workload };
+    return { name: p.name, agg, score: computeScore(agg), open: p.open_workload };
   }).filter(d => d.agg);
 
   const maxTasks = Math.max(...chartData.map(d => d.agg?.total_tasks ?? 0), 1);
 
-  const unknownPeople = allPeople.filter(p => p.name.startsWith("User "));
-
   return (
     <div className="space-y-5">
-
-      {/* Warning for unmapped PICs */}
-      {unknownPeople.length > 0 && (
-        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 flex items-start gap-2">
-          <span className="mt-0.5">⚠️</span>
-          <span>
-            <strong>{unknownPeople.length} team member(s)</strong> not yet identified in Lark (showing as &quot;User XXXX&quot;).
-            Hit <code className="bg-amber-100 px-1 rounded">/api/team-kpi/debug/lark</code> → <code>pic_ids</code> to get their IDs, then update <code>PIC_NAME_MAP</code> in <code>lark_service.py</code>.
-          </span>
-        </div>
-      )}
 
       {/* ── Summary scorecards ── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
@@ -610,7 +594,7 @@ function TaskOverview({ year }) {
             {allPeople.map(p => (
               <button key={p.pic_id} onClick={() => setPicFilter(p.pic_id)}
                 className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${picFilter === p.pic_id ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
-                {p.name.startsWith("User ") ? `ID:${p.pic_id.slice(-4)}` : p.name}
+                {p.name}
               </button>
             ))}
           </div>
@@ -674,7 +658,6 @@ function TaskOverview({ year }) {
                 const showName = idx === 0;
                 const isAnnual = month === "Annual";
                 const monthLabel = isAnnual ? "Annual" : MONTH_NAMES[month - 1];
-                const displayName = person.name.startsWith("User ") ? `ID:${person.pic_id.slice(-6)}` : person.name;
 
                 return (
                   <tr key={`${person.pic_id}-${month}`}
@@ -682,7 +665,7 @@ function TaskOverview({ year }) {
                     <td className={tdCls + " font-medium text-gray-900 min-w-[90px]"}>
                       {showName ? (
                         <div>
-                          <div>{displayName}</div>
+                          <div>{person.name}</div>
                           {person.open_workload > 0 && (
                             <div className="text-[10px] text-orange-500 font-normal mt-0.5">{person.open_workload} open</div>
                           )}
