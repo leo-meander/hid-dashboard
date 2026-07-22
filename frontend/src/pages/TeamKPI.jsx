@@ -318,7 +318,10 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     </>
                   )}
                   <td className="px-2 py-1.5 text-center">
-                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700">A</span>
+                    {kpi.auto_actuals === false
+                      ? <span title="Enter manually" className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-100 text-orange-600 cursor-help">M</span>
+                      : <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700">A</span>
+                    }
                   </td>
                   {kpi.monthly.map(m => {
                     const color = m.has_target && m.pct !== null ? pctColor(m.pct, kpi.higher_is_better) : null;
@@ -1043,7 +1046,11 @@ export default function TeamKPI() {
               </span>
               <span className="flex items-center gap-1">
                 <span className="inline-block w-3 h-3 rounded bg-green-100 border border-green-300" />
-                A = Actual {data.auto_actuals ? "(auto)" : "(click to enter)"}
+                A = Actual (auto)
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block w-3 h-3 rounded bg-orange-100 border border-orange-300" />
+                M = Manual (click to enter)
               </span>
             </div>
           </div>
