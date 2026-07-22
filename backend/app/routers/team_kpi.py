@@ -82,11 +82,22 @@ def debug_lark():
     except Exception as exc:
         result["agg_error"] = str(exc)
 
-    # Show raw PIC values from first 10 records to understand field format
-    result["pic_field_samples"] = [
-        {"PIC_raw": repr(rec.get("PIC"))[:120], "Task": str(rec.get("Task") or "")[:40]}
-        for rec in records[:10]
-    ]
+    # Collect all unique PIC record IDs with task samples to identify each person
+    from collections import defaultdict
+    pic_id_tasks: dict = defaultdict(list)
+    for rec in records:
+        pic_raw = rec.get("PIC") or {}
+        ids = pic_raw.get("link_record_ids", []) if isinstance(pic_raw, dict) else []
+        task_text = ""
+        task_val = rec.get("Task")
+        if isinstance(task_val, list) and task_val:
+            task_text = task_val[0].get("text", "")[:50] if isinstance(task_val[0], dict) else str(task_val[0])[:50]
+        for uid in ids:
+            pic_id_tasks[uid].append(task_text)
+    result["pic_ids"] = {
+        uid: {"count": len(tasks), "samples": tasks[:3]}
+        for uid, tasks in pic_id_tasks.items()
+    }
     result["all_field_names"] = list(records[0].keys()) if records else []
 
     return {"success": True, "data": result, "error": None}
