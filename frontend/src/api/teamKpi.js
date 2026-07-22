@@ -18,3 +18,6 @@ export const upsertActual = (payload) =>
 
 export const deleteTarget = (id) =>
   axios.delete(`${BASE}/targets/${id}`).then(r => r.data);
+
+export const getTaskOverview = (year) =>
+  axios.get(`${BASE}/task-overview`, { params: { year } }).then(r => r.data.data);

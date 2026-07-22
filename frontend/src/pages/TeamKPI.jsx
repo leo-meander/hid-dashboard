@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
-import { getTeamKpiSummary, upsertTarget, upsertActual } from "../api/teamKpi";
+import { getTeamKpiSummary, upsertTarget, upsertActual, getTaskOverview } from "../api/teamKpi";
 
 const ROLES = [
   { key: "kol",      label: "KOL",       person: "Mel",   emoji: "🤝" },
@@ -391,6 +391,225 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+// ── Task Overview ─────────────────────────────────────────────────────────────
+
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+function computeScore(row) {
+  if (!row) return null;
+  const on_time_rate = row.on_time_rate ?? 0;
+  const cycle_ratio  = row.cycle_ratio;
+  const overdue      = row.overdue_count ?? 0;
+
+  const s_ontime  = on_time_rate >= 90 ? 10 : on_time_rate >= 80 ? 8 : on_time_rate >= 70 ? 6 : 4;
+  const s_cycle   = cycle_ratio == null ? 10 : cycle_ratio <= 1 ? 10 : cycle_ratio <= 1.2 ? 8 : cycle_ratio <= 1.5 ? 6 : 4;
+  const s_overdue = overdue === 0 ? 10 : overdue <= 1 ? 8 : overdue <= 3 ? 6 : 4;
+  const s_reopen  = 10;
+
+  const total = s_ontime * 0.35 + s_cycle * 0.25 + s_overdue * 0.25 + s_reopen * 0.15;
+  return Math.round(total * 10) / 10;
+}
+
+function ratingLabel(score) {
+  if (score === null) return "—";
+  if (score >= 9) return "Xuất sắc";
+  if (score >= 8) return "Tốt";
+  if (score >= 7) return "Khá";
+  if (score >= 5.5) return "Đạt";
+  return "Chưa đạt";
+}
+
+function ratingClasses(score) {
+  if (score === null) return "bg-gray-50 text-gray-400";
+  if (score >= 8) return "bg-green-100 text-green-700 font-semibold";
+  if (score >= 5.5) return "bg-yellow-100 text-yellow-700 font-semibold";
+  return "bg-red-100 text-red-700 font-semibold";
+}
+
+function fmtNum(v, decimals = 1) {
+  if (v === null || v === undefined) return "—";
+  return typeof v === "number" ? v.toFixed(decimals) : v;
+}
+
+function aggregateRows(rows) {
+  // rows: array of month dicts; produce annual aggregate
+  if (!rows.length) return null;
+  const totals = { total_tasks: 0, completed: 0, on_time_count: 0, late_count: 0, overdue_count: 0 };
+  let ct_sum = 0, ct_n = 0, ed_sum = 0, ed_n = 0;
+  for (const r of rows) {
+    totals.total_tasks   += r.total_tasks   ?? 0;
+    totals.completed     += r.completed     ?? 0;
+    totals.on_time_count += r.on_time_count ?? 0;
+    totals.late_count    += r.late_count    ?? 0;
+    totals.overdue_count += r.overdue_count ?? 0;
+    if (r.cycle_time_avg != null) { ct_sum += r.cycle_time_avg; ct_n++; }
+    if (r.estimated_avg  != null) { ed_sum += r.estimated_avg;  ed_n++; }
+  }
+  const cycle_time_avg = ct_n ? Math.round(ct_sum / ct_n * 10) / 10 : null;
+  const estimated_avg  = ed_n ? Math.round(ed_sum / ed_n * 10) / 10 : null;
+  const cycle_ratio    = (cycle_time_avg && estimated_avg) ? Math.round(cycle_time_avg / estimated_avg * 1000) / 1000 : null;
+  const completion_rate = totals.total_tasks > 0 ? Math.round(totals.completed / totals.total_tasks * 100 * 10) / 10 : null;
+  const on_time_rate    = totals.completed > 0   ? Math.round(totals.on_time_count / totals.completed * 100 * 10) / 10 : null;
+  return { ...totals, cycle_time_avg, estimated_avg, cycle_ratio, completion_rate, on_time_rate };
+}
+
+function TaskOverview({ year }) {
+  const [monthFilter, setMonthFilter] = useState(0); // 0 = All, 1–12 = specific month
+
+  const { data, isPending, error } = useQuery({
+    queryKey: ["task-overview", year],
+    queryFn: () => getTaskOverview(year),
+  });
+
+  const thCls = "px-2 py-1.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-200 whitespace-nowrap";
+  const tdCls = "px-2 py-1.5 text-xs text-gray-700 border-b border-gray-100";
+
+  const displayMonths = monthFilter === 0
+    ? MONTH_NAMES.map((_, i) => i + 1)
+    : [monthFilter];
+
+  if (isPending) {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 p-12 flex justify-center">
+        <div className="w-6 h-6 border-2 border-gray-300 border-t-gray-800 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">
+        {error?.response?.data?.detail || error.message || "Failed to load task overview"}
+      </div>
+    );
+  }
+
+  if (!data?.length) {
+    return <div className="text-center py-8 text-sm text-gray-400">No task data available for {year}.</div>;
+  }
+
+  // Sort by name
+  const sorted = [...data].sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <div className="space-y-4">
+      {/* Controls */}
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-gray-500 font-medium">Tháng:</span>
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            onClick={() => setMonthFilter(0)}
+            className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              monthFilter === 0 ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
+            }`}
+          >All</button>
+          {MONTH_NAMES.map((m, i) => (
+            <button
+              key={m}
+              onClick={() => setMonthFilter(i + 1)}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                monthFilter === i + 1 ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
+              }`}
+            >{m}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+        <table className="min-w-full text-xs border-collapse">
+          <thead>
+            <tr className="bg-gray-50">
+              <th className={thCls}>Nhân viên</th>
+              <th className={thCls}>Tháng</th>
+              <th className={thCls + " text-right"}>Tổng task</th>
+              <th className={thCls + " text-right"}>Hoàn thành</th>
+              <th className={thCls + " text-right"}>On-time rate</th>
+              <th className={thCls + " text-right"}>Cycle TB (ngày)</th>
+              <th className={thCls + " text-right"}>Ước tính TB</th>
+              <th className={thCls + " text-right"}>Cycle/Ước tính</th>
+              <th className={thCls + " text-right"}>Quá hạn</th>
+              <th className={thCls + " text-right"}>ĐIỂM</th>
+              <th className={thCls}>XẾP LOẠI</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((person) => {
+              const monthRows = displayMonths.map(m => ({
+                month: m,
+                data: person.months[String(m)] ?? person.months[m] ?? null,
+              }));
+              const hasData = monthRows.some(r => r.data !== null);
+              if (!hasData && monthFilter !== 0) return null;
+
+              // Annual aggregate over months with data
+              const annualRows = Object.entries(person.months)
+                .filter(([k]) => !isNaN(Number(k)))
+                .map(([, v]) => v);
+              const annual = aggregateRows(annualRows);
+              const annualScore = computeScore(annual);
+
+              const rows = monthFilter === 0
+                ? [...monthRows, { month: "Annual", data: annual }]
+                : monthRows;
+
+              return rows.map(({ month, data: row }, idx) => {
+                const score = computeScore(row);
+                const rating = ratingLabel(score);
+                const rCls = ratingClasses(score);
+                const showName = idx === 0;
+                const isAnnual = month === "Annual";
+                const monthLabel = isAnnual ? "Annual" : MONTH_NAMES[month - 1];
+
+                return (
+                  <tr
+                    key={`${person.pic_id}-${month}`}
+                    className={isAnnual ? "bg-gray-50 font-semibold" : "hover:bg-gray-50/50"}
+                  >
+                    <td className={tdCls + " font-medium text-gray-900"}>
+                      {showName ? (
+                        <div>
+                          <div>{person.name}</div>
+                          {person.open_workload > 0 && (
+                            <div className="text-[10px] text-orange-500 font-normal mt-0.5">
+                              {person.open_workload} open
+                            </div>
+                          )}
+                        </div>
+                      ) : ""}
+                    </td>
+                    <td className={tdCls + (isAnnual ? " text-gray-500 italic" : "")}>{monthLabel}</td>
+                    <td className={tdCls + " text-right"}>{row ? row.total_tasks : "—"}</td>
+                    <td className={tdCls + " text-right"}>
+                      {row ? `${row.completed} (${fmtNum(row.completion_rate)}%)` : "—"}
+                    </td>
+                    <td className={tdCls + " text-right"}>
+                      {row?.on_time_rate != null ? `${fmtNum(row.on_time_rate)}%` : "—"}
+                    </td>
+                    <td className={tdCls + " text-right"}>{fmtNum(row?.cycle_time_avg)}</td>
+                    <td className={tdCls + " text-right"}>{fmtNum(row?.estimated_avg)}</td>
+                    <td className={tdCls + " text-right"}>{fmtNum(row?.cycle_ratio, 2)}</td>
+                    <td className={tdCls + " text-right"}>{row?.overdue_count ?? "—"}</td>
+                    <td className={tdCls + " text-right font-semibold"}>{score ?? "—"}</td>
+                    <td className={tdCls}>
+                      {score !== null ? (
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] ${rCls}`}>{rating}</span>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                );
+              });
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[10px] text-gray-400">
+        Điểm = On-time rate 35% + Cycle/Ước tính 25% + Quá hạn 25% + Reopen 15% (chưa có dữ liệu reopen)
+      </p>
+    </div>
+  );
+}
+
 export default function TeamKPI() {
   const { branches, selected, selectBranch } = useBranch();
   const [role, setRole] = useState("kol");
@@ -400,10 +619,13 @@ export default function TeamKPI() {
   const branchId = selected !== "all" ? selected : null;
 
 
+  const isTaskOverview = role === "task_overview";
+
   const { data, isPending, isPlaceholderData, error } = useQuery({
     queryKey: ["team-kpi", role, year, branchId],
     queryFn: () => getTeamKpiSummary(role, year, branchId),
     placeholderData: keepPreviousData,
+    enabled: !isTaskOverview,
   });
 
   const roleMeta = ROLES.find(r => r.key === role);
@@ -460,6 +682,17 @@ export default function TeamKPI() {
             <span className={`text-xs ${role === r.key ? "text-gray-400" : "text-gray-400"}`}>· {r.label}</span>
           </button>
         ))}
+        <button
+          onClick={() => setRole("task_overview")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all border ${
+            role === "task_overview"
+              ? "bg-gray-900 text-white border-gray-900 shadow-sm"
+              : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:text-gray-900"
+          }`}
+        >
+          <span>📋</span>
+          <span>Task Overview</span>
+        </button>
       </div>
 
       {/* Branch selector */}
@@ -489,14 +722,17 @@ export default function TeamKPI() {
         </button>
       </div>
 
-      {error && (
+      {/* Task Overview tab */}
+      {role === "task_overview" && <TaskOverview year={year} />}
+
+      {role !== "task_overview" && error && (
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">
           {error?.response?.data?.detail || error.message || "Failed to load"}
         </div>
       )}
 
       {/* Summary cards row */}
-      {data && (
+      {role !== "task_overview" && data && (
         <div className={"grid grid-cols-1 sm:grid-cols-2 gap-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {/* This month ring */}
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex items-center gap-6">
@@ -554,13 +790,13 @@ export default function TeamKPI() {
       )}
 
       {/* KPI grid */}
-      {isPending && !data && (
+      {role !== "task_overview" && isPending && !data && (
         <div className="bg-white rounded-xl border border-gray-200 p-12 flex justify-center">
           <div className="w-6 h-6 border-2 border-gray-300 border-t-gray-800 rounded-full animate-spin" />
         </div>
       )}
 
-      {data && (() => {
+      {role !== "task_overview" && data && (() => {
         const visibleKpis = (data.kpis || []).filter(k => branchId ? !k.org_wide : true);
         return (
         <div className={"space-y-2 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>

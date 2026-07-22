@@ -1,4 +1,5 @@
 """Lark Base API client — fetches task records for Designer & Paid Ads KPI actuals.
+Also provides get_task_overview_yearly() for the Task Overview tab.
 
 Mirrors exactly what the Google Apps Script does:
   - Branch from 'Project' field: "[1948] Ads" -> "1948", "[Sai Gon] Ads" -> "saigon"
@@ -24,6 +25,13 @@ import requests
 from app.config import settings
 
 log = logging.getLogger(__name__)
+
+# ── PIC name mapping (record_id → display name) ───────────────────────────────
+PIC_NAME_MAP: dict[str, str] = {
+    "recuOULUU1hNZe": "Mason",
+    "recuOUM6YA5NP7": "Nora",
+    # Others will be added once debug/lark identifies them
+}
 
 _LARK_AUTH_URL    = "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal"
 _LARK_RECORDS_URL = "https://open.larksuite.com/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
@@ -472,3 +480,137 @@ def get_ads_material_yearly(year: int) -> dict[int, dict[str, dict]]:
                 "ads_material": round(counts["images"] + counts["videos"]),
             }
     return out
+
+
+# ── Task Overview cache ───────────────────────────────────────────────────────
+
+_task_overview_cache: dict = {}  # year → (fetched_at, data)
+
+
+def get_task_overview_yearly(year: int) -> dict:
+    """
+    Return per-PIC per-month task stats for the Task Overview tab.
+
+    Structure:
+      {pic_id: {month: {total_tasks, completed, on_time_count, late_count,
+                        overdue_count, cycle_time_avg, estimated_avg,
+                        cycle_ratio, completion_rate, on_time_rate},
+                "open_workload": int}}
+
+    Months are int (1–12).  open_workload is a special key (not a month dict).
+    """
+    cached = _task_overview_cache.get(year)
+    if cached and (time.time() - cached[0]) < _LARK_TTL:
+        return cached[1]
+
+    import datetime as _dt
+    now_utc = _dt.datetime.now(tz=timezone.utc)
+    current_year_month = (now_utc.year, now_utc.month)
+
+    records = _fetch_all_records(cutoff_ms=None)  # fetch all, we'll filter by deadline year
+
+    # agg[pic_id][month] → running totals
+    from collections import defaultdict
+    agg: dict[str, dict[int, dict]] = defaultdict(lambda: defaultdict(lambda: {
+        "total_tasks": 0,
+        "completed": 0,
+        "on_time_count": 0,
+        "late_count": 0,
+        "overdue_count": 0,
+        "cycle_times": [],
+        "estimated_days": [],
+    }))
+    open_workload: dict[str, int] = defaultdict(int)
+
+    for rec in records:
+        # Extract PIC id
+        pic_raw = rec.get("PIC")
+        if isinstance(pic_raw, dict):
+            ids = pic_raw.get("link_record_ids", [])
+        else:
+            ids = []
+        pic_id: Optional[str] = ids[0] if ids else None
+        if not pic_id:
+            continue
+
+        status = str(rec.get("Status") or "").lower().strip()
+        is_completed = status == "completed"
+
+        # Open workload: tasks not completed regardless of year
+        if not is_completed:
+            open_workload[pic_id] += 1
+
+        # Deadline-based month grouping
+        ym = _parse_month_year(rec.get("Deadline"))
+        if not ym or ym[0] != year:
+            continue
+        _, month = ym
+
+        bucket = agg[pic_id][month]
+        bucket["total_tasks"] += 1
+
+        if is_completed:
+            bucket["completed"] += 1
+            on_time_val = str(rec.get("On-time vs Original") or "").strip()
+            if on_time_val == "On-time":
+                bucket["on_time_count"] += 1
+            else:
+                bucket["late_count"] += 1
+        else:
+            # Overdue: deadline in a past month and still not completed
+            if (year, month) < current_year_month:
+                bucket["overdue_count"] += 1
+
+        # Cycle time
+        ct_raw = rec.get("Cycle Time")
+        ct: Optional[float] = None
+        if isinstance(ct_raw, (int, float)) and ct_raw > 0:
+            ct = float(ct_raw)
+        elif isinstance(ct_raw, dict):
+            v = ct_raw.get("value") or ct_raw.get("number")
+            if isinstance(v, (int, float)) and v > 0:
+                ct = float(v)
+        if ct is not None:
+            bucket["cycle_times"].append(ct)
+
+        # Estimated days
+        ed_raw = rec.get("Estimated Days")
+        ed: Optional[float] = None
+        if isinstance(ed_raw, (int, float)) and ed_raw > 0:
+            ed = float(ed_raw)
+        elif isinstance(ed_raw, dict):
+            v = ed_raw.get("value") or ed_raw.get("number")
+            if isinstance(v, (int, float)) and v > 0:
+                ed = float(v)
+        if ed is not None:
+            bucket["estimated_days"].append(ed)
+
+    # Build final output
+    result: dict = {}
+    for pic_id, months in agg.items():
+        result[pic_id] = {}
+        for month, b in months.items():
+            ct_vals = b["cycle_times"]
+            ed_vals = b["estimated_days"]
+            ct_avg = round(sum(ct_vals) / len(ct_vals), 2) if ct_vals else None
+            ed_avg = round(sum(ed_vals) / len(ed_vals), 2) if ed_vals else None
+            cycle_ratio = round(ct_avg / ed_avg, 3) if (ct_avg and ed_avg) else None
+            total = b["total_tasks"]
+            comp = b["completed"]
+            on_time = b["on_time_count"]
+            result[pic_id][month] = {
+                "total_tasks": total,
+                "completed": comp,
+                "on_time_count": on_time,
+                "late_count": b["late_count"],
+                "overdue_count": b["overdue_count"],
+                "cycle_time_avg": ct_avg,
+                "estimated_avg": ed_avg,
+                "cycle_ratio": cycle_ratio,
+                "completion_rate": round(comp / total * 100, 1) if total > 0 else None,
+                "on_time_rate": round(on_time / comp * 100, 1) if comp > 0 else None,
+            }
+        result[pic_id]["open_workload"] = open_workload.get(pic_id, 0)
+
+    _task_overview_cache[year] = (time.time(), result)
+    return result

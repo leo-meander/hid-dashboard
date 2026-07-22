@@ -105,6 +105,28 @@ def debug_lark():
 
 # ── Roles metadata ────────────────────────────────────────────────────────────
 
+@router.get("/task-overview")
+def get_task_overview(year: int = Query(2026)):
+    """Return per-PIC per-month task stats for the Task Overview tab."""
+    from app.services.lark_service import get_task_overview_yearly, PIC_NAME_MAP
+    try:
+        data = get_task_overview_yearly(year)
+    except Exception as exc:
+        log.exception("task_overview error year=%s", year)
+        raise HTTPException(500, str(exc))
+
+    result = []
+    for pic_id, months in data.items():
+        open_workload = months.pop("open_workload", 0)
+        result.append({
+            "pic_id": pic_id,
+            "name": PIC_NAME_MAP.get(pic_id, f"User {pic_id[-4:]}"),
+            "months": months,
+            "open_workload": open_workload,
+        })
+    return {"success": True, "data": result, "error": None}
+
+
 @router.get("/roles")
 def get_roles():
     roles = []
