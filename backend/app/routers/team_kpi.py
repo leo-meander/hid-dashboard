@@ -34,6 +34,25 @@ VALID_ROLES = set(ROLE_META.keys())
 
 # ── Lark debug ────────────────────────────────────────────────────────────────
 
+@router.get("/debug/kol-targets")
+def debug_kol_targets(year: int = Query(2026), month: int = Query(7)):
+    """Expose raw KOL Engine targets API response for one month."""
+    from app.services.kol_engine import fetch_kol_targets
+    from app.config import settings
+    data = fetch_kol_targets(
+        base_url=settings.KOL_ENGINE_URL,
+        org_slug=settings.KOL_TARGETS_ORG_SLUG,
+        api_key=settings.KOL_PUBLIC_API_KEY,
+        year=year,
+        month=month,
+    )
+    if data is None:
+        return {"success": False, "data": None, "error": "fetch returned None — check config/creds"}
+    branches = data.get("branches") or []
+    sample = branches[0] if branches else {}
+    return {"success": True, "data": {"branch_keys": list(sample.keys()), "first_branch": sample, "branch_count": len(branches)}, "error": None}
+
+
 @router.get("/debug/lark")
 def debug_lark():
     """Test Lark connectivity: auth → record fetch → field parse."""
