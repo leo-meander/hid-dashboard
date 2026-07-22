@@ -360,12 +360,6 @@ export default function TeamKPI() {
 
   const branchId = selected !== "all" ? selected : null;
 
-  // Auto-select first branch on mount if "all" is active (all is low-priority here)
-  useEffect(() => {
-    if (selected === "all" && branches?.length) {
-      selectBranch(branches[0].id);
-    }
-  }, [branches]);
 
   const { data, isPending, isPlaceholderData, error } = useQuery({
     queryKey: ["team-kpi", role, year, branchId],
