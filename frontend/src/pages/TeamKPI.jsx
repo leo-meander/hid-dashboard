@@ -244,19 +244,33 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     {kpi.org_wide && (
                       <span className="text-[10px] text-blue-500 font-normal">org-wide</span>
                     )}
+                    {kpi.computed_target && (
+                      <span className="text-[10px] text-gray-400 font-normal">= spend × ROAS target</span>
+                    )}
                   </td>
                   <td className="px-2 py-1.5 text-center text-gray-400" rowSpan={2}>{kpi.unit}</td>
                   <td className="px-2 py-1.5 text-center">
-                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-yellow-100 text-yellow-700">T</span>
+                    <span
+                      className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-yellow-100 text-yellow-700"
+                      title={kpi.computed_target ? "Computed: actual spend × ROAS target" : undefined}
+                    >T</span>
                   </td>
                   {kpi.monthly.map(m => (
                     <td key={m.month} className="px-1 py-1.5 bg-yellow-50">
-                      <EditableCell
-                        value={m.target}
-                        disabled={m.is_future}
-                        onSave={val => saveTarget(kpi.key, m.month, val)}
-                        placeholder="—"
-                      />
+                      {kpi.computed_target ? (
+                        <div className="text-center text-gray-600 font-medium text-xs">
+                          {m.target !== null && m.target !== undefined
+                            ? m.target.toLocaleString(undefined, { maximumFractionDigits: kpi.decimals ?? 1 })
+                            : <span className="text-gray-300">—</span>}
+                        </div>
+                      ) : (
+                        <EditableCell
+                          value={m.target}
+                          disabled={m.is_future}
+                          onSave={val => saveTarget(kpi.key, m.month, val)}
+                          placeholder="—"
+                        />
+                      )}
                     </td>
                   ))}
                   <td className="px-2 py-1.5 text-center text-gray-400 font-medium">

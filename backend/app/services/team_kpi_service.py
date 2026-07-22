@@ -44,7 +44,7 @@ KPI_DEFS: dict[str, list[dict]] = {
     "paid_ads": [
         {"key": "ads_material",    "label": "Variation Ads Material", "unit": "count",  "org_wide": False, "higher_is_better": True},
         {"key": "roas",            "label": "ROAS",                   "unit": "×",      "org_wide": False, "higher_is_better": True,  "decimals": 2},
-        {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True, "no_target": True},
+        {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True, "computed_target": "spend_x_roas"},
     ],
     "designer": [
         {"key": "design_assets",   "label": "Design Assets Completed","unit": "designs","org_wide": False, "higher_is_better": True},
@@ -516,6 +516,8 @@ def build_monthly_summary(
 
     targets_map: dict[tuple, float] = {}        # (kpi_key, month) → target value (summed for All)
     manual_actuals_map: dict[tuple, float] = {} # (kpi_key, month) → manual actual value
+    # Per-branch targets for computed-target KPIs that need branch-level data in All view
+    per_branch_targets_map: dict[tuple, dict[str, float]] = {}  # (kpi_key, month) → {branch_key: value}
     for row in q.all():
         if row.target_value is None:
             continue
@@ -531,6 +533,10 @@ def build_monthly_summary(
             if all_branches_view and row.branch_id is not None:
                 # sum per-branch targets for All view
                 targets_map[key] = targets_map.get(key, 0.0) + raw_val
+                # also keep per-branch copy for computed-target lookups
+                bk = BRANCH_UUID_TO_KEY.get(str(row.branch_id))
+                if bk:
+                    per_branch_targets_map.setdefault(key, {})[bk] = raw_val
             elif all_branches_view and row.branch_id is None:
                 # org-wide target (e.g. kol_invited) — use as-is, don't double-add
                 targets_map.setdefault(key, raw_val)
@@ -594,13 +600,44 @@ def build_monthly_summary(
         # Unit: revenue KPIs show branch-native currency; others use static unit
         kpi_unit = currency_display["unit"] if is_revenue else (defn.get("unit_display") or defn["unit"])
 
-        kpi_auto   = auto and defn.get("auto", True)   # per-KPI override via auto: False
-        no_target  = defn.get("no_target", False)       # display-only: suppress target editing
+        kpi_auto          = auto and defn.get("auto", True)   # per-KPI override via auto: False
+        no_target         = defn.get("no_target", False)       # display-only: suppress target editing
+        computed_target_t = defn.get("computed_target")        # computed target type (e.g. "spend_x_roas")
 
         monthly = []
         for m in range(1, 13):
             is_future = (m > cur_month)
-            target = None if no_target else targets_map.get((kpi_key, m))
+
+            if no_target:
+                target = None
+            elif computed_target_t == "spend_x_roas" and not is_future:
+                # Revenue target = actual ads spend × ROAS target for that month
+                target = None
+                if all_branches_view:
+                    per_branch_roas = per_branch_targets_map.get(("roas", m), {})
+                    total_rev_vnd = 0.0
+                    found = False
+                    for bk in _ALL_BRANCH_KEYS:
+                        spend_raw = actuals_yearly.get(m, {}).get(bk, {}).get("ads_spend")
+                        roas_tgt_bk = per_branch_roas.get(bk)
+                        if spend_raw is not None and roas_tgt_bk is not None:
+                            total_rev_vnd += float(spend_raw) * float(roas_tgt_bk)
+                            found = True
+                    if found and scale:
+                        target = round(total_rev_vnd / scale, decimals or 1)
+                else:
+                    spend_raw = actuals_yearly.get(m, {}).get(branch_key or "", {}).get("ads_spend")
+                    roas_tgt = targets_map.get(("roas", m))
+                    if spend_raw is not None and roas_tgt is not None:
+                        rev_target_vnd = float(spend_raw) * float(roas_tgt)
+                        if is_revenue and native_currency != "VND" and vnd_to_native_rate:
+                            target = round(rev_target_vnd / vnd_to_native_rate, decimals)
+                        elif scale:
+                            target = round(rev_target_vnd / scale, decimals or 1)
+            elif computed_target_t:
+                target = None  # future month or unknown computed type
+            else:
+                target = targets_map.get((kpi_key, m))
 
             # Actual: from upstream API (auto roles) or manual DB entry (non-auto)
             actual = None
@@ -661,6 +698,7 @@ def build_monthly_summary(
             "org_wide": org_wide,
             "auto_actuals": kpi_auto,
             "no_target": no_target,
+            "computed_target": computed_target_t is not None,
             "monthly": monthly,
         })
 
