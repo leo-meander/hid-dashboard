@@ -556,7 +556,7 @@ def build_monthly_summary(
                         vnd_val = raw_val * 1_000_000  # mil VND → VND
                     else:
                         rate = get_cached_rate(bk_curr, "VND") or 1.0
-                        vnd_val = raw_val / rate  # native → VND
+                        vnd_val = raw_val * rate  # native × VND/native → VND
                     sum_val = vnd_val / 1_000_000  # back to mil VND for display
                 else:
                     sum_val = raw_val
