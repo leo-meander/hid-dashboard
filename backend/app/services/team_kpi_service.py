@@ -192,7 +192,7 @@ def get_kol_actuals_yearly_db(
                     return float(v.get("actual") if isinstance(v, dict) else (v or 0))
                 out[m][branch_key]["kol_collaborated"] = _v("collaborated")
                 out[m][branch_key]["kol_posted"]       = _v("posted")
-                out[m][branch_key]["kol_ads_collab"]   = _v("ads_collab")
+                out[m][branch_key]["kol_ads_collab"]   = _v("ads_allowed")
     except Exception as exc:
         log.warning("kol targets API merge failed (counts will be 0): %s", exc)
 
