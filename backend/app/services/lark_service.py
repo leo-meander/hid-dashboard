@@ -28,9 +28,15 @@ log = logging.getLogger(__name__)
 
 # ── PIC name mapping (record_id → display name) ───────────────────────────────
 PIC_NAME_MAP: dict[str, str] = {
-    "recuOULUU1hNZe": "Mason",
-    "recuOUM6YA5NP7": "Nora",
-    # Others will be added once debug/lark identifies them
+    "recuOULUU1hNZe": "Mason",      # 141 tasks — Ads
+    "recuOUM6YA5NP7": "Nora",       # 29 tasks  — Design
+    "recvfBvofwVG5z": "Mel",        # 117 tasks — KOL/XHS social
+    "recuOUECycRmpy": "Nuha",       # 61 tasks  — PM (CVs, probation reviews)
+    "recuGw12iUnRNJ": "Kin",        # 40 tasks  — Data/CRM (Forecast, OTA tracking)
+    # Unidentified (kept as "User XXXX" in UI until confirmed):
+    # "recv6JxUlC2N9p": ???  81 tasks — KOL videos + Image Design (Mel alt? other?)
+    # "recuE05GOBewVj": ???  14 tasks — Bi-weekly Meeting Update
+    # "recuJabgFnVMiH": ???   2 tasks — PMGC, Design post
 }
 
 _LARK_AUTH_URL    = "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal"
