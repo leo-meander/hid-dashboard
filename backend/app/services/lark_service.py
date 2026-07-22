@@ -90,9 +90,17 @@ def _parse_branch_from_project(project_val) -> Optional[str]:
 
 
 def _parse_month_year(val) -> Optional[tuple[int, int]]:
-    """Parse 'Date Created' field (ms timestamp or ISO string) → (year, month)."""
+    """Parse date field (ms timestamp, ISO string, or Lark date dict) → (year, month)."""
     if val is None:
         return None
+    # Lark date fields return {"date": "2026-07-15"} or {"timestamp": <ms>}
+    if isinstance(val, dict):
+        if val.get("date"):
+            val = val["date"]
+        elif val.get("timestamp"):
+            val = val["timestamp"]
+        else:
+            return None
     if isinstance(val, (int, float)):
         try:
             dt = datetime.fromtimestamp(val / 1000, tz=timezone.utc)
@@ -412,7 +420,7 @@ def get_designer_actuals_yearly(year: int, nora_name: str = "Nora") -> dict[int,
         if status != "completed":
             continue
 
-        ym = _parse_month_year(rec.get("Date Created"))
+        ym = _parse_month_year(rec.get("Deadline"))
         if not ym or ym[0] != year:
             continue
         _, month = ym
