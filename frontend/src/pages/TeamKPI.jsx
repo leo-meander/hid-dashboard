@@ -337,7 +337,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                                   ? m.actual.toLocaleString(undefined, { maximumFractionDigits: kpi.decimals ?? 0 })
                                   : m.actual}
                               </span>
-                              {m.pct !== null && m.has_target && (
+                              {m.pct !== null && m.has_target && kpi.unit !== "%" && (
                                 <span className={`text-[10px] px-1 rounded ${cls ? cls.badge : ""}`}>{m.pct}%</span>
                               )}
                             </div>
@@ -361,7 +361,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                               onSave={val => saveActual(kpi.key, m.month, val)}
                               placeholder="—"
                             />
-                            {m.pct !== null && m.actual !== null && (
+                            {m.pct !== null && m.actual !== null && kpi.unit !== "%" && (
                               <span className={`text-[10px] px-1 rounded ${cls ? cls.badge : ""}`}>{m.pct}%</span>
                             )}
                           </div>
