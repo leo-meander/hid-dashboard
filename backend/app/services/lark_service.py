@@ -411,7 +411,7 @@ def _get_yearly_agg(year: int) -> dict:
         if status != "completed":
             continue
 
-        ym = _parse_month_year(rec.get("Date Created"))
+        ym = _parse_month_year(rec.get("Deadline"))
         if not ym or ym[0] != year:
             continue
 
@@ -455,7 +455,7 @@ def get_designer_actuals_yearly(year: int, nora_name: str = "Nora") -> dict[int,
         if status != "completed":
             continue
 
-        ym = _parse_month_year(rec.get("Date Created"))
+        ym = _parse_month_year(rec.get("Deadline"))
         if not ym or ym[0] != year:
             continue
         _, month = ym
