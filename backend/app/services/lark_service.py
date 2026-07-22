@@ -558,11 +558,16 @@ def get_task_overview_yearly(year: int) -> dict:
         if is_completed:
             bucket["completed"] += 1
             raw_ot = rec.get("On-time vs Original") or ""
-            # Field may be a string, list of dicts, or dict with "value"
-            if isinstance(raw_ot, list):
+            # Field format: {'type': 1, 'value': [{'text': 'On-time', 'type': 'text'}]}
+            if isinstance(raw_ot, dict):
+                val_list = raw_ot.get("value", [])
+                if isinstance(val_list, list) and val_list:
+                    first = val_list[0]
+                    on_time_val = first.get("text", "") if isinstance(first, dict) else str(first)
+                else:
+                    on_time_val = ""
+            elif isinstance(raw_ot, list):
                 on_time_val = raw_ot[0].get("text", "") if raw_ot and isinstance(raw_ot[0], dict) else str(raw_ot[0]) if raw_ot else ""
-            elif isinstance(raw_ot, dict):
-                on_time_val = raw_ot.get("value", raw_ot.get("text", ""))
             else:
                 on_time_val = str(raw_ot)
             on_time_val = on_time_val.strip().lower().replace("-", " ").replace("_", " ")
