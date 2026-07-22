@@ -49,7 +49,7 @@ KPI_DEFS: dict[str, list[dict]] = {
     "designer": [
         {"key": "design_assets",   "label": "Design Assets Completed","unit": "designs","org_wide": False, "higher_is_better": True},
         {"key": "videos_delivered","label": "Videos Delivered",       "unit": "videos", "org_wide": False, "higher_is_better": True},
-        {"key": "delivery_rate",   "label": "On-Time Delivery Rate",  "unit": "%",      "org_wide": True,  "higher_is_better": True,  "decimals": 1, "is_pct": True},
+        {"key": "delivery_rate",   "label": "On-Time Delivery Rate",  "unit": "%",      "org_wide": True,  "higher_is_better": True,  "decimals": 1, "is_pct": True, "auto": False},
         {"key": "design_ideas",    "label": "Design Ideas",           "unit": "ideas",  "org_wide": False, "higher_is_better": True,  "auto": False},
     ],
     "crm": [
@@ -520,9 +520,8 @@ def build_monthly_summary(
         )
     # All view: load every branch + org-wide so we can sum per-branch targets
 
-    # For is_pct KPIs in the PM role, targets may have been entered as fractions
-    # (e.g. 0.9 = 90%) instead of percentage values (90). Normalize on load.
-    _pct_keys = {d["key"] for d in defs if d.get("is_pct")} if role_key == "pm" else set()
+    # For is_pct KPIs, targets may have been entered as fractions (e.g. 0.9 = 90%). Normalize on load.
+    _pct_keys = {d["key"] for d in defs if d.get("is_pct")}
     # CRM revenue targets entered in bil VND (e.g. 0.056) instead of mil VND (56). Normalize on load.
     _bil_vnd_keys = {"crm_revenue"} if role_key == "crm" else set()
     # Revenue KPI keys — targets stored in native currency units, need FX conversion for All view
