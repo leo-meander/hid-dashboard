@@ -53,6 +53,34 @@ def debug_kol_targets(year: int = Query(2026), month: int = Query(7)):
     return {"success": True, "data": {"branch_keys": list(sample.keys()), "first_branch": sample, "branch_count": len(branches)}, "error": None}
 
 
+@router.get("/debug/nora-tasks")
+def debug_nora_tasks():
+    """Show raw Deadline field values from Nora's completed tasks."""
+    from app.services.lark_service import _fetch_all_records, _NORA_PIC_ID
+    records = _fetch_all_records()
+    samples = []
+    for rec in records:
+        pic_raw = rec.get("PIC") or {}
+        ids = pic_raw.get("link_record_ids", []) if isinstance(pic_raw, dict) else []
+        if _NORA_PIC_ID not in ids:
+            continue
+        status = str(rec.get("Status") or "").lower().strip()
+        deadline_raw = rec.get("Deadline")
+        task_raw = rec.get("Task")
+        task_text = ""
+        if isinstance(task_raw, list) and task_raw:
+            task_text = task_raw[0].get("text", "")[:40] if isinstance(task_raw[0], dict) else str(task_raw[0])[:40]
+        samples.append({
+            "task": task_text,
+            "status": status,
+            "deadline_raw": repr(deadline_raw)[:80],
+            "deadline_type": type(deadline_raw).__name__,
+        })
+        if len(samples) >= 20:
+            break
+    return {"success": True, "data": {"nora_task_count": len(samples), "samples": samples}, "error": None}
+
+
 @router.get("/debug/lark")
 def debug_lark():
     """Test Lark connectivity: auth → record fetch → field parse."""
