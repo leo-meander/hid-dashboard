@@ -223,7 +223,10 @@ def get_task_overview(year: int = Query(2026)):
             if month_key not in m["months"]:
                 m["months"][month_key] = {k: 0 for k in stats}
             for k, v in stats.items():
-                m["months"][month_key][k] = m["months"][month_key].get(k, 0) + v
+                if v is None:
+                    continue
+                prev = m["months"][month_key].get(k)
+                m["months"][month_key][k] = (prev or 0) + v
 
     result = [v for v in merged.values() if not v["name"].startswith("User ")]
     return {"success": True, "data": result, "error": None}
