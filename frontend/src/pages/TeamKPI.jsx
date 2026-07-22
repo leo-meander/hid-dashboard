@@ -32,6 +32,17 @@ const COLOR_CLASSES = {
   red:    { bg: "bg-red-50",    text: "text-red-700",    badge: "bg-red-100 text-red-700",    ring: "#ef4444" },
 };
 
+// ── Per-KPI formula tooltips ──────────────────────────────────────────────────
+
+const KPI_TOOLTIPS = {
+  delivery_rate:        "On-Time Delivery Rate — Nora's completed tasks with Deadline in that month where 'On-time vs Original' = On-time. Formula: on-time tasks ÷ total completed tasks × 100. Source: Lark Base.",
+  task_completion_rate: "Team Task Completion Rate — all tasks across the team with a Deadline in that month, regardless of assignee. Formula: completed tasks ÷ total tasks due × 100. Source: Lark Base.",
+  branch_kpi_rate:      "Branch KPI Achievement Rate — actual revenue (Cloudbeds or manual override, after deductions) ÷ target revenue × 100. Mirrors the Revenue KPI page formula.",
+  budget_utilisation:   "Marketing Budget Utilisation — total actual spend (Paid Ads + KOL + CRM) ÷ total allocated budget × 100 for the branch and month.",
+  roas:                 "Return on Ad Spend — Revenue from Paid Ads ÷ Ad Spend. In the All view, this is a weighted average: total revenue across all branches ÷ total spend across all branches.",
+  crm_revenue:          "Revenue attributed to CRM campaigns in that month. Enter targets in mil VND (e.g. enter 56 for 56 million VND).",
+};
+
 // ── Tooltip ───────────────────────────────────────────────────────────────────
 
 function Tooltip({ text, children }) {
@@ -240,7 +251,14 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                 {!kpi.no_target && (
                 <tr className={`border-t border-gray-100 ${ki > 0 ? "border-t-2 border-gray-200" : ""}`}>
                   <td className="sticky left-0 bg-white px-4 py-1.5 font-semibold text-gray-800 border-r border-gray-200 z-10" rowSpan={2}>
-                    <div>{kpi.label}</div>
+                    <div className="flex items-center gap-1">
+                      {kpi.label}
+                      {KPI_TOOLTIPS[kpi.key] && (
+                        <Tooltip text={KPI_TOOLTIPS[kpi.key]}>
+                          <span className="text-[10px] text-gray-400 cursor-default">ⓘ</span>
+                        </Tooltip>
+                      )}
+                    </div>
                     {kpi.org_wide && (
                       <span className="text-[10px] text-blue-500 font-normal">org-wide</span>
                     )}
@@ -286,7 +304,14 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                   {kpi.no_target && (
                     <>
                       <td className="sticky left-0 bg-white px-4 py-1.5 font-semibold text-gray-800 border-r border-gray-200 z-10">
-                        <div>{kpi.label}</div>
+                        <div className="flex items-center gap-1">
+                          {kpi.label}
+                          {KPI_TOOLTIPS[kpi.key] && (
+                            <Tooltip text={KPI_TOOLTIPS[kpi.key]}>
+                              <span className="text-[10px] text-gray-400 cursor-default">ⓘ</span>
+                            </Tooltip>
+                          )}
+                        </div>
                         {kpi.org_wide && <span className="text-[10px] text-blue-500 font-normal">org-wide</span>}
                       </td>
                       <td className="px-2 py-1.5 text-center text-gray-400">{kpi.unit}</td>

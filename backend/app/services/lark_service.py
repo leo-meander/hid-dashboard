@@ -394,12 +394,13 @@ def get_designer_actuals_yearly(year: int, nora_name: str = "Nora") -> dict[int,
 
 def get_delivery_rate_yearly(year: int, pic_name: str = "Nora") -> dict[int, dict[str, dict]]:
     """
-    Return {month: {branch_key: {delivery_rate}}}
-    delivery_rate = % of completed tasks assigned to pic_name with Deadline in that
-    month where 'On-time vs Original' == 'On-time'.
+    Return {month: {'all': {delivery_rate}}}
+    delivery_rate = % of pic_name's completed tasks (with Deadline in that month)
+    where 'On-time vs Original' == 'On-time'. Reported as org-wide (no branch split)
+    since Nora works across all branches.
     """
     records = _fetch_all_records()
-    counts: dict[tuple, dict] = {}  # (month, branch_key) → {on_time, total}
+    counts: dict[int, dict] = {}  # month → {on_time, total}
 
     for rec in records:
         pic_val = rec.get("PIC") or ""
@@ -416,23 +417,17 @@ def get_delivery_rate_yearly(year: int, pic_name: str = "Nora") -> dict[int, dic
             continue
         _, month = ym
 
-        project = _resolve_project(rec.get("Project"))
-        branch_key = _parse_branch_from_project(project)
-        if not branch_key:
-            continue
-
-        key = (month, branch_key)
-        if key not in counts:
-            counts[key] = {"on_time": 0, "total": 0}
-        counts[key]["total"] += 1
+        if month not in counts:
+            counts[month] = {"on_time": 0, "total": 0}
+        counts[month]["total"] += 1
         on_time_val = str(rec.get("On-time vs Original") or "").strip().lower()
         if on_time_val == "on-time":
-            counts[key]["on_time"] += 1
+            counts[month]["on_time"] += 1
 
     out: dict[int, dict[str, dict]] = {}
-    for (month, branch_key), c in counts.items():
+    for month, c in counts.items():
         rate = round(c["on_time"] / c["total"] * 100, 1) if c["total"] > 0 else None
-        out.setdefault(month, {})[branch_key] = {"delivery_rate": rate}
+        out[month] = {"all": {"delivery_rate": rate}}
     return out
 
 

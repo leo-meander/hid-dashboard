@@ -49,7 +49,7 @@ KPI_DEFS: dict[str, list[dict]] = {
     "designer": [
         {"key": "design_assets",   "label": "Design Assets Completed","unit": "designs","org_wide": False, "higher_is_better": True},
         {"key": "videos_delivered","label": "Videos Delivered",       "unit": "videos", "org_wide": False, "higher_is_better": True},
-        {"key": "delivery_rate",   "label": "On-Time Delivery Rate",  "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True},
+        {"key": "delivery_rate",   "label": "On-Time Delivery Rate",  "unit": "%",      "org_wide": True,  "higher_is_better": True,  "decimals": 1, "is_pct": True},
         {"key": "design_ideas",    "label": "Design Ideas",           "unit": "ideas",  "org_wide": False, "higher_is_better": True,  "auto": False},
     ],
     "crm": [
