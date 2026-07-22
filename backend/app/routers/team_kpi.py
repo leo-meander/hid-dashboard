@@ -126,11 +126,13 @@ def get_task_overview(year: int = Query(2026)):
     result = []
     for pic_id, months in data.items():
         open_workload = months.pop("open_workload", 0)
+        no_deadline_count = months.pop("no_deadline_count", 0)
         result.append({
             "pic_id": pic_id,
             "name": PIC_NAME_MAP.get(pic_id, f"User {pic_id[-4:]}"),
             "months": months,
             "open_workload": open_workload,
+            "no_deadline_count": no_deadline_count,
         })
     return {"success": True, "data": result, "error": None}
 

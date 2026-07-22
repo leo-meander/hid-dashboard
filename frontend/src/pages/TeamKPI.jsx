@@ -517,7 +517,7 @@ function TaskOverview({ year }) {
     });
     const rows = Object.entries(p.months).filter(([k]) => !isNaN(Number(k))).map(([, v]) => v);
     const agg = aggregateRows(rows);
-    return { name: p.name, monthScores, agg, score: computeScore(agg), open: p.open_workload };
+    return { name: p.name, monthScores, agg, score: computeScore(agg), open: p.open_workload, noDeadline: p.no_deadline_count ?? 0 };
   });
 
   // Score → heatmap bg color
@@ -665,6 +665,12 @@ function TaskOverview({ year }) {
                 </span>
               )}
               <div className="text-[10px] text-gray-400">{d.agg?.total_tasks ?? 0} tasks · {d.open} open</div>
+              {d.noDeadline > 0 && (
+                <div title={`${d.noDeadline} open task(s) have no deadline set — please add a deadline in Lark so they appear in the monthly breakdown.`}
+                  className="flex items-center gap-1 px-2 py-0.5 bg-red-50 border border-red-200 rounded-full text-[10px] text-red-600 font-medium cursor-help">
+                  ⚠ {d.noDeadline} no deadline
+                </div>
+              )}
             </div>
           );
         })}

@@ -527,6 +527,7 @@ def get_task_overview_yearly(year: int) -> dict:
         "estimated_days": [],
     }))
     open_workload: dict[str, int] = defaultdict(int)
+    no_deadline: dict[str, int] = defaultdict(int)
 
     for rec in records:
         # Extract PIC id
@@ -548,7 +549,12 @@ def get_task_overview_yearly(year: int) -> dict:
 
         # Deadline-based month grouping
         ym = _parse_month_year(rec.get("Deadline"))
-        if not ym or ym[0] != year:
+        if not ym:
+            # No deadline set — count as missing
+            if not is_completed:
+                no_deadline[pic_id] += 1
+            continue
+        if ym[0] != year:
             continue
         _, month = ym
 
@@ -630,6 +636,7 @@ def get_task_overview_yearly(year: int) -> dict:
                 "on_time_rate": round(on_time / comp * 100, 1) if comp > 0 else None,
             }
         result[pic_id]["open_workload"] = open_workload.get(pic_id, 0)
+        result[pic_id]["no_deadline_count"] = no_deadline.get(pic_id, 0)
 
     _task_overview_cache[year] = (time.time(), result)
     return result
