@@ -395,6 +395,19 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
 
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
+// Mini bar chart SVG
+function MiniBar({ value, max, color = "#6366f1" }) {
+  const pct = max > 0 ? Math.min(value / max, 1) : 0;
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="w-16 h-2 bg-gray-100 rounded-full overflow-hidden flex-shrink-0">
+        <div className="h-full rounded-full" style={{ width: `${pct * 100}%`, backgroundColor: color }} />
+      </div>
+      <span className="text-xs text-gray-700 tabular-nums">{value}</span>
+    </div>
+  );
+}
+
 function computeScore(row) {
   if (!row) return null;
   const on_time_rate = row.on_time_rate ?? 0;
@@ -412,16 +425,18 @@ function computeScore(row) {
 
 function ratingLabel(score) {
   if (score === null) return "—";
-  if (score >= 9) return "Xuất sắc";
-  if (score >= 8) return "Tốt";
-  if (score >= 7) return "Khá";
-  if (score >= 5.5) return "Đạt";
-  return "Chưa đạt";
+  if (score >= 9) return "Excellent";
+  if (score >= 8) return "Good";
+  if (score >= 7) return "Fair";
+  if (score >= 5.5) return "Pass";
+  return "Fail";
 }
 
 function ratingClasses(score) {
   if (score === null) return "bg-gray-50 text-gray-400";
-  if (score >= 8) return "bg-green-100 text-green-700 font-semibold";
+  if (score >= 9) return "bg-green-100 text-green-700 font-semibold";
+  if (score >= 8) return "bg-emerald-100 text-emerald-700 font-semibold";
+  if (score >= 7) return "bg-blue-100 text-blue-700 font-semibold";
   if (score >= 5.5) return "bg-yellow-100 text-yellow-700 font-semibold";
   return "bg-red-100 text-red-700 font-semibold";
 }
@@ -455,18 +470,15 @@ function aggregateRows(rows) {
 
 function TaskOverview({ year }) {
   const [monthFilter, setMonthFilter] = useState(0); // 0 = All, 1–12 = specific month
+  const [picFilter, setPicFilter] = useState("all"); // "all" or pic_id
 
   const { data, isPending, error } = useQuery({
     queryKey: ["task-overview", year],
     queryFn: () => getTaskOverview(year),
   });
 
-  const thCls = "px-2 py-1.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-200 whitespace-nowrap";
-  const tdCls = "px-2 py-1.5 text-xs text-gray-700 border-b border-gray-100";
-
-  const displayMonths = monthFilter === 0
-    ? MONTH_NAMES.map((_, i) => i + 1)
-    : [monthFilter];
+  const thCls = "px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-200 whitespace-nowrap";
+  const tdCls = "px-3 py-2 text-xs text-gray-700 border-b border-gray-100";
 
   if (isPending) {
     return (
@@ -488,53 +500,159 @@ function TaskOverview({ year }) {
     return <div className="text-center py-8 text-sm text-gray-400">No task data available for {year}.</div>;
   }
 
-  // Sort by name
-  const sorted = [...data].sort((a, b) => a.name.localeCompare(b.name));
+  // Sort by name; unknown PIDs ("User XXXX") go last
+  const allPeople = [...data].sort((a, b) => {
+    const aUnk = a.name.startsWith("User ");
+    const bUnk = b.name.startsWith("User ");
+    if (aUnk !== bUnk) return aUnk ? 1 : -1;
+    return a.name.localeCompare(b.name);
+  });
+
+  const filtered = picFilter === "all" ? allPeople : allPeople.filter(p => p.pic_id === picFilter);
+  const displayMonths = monthFilter === 0 ? MONTH_NAMES.map((_, i) => i + 1) : [monthFilter];
+
+  // ── Chart data: per-person annual aggregates ───────────────────────────────
+  const chartData = allPeople.map(p => {
+    const rows = Object.entries(p.months).filter(([k]) => !isNaN(Number(k))).map(([, v]) => v);
+    const agg = aggregateRows(rows);
+    return { name: p.name.startsWith("User ") ? p.pic_id.slice(-6) : p.name, agg, score: computeScore(agg), open: p.open_workload };
+  }).filter(d => d.agg);
+
+  const maxTasks = Math.max(...chartData.map(d => d.agg?.total_tasks ?? 0), 1);
+
+  const unknownPeople = allPeople.filter(p => p.name.startsWith("User "));
 
   return (
-    <div className="space-y-4">
-      {/* Controls */}
-      <div className="flex items-center gap-3">
-        <span className="text-xs text-gray-500 font-medium">Tháng:</span>
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            onClick={() => setMonthFilter(0)}
-            className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-              monthFilter === 0 ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
-            }`}
-          >All</button>
-          {MONTH_NAMES.map((m, i) => (
-            <button
-              key={m}
-              onClick={() => setMonthFilter(i + 1)}
-              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                monthFilter === i + 1 ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
-              }`}
-            >{m}</button>
+    <div className="space-y-5">
+
+      {/* Warning for unmapped PICs */}
+      {unknownPeople.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 flex items-start gap-2">
+          <span className="mt-0.5">⚠️</span>
+          <span>
+            <strong>{unknownPeople.length} team member(s)</strong> not yet identified in Lark (showing as &quot;User XXXX&quot;).
+            Hit <code className="bg-amber-100 px-1 rounded">/api/team-kpi/debug/lark</code> → <code>pic_ids</code> to get their IDs, then update <code>PIC_NAME_MAP</code> in <code>lark_service.py</code>.
+          </span>
+        </div>
+      )}
+
+      {/* ── Summary scorecards ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        {chartData.map(d => {
+          const rCls = ratingClasses(d.score);
+          const score = d.score;
+          const onTimeRate = d.agg?.on_time_rate ?? 0;
+          const ringPct = onTimeRate;
+          const ringColor = onTimeRate >= 90 ? "#22c55e" : onTimeRate >= 70 ? "#eab308" : "#ef4444";
+          const radius = 28;
+          const circ = 2 * Math.PI * radius;
+          const filled = Math.min(ringPct / 100, 1) * circ;
+          return (
+            <div key={d.name} className="bg-white rounded-xl border border-gray-200 p-3 flex flex-col items-center gap-2">
+              <p className="text-xs font-semibold text-gray-700">{d.name}</p>
+              {/* Mini ring: on-time rate */}
+              <div className="relative w-16 h-16">
+                <svg className="w-full h-full -rotate-90" viewBox="0 0 72 72">
+                  <circle cx="36" cy="36" r={radius} fill="none" stroke="#e5e7eb" strokeWidth="7" />
+                  {ringPct > 0 && (
+                    <circle cx="36" cy="36" r={radius} fill="none" stroke={ringColor} strokeWidth="7"
+                      strokeDasharray={`${filled} ${circ}`} strokeLinecap="round" />
+                  )}
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-[11px] font-bold text-gray-800">{onTimeRate > 0 ? `${onTimeRate.toFixed(0)}%` : "—"}</span>
+                </div>
+              </div>
+              <div className="text-[10px] text-gray-400">On-time</div>
+              {score !== null && (
+                <span className={`px-2 py-0.5 rounded-full text-[10px] ${rCls}`}>
+                  {score.toFixed(1)} · {ratingLabel(score)}
+                </span>
+              )}
+              <div className="text-[10px] text-gray-400">{d.agg.total_tasks} tasks · {d.open} open</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Task volume chart ── */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <p className="text-xs font-semibold text-gray-600 mb-3">Task Volume by Person (Annual)</p>
+        <div className="space-y-2">
+          {chartData.map(d => (
+            <div key={d.name} className="flex items-center gap-2">
+              <span className="text-xs text-gray-600 w-16 flex-shrink-0 truncate">{d.name}</span>
+              <div className="flex-1 flex items-center gap-2">
+                <div className="flex-1 h-5 bg-gray-100 rounded overflow-hidden">
+                  <div className="h-full flex items-center">
+                    <div className="h-3 rounded-r bg-indigo-400 transition-all"
+                      style={{ width: `${Math.max((d.agg.total_tasks / maxTasks) * 100, 2)}%` }} />
+                  </div>
+                </div>
+                <span className="text-xs text-gray-700 w-8 text-right">{d.agg.total_tasks}</span>
+                <span className="text-[10px] text-gray-400 w-10 text-right">{d.agg.completed} done</span>
+              </div>
+            </div>
           ))}
         </div>
       </div>
 
-      {/* Table */}
+      {/* ── Filters ── */}
+      <div className="flex flex-wrap items-center gap-4">
+        {/* PIC filter */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500 font-medium">Person:</span>
+          <div className="flex flex-wrap gap-1.5">
+            <button onClick={() => setPicFilter("all")}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${picFilter === "all" ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
+              All
+            </button>
+            {allPeople.map(p => (
+              <button key={p.pic_id} onClick={() => setPicFilter(p.pic_id)}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${picFilter === p.pic_id ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
+                {p.name.startsWith("User ") ? `ID:${p.pic_id.slice(-4)}` : p.name}
+              </button>
+            ))}
+          </div>
+        </div>
+        {/* Month filter */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500 font-medium">Month:</span>
+          <div className="flex flex-wrap gap-1.5">
+            <button onClick={() => setMonthFilter(0)}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${monthFilter === 0 ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
+              All
+            </button>
+            {MONTH_NAMES.map((m, i) => (
+              <button key={m} onClick={() => setMonthFilter(i + 1)}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${monthFilter === i + 1 ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}>
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Detail table ── */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
         <table className="min-w-full text-xs border-collapse">
           <thead>
             <tr className="bg-gray-50">
-              <th className={thCls}>Nhân viên</th>
-              <th className={thCls}>Tháng</th>
-              <th className={thCls + " text-right"}>Tổng task</th>
-              <th className={thCls + " text-right"}>Hoàn thành</th>
+              <th className={thCls}>Person</th>
+              <th className={thCls}>Month</th>
+              <th className={thCls + " text-right"}>Total</th>
+              <th className={thCls + " text-right"}>Done</th>
               <th className={thCls + " text-right"}>On-time rate</th>
-              <th className={thCls + " text-right"}>Cycle TB (ngày)</th>
-              <th className={thCls + " text-right"}>Ước tính TB</th>
-              <th className={thCls + " text-right"}>Cycle/Ước tính</th>
-              <th className={thCls + " text-right"}>Quá hạn</th>
-              <th className={thCls + " text-right"}>ĐIỂM</th>
-              <th className={thCls}>XẾP LOẠI</th>
+              <th className={thCls + " text-right"}>Avg Cycle (days)</th>
+              <th className={thCls + " text-right"}>Avg Estimate</th>
+              <th className={thCls + " text-right"}>Cycle/Est.</th>
+              <th className={thCls + " text-right"}>Overdue</th>
+              <th className={thCls + " text-right"}>Score</th>
+              <th className={thCls}>Rating</th>
             </tr>
           </thead>
           <tbody>
-            {sorted.map((person) => {
+            {filtered.map((person) => {
               const monthRows = displayMonths.map(m => ({
                 month: m,
                 data: person.months[String(m)] ?? person.months[m] ?? null,
@@ -542,12 +660,9 @@ function TaskOverview({ year }) {
               const hasData = monthRows.some(r => r.data !== null);
               if (!hasData && monthFilter !== 0) return null;
 
-              // Annual aggregate over months with data
               const annualRows = Object.entries(person.months)
-                .filter(([k]) => !isNaN(Number(k)))
-                .map(([, v]) => v);
+                .filter(([k]) => !isNaN(Number(k))).map(([, v]) => v);
               const annual = aggregateRows(annualRows);
-              const annualScore = computeScore(annual);
 
               const rows = monthFilter === 0
                 ? [...monthRows, { month: "Annual", data: annual }]
@@ -555,45 +670,55 @@ function TaskOverview({ year }) {
 
               return rows.map(({ month, data: row }, idx) => {
                 const score = computeScore(row);
-                const rating = ratingLabel(score);
                 const rCls = ratingClasses(score);
                 const showName = idx === 0;
                 const isAnnual = month === "Annual";
                 const monthLabel = isAnnual ? "Annual" : MONTH_NAMES[month - 1];
+                const displayName = person.name.startsWith("User ") ? `ID:${person.pic_id.slice(-6)}` : person.name;
 
                 return (
-                  <tr
-                    key={`${person.pic_id}-${month}`}
-                    className={isAnnual ? "bg-gray-50 font-semibold" : "hover:bg-gray-50/50"}
-                  >
-                    <td className={tdCls + " font-medium text-gray-900"}>
+                  <tr key={`${person.pic_id}-${month}`}
+                    className={isAnnual ? "bg-gray-50 font-semibold" : "hover:bg-gray-50/50"}>
+                    <td className={tdCls + " font-medium text-gray-900 min-w-[90px]"}>
                       {showName ? (
                         <div>
-                          <div>{person.name}</div>
+                          <div>{displayName}</div>
                           {person.open_workload > 0 && (
-                            <div className="text-[10px] text-orange-500 font-normal mt-0.5">
-                              {person.open_workload} open
-                            </div>
+                            <div className="text-[10px] text-orange-500 font-normal mt-0.5">{person.open_workload} open</div>
                           )}
                         </div>
                       ) : ""}
                     </td>
                     <td className={tdCls + (isAnnual ? " text-gray-500 italic" : "")}>{monthLabel}</td>
                     <td className={tdCls + " text-right"}>{row ? row.total_tasks : "—"}</td>
+                    <td className={tdCls + " text-right"}>{row ? `${row.completed} (${fmtNum(row.completion_rate)}%)` : "—"}</td>
                     <td className={tdCls + " text-right"}>
-                      {row ? `${row.completed} (${fmtNum(row.completion_rate)}%)` : "—"}
-                    </td>
-                    <td className={tdCls + " text-right"}>
-                      {row?.on_time_rate != null ? `${fmtNum(row.on_time_rate)}%` : "—"}
+                      {row?.on_time_rate != null ? (
+                        <span className={row.on_time_rate >= 90 ? "text-green-600 font-medium" : row.on_time_rate >= 70 ? "text-yellow-600" : "text-red-500"}>
+                          {fmtNum(row.on_time_rate)}%
+                        </span>
+                      ) : "—"}
                     </td>
                     <td className={tdCls + " text-right"}>{fmtNum(row?.cycle_time_avg)}</td>
                     <td className={tdCls + " text-right"}>{fmtNum(row?.estimated_avg)}</td>
-                    <td className={tdCls + " text-right"}>{fmtNum(row?.cycle_ratio, 2)}</td>
-                    <td className={tdCls + " text-right"}>{row?.overdue_count ?? "—"}</td>
+                    <td className={tdCls + " text-right"}>
+                      {row?.cycle_ratio != null ? (
+                        <span className={row.cycle_ratio <= 1 ? "text-green-600" : row.cycle_ratio <= 1.3 ? "text-yellow-600" : "text-red-500"}>
+                          {fmtNum(row.cycle_ratio, 2)}×
+                        </span>
+                      ) : "—"}
+                    </td>
+                    <td className={tdCls + " text-right"}>
+                      {row?.overdue_count != null ? (
+                        <span className={row.overdue_count === 0 ? "text-green-600" : row.overdue_count <= 2 ? "text-yellow-600" : "text-red-500"}>
+                          {row.overdue_count}
+                        </span>
+                      ) : "—"}
+                    </td>
                     <td className={tdCls + " text-right font-semibold"}>{score ?? "—"}</td>
                     <td className={tdCls}>
                       {score !== null ? (
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] ${rCls}`}>{rating}</span>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] ${rCls}`}>{ratingLabel(score)}</span>
                       ) : "—"}
                     </td>
                   </tr>
@@ -604,7 +729,7 @@ function TaskOverview({ year }) {
         </table>
       </div>
       <p className="text-[10px] text-gray-400">
-        Điểm = On-time rate 35% + Cycle/Ước tính 25% + Quá hạn 25% + Reopen 15% (chưa có dữ liệu reopen)
+        Score = On-time rate ×0.35 + Cycle/Estimate ×0.25 + Overdue ×0.25 + Reopen ×0.15 (Reopen not yet tracked in Lark)
       </p>
     </div>
   );
@@ -695,8 +820,8 @@ export default function TeamKPI() {
         </button>
       </div>
 
-      {/* Branch selector */}
-      <div className="flex flex-wrap gap-1.5">
+      {/* Branch selector — hidden on Task Overview */}
+      <div className={`flex flex-wrap gap-1.5 ${isTaskOverview ? "hidden" : ""}`}>
         {branches?.map(b => (
           <button
             key={b.id}
