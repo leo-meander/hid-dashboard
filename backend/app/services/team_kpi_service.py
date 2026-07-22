@@ -638,6 +638,9 @@ def build_monthly_summary(
                 target = None  # future month or unknown computed type
             else:
                 target = targets_map.get((kpi_key, m))
+                # ROAS can't be summed across branches — suppress target in All view
+                if all_branches_view and kpi_key == "roas":
+                    target = None
 
             # Actual: from upstream API (auto roles) or manual DB entry (non-auto)
             actual = None
@@ -645,6 +648,11 @@ def build_monthly_summary(
                 month_actuals = actuals_yearly.get(m, {})
                 if org_wide:
                     raw = month_actuals.get("all", {}).get(kpi_key)
+                elif all_branches_view and kpi_key == "roas" and role_key == "paid_ads":
+                    # Weighted ROAS = total_revenue_vnd / total_spend_vnd across branches
+                    tot_rev   = sum(float(month_actuals.get(bk, {}).get("ads_revenue") or 0) for bk in _ALL_BRANCH_KEYS)
+                    tot_spend = sum(float(month_actuals.get(bk, {}).get("ads_spend")   or 0) for bk in _ALL_BRANCH_KEYS)
+                    raw = round(tot_rev / tot_spend, 2) if tot_spend > 0 else None
                 elif all_branches_view:
                     # Sum raw VND values across all branches
                     total = 0.0
