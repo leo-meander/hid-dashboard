@@ -721,11 +721,7 @@ function TaskOverview({ year }) {
               <th className={thCls + " text-right"}>Avg Estimate</th>
               <th className={thCls + " text-right"}>Cycle/Est.</th>
               <th className={thCls + " text-right"}>Overdue</th>
-              <th className={thCls + " text-right"}>
-                <Tooltip text={SCORE_TOOLTIP}>
-                  <span className="border-b border-dashed border-gray-400 cursor-help">Score</span>
-                </Tooltip>
-              </th>
+              <th className={thCls + " text-right cursor-help"} title={SCORE_TOOLTIP}>Score ⓘ</th>
               <th className={thCls}>Rating</th>
             </tr>
           </thead>
@@ -792,12 +788,9 @@ function TaskOverview({ year }) {
                         </span>
                       ) : "—"}
                     </td>
-                    <td className={tdCls + " text-right font-semibold"}>
-                      {score !== null ? (
-                        <Tooltip text={row ? `On-time: ${fmtNum(row.on_time_rate)}% →×0.35 | Cycle: ${fmtNum(row.cycle_ratio,2)}× →×0.25 | Overdue: ${row.overdue_count ?? 0} →×0.25 | Reopen: 10 →×0.15` : SCORE_TOOLTIP}>
-                          <span className="border-b border-dashed border-gray-300 cursor-help">{score}</span>
-                        </Tooltip>
-                      ) : "—"}
+                    <td className={tdCls + " text-right font-semibold cursor-help"}
+                      title={row ? `On-time: ${fmtNum(row.on_time_rate)}% ×0.35 | Cycle: ${fmtNum(row.cycle_ratio,2)}× ×0.25 | Overdue: ${row.overdue_count ?? 0} ×0.25 | Reopen: 10 ×0.15` : SCORE_TOOLTIP}>
+                      {score ?? "—"}
                     </td>
                     <td className={tdCls}>
                       {score !== null ? (
