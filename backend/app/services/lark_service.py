@@ -33,7 +33,8 @@ log = logging.getLogger(__name__)
 PIC_NAME_MAP: dict[str, str] = {
     # linked-record IDs
     "recuOULUU1hNZe": "Mason",
-    "recuOUM6YA5NP7": "Nora",
+    "recuOUM6YA5NP7": "Nora",   # non-Ads tasks
+    "recv6JxUlC2N9p": "Nora",   # Ads design tasks (same person, second record)
     "recvfBvofwVG5z":  "Mel",
     "recuOUECycRmpy": "Nuha",
     "recuGw12iUnRNJ":  "Kin",
@@ -45,7 +46,7 @@ PIC_NAME_MAP: dict[str, str] = {
     "kin@staymeander.com":    "Kin",
 }
 
-_NORA_KEYS = {"recuOUM6YA5NP7", "nora@staymeander.com"}
+_NORA_KEYS = {"recuOUM6YA5NP7", "recv6JxUlC2N9p", "nora@staymeander.com"}
 
 # Optional project keyword filter per PIC (case-insensitive substring match on resolved project name).
 # If a PIC is not listed here, all projects are counted.
