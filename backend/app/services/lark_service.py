@@ -455,7 +455,7 @@ def get_designer_actuals_yearly(year: int, nora_name: str = "Nora") -> dict[int,
         if status != "completed":
             continue
 
-        ym = _parse_month_year(rec.get("Deadline"))
+        ym = _parse_month_year(rec.get("Date Created"))
         if not ym or ym[0] != year:
             continue
         _, month = ym
