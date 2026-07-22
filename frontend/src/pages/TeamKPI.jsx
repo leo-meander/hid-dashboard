@@ -325,7 +325,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     const cls = color ? COLOR_CLASSES[color] : null;
                     const isSaving = saving === `${kpi.key}-${m.month}-actual`;
 
-                    if (autoActuals || kpi.auto_actuals) {
+                    if ((autoActuals || kpi.auto_actuals) && kpi.auto !== false) {
                       // Read-only actual from API
                       return (
                         <td key={m.month} title={!m.has_target && m.actual !== null ? "No target set — excluded from YTD & Avg%" : undefined}
