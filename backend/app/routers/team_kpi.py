@@ -208,17 +208,24 @@ def get_task_overview(year: int = Query(2026)):
         log.exception("task_overview error year=%s", year)
         raise HTTPException(500, str(exc))
 
-    result = []
+    # Merge entries with the same display name (e.g. Nora has 2 record IDs)
+    merged: dict[str, dict] = {}
     for pic_id, months in data.items():
         open_workload = months.pop("open_workload", 0)
         no_deadline_count = months.pop("no_deadline_count", 0)
-        result.append({
-            "pic_id": pic_id,
-            "name": PIC_NAME_MAP.get(pic_id, f"User {pic_id[-4:]}"),
-            "months": months,
-            "open_workload": open_workload,
-            "no_deadline_count": no_deadline_count,
-        })
+        name = PIC_NAME_MAP.get(pic_id, f"User {pic_id[-4:]}")
+        if name not in merged:
+            merged[name] = {"pic_id": pic_id, "name": name, "months": {}, "open_workload": 0, "no_deadline_count": 0}
+        m = merged[name]
+        m["open_workload"] += open_workload
+        m["no_deadline_count"] += no_deadline_count
+        for month_key, stats in months.items():
+            if month_key not in m["months"]:
+                m["months"][month_key] = {k: 0 for k in stats}
+            for k, v in stats.items():
+                m["months"][month_key][k] = m["months"][month_key].get(k, 0) + v
+
+    result = [v for v in merged.values() if not v["name"].startswith("User ")]
     return {"success": True, "data": result, "error": None}
 
 
