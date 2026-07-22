@@ -8,8 +8,8 @@ Mirrors exactly what the Google Apps Script does:
   - No PIC filter — all tasks with a branch prefix count
 
 KPIs derived:
-  Designer (Nora):  design_assets    = Ads-only_Number of images
-                    videos_delivered = Ads-only_Number of video
+  Designer (Nora):  design_assets    = Design-only_Number of images
+                    videos_delivered = Design-only_Number of video
   Paid Ads (Mason): ads_material     = images + videos
 """
 from __future__ import annotations
@@ -371,8 +371,8 @@ def _get_yearly_agg(year: int) -> dict:
             continue
 
         _, month = ym
-        images = float(rec.get("Ads-only_Number of images") or 0)
-        videos = float(rec.get("Ads-only_Number of video") or 0)
+        images = float(rec.get("Design-only_Number of images") or 0)
+        videos = float(rec.get("Design-only_Number of video") or 0)
         if images == 0 and videos == 0:
             continue  # skip tasks with no asset counts (matches script behaviour)
 
@@ -421,8 +421,8 @@ def get_designer_actuals_yearly(year: int, nora_name: str = "Nora") -> dict[int,
         project = _resolve_project(rec.get("Project"))
         branch_key = _parse_branch_from_project(project) or "all"
 
-        images = float(rec.get("Ads-only_Number of images") or 0)
-        videos = float(rec.get("Ads-only_Number of video") or 0)
+        images = float(rec.get("Design-only_Number of images") or 0)
+        videos = float(rec.get("Design-only_Number of video") or 0)
         # For non-Ads tasks these fields are 0 — count the task itself as 1 asset
         if images == 0 and videos == 0:
             images = 1
