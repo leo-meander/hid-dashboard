@@ -659,6 +659,7 @@ function TaskOverview({ year }) {
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
                   <span className="text-[11px] font-bold text-gray-800">{onTimeRate > 0 ? `${onTimeRate.toFixed(0)}%` : "—"}</span>
+                  <span className="text-[9px] text-gray-400 leading-none">{d.agg?.on_time_count ?? 0}/{d.agg?.on_time_filled ?? 0}</span>
                 </div>
               </div>
               <div className="text-[10px] text-gray-400">On-time rate</div>
