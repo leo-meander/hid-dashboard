@@ -135,6 +135,7 @@ def get_kol_actuals_yearly_db(
     )
 
     out: dict[int, dict[str, dict]] = {}
+    cached_months: set[int] = set()
     for mac, branch_name in rows:
         name_lower = (branch_name or "").lower()
         branch_key = None
@@ -145,12 +146,57 @@ def get_kol_actuals_yearly_db(
         if not branch_key:
             continue
         month = mac.month
+        cached_months.add(month)
         out.setdefault(month, {})[branch_key] = {
             "kol_revenue":      float(mac.revenue_vnd or 0),
             "kol_collaborated": 0.0,
             "kol_posted":       0.0,
             "kol_ads_collab":   0.0,
         }
+
+    # Fallback: for months not in cache, query Cloudbeds KOL room-type bookings
+    today = date.today()
+    cur_month = today.month if today.year == year else (12 if today.year > year else 0)
+    try:
+        from sqlalchemy import func as _func, extract as _extract
+        from app.models.reservation import Reservation
+        from app.models.branch import Branch as _Branch
+        BRANCH_KEYS_ALL = ("saigon", "taipei", "1948", "oani", "osaka")
+        for m in range(1, cur_month + 1):
+            if m in cached_months:
+                continue
+            d_from = date(year, m, 1)
+            d_to = date(year, m, calendar.monthrange(year, m)[1])
+            cb_rows = (
+                db.query(_Branch.name, _func.coalesce(_func.sum(Reservation.grand_total_vnd), 0))
+                .join(Reservation, Reservation.branch_id == _Branch.id)
+                .filter(
+                    Reservation.room_type.ilike("%KOL_%"),
+                    Reservation.reservation_date >= d_from,
+                    Reservation.reservation_date <= d_to,
+                    Reservation.status.notin_(["cancelled", "no_show"]),
+                )
+                .group_by(_Branch.name)
+                .all()
+            )
+            if not cb_rows:
+                continue
+            for bname, rev in cb_rows:
+                bk = None
+                for k in BRANCH_KEYS_ALL:
+                    if k in (bname or "").lower():
+                        bk = k
+                        break
+                if not bk:
+                    continue
+                out.setdefault(m, {})[bk] = {
+                    "kol_revenue":      float(rev),
+                    "kol_collaborated": 0.0,
+                    "kol_posted":       0.0,
+                    "kol_ads_collab":   0.0,
+                }
+    except Exception as exc:
+        log.warning("KOL Cloudbeds fallback failed: %s", exc)
 
     # Ensure every month up to today has an 'all' key (for kol_invited)
     today = date.today()
