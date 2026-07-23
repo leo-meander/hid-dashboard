@@ -280,23 +280,24 @@ def create_contact(client: httpx.Client, location_id: str, api_key: str, payload
         return None
 
 
-def update_contact(client: httpx.Client, contact_id: str, api_key: str, payload: dict) -> bool:
-    """Update an existing GHL contact. Returns True on success."""
+def update_contact(client: httpx.Client, contact_id: str, api_key: str, location_id: str, payload: dict) -> tuple[bool, str | None]:
+    """Update an existing GHL contact. Returns (success, error_message)."""
     try:
         resp = client.put(
             f"{GHL_BASE}/contacts/{contact_id}",
-            json=payload,
+            json={**payload, "locationId": location_id},
             headers=_headers(api_key),
             timeout=15,
         )
         if resp.status_code in (200, 201):
             logger.info("GHL contact updated id=%s", contact_id)
-            return True
+            return True, None
+        err = f"HTTP {resp.status_code}: {resp.text[:200]}"
         logger.warning("GHL update failed status=%d: %s", resp.status_code, resp.text[:300])
-        return False
+        return False, err
     except Exception as e:
         logger.error("GHL update error: %s", e)
-        return False
+        return False, str(e)
 
 
 def upsert_contact_from_reservation(
@@ -326,5 +327,5 @@ def upsert_contact_from_reservation(
             return {"action": "created", "contact_id": contact_id}
         else:
             contact_id = existing.get("id")
-            success = update_contact(client, contact_id, api_key, update_payload)
-            return {"action": "updated" if success else "update_failed", "contact_id": contact_id}
+            success, err = update_contact(client, contact_id, api_key, location_id, update_payload)
+            return {"action": "updated" if success else "update_failed", "contact_id": contact_id, "error": err}

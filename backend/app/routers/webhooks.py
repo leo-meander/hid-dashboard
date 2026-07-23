@@ -81,7 +81,7 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
                 branch=branch,
             )
             logger.info("GHL upsert branch=%s action=%s contact_id=%s", branch, result["action"], result["contact_id"])
-            ghl_log = {"success": result["action"] in ("created", "updated"), "action": result["action"]}
+            ghl_log = {"success": result["action"] in ("created", "updated"), "action": result["action"], "error": result.get("error")}
         except Exception as e:
             logger.error("GHL upsert error branch=%s reservation=%s: %s", branch, reservation_id, e)
             ghl_log = {"success": False, "error": str(e)}
@@ -106,7 +106,10 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
                 )
                 ok = meta_result.get("success", False)
                 logger.info("Meta CAPI branch=%s success=%s", branch, ok)
-                meta_log = {"success": ok, "error": meta_result.get("error")}
+                err = meta_result.get("error")
+                if not ok and not err and meta_result.get("response"):
+                    err = str(meta_result["response"])[:200]
+                meta_log = {"success": ok, "error": err}
             except Exception as e:
                 logger.error("Meta CAPI error branch=%s reservation=%s: %s", branch, reservation_id, e)
                 meta_log = {"success": False, "error": str(e)}
