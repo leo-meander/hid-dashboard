@@ -82,6 +82,27 @@ def debug_kol_revenue_by_branch(year: int = Query(2026)):
     return {"success": True, "data": out, "error": None}
 
 
+@router.get("/debug/kol-revenue-raw")
+def debug_kol_revenue_raw(year: int = Query(2026), month: int = Query(7)):
+    """Show RAW KOL Engine revenue API response for one month including excluded bookings."""
+    from app.services.kol_engine import fetch_kol_revenue
+    from app.config import settings
+    import time
+    # Bust the in-process cache so we always get a fresh response
+    from app.services import kol_engine as _ke
+    _ke._kol_revenue_cache.clear()
+    data = fetch_kol_revenue(
+        base_url=settings.KOL_ENGINE_URL,
+        org_slug=settings.KOL_TARGETS_ORG_SLUG,
+        api_key=settings.KOL_REVENUE_API_SECRET,
+        year=year,
+        month=month,
+    )
+    if data is None:
+        return {"success": False, "data": None, "error": "fetch returned None — check config/creds"}
+    return {"success": True, "data": data, "error": None}
+
+
 @router.get("/debug/kol-targets")
 def debug_kol_targets(year: int = Query(2026), month: int = Query(7)):
     """Expose raw KOL Engine targets API response for one month."""
