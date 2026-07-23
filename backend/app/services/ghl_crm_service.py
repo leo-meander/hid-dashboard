@@ -280,12 +280,12 @@ def create_contact(client: httpx.Client, location_id: str, api_key: str, payload
         return None
 
 
-def update_contact(client: httpx.Client, contact_id: str, api_key: str, payload: dict) -> tuple[bool, str | None]:
+def update_contact(client: httpx.Client, contact_id: str, api_key: str, location_id: str, payload: dict) -> tuple[bool, str | None]:
     """Update an existing GHL contact. Returns (success, error_message)."""
     try:
         resp = client.put(
             f"{GHL_BASE}/contacts/{contact_id}",
-            json=payload,
+            json={**payload, "locationId": location_id},
             headers=_headers(api_key),
             timeout=15,
         )
@@ -327,5 +327,5 @@ def upsert_contact_from_reservation(
             return {"action": "created", "contact_id": contact_id}
         else:
             contact_id = existing.get("id")
-            success, err = update_contact(client, contact_id, api_key, update_payload)
+            success, err = update_contact(client, contact_id, api_key, location_id, update_payload)
             return {"action": "updated" if success else "update_failed", "contact_id": contact_id, "error": err}
