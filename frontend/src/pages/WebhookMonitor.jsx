@@ -63,6 +63,7 @@ export default function WebhookMonitor() {
   const [loading, setLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [polling, setPolling] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -116,6 +117,22 @@ export default function WebhookMonitor() {
           >
             {BRANCH_OPTS.map(b => <option key={b} value={b}>{b === "all" ? "All branches" : b}</option>)}
           </select>
+          <button
+            onClick={async () => {
+              setPolling(true);
+              try {
+                await axios.post("/api/admin/poll-now", null, { params: { minutes: 60 } });
+                setTimeout(load, 3000);
+              } finally {
+                setPolling(false);
+              }
+            }}
+            disabled={polling}
+            title="Pull last 60 min of reservations from Cloudbeds now"
+            className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {polling ? "Polling…" : "Poll Now"}
+          </button>
           <button
             onClick={load}
             disabled={loading}

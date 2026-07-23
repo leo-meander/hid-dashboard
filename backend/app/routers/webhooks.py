@@ -307,3 +307,58 @@ async def get_webhook_events(branch: str | None = None, limit: int = 100) -> dic
     """Return recent webhook processing results from the in-memory ring buffer."""
     events = webhook_log.get_events(branch=branch, limit=min(limit, 500))
     return {"success": True, "data": events, "total": len(events)}
+
+
+@router.post("/admin/poll-now")
+async def poll_now(background_tasks: BackgroundTasks, minutes: int = 60) -> dict:
+    """Manually trigger a Cloudbeds poll for the last N minutes (default 60). Admin use only."""
+    background_tasks.add_task(_poll_with_window, minutes)
+    return {"success": True, "message": f"Polling last {minutes} minutes in background"}
+
+
+def _poll_with_window(minutes: int) -> None:
+    """Like poll_new_reservations but with a custom lookback window and no dedup."""
+    from datetime import datetime, timedelta, timezone
+    now_utc = datetime.now(timezone.utc)
+    from_dt = now_utc - timedelta(minutes=minutes)
+    date_from = from_dt.strftime("%Y-%m-%d %H:%M:%S")
+    date_to = now_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+    branches = [
+        (settings.CB_PROPERTY_ID_SAIGON, settings.CB_API_KEY_SAIGON),
+        (settings.CB_PROPERTY_ID_TAIPEI, settings.CB_API_KEY_TAIPEI),
+        (settings.CB_PROPERTY_ID_1948, settings.CB_API_KEY_1948),
+        (settings.CB_PROPERTY_ID_OANI, settings.CB_API_KEY_OANI),
+        (settings.CB_PROPERTY_ID_OSAKA, settings.CB_API_KEY_OSAKA),
+    ]
+
+    for property_id, api_key in branches:
+        if not property_id or not api_key:
+            continue
+        try:
+            with httpx.Client(timeout=20) as client:
+                resp = client.get(
+                    f"{CLOUDBEDS_API_BASE}/getReservations",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    params={
+                        "propertyID": property_id,
+                        "dateCreatedFrom": date_from,
+                        "dateCreatedTo": date_to,
+                        "includeGuestList": "true",
+                        "pageSize": 50,
+                    },
+                )
+                body = resp.json()
+                if not body.get("success"):
+                    logger.warning("poll-now getReservations failed property=%s: %s", property_id, body.get("message"))
+                    continue
+                reservations = body.get("data") or []
+                if isinstance(reservations, dict):
+                    reservations = list(reservations.values())
+                for res in reservations:
+                    rid = str(res.get("reservationID", ""))
+                    if rid:
+                        logger.info("poll-now: processing reservation=%s property=%s", rid, property_id)
+                        _fan_out(property_id, rid, res)
+        except Exception as e:
+            logger.error("poll-now error property=%s: %s", property_id, e)
