@@ -239,6 +239,58 @@ def fetch_kol_revenue(
     return data
 
 
+_KOL_RES_IDS_TTL_SEC = 600
+_kol_res_ids_cache: dict[tuple, tuple[float, list]] = {}
+
+
+def fetch_kol_reservation_ids(
+    base_url: str,
+    org_slug: str,
+    api_key: str,
+    year: int,
+    month: int,
+    hotel_id: Optional[str] = None,
+) -> Optional[list[str]]:
+    """Fetch the list of Cloudbeds reservation IDs attributed to KOL for a month.
+
+    Calls the KOL Engine /api/public/kol-reservations/:slug endpoint which applies
+    the same filters as the Insights page (not cancelled, not ads-attributed).
+    Returns a list of cloudbeds_reservation_id strings, or None on failure.
+    """
+    if not (base_url and org_slug and api_key):
+        return None
+
+    cache_key = (org_slug, int(year), int(month), hotel_id or "")
+    cached = _kol_res_ids_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _KOL_RES_IDS_TTL_SEC:
+        return cached[1]
+
+    qs = f"year={year}&month={month}"
+    if hotel_id:
+        qs += f"&hotel_id={hotel_id}"
+    url = f"{base_url}/api/public/kol-reservations/{org_slug}?{qs}"
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {api_key}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+    except Exception as e:
+        log.warning("fetch_kol_reservation_ids: HTTP error %s", e)
+        return None
+
+    if not body.get("success"):
+        log.warning("fetch_kol_reservation_ids: API error: %s", body.get("error"))
+        return None
+
+    ids = body.get("data", {}).get("reservation_ids") or []
+    _kol_res_ids_cache[cache_key] = (time.time(), ids)
+    log.info("fetch_kol_reservation_ids OK: %s %s/%s — %d IDs", org_slug, year, month, len(ids))
+    return ids
+
+
 # Inverse of HOTEL_TO_BRANCH_KEY — short branch-key → KOL Engine hotel UUID.
 # Used by weekly_report_builder.kol_section() to look up the right branch
 # row in the targets API response.
