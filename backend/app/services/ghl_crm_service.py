@@ -17,53 +17,30 @@ logger = logging.getLogger(__name__)
 
 GHL_BASE = "https://services.leadconnectorhq.com"
 
-# Per-branch GHL custom field IDs.
-# Each entry: { field_id: reservation_field_name_or_None }
-# reservation_field_name conventions:
-#   "startDate", "endDate", "source", "reservationID", "status", "dateCreated"
-#   "roomTypeShort"  → extracted from assigned[]
-#   "gender"         → from guestList[0].guestGender
-BRANCH_CUSTOM_FIELDS: dict[str, list[tuple[str, str]]] = {
-    "taipei": [
-        ("9ynXRQM5jnmTsH0vPMkN", "roomTypeShort"),
-        ("Ku9p0QhdXSCSVzYfCl33", "startDate"),
-        ("isORAKLwe8h4Humcuixp", "endDate"),
-        ("v8Nr2YnLXwVlTlL1hNpb", "source"),
-        ("yjlbiIqb4VUBNiG02Twt", "reservationID"),
-    ],
-    "saigon": [
-        ("E14Quzy2vEoNgTvQB0P9", "source"),
-        ("Egn8vjjNc6nb9zc4l6vB", "dateCreated"),
-        ("Nd4TAjq2ymqnxOmCvAen", "reservationID"),
-        ("PlwsbIxlsEDjLK5sheSm", "endDate"),
-        ("Z5UbwQLkvqiZuSPbuo3g", "startDate"),
-        ("cyb2RaJmRbIBRRE4jZaB", "status"),
-        ("v0WUcQZmhhx66G65AL79", "roomTypeShort"),
-    ],
-    "oani": [
-        ("QQ32TpgtZM4JjZ8jndVU", "reservationID"),
-        ("gm2J6IoFhEAMWiRhY43g", "source"),
-        ("gw90Ed7o4NhEUW8NgJuF", "roomTypeShort"),
-    ],
-    "osaka": [
-        ("2U1N1UE2Co7ejCsmg1sp", "roomTypeShort"),
-        ("6gXSzTrk0WYKRHbpCLiK", "reservationID"),
-        ("Fa0IMxR8L4ng2RkBvjIl", "source"),
-        ("bdbI4avHMebzvRcoTJUf", "endDate"),
-        ("bg3ZbiKJ7njqCv1Be5rd", "startDate"),
-        ("qQ6H4j0LKsDsIZFRMRdV", "dateCreated"),
-    ],
-    "1948": [
-        ("0AVJ2U2l2QSSlk4bIhWa", "endDate"),
-        ("10vLyNuVAWOiX6mLJqi0", "source"),
-        ("Ci8yVMKmQd5sRjCoToib", "startDate"),
-        ("EW5RlkEiPxgYp5d3oT1C", "reservationID"),
-        ("IygIv3bld8BlsjRvHIIm", "gender"),
-        ("JoPkKzArZMGnjVkRpjBY", "roomTypeShort"),
-        ("UEWJCyNCHON1gEZ97tiB", "status"),
-        ("ilkDHYVKJtF3C2cykg0T", "dateCreated"),
-    ],
+# Maps GHL custom field keys → Cloudbeds reservation data keys.
+# Field IDs are fetched dynamically per location (see _get_location_field_map).
+FIELD_KEY_MAP: dict[str, str] = {
+    "contact.reservation_number": "reservationID",
+    "contact.reservation_date":   "dateCreated",
+    "contact.checkin_date":       "startDate",
+    "contact.checkout_date":      "endDate",
+    "contact.checkin_status":     "status",
+    "contact.roomtypename":       "roomTypeShort",
+    "contact.booking_source":     "source",
+    "contact.gender":             "gender",
 }
+
+# Default country dialing code per branch for E.164 phone normalization.
+BRANCH_COUNTRY_CODE: dict[str, str] = {
+    "saigon": "+84",
+    "taipei": "+886",
+    "1948":   "+886",
+    "oani":   "+886",
+    "osaka":  "+81",
+}
+
+# In-memory cache: location_id → {fieldKey: fieldId}
+_field_cache: dict[str, dict[str, str]] = {}
 
 
 def _headers(api_key: str) -> dict:
@@ -75,12 +52,48 @@ def _headers(api_key: str) -> dict:
     }
 
 
-def _clean_phone(raw: Optional[str]) -> Optional[str]:
-    """Strip +, -, spaces, ( ) from phone. Return None if too short."""
+def _normalize_phone(raw: Optional[str], branch: str) -> Optional[str]:
+    """
+    Normalize phone to E.164.
+    - If raw starts with '+': strip non-digits after +, return +{digits}
+    - Otherwise: prepend branch default country code, strip leading zero
+    Returns None if result is too short to be valid.
+    """
     if not raw:
         return None
-    cleaned = re.sub(r"[+\-\s()]", "", raw.strip())
-    return cleaned if len(cleaned) > 5 else None
+    stripped = raw.strip()
+    if stripped.startswith("+"):
+        digits = re.sub(r"\D", "", stripped[1:])
+        return f"+{digits}" if len(digits) >= 7 else None
+    digits = re.sub(r"\D", "", stripped).lstrip("0")
+    code = BRANCH_COUNTRY_CODE.get(branch, "")
+    if not code or len(digits) < 7:
+        return None
+    return f"{code}{digits}"
+
+
+def _get_location_field_map(
+    client: httpx.Client, location_id: str, api_key: str
+) -> dict[str, str]:
+    """Return {fieldKey: fieldId} for a GHL location. Cached in-process."""
+    if location_id in _field_cache:
+        return _field_cache[location_id]
+    try:
+        resp = client.get(
+            f"{GHL_BASE}/locations/{location_id}/customFields",
+            params={"model": "contact"},
+            headers=_headers(api_key),
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            fields = resp.json().get("customFields") or []
+            field_map = {f["fieldKey"]: f["id"] for f in fields if "fieldKey" in f and "id" in f}
+            _field_cache[location_id] = field_map
+            return field_map
+        logger.warning("GHL get custom fields failed status=%d location=%s", resp.status_code, location_id)
+    except Exception as e:
+        logger.error("GHL get custom fields error location=%s: %s", location_id, e)
+    return {}
 
 
 def _clean_country(raw: Optional[str]) -> Optional[str]:
@@ -136,31 +149,50 @@ def _get_room_type_short(reservation: dict) -> Optional[str]:
     return None
 
 
-def _build_custom_fields(reservation: dict, guest: dict, branch: str) -> list:
-    """Build the GHL v2 customFields array for the given branch."""
-    room_type_short = _get_room_type_short(reservation)
+def _build_custom_fields(
+    reservation: dict,
+    guest: dict,
+    location_id: str,
+    api_key: str,
+    client: httpx.Client,
+) -> list:
+    """Build the GHL v2 customFields array using dynamic field ID lookup."""
+    field_map = _get_location_field_map(client, location_id, api_key)
+    if not field_map:
+        return []
 
-    field_values = {
-        "startDate":    reservation.get("startDate", ""),
-        "endDate":      reservation.get("endDate", ""),
-        "source":       reservation.get("source", ""),
-        "reservationID": reservation.get("reservationID", ""),
-        "status":       reservation.get("status", ""),
-        "dateCreated":  reservation.get("dateCreated", ""),
+    room_type_short = _get_room_type_short(reservation)
+    data = {
+        "reservationID": str(reservation.get("reservationID") or ""),
+        "dateCreated":   reservation.get("dateCreated") or "",
+        "startDate":     reservation.get("startDate") or "",
+        "endDate":       reservation.get("endDate") or "",
+        "status":        reservation.get("status") or "",
+        "source":        reservation.get("source") or "",
         "roomTypeShort": room_type_short or "",
-        "gender":       _normalize_gender(guest.get("guestGender")),
+        "gender":        _normalize_gender(guest.get("guestGender")),
     }
 
     custom_fields = []
-    for field_id, key in BRANCH_CUSTOM_FIELDS.get(branch, []):
-        value = field_values.get(key, "")
+    for field_key, data_key in FIELD_KEY_MAP.items():
+        field_id = field_map.get(field_key)
+        if not field_id:
+            continue
+        value = data.get(data_key, "")
         if value:
             custom_fields.append({"id": field_id, "field_value": str(value)})
 
     return custom_fields
 
 
-def _build_contact_payload(reservation: dict, branch: str, is_update: bool = False) -> dict:
+def _build_contact_payload(
+    reservation: dict,
+    branch: str,
+    location_id: str,
+    api_key: str,
+    client: httpx.Client,
+    is_update: bool = False,
+) -> dict:
     """Build the GHL contact payload for a specific branch."""
     guest_list = reservation.get("guestList") or {}
     guest = _first_guest(guest_list)
@@ -168,12 +200,11 @@ def _build_contact_payload(reservation: dict, branch: str, is_update: bool = Fal
     email = (reservation.get("guestEmail") or "").strip().lower()
     country = _clean_country(guest.get("guestCountry"))
 
-    # Phone — Osaka uses guestCellPhone when raw guestPhone exists; others use cleaned guestPhone
+    # Phone — Osaka uses guestCellPhone; others use guestPhone. Normalize to E.164.
     raw_phone = guest.get("guestPhone", "")
     if branch == "osaka":
-        phone = guest.get("guestCellPhone") if raw_phone and len(raw_phone.strip()) > 5 else None
-    else:
-        phone = _clean_phone(raw_phone)
+        raw_phone = guest.get("guestCellPhone") or raw_phone
+    phone = _normalize_phone(raw_phone, branch)
 
     # Name — differs per branch and create vs update
     guest_name = _normalize_name(guest.get("guestName"))
@@ -230,7 +261,7 @@ def _build_contact_payload(reservation: dict, branch: str, is_update: bool = Fal
         if address_payload:
             payload["address"] = address_payload
 
-    custom_fields = _build_custom_fields(reservation, guest, branch)
+    custom_fields = _build_custom_fields(reservation, guest, location_id, api_key, client)
     if custom_fields:
         payload["customFields"] = custom_fields
 
@@ -313,10 +344,11 @@ def upsert_contact_from_reservation(
         return {"action": "skipped", "contact_id": None}
 
     b = branch.lower()
-    create_payload = _build_contact_payload(reservation, b, is_update=False)
-    update_payload = _build_contact_payload(reservation, b, is_update=True)
 
     with httpx.Client(timeout=20) as client:
+        create_payload = _build_contact_payload(reservation, b, location_id, api_key, client, is_update=False)
+        update_payload = _build_contact_payload(reservation, b, location_id, api_key, client, is_update=True)
+
         existing = search_contact(client, location_id, api_key, email)
 
         if existing is None:
