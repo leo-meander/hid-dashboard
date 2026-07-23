@@ -288,23 +288,26 @@ def get_marketing_activity_summary(
 
 
 def _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native):
-    """Cloudbeds KOL revenue by reservation date — matches KOL Engine Insights page.
+    """KOL revenue via KOLBooking → Reservation join — matches KOL Engine Insights.
 
-    Uses reservation_date (booking date) matching the KOL Engine Insights "by
-    reservation date" attribution. Does not re-exclude ads bookings here; the
-    KOL Engine API (/api/public/kol-revenue/) was doing that but returned numbers
-    significantly lower than the Insights page, so we go to Cloudbeds directly.
+    KOLBooking rows are synced from the KOL tracking Google Sheet and link each
+    KOL collaboration to its Cloudbeds reservation. Filtering by room_type was
+    only catching a small subset; the join captures all KOL-attributed bookings.
+    Uses reservation_date (booking date) matching Insights "by reservation date".
     """
+    from app.models.kol import KOLBooking
     rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
-    q = db.query(
-        func.count(Reservation.id).label("bookings"),
-        func.coalesce(func.sum(rev_col), 0).label("revenue"),
-    ).filter(
-        Reservation.room_type.ilike("%KOL_%"),
-        Reservation.reservation_date >= d_from,
-        Reservation.reservation_date <= d_to,
-        _status_filter(),
-        _revenue_source_filter(),
+    q = (
+        db.query(
+            func.count(Reservation.id).label("bookings"),
+            func.coalesce(func.sum(rev_col), 0).label("revenue"),
+        )
+        .join(KOLBooking, KOLBooking.reservation_id == Reservation.id)
+        .filter(
+            Reservation.reservation_date >= d_from,
+            Reservation.reservation_date <= d_to,
+            _status_filter(),
+        )
     )
     if branch_id:
         q = q.filter(Reservation.branch_id == branch_id)
