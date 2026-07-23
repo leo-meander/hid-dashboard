@@ -81,7 +81,7 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
                 branch=branch,
             )
             logger.info("GHL upsert branch=%s action=%s contact_id=%s", branch, result["action"], result["contact_id"])
-            ghl_log = {"success": result["action"] in ("created", "updated"), "action": result["action"]}
+            ghl_log = {"success": result["action"] in ("created", "updated"), "action": result["action"], "error": result.get("error")}
         except Exception as e:
             logger.error("GHL upsert error branch=%s reservation=%s: %s", branch, reservation_id, e)
             ghl_log = {"success": False, "error": str(e)}
