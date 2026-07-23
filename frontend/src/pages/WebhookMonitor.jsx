@@ -20,7 +20,7 @@ function StatusBadge({ svc }) {
 
 function EventRow({ ev }) {
   const [open, setOpen] = useState(false);
-  const ts = new Date(ev.timestamp).toLocaleString("vi-VN", { hour12: false });
+  const ts = new Date(ev.timestamp).toLocaleString("en-GB", { hour12: false });
   const anyFail = SERVICES.some(s => ev[s]?.success === false);
 
   return (
@@ -95,6 +95,10 @@ export default function WebhookMonitor() {
 
   return (
     <div className="max-w-7xl mx-auto">
+      <div className="mb-4 px-3 py-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-700 space-y-0.5">
+        <p><span className="font-semibold">Google Ads:</span> Pending migration to Data Manager API (old uploadClickConversions API blocked by Google since Jun 15 2026).</p>
+        <p><span className="font-semibold">Meta CAPI (Osaka, Oani):</span> Access tokens expired — regenerate System User tokens in Meta Business Suite and update env vars.</p>
+      </div>
       {pollStatus && (
         <div className="mb-3 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded text-sm text-emerald-700">
           ⏳ {pollStatus}
@@ -106,7 +110,7 @@ export default function WebhookMonitor() {
           <p className="text-sm text-gray-500 mt-0.5">
             {events.length} events in memory
             {failCount > 0 && <span className="ml-2 text-red-600 font-medium">· {failCount} failed</span>}
-            {lastRefresh && <span className="ml-2 text-gray-400">· refreshed {lastRefresh.toLocaleTimeString("vi-VN")}</span>}
+            {lastRefresh && <span className="ml-2 text-gray-400">· refreshed {lastRefresh.toLocaleTimeString("en-GB")}</span>}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -129,20 +133,20 @@ export default function WebhookMonitor() {
           <button
             onClick={async () => {
               setPolling(true);
-              setPollStatus("Đang gọi Cloudbeds…");
+              setPollStatus("Fetching from Cloudbeds…");
               try {
                 await axios.post("/api/admin/poll-now", null, { params: { minutes: 60 } });
                 // Poll background job runs async — wait then retry until count changes
                 const before = eventCountRef.current;
                 for (let i = 0; i < 6; i++) {
                   await new Promise(r => setTimeout(r, 5000));
-                  setPollStatus(`Chờ kết quả… (${(i + 1) * 5}s)`);
+                  setPollStatus(`Waiting for results… (${(i + 1) * 5}s)`);
                   await load();
                   if (eventCountRef.current !== before) break;
                 }
                 setPollStatus("");
               } catch {
-                setPollStatus("Lỗi — thử lại");
+                setPollStatus("Error — please try again");
               } finally {
                 setPolling(false);
               }
@@ -151,7 +155,7 @@ export default function WebhookMonitor() {
             title="Pull last 60 min of reservations from Cloudbeds now"
             className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50 min-w-[90px]"
           >
-            {polling ? "Đang poll…" : "Poll Now"}
+            {polling ? "Polling…" : "Poll Now"}
           </button>
           <button
             onClick={load}
