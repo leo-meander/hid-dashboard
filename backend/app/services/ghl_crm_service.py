@@ -27,6 +27,7 @@ FIELD_KEY_MAP: dict[str, str] = {
     "contact.checkin_status":     "status",
     "contact.roomtypename":       "roomTypeShort",
     "contact.booking_source":     "source",
+    "contact.booking_channel":    "source",
     "contact.gender":             "gender",
 }
 
