@@ -88,88 +88,13 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
     else:
         ghl_log = {"success": None, "action": "skipped_no_config"}
 
-    # ── Meta CAPI + Google Ads (non-website sources only) ────────────────────
-    if is_website_source:
-        logger.info("Meta/Google Ads skipped — website source (%s)", source)
-        meta_log = {"success": None, "action": "skipped_website_source"}
-        gads_log = {"success": None, "action": "skipped_website_source"}
-    else:
-        # 1948 Meta CAPI temporarily disabled — pending rebuild
-        if branch == "1948":
-            meta_log = {"success": None, "action": "skipped_disabled"}
-        elif cfg["meta_pixel_id"] and cfg["meta_access_token"]:
-            try:
-                meta_result = send_purchase_event(
-                    reservation=reservation,
-                    pixel_id=cfg["meta_pixel_id"],
-                    access_token=cfg["meta_access_token"],
-                    currency=cfg["currency"],
-                    tz_offset_hours=cfg["tz_offset_hours"],
-                    event_time_extra_offset=cfg["event_time_extra_offset"],
-                )
-                ok = meta_result.get("success", False)
-                logger.info("Meta CAPI branch=%s success=%s", branch, ok)
-                err = meta_result.get("error")
-                if not ok and not err and meta_result.get("response"):
-                    err = str(meta_result["response"])[:200]
-                meta_log = {"success": ok, "error": err}
-            except Exception as e:
-                logger.error("Meta CAPI error branch=%s reservation=%s: %s", branch, reservation_id, e)
-                meta_log = {"success": False, "error": str(e)}
-        else:
-            meta_log = {"success": None, "action": "skipped_no_config"}
+    # ── Meta CAPI + Google Ads — disabled pending rebuild ────────────────────
+    meta_log = {"success": None, "action": "skipped_disabled"}
+    gads_log = {"success": None, "action": "skipped_disabled"}
 
-        if (
-            cfg["google_ads_customer_id"]
-            and cfg["google_ads_conversion_single"]
-            and settings.GOOGLE_DEVELOPER_TOKEN
-            and settings.GOOGLE_REFRESH_TOKEN
-        ):
-            try:
-                gads_result = upload_offline_conversion(
-                    reservation=reservation,
-                    customer_id=cfg["google_ads_customer_id"],
-                    developer_token=settings.GOOGLE_DEVELOPER_TOKEN,
-                    client_id=settings.GOOGLE_CLIENT_ID,
-                    client_secret=settings.GOOGLE_CLIENT_SECRET,
-                    refresh_token=settings.GOOGLE_REFRESH_TOKEN,
-                    conversion_action_single=cfg["google_ads_conversion_single"],
-                    conversion_action_both=cfg["google_ads_conversion_both"],
-                    login_customer_id=settings.GOOGLE_LOGIN_CUSTOMER_ID,
-                    currency=cfg["currency"],
-                    tz_offset_hours=cfg["tz_offset_hours"],
-                    event_time_extra_offset=cfg["event_time_extra_offset"],
-                    conversion_action_phone=cfg.get("google_ads_conversion_phone", ""),
-                )
-                ok = gads_result.get("success", False)
-                logger.info("Google Ads branch=%s case=%s success=%s", branch, gads_result.get("case"), ok)
-                gads_log = {
-                    "success": ok,
-                    "case": gads_result.get("case"),
-                    "error": gads_result.get("error") or gads_result.get("partial_failure_error"),
-                }
-            except Exception as e:
-                logger.error("Google Ads error branch=%s reservation=%s: %s", branch, reservation_id, e)
-                gads_log = {"success": False, "error": str(e)}
-        else:
-            gads_log = {"success": None, "action": "skipped_no_config"}
-
-    # ── TikTok Events API — Saigon only ──────────────────────────────────────
-    if branch == "saigon" and cfg.get("tiktok_access_token") and cfg.get("tiktok_event_source_id"):
-        try:
-            tt_result = send_complete_payment_event(
-                reservation=reservation,
-                access_token=cfg["tiktok_access_token"],
-                event_source_id=cfg["tiktok_event_source_id"],
-            )
-            ok = tt_result.get("success", False)
-            logger.info("TikTok CAPI branch=%s success=%s", branch, ok)
-            tiktok_log = {"success": ok, "error": tt_result.get("error")}
-        except Exception as e:
-            logger.error("TikTok CAPI error branch=%s reservation=%s: %s", branch, reservation_id, e)
-            tiktok_log = {"success": False, "error": str(e)}
-    elif branch == "saigon":
-        tiktok_log = {"success": None, "action": "skipped_no_config"}
+    # ── TikTok Events API — disabled pending rebuild ─────────────────────────
+    if branch == "saigon":
+        tiktok_log = {"success": None, "action": "skipped_disabled"}
 
     webhook_log.record(
         reservation_id=reservation_id,
