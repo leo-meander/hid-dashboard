@@ -288,11 +288,12 @@ def get_marketing_activity_summary(
 
 
 def _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native):
-    """Cloudbeds KOL revenue by check-in month — matches KOL Engine dashboard.
+    """Cloudbeds KOL revenue by reservation date — matches KOL Engine Insights page.
 
-    Uses check_in_date (not reservation_date) so monthly totals match what the
-    KOL Engine dashboard displays. Does not exclude ads-attributed bookings;
-    that de-duplication was causing numbers ~5-8x lower than the dashboard.
+    Uses reservation_date (booking date) matching the KOL Engine Insights "by
+    reservation date" attribution. Does not re-exclude ads bookings here; the
+    KOL Engine API (/api/public/kol-revenue/) was doing that but returned numbers
+    significantly lower than the Insights page, so we go to Cloudbeds directly.
     """
     rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
     q = db.query(
@@ -300,8 +301,8 @@ def _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native):
         func.coalesce(func.sum(rev_col), 0).label("revenue"),
     ).filter(
         Reservation.room_type.ilike("%KOL_%"),
-        Reservation.check_in_date >= d_from,
-        Reservation.check_in_date <= d_to,
+        Reservation.reservation_date >= d_from,
+        Reservation.reservation_date <= d_to,
         _status_filter(),
         _revenue_source_filter(),
     )
