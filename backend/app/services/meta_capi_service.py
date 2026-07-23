@@ -32,19 +32,24 @@ def _clean_phone(raw: Optional[str]) -> Optional[str]:
     return cleaned if len(cleaned) > 5 else None
 
 
-def _parse_event_time(date_created: Optional[str]) -> Optional[int]:
+def _parse_event_time(
+    date_created: Optional[str],
+    tz_offset_hours: int = 8,
+    extra_offset_hours: int = 1,
+) -> Optional[int]:
     """
-    Convert Cloudbeds dateCreated (Asia/Taipei, 'YYYY-MM-DD HH:mm') to Unix timestamp.
-    Subtracts 1 hour to match the Make formula: addHours(..., -1).
+    Convert Cloudbeds dateCreated to Unix timestamp.
+
+    Mirrors Make formula: addHours(parseDate(date, branch_timezone), -extra_offset)
+      - tz_offset_hours: UTC offset of branch local time (8=Taipei, 9=Tokyo, 7=Saigon)
+      - extra_offset_hours: additional hours subtracted (Make's addHours value)
     """
     if not date_created:
         return None
     from datetime import datetime, timezone, timedelta
     try:
-        # Cloudbeds returns Asia/Taipei time (UTC+8)
         local_dt = datetime.strptime(date_created[:16], "%Y-%m-%d %H:%M")
-        # Treat as UTC+8, then subtract 1h (Make formula: addHours(..., -1))
-        utc_dt = local_dt - timedelta(hours=8) - timedelta(hours=1)
+        utc_dt = local_dt - timedelta(hours=tz_offset_hours) - timedelta(hours=extra_offset_hours)
         return int(utc_dt.replace(tzinfo=timezone.utc).timestamp())
     except (ValueError, TypeError):
         return None
@@ -61,6 +66,9 @@ def send_purchase_event(
     reservation: dict,
     pixel_id: str,
     access_token: str,
+    currency: str = "TWD",
+    tz_offset_hours: int = 8,
+    event_time_extra_offset: int = 1,
 ) -> dict:
     """
     Send a Purchase event to Meta CAPI for the given reservation.
@@ -70,7 +78,11 @@ def send_purchase_event(
     guest_list = reservation.get("guestList") or {}
     guest = _first_guest(guest_list)
 
-    event_time = _parse_event_time(reservation.get("dateCreated"))
+    event_time = _parse_event_time(
+        reservation.get("dateCreated"),
+        tz_offset_hours=tz_offset_hours,
+        extra_offset_hours=event_time_extra_offset,
+    )
     if not event_time:
         logger.warning("Meta CAPI: could not parse dateCreated=%s", reservation.get("dateCreated"))
         return {"success": False, "error": "invalid_event_time"}
@@ -122,7 +134,7 @@ def send_purchase_event(
         "user_data": user_data,
         "custom_data": {
             "value": total,
-            "currency": "TWD",
+            "currency": currency,
             "order_id": str(reservation.get("reservationID", "")),
             "Source": reservation.get("source", ""),
         },
