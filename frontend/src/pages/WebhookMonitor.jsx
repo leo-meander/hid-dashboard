@@ -64,6 +64,7 @@ export default function WebhookMonitor() {
   const [lastRefresh, setLastRefresh] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [polling, setPolling] = useState(false);
+  const [pollStatus, setPollStatus] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -91,6 +92,11 @@ export default function WebhookMonitor() {
 
   return (
     <div className="max-w-7xl mx-auto">
+      {pollStatus && (
+        <div className="mb-3 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded text-sm text-emerald-700">
+          ⏳ {pollStatus}
+        </div>
+      )}
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-xl font-semibold text-gray-800">Webhook Monitor</h1>
@@ -120,18 +126,29 @@ export default function WebhookMonitor() {
           <button
             onClick={async () => {
               setPolling(true);
+              setPollStatus("Đang gọi Cloudbeds…");
               try {
                 await axios.post("/api/admin/poll-now", null, { params: { minutes: 60 } });
-                setTimeout(load, 3000);
+                // Poll background job runs async — wait then retry until count changes
+                const before = events.length;
+                for (let i = 0; i < 6; i++) {
+                  await new Promise(r => setTimeout(r, 5000));
+                  setPollStatus(`Chờ kết quả… (${(i + 1) * 5}s)`);
+                  await load();
+                  if (events.length !== before) break;
+                }
+                setPollStatus("");
+              } catch {
+                setPollStatus("Lỗi — thử lại");
               } finally {
                 setPolling(false);
               }
             }}
             disabled={polling}
             title="Pull last 60 min of reservations from Cloudbeds now"
-            className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50"
+            className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50 min-w-[90px]"
           >
-            {polling ? "Polling…" : "Poll Now"}
+            {polling ? "Đang poll…" : "Poll Now"}
           </button>
           <button
             onClick={load}
