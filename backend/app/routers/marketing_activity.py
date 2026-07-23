@@ -34,7 +34,7 @@ from app.models.reservation import Reservation
 from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
 from app.services.ads_platform import branch_slug_for, get_client as _get_ads_client
 from app.services.crm_filters import crm_rate_plan_label_expr, crm_reservation_filter
-from app.services.kol_engine import fetch_kol_revenue, resolve_hotel_id_from_branch_name
+from app.services.kol_engine import fetch_kol_revenue, fetch_kol_reservation_ids, resolve_hotel_id_from_branch_name
 from app.config import settings
 
 router = APIRouter()
@@ -307,14 +307,19 @@ def _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native):
 
 
 def _fetch_kol_totals_one_month(db, branch_id, branch_obj, hotel_id, year, month, use_native):
-    """Fetch KOL for a single (year, month) from the KOL Engine API.
+    """Fetch KOL revenue for a single month by joining KOL Engine reservation IDs
+    with HiD's own Cloudbeds reservation data.
 
-    Falls back to Cloudbeds on API failure.
+    KOL Engine returns the exact set of cloudbeds_reservation_ids it attributes
+    to KOL campaigns (applying the same ads exclusion as Insights). HiD then
+    sums those reservation rows directly — matching the Insights page numbers.
+
+    Falls back to room_type filter if the new endpoint is unavailable.
     """
     d_from = date(year, month, 1)
     d_to = date(year, month, calendar.monthrange(year, month)[1])
 
-    data = fetch_kol_revenue(
+    res_ids = fetch_kol_reservation_ids(
         base_url=settings.KOL_ENGINE_URL,
         org_slug=settings.KOL_TARGETS_ORG_SLUG,
         api_key=settings.KOL_REVENUE_API_SECRET,
@@ -322,32 +327,26 @@ def _fetch_kol_totals_one_month(db, branch_id, branch_obj, hotel_id, year, month
         month=month,
         hotel_id=hotel_id,
     )
-    if data is None:
-        log.warning("KOL revenue API unavailable for %s-%s — falling back to Cloudbeds", year, month)
+
+    if res_ids is None:
+        log.warning("KOL reservation IDs unavailable for %s-%s — falling back to room_type filter", year, month)
         return _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native)
 
-    branches = data.get("branches") or []
+    if not res_ids:
+        return 0, 0.0
 
+    rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
+    q = db.query(
+        func.count(Reservation.id).label("bookings"),
+        func.coalesce(func.sum(rev_col), 0).label("revenue"),
+    ).filter(
+        Reservation.cloudbeds_reservation_id.in_(res_ids),
+        _status_filter(),
+    )
     if branch_id:
-        if not hotel_id:
-            return _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native)
-        match = next((b for b in branches if b.get("hotel_id") == hotel_id), None)
-        if not match:
-            return 0, 0.0
-        bookings = int(match.get("bookings") or 0)
-        revenue_vnd = float(match.get("revenue_vnd") or match.get("revenue") or 0)
-        if use_native and branch_obj:
-            cur = (branch_obj.currency or "VND").upper()
-            rate = _get_rate_to_vnd(cur)
-            revenue = _vnd_to_native(revenue_vnd, cur, rate)
-        else:
-            revenue = revenue_vnd
-        return bookings, revenue
-
-    totals = data.get("totals") or {}
-    bookings = int(totals.get("bookings") or 0)
-    revenue = sum(float(b.get("revenue_vnd") or 0) for b in branches)
-    return bookings, revenue
+        q = q.filter(Reservation.branch_id == branch_id)
+    row = q.one()
+    return int(row.bookings or 0), float(row.revenue or 0)
 
 
 def _fetch_kol_totals(db, branch_id, d_from, d_to, use_native):
