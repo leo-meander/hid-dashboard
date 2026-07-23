@@ -381,6 +381,7 @@ def _fetch_all_records(cutoff_ms: Optional[int] = None) -> list[dict]:
 
 _lark_cache: dict = {}  # year → (fetched_at, data)
 _LARK_TTL = 600
+_LARK_START_MONTH = 7  # data clean from July 2026 onwards; ignore earlier months
 
 
 def _get_yearly_agg(year: int) -> dict:
@@ -414,8 +415,10 @@ def _get_yearly_agg(year: int) -> dict:
         ym = _parse_month_year(rec.get("Deadline"))
         if not ym or ym[0] != year:
             continue
-
         _, month = ym
+        if month < _LARK_START_MONTH:
+            continue
+
         images = float(rec.get("Design-only_Number of images") or 0)
         videos = float(rec.get("Design-only_Number of video") or 0)
         if images == 0 and videos == 0:
@@ -459,6 +462,8 @@ def get_designer_actuals_yearly(year: int, nora_name: str = "Nora") -> dict[int,
         if not ym or ym[0] != year:
             continue
         _, month = ym
+        if month < _LARK_START_MONTH:
+            continue
 
         # Use branch from project if available, else 'all'
         project = _resolve_project(rec.get("Project"))
@@ -508,6 +513,8 @@ def get_delivery_rate_yearly(year: int, pic_name: str = "Nora") -> dict[int, dic
         if not ym or ym[0] != year:
             continue
         _, month = ym
+        if month < _LARK_START_MONTH:
+            continue
 
         if month not in counts:
             counts[month] = {"on_time": 0, "total": 0}
@@ -536,6 +543,8 @@ def get_task_completion_rate_yearly(year: int) -> dict[int, dict[str, dict]]:
         if not ym or ym[0] != year:
             continue
         _, month = ym
+        if month < _LARK_START_MONTH:
+            continue
 
         status = str(rec.get("Status") or "").lower().strip()
         if month not in counts:
@@ -630,6 +639,8 @@ def get_task_overview_yearly(year: int) -> dict:
         if ym[0] != year:
             continue
         _, month = ym
+        if month < _LARK_START_MONTH:
+            continue
 
         bucket = agg[pic_id][month]
         bucket["total_tasks"] += 1
