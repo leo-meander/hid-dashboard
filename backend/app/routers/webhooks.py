@@ -94,7 +94,10 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
         meta_log = {"success": None, "action": "skipped_website_source"}
         gads_log = {"success": None, "action": "skipped_website_source"}
     else:
-        if cfg["meta_pixel_id"] and cfg["meta_access_token"]:
+        # 1948 Meta CAPI temporarily disabled — pending rebuild
+        if branch == "1948":
+            meta_log = {"success": None, "action": "skipped_disabled"}
+        elif cfg["meta_pixel_id"] and cfg["meta_access_token"]:
             try:
                 meta_result = send_purchase_event(
                     reservation=reservation,
