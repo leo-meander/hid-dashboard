@@ -50,6 +50,9 @@ import HolidayIntel from "./pages/HolidayIntel";
 // Alert System
 import Alerts from "./pages/Alerts";
 
+// Webhook Monitor (admin)
+import WebhookMonitor from "./pages/WebhookMonitor";
+
 // Rate Plan Quotas
 import RatePlanQuotas from "./pages/RatePlanQuotas";
 
@@ -139,9 +142,10 @@ function AppRoutes() {
             <Route path="/team-kpi" element={<TeamKPI />} />
 
             {/* Settings & Admin */}
-            <Route path="/settings" element={<Settings />} />
-            <Route path="/users"    element={<Users />} />
-            <Route path="/gov-data" element={<GovVisitorData />} />
+            <Route path="/settings"         element={<Settings />} />
+            <Route path="/users"            element={<Users />} />
+            <Route path="/gov-data"         element={<GovVisitorData />} />
+            <Route path="/webhook-monitor"  element={<WebhookMonitor />} />
 
             {/* Phase 1 legacy */}
             <Route path="/dashboard"    element={<Dashboard />} />

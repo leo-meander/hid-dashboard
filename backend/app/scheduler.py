@@ -24,10 +24,12 @@ scheduler = AsyncIOScheduler(
 
 
 def setup_scheduler(app):
-    """Register the heartbeat job and attach scheduler lifecycle to FastAPI."""
+    """Register scheduled jobs and attach scheduler lifecycle to FastAPI."""
 
     @app.on_event("startup")
     async def start_scheduler():
+        from app.routers.webhooks import poll_new_reservations
+
         def _heartbeat():
             logger.info("Scheduler heartbeat — server alive")
 
@@ -39,8 +41,16 @@ def setup_scheduler(app):
             executor="default",
         )
 
+        scheduler.add_job(
+            poll_new_reservations,
+            trigger=IntervalTrigger(minutes=10),
+            id="cloudbeds_reservation_poll",
+            replace_existing=True,
+            executor="default",
+        )
+
         scheduler.start()
-        logger.info("Scheduler started — heartbeat only; sync jobs run on GitHub Actions")
+        logger.info("Scheduler started — polling Cloudbeds every 10 min")
 
     @app.on_event("shutdown")
     async def stop_scheduler():

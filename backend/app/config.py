@@ -51,6 +51,47 @@ class Settings(BaseSettings):
     GHL_API_KEY_OSAKA: str = ""
     GHL_WEBHOOK_SECRET: str = ""
 
+    # Cloudbeds inbound webhook secret (set in Cloudbeds → Webhooks → Secret)
+    CLOUDBEDS_WEBHOOK_SECRET: str = ""
+
+    # Meta Conversions API — per-branch pixel + system user access token
+    META_PIXEL_ID_1948: str = ""
+    META_ACCESS_TOKEN_1948: str = ""
+    META_PIXEL_ID_SAIGON: str = ""
+    META_ACCESS_TOKEN_SAIGON: str = ""
+    META_PIXEL_ID_TAIPEI: str = ""
+    META_ACCESS_TOKEN_TAIPEI: str = ""
+    META_PIXEL_ID_OANI: str = ""
+    META_ACCESS_TOKEN_OANI: str = ""
+    META_PIXEL_ID_OSAKA: str = ""
+    META_ACCESS_TOKEN_OSAKA: str = ""
+
+    # Google Ads offline conversion — shared OAuth, per-branch customer/conversion IDs
+    # Reuses GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN (same OAuth app)
+    # GOOGLE_DEVELOPER_TOKEN and GOOGLE_LOGIN_CUSTOMER_ID already set in env (MCC manager account)
+    GOOGLE_DEVELOPER_TOKEN: str = ""
+    GOOGLE_LOGIN_CUSTOMER_ID: str = ""
+    GOOGLE_ADS_CUSTOMER_ID_1948: str = ""
+    GOOGLE_ADS_CONVERSION_SINGLE_1948: str = ""   # email-only OR phone-only
+    GOOGLE_ADS_CONVERSION_BOTH_1948: str = ""     # both email + phone
+    GOOGLE_ADS_CUSTOMER_ID_SAIGON: str = ""
+    GOOGLE_ADS_CONVERSION_SINGLE_SAIGON: str = ""
+    GOOGLE_ADS_CONVERSION_BOTH_SAIGON: str = ""
+    GOOGLE_ADS_CUSTOMER_ID_TAIPEI: str = ""
+    GOOGLE_ADS_CONVERSION_SINGLE_TAIPEI: str = ""
+    GOOGLE_ADS_CONVERSION_BOTH_TAIPEI: str = ""
+    GOOGLE_ADS_CUSTOMER_ID_OANI: str = ""
+    GOOGLE_ADS_CONVERSION_SINGLE_OANI: str = ""   # email-only
+    GOOGLE_ADS_CONVERSION_PHONE_OANI: str = ""    # phone-only (different action for Oani)
+    GOOGLE_ADS_CONVERSION_BOTH_OANI: str = ""
+    GOOGLE_ADS_CUSTOMER_ID_OSAKA: str = ""
+    GOOGLE_ADS_CONVERSION_SINGLE_OSAKA: str = ""
+    GOOGLE_ADS_CONVERSION_BOTH_OSAKA: str = ""
+
+    # TikTok Events API — Saigon only
+    TIKTOK_ACCESS_TOKEN_SAIGON: str = ""
+    TIKTOK_EVENT_SOURCE_ID_SAIGON: str = ""
+
     # KOL Media Engine
     KOL_ENGINE_URL: str = "https://kol-media-engine.zeabur.app"
     KOL_ENGINE_ORG_ID: str = "7c7b450e-ffa2-42fb-8742-f28916e811d8"
@@ -130,6 +171,93 @@ class Settings(BaseSettings):
             if pid and key:
                 result[str(pid)] = key
         return result
+
+    @property
+    def cloudbeds_property_to_branch(self) -> Dict[str, str]:
+        """Map Cloudbeds property_id → branch slug (1948/saigon/taipei/oani/osaka)."""
+        return {
+            str(self.CB_PROPERTY_ID_1948): "1948",
+            str(self.CB_PROPERTY_ID_SAIGON): "saigon",
+            str(self.CB_PROPERTY_ID_TAIPEI): "taipei",
+            str(self.CB_PROPERTY_ID_OANI): "oani",
+            str(self.CB_PROPERTY_ID_OSAKA): "osaka",
+        }
+
+    def get_webhook_config_for_branch(self, branch: str) -> dict:
+        """Return all webhook-related config for a branch slug."""
+        b = branch.lower()
+        ghl_loc = {
+            "1948":   (self.GHL_LOCATION_ID_1948,   self.GHL_API_KEY_1948),
+            "saigon": (self.GHL_LOCATION_ID_SAIGON, self.GHL_API_KEY_SAIGON),
+            "taipei": (self.GHL_LOCATION_ID_TAIPEI, self.GHL_API_KEY_TAIPEI),
+            "oani":   (self.GHL_LOCATION_ID_OANI,   self.GHL_API_KEY_OANI),
+            "osaka":  (self.GHL_LOCATION_ID_OSAKA,  self.GHL_API_KEY_OSAKA),
+        }.get(b, ("", ""))
+
+        meta = {
+            "1948":   (self.META_PIXEL_ID_1948,   self.META_ACCESS_TOKEN_1948),
+            "saigon": (self.META_PIXEL_ID_SAIGON, self.META_ACCESS_TOKEN_SAIGON),
+            "taipei": (self.META_PIXEL_ID_TAIPEI, self.META_ACCESS_TOKEN_TAIPEI),
+            "oani":   (self.META_PIXEL_ID_OANI,   self.META_ACCESS_TOKEN_OANI),
+            "osaka":  (self.META_PIXEL_ID_OSAKA,  self.META_ACCESS_TOKEN_OSAKA),
+        }.get(b, ("", ""))
+
+        gads_customer = {
+            "1948":   self.GOOGLE_ADS_CUSTOMER_ID_1948,
+            "saigon": self.GOOGLE_ADS_CUSTOMER_ID_SAIGON,
+            "taipei": self.GOOGLE_ADS_CUSTOMER_ID_TAIPEI,
+            "oani":   self.GOOGLE_ADS_CUSTOMER_ID_OANI,
+            "osaka":  self.GOOGLE_ADS_CUSTOMER_ID_OSAKA,
+        }.get(b, "")
+
+        gads_single = {
+            "1948":   self.GOOGLE_ADS_CONVERSION_SINGLE_1948,
+            "saigon": self.GOOGLE_ADS_CONVERSION_SINGLE_SAIGON,
+            "taipei": self.GOOGLE_ADS_CONVERSION_SINGLE_TAIPEI,
+            "oani":   self.GOOGLE_ADS_CONVERSION_SINGLE_OANI,
+            "osaka":  self.GOOGLE_ADS_CONVERSION_SINGLE_OSAKA,
+        }.get(b, "")
+
+        # Oani has a separate phone-only conversion action; all others use the same as single
+        gads_phone = {
+            "oani": self.GOOGLE_ADS_CONVERSION_PHONE_OANI,
+        }.get(b, "")
+
+        gads_both = {
+            "1948":   self.GOOGLE_ADS_CONVERSION_BOTH_1948,
+            "saigon": self.GOOGLE_ADS_CONVERSION_BOTH_SAIGON,
+            "taipei": self.GOOGLE_ADS_CONVERSION_BOTH_TAIPEI,
+            "oani":   self.GOOGLE_ADS_CONVERSION_BOTH_OANI,
+            "osaka":  self.GOOGLE_ADS_CONVERSION_BOTH_OSAKA,
+        }.get(b, "")
+
+        # Per-branch timezone and currency (mirrors Make.com blueprint formulas)
+        # tz_offset_hours: UTC offset of the branch local time
+        # event_time_extra_offset: hours subtracted on top (Make's addHours value)
+        branch_meta = {
+            "1948":   {"currency": "TWD", "tz_offset_hours": 8, "event_time_extra_offset": 1},
+            "taipei": {"currency": "TWD", "tz_offset_hours": 8, "event_time_extra_offset": 1},
+            "oani":   {"currency": "TWD", "tz_offset_hours": 8, "event_time_extra_offset": 1},
+            "osaka":  {"currency": "JPY", "tz_offset_hours": 9, "event_time_extra_offset": 2},
+            "saigon": {"currency": "VND", "tz_offset_hours": 7, "event_time_extra_offset": 0},
+        }.get(b, {"currency": "TWD", "tz_offset_hours": 8, "event_time_extra_offset": 1})
+
+        return {
+            "ghl_location_id": ghl_loc[0],
+            "ghl_api_key": ghl_loc[1],
+            "meta_pixel_id": meta[0],
+            "meta_access_token": meta[1],
+            "google_ads_customer_id": gads_customer,
+            "google_ads_conversion_single": gads_single,
+            "google_ads_conversion_phone": gads_phone,
+            "google_ads_conversion_both": gads_both,
+            "currency": branch_meta["currency"],
+            "tz_offset_hours": branch_meta["tz_offset_hours"],
+            "event_time_extra_offset": branch_meta["event_time_extra_offset"],
+            # TikTok — Saigon only
+            "tiktok_access_token": self.TIKTOK_ACCESS_TOKEN_SAIGON if b == "saigon" else "",
+            "tiktok_event_source_id": self.TIKTOK_EVENT_SOURCE_ID_SAIGON if b == "saigon" else "",
+        }
 
     def get_api_key_for_property(self, property_id: str) -> Optional[str]:
         return self.property_api_key_map.get(str(property_id)) or (
