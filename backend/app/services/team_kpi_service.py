@@ -172,8 +172,8 @@ def get_kol_actuals_yearly_db(
                 .join(Reservation, Reservation.branch_id == _Branch.id)
                 .filter(
                     Reservation.room_type.ilike("%KOL_%"),
-                    Reservation.reservation_date >= d_from,
-                    Reservation.reservation_date <= d_to,
+                    Reservation.check_in_date >= d_from,
+                    Reservation.check_in_date <= d_to,
                     Reservation.status.notin_(["cancelled", "no_show"]),
                 )
                 .group_by(_Branch.name)
