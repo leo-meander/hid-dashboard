@@ -1,0 +1,50 @@
+name: Cron — Marketing Activity cache
+
+# 01:00 ICT (UTC+7) = 18:00 UTC — after ads-platform sync (23:00 UTC prev day)
+# and budget-actuals sync so cache has fresh cost + revenue data.
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run migrations
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          SYNC_TRIGGER_TOKEN: ${{ secrets.SYNC_TRIGGER_TOKEN }}
+        run: |
+          set -euo pipefail
+          http_code=$(curl -sS -o response.json -w "%{http_code}" \
+            -X POST "${BACKEND_URL}/api/sync/run-migrations" \
+            -H "X-Sync-Token: ${SYNC_TRIGGER_TOKEN}" \
+            --max-time 60) || true
+          cat response.json
+          echo
+          echo "Migration HTTP $http_code"
+
+      - name: Refresh marketing activity cache
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          SYNC_TRIGGER_TOKEN: ${{ secrets.SYNC_TRIGGER_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt..."
+            http_code=$(curl -sS -o response.json -w "%{http_code}" \
+              -X POST "${BACKEND_URL}/api/marketing-activity/sync-cache" \
+              -H "X-Sync-Token: ${SYNC_TRIGGER_TOKEN}" \
+              --max-time 300) || true
+            cat response.json
+            echo
+            if [ "$http_code" = "200" ]; then
+              echo "OK"
+              exit 0
+            fi
+            echo "Got HTTP $http_code, retrying in 30s..."
+            sleep 30
+          done
+          echo "Failed after 3 attempts"
+          exit 1

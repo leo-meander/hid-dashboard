@@ -1,7 +1,8 @@
 /**
  * Weekly Brief — KPI cards, revenue/OCC/ADR trends, per-branch table, OTA mix
  */
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useMemo, useCallback, useState } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import {
   BarChart, Bar, LineChart, Line,
@@ -68,7 +69,7 @@ function mergeOtaMix(rows) {
 
 function KpiCard({ label, value, change, suffix = "" }) {
   const changeColor = change == null ? "" : change >= 0 ? "text-emerald-600" : "text-red-500";
-  const arrow = change == null ? "" : change >= 0 ? "\u2191" : "\u2193";
+  const arrow = change == null ? "" : change >= 0 ? "↑" : "↓";
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 flex flex-col justify-between min-h-[100px]">
       <p className="text-xs text-gray-500 uppercase tracking-wide">{label}</p>
@@ -116,7 +117,7 @@ function WeeklyTable({ rows, branchMap }) {
     { key: "cancellation_pct", label: "Cancel%", align: "right" },
   ];
 
-  const arrow = (key) => sortKey === key ? (sortAsc ? " \u25B2" : " \u25BC") : "";
+  const arrow = (key) => sortKey === key ? (sortAsc ? " ▲" : " ▼") : "";
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
@@ -176,38 +177,38 @@ export default function PerformanceWeekly() {
     return m;
   }, [branches]);
 
-  const [weeklyByBranch, setWeeklyByBranch] = useState({});
-  const [otaMixByBranch, setOtaMixByBranch] = useState({});
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (!branches.length) return;
-    setLoading(true);
-
+  const targetBranchIds = useMemo(() => {
     const targetBranches = !isAll && selected
       ? branches.filter((b) => b.id === selected)
       : branches;
-
-    const weeklyFetches = targetBranches.map((b) =>
-      axios.get(`/api/metrics/weekly?branch_id=${b.id}`).then((r) => [b.id, r.data.data || []])
-    );
-    const otaFetches = targetBranches.map((b) =>
-      axios.get(`/api/metrics/ota-mix?branch_id=${b.id}`).then((r) => [b.id, r.data.data || []])
-    );
-
-    Promise.all([Promise.all(weeklyFetches), Promise.all(otaFetches)])
-      .then(([weeklyResults, otaResults]) => {
-        const wMap = {};
-        for (const [id, rows] of weeklyResults) wMap[id] = rows;
-        setWeeklyByBranch(wMap);
-
-        const oMap = {};
-        for (const [id, rows] of otaResults) oMap[id] = mergeOtaMix(rows);
-        setOtaMixByBranch(oMap);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
+    return targetBranches.map((b) => b.id);
   }, [branches, selected, isAll]);
+
+  const { data: pageData, isPending, isPlaceholderData } = useQuery({
+    queryKey: ["performance-weekly", targetBranchIds],
+    queryFn: () => {
+      const weeklyFetches = targetBranchIds.map((id) =>
+        axios.get(`/api/metrics/weekly?branch_id=${id}`).then((r) => [id, r.data.data || []])
+      );
+      const otaFetches = targetBranchIds.map((id) =>
+        axios.get(`/api/metrics/ota-mix?branch_id=${id}`).then((r) => [id, r.data.data || []])
+      );
+      return Promise.all([Promise.all(weeklyFetches), Promise.all(otaFetches)]).then(
+        ([weeklyResults, otaResults]) => {
+          const weeklyByBranch = {};
+          for (const [id, rows] of weeklyResults) weeklyByBranch[id] = rows;
+          const otaMixByBranch = {};
+          for (const [id, rows] of otaResults) otaMixByBranch[id] = mergeOtaMix(rows);
+          return { weeklyByBranch, otaMixByBranch };
+        }
+      );
+    },
+    enabled: branches.length > 0,
+    placeholderData: keepPreviousData,
+  });
+
+  const weeklyByBranch = pageData?.weeklyByBranch ?? {};
+  const otaMixByBranch = pageData?.otaMixByBranch ?? {};
 
   const branchIds = useMemo(() => Object.keys(weeklyByBranch), [weeklyByBranch]);
 
@@ -337,7 +338,7 @@ export default function PerformanceWeekly() {
 
   /* ── Render ───────────────────────────────────────────────────────────── */
 
-  if (loading) {
+  if (isPending && !pageData) {
     return (
       <div className="space-y-6">
         <div>
@@ -354,10 +355,13 @@ export default function PerformanceWeekly() {
       <div>
         <h1 className="text-xl font-bold text-gray-800">Weekly Brief</h1>
         <p className="text-sm text-gray-500">
-          Last 13 weeks {dateRange && `\u00B7 ${dateRange}`}
+          Last 13 weeks {dateRange && `· ${dateRange}`}
           <SyncBadge timestamp={lastSynced} />
         </p>
       </div>
+
+      {/* Data content — dimmed while serving stale/placeholder data */}
+      <div className={"space-y-6 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
 
       {/* KPI Summary Cards */}
       {kpis && (
@@ -553,6 +557,8 @@ export default function PerformanceWeekly() {
           </div>
         </div>
       )}
+
+      </div>{/* end dimming wrapper */}
     </div>
   );
 }

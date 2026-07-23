@@ -402,6 +402,32 @@ def public_lead_time(
     })
 
 
+# ── Booking Pace by lead time ────────────────────────────────────────────────
+
+@router.get("/metrics/booking-pace")
+def public_metrics_booking_pace(
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+    branch_id: Optional[UUID] = Query(None),
+    lead_time_max: int = Query(15, ge=1, le=90),
+    _key: ApiKey = Depends(verify_api_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Daily booking pace filtered by lead_time <= N days (default 15).
+
+    Per booking_date shows: bookings count, room_nights, revenue_native/vnd,
+    OCC contribution %, and running KPI progress vs monthly target.
+    Use to answer: "how much OCC and revenue did each branch capture per day
+    from last-minute bookings?"
+    """
+    from app.routers.metrics import get_booking_pace_endpoint
+    return get_booking_pace_endpoint(
+        year=year, month=month, branch_id=branch_id,
+        lead_time_max=lead_time_max, db=db,
+    )
+
+
 # ── Events (city / branch demand drivers) ────────────────────────────────────
 
 @router.get("/events")

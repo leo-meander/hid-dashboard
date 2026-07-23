@@ -2,7 +2,8 @@
  * OTA Channel Mix — Cancel Rate & Check-in Rate pivot table
  * Same format as Channel Mix: channels × periods, two section blocks
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import SyncBadge from "../components/SyncBadge";
 import { useBranch } from "../context/BranchContext";
@@ -44,19 +45,17 @@ export default function PerformanceOTA() {
   const [mode,     setMode]     = useState("daily");
   const [months,   setMonths]   = useState(3);      // monthly mode: how many months to show
   const [dateType, setDateType] = useState("check_in");
-  const [data,     setData]     = useState(null);
-  const [loading,  setLoading]  = useState(true);
 
   const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
   const mParam = mode === "monthly" ? `&months=${months}` : "";
 
-  useEffect(() => {
-    setLoading(true);
-    axios.get(`/api/metrics/rates-trend?mode=${mode}&date_type=${dateType}${bParam}${mParam}`)
-      .then(r => setData(r.data.data))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [mode, months, dateType, selected, isAll]);
+  const { data, isPending, isPlaceholderData } = useQuery({
+    queryKey: ["ota-rates-trend", mode, months, dateType, selected, isAll],
+    queryFn: () =>
+      axios.get(`/api/metrics/rates-trend?mode=${mode}&date_type=${dateType}${bParam}${mParam}`)
+        .then(r => r.data.data),
+    placeholderData: keepPreviousData,
+  });
 
   return (
     <div className="space-y-5">
@@ -122,12 +121,14 @@ export default function PerformanceOTA() {
         ))}
       </div>
 
-      {loading || !data ? (
+      {isPending && !data ? (
         <div className="text-gray-400 animate-pulse py-12 text-center">Loading…</div>
-      ) : data.channels.length === 0 ? (
+      ) : !data || data.channels.length === 0 ? (
         <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No data for this period.</div>
       ) : (
-        <RatesPivotTable periods={data.periods} channels={data.channels} />
+        <div className={"transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
+          <RatesPivotTable periods={data.periods} channels={data.channels} />
+        </div>
       )}
     </div>
   );

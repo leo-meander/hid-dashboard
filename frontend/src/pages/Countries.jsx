@@ -1,9 +1,10 @@
 /**
  * Countries — ranking table with Hot / Warm / Cold tiers
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import CountryBadge from "../components/CountryBadge";
 import SyncBadge from "../components/SyncBadge";
 
@@ -13,20 +14,18 @@ export default function Countries() {
   const currentYear = new Date().getFullYear();
   const [year,      setYear]      = useState(currentYear);
   const [month,     setMonth]     = useState(""); // "" = full year
-  const [countries, setCountries] = useState([]);
-  const [loading,   setLoading]   = useState(true);
   const [search,    setSearch]    = useState("");
   const [tierFilter, setTierFilter] = useState("All");
 
-  useEffect(() => {
-    setLoading(true);
-    const params = new URLSearchParams({ year });
-    if (month) params.set("month", month);
-    axios.get(`/api/countries/ranking?${params}`)
-      .then((r) => setCountries(r.data.data || []))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [year, month]);
+  const { data: countries = [], isPending, isPlaceholderData } = useQuery({
+    queryKey: ["countries-ranking", year, month],
+    queryFn: () => {
+      const params = new URLSearchParams({ year });
+      if (month) params.set("month", month);
+      return axios.get(`/api/countries/ranking?${params}`).then((r) => r.data.data || []);
+    },
+    placeholderData: keepPreviousData,
+  });
 
   const filtered = countries.filter((c) => {
     const matchSearch = !search ||
@@ -105,14 +104,14 @@ export default function Countries() {
       </div>
 
       {/* Table */}
-      {loading ? (
+      {isPending && !countries.length ? (
         <div className="text-gray-400 animate-pulse">Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="bg-white rounded-xl border p-8 text-center text-gray-400">
           No countries found.
         </div>
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+        <div className={"bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">
@@ -122,6 +121,7 @@ export default function Countries() {
                 <th className="px-4 py-3 text-right">Score</th>
                 <th className="px-4 py-3 text-right">Bookings</th>
                 <th className="px-4 py-3 text-right">Revenue</th>
+                <th className="px-4 py-3 text-right">ADR</th>
                 <th className="px-4 py-3 text-right">YoY Growth</th>
                 <th className="px-4 py-3 text-center">Details</th>
               </tr>
@@ -161,6 +161,11 @@ export default function Countries() {
                   <td className="px-4 py-2.5 text-right text-gray-700">{c.count?.toLocaleString()}</td>
                   <td className="px-4 py-2.5 text-right text-gray-700">
                     {new Intl.NumberFormat("en").format(Math.round(c.revenue_native || 0))}
+                  </td>
+                  <td className="px-4 py-2.5 text-right text-gray-700">
+                    {c.adr != null
+                      ? new Intl.NumberFormat("en").format(Math.round(c.adr))
+                      : <span className="text-gray-300">—</span>}
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     {c.yoy_growth != null ? (

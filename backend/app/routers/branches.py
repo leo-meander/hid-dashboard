@@ -29,10 +29,18 @@ def list_branches(db: Session = Depends(get_db)):
             cloudbeds_property_id
         FROM branches
         WHERE is_active = true
-        ORDER BY name
     """)).mappings().all()
 
-    return {"success": True, "data": [dict(r) for r in rows]}
+    _ORDER = ("taipei", "1948", "oani", "osaka", "saigon")
+    def _branch_rank(r):
+        name_lower = r["name"].lower()
+        for i, key in enumerate(_ORDER):
+            if key in name_lower:
+                return i
+        return 99
+
+    sorted_rows = sorted(rows, key=_branch_rank)
+    return {"success": True, "data": [dict(r) for r in sorted_rows]}
 
 
 class BranchCapacityUpdate(BaseModel):

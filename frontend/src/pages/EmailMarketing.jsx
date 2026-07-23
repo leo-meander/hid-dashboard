@@ -3,7 +3,8 @@
  * Shows both Workflow campaigns (automated) and Bulk campaigns (one-time blasts).
  * Uses BranchSelector (top bar) for branch filtering.
  */
-import { useEffect, useState, useMemo } from "react";
+import { useState, useMemo } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import {
   getEmailSummary,
@@ -79,11 +80,6 @@ export default function EmailMarketing() {
   const [tab, setTab] = useState("overview");
   const [typeFilter, setTypeFilter] = useState("");
 
-  const [loading, setLoading] = useState(true);
-  const [summary, setSummary] = useState(null);
-  const [daily, setDaily] = useState([]);
-  const [campaigns, setCampaigns] = useState([]);
-
   const ghlBranch = useMemo(() => isAll ? null : branchToGHL(currentBranch?.name), [currentBranch, isAll]);
 
   const params = useMemo(() => {
@@ -93,29 +89,31 @@ export default function EmailMarketing() {
     return p;
   }, [dateFrom, dateTo, typeFilter, ghlBranch]);
 
-  useEffect(() => {
-    setLoading(true);
-
-    if (tab === "overview") {
+  const { data: overviewData, isPending: overviewPending, isPlaceholderData: overviewPlaceholder } = useQuery({
+    queryKey: ["email-overview", params],
+    queryFn: () =>
       Promise.all([
         getEmailSummary(params),
         getEmailDaily(params),
         getEmailByCampaign(params),
-      ])
-        .then(([s, d, c]) => {
-          setSummary(s);
-          setDaily(d || []);
-          setCampaigns(c || []);
-        })
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    } else if (tab === "campaigns") {
-      getEmailByCampaign(params)
-        .then(c => setCampaigns(c || []))
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    }
-  }, [tab, params]);
+      ]).then(([s, d, c]) => ({ summary: s, daily: d || [], campaigns: c || [] })),
+    enabled: tab === "overview",
+    placeholderData: keepPreviousData,
+  });
+
+  const { data: campaignsData, isPending: campaignsPending, isPlaceholderData: campaignsPlaceholder } = useQuery({
+    queryKey: ["email-campaigns", params],
+    queryFn: () => getEmailByCampaign(params).then(c => c || []),
+    enabled: tab === "campaigns",
+    placeholderData: keepPreviousData,
+  });
+
+  const isPending = tab === "overview" ? overviewPending : campaignsPending;
+  const summary = overviewData?.summary;
+  const daily = overviewData?.daily ?? [];
+  const campaigns = tab === "overview"
+    ? (overviewData?.campaigns ?? [])
+    : (campaignsData ?? []);
 
   return (
     <div className="space-y-6">
@@ -164,19 +162,19 @@ export default function EmailMarketing() {
         </div>
       </div>
 
-      {loading ? (
+      {isPending && !overviewData && !campaignsData ? (
         <div className="text-gray-400 animate-pulse">Loading...</div>
       ) : tab === "overview" ? (
-        <OverviewTab summary={summary} daily={daily} campaigns={campaigns} />
+        <OverviewTab summary={summary} daily={daily} campaigns={campaigns} isPlaceholderData={overviewPlaceholder} />
       ) : (
-        <CampaignsTab campaigns={campaigns} />
+        <CampaignsTab campaigns={campaigns} isPlaceholderData={campaignsPlaceholder} />
       )}
     </div>
   );
 }
 
 /* ── Overview Tab ────────────────────────────────────────────────────────── */
-function OverviewTab({ summary, daily, campaigns }) {
+function OverviewTab({ summary, daily, campaigns, isPlaceholderData }) {
   if (!summary || summary.total_sent === 0) {
     return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No email data for this range.</div>;
   }
@@ -198,7 +196,7 @@ function OverviewTab({ summary, daily, campaigns }) {
   const bulkSent = bulkCampaigns.reduce((s, c) => s + c.sent, 0);
 
   return (
-    <div className="space-y-6">
+    <div className={"space-y-6 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
         {kpis.map(k => (
@@ -258,11 +256,15 @@ function OverviewTab({ summary, daily, campaigns }) {
 }
 
 /* ── Campaigns Tab ───────────────────────────────────────────────────────── */
-function CampaignsTab({ campaigns }) {
+function CampaignsTab({ campaigns, isPlaceholderData }) {
   if (campaigns.length === 0) {
     return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No campaign data.</div>;
   }
-  return <CampaignTable campaigns={campaigns} title={null} />;
+  return (
+    <div className={"transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
+      <CampaignTable campaigns={campaigns} title={null} />
+    </div>
+  );
 }
 
 /* ── Shared Campaign Table ───────────────────────────────────────────────── */

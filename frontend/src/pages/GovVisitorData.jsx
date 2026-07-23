@@ -1,14 +1,34 @@
 import { useState, useEffect, useRef } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useAuth } from "../context/AuthContext";
 import SyncBadge from "../components/SyncBadge";
 
 const MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
 const MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const IMPORT_YEARS = [2023, 2024, 2025, 2026];
 
 const fmt = (n) => n == null ? "—" : new Intl.NumberFormat("en").format(n);
 
+function pct(cur, base) {
+  if (base == null || base === 0) return null;
+  return ((cur - base) / base) * 100;
+}
+
+function DeltaBadge({ value, size = "xs" }) {
+  if (value == null) return null;
+  const sign = value > 0 ? "+" : "";
+  const color = value > 0 ? "text-emerald-600" : "text-red-500";
+  const arrow = value > 0 ? "▲" : "▼";
+  const cls = size === "xs" ? "text-[10px]" : "text-xs";
+  return (
+    <div className={`${cls} ${color} leading-none mt-0.5 whitespace-nowrap`}>
+      {arrow} {sign}{value.toFixed(1)}%
+    </div>
+  );
+}
+
 function api(path, opts = {}) {
-  const token = localStorage.getItem("token");
+  const token = localStorage.getItem("hid_token");
   return fetch(path, {
     ...opts,
     headers: { ...opts.headers, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -18,36 +38,37 @@ function api(path, opts = {}) {
 export default function GovVisitorData() {
   const { isAdmin } = useAuth();
   const fileRef = useRef(null);
+  const queryClient = useQueryClient();
 
-  const [data, setData] = useState([]);
-  const [destinations, setDestinations] = useState([]);
   const [selectedDest, setSelectedDest] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [selectedYear, setSelectedYear] = useState(null);
+  const [compareYear, setCompareYear] = useState(null);
+  const [viewMode, setViewMode] = useState("raw");
+  const [importYear, setImportYear] = useState(2025);
   const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState(null);
 
-  const loadDestinations = () => {
-    api("/api/gov-visitor/destinations").then((j) => {
-      if (j.success) setDestinations(j.data);
-    });
-  };
+  const { data: pageData, isPending, isPlaceholderData } = useQuery({
+    queryKey: ["gov-visitor-data"],
+    queryFn: () =>
+      Promise.all([
+        api("/api/gov-visitor/destinations").then(j => j.success ? j.data : []),
+        api("/api/gov-visitor/years").then(j => j.success ? j.data : []),
+        api("/api/gov-visitor").then(j => j.success ? j.data : []),
+      ]).then(([destinations, years, allData]) => ({ destinations, years, allData })),
+    placeholderData: keepPreviousData,
+  });
 
-  const loadData = (dest) => {
-    setLoading(true);
-    const params = dest ? `?destination=${encodeURIComponent(dest)}` : "";
-    api(`/api/gov-visitor${params}`).then((j) => {
-      if (j.success) setData(j.data);
-    }).finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    loadDestinations();
-    loadData("");
-  }, []);
+  const destinations = pageData?.destinations ?? [];
+  const years = pageData?.years ?? [];
+  const allData = pageData?.allData ?? [];
 
   useEffect(() => {
-    loadData(selectedDest);
-  }, [selectedDest]);
+    if (selectedYear == null && years.length > 0) {
+      setSelectedYear(years[0]);
+      setCompareYear(years[1] ?? null);
+    }
+  }, [years, selectedYear]);
 
   const handleUpload = async () => {
     const file = fileRef.current?.files?.[0];
@@ -56,12 +77,12 @@ export default function GovVisitorData() {
     setMsg(null);
     const fd = new FormData();
     fd.append("file", file);
+    fd.append("year", String(importYear));
     try {
       const j = await api("/api/gov-visitor/import", { method: "POST", body: fd });
       if (j.success) {
-        setMsg({ type: "ok", text: `Imported ${j.data.imported_rows} rows from ${j.data.destinations.join(", ")}` });
-        loadDestinations();
-        loadData(selectedDest);
+        setMsg({ type: "ok", text: `Imported ${j.data.imported_rows} rows (${j.data.year}) · ${j.data.destinations.join(", ")}` });
+        queryClient.invalidateQueries({ queryKey: ["gov-visitor-data"] });
       } else {
         setMsg({ type: "err", text: j.error || "Import failed" });
       }
@@ -73,75 +94,94 @@ export default function GovVisitorData() {
     }
   };
 
-  const handleDeleteDest = async (dest) => {
-    if (!confirm(`Delete all data for "${dest}"?`)) return;
-    const j = await api(`/api/gov-visitor?destination=${encodeURIComponent(dest)}`, { method: "DELETE" });
+  const handleDeleteDest = async (dest, year) => {
+    const label = year ? `"${dest}" (${year})` : `"${dest}" (all years)`;
+    if (!confirm(`Delete all data for ${label}?`)) return;
+    const params = `destination=${encodeURIComponent(dest)}${year ? `&year=${year}` : ""}`;
+    const j = await api(`/api/gov-visitor?${params}`, { method: "DELETE" });
     if (j.success) {
-      setMsg({ type: "ok", text: `Deleted ${j.data.deleted_count} rows for ${dest}` });
-      loadDestinations();
-      loadData(selectedDest);
+      setMsg({ type: "ok", text: `Deleted ${j.data.deleted_count} rows for ${label}` });
+      queryClient.invalidateQueries({ queryKey: ["gov-visitor-data"] });
     }
   };
 
-  // Group data by destination
+  // Group all rows by (destination, year)
   const grouped = {};
-  data.forEach((r) => {
-    if (!grouped[r.destination]) grouped[r.destination] = [];
-    grouped[r.destination].push(r);
+  allData.forEach(r => {
+    const key = `${r.destination}|||${r.data_year ?? "null"}`;
+    if (!grouped[key]) grouped[key] = { dest: r.destination, year: r.data_year, rows: [] };
+    grouped[key].rows.push(r);
+  });
+
+  // Visible groups for raw/mom
+  const rawGroups = Object.values(grouped)
+    .filter(g =>
+      (!selectedDest || g.dest === selectedDest) &&
+      (!selectedYear || g.year === selectedYear || g.year == null)
+    )
+    .sort((a, b) => a.dest.localeCompare(b.dest) || (b.year ?? 0) - (a.year ?? 0));
+
+  // YoY: merge by destination
+  const yoyGroups = {};
+  allData.forEach(r => {
+    if (!yoyGroups[r.destination]) yoyGroups[r.destination] = { curRows: [], priorRows: [] };
+    if (r.data_year === selectedYear) yoyGroups[r.destination].curRows.push(r);
+    if (r.data_year === compareYear) yoyGroups[r.destination].priorRows.push(r);
   });
 
   if (!isAdmin) {
-    return (
-      <div className="text-center py-16 text-gray-400">
-        Admin access required.
-      </div>
-    );
+    return <div className="text-center py-16 text-gray-400">Admin access required.</div>;
+  }
+
+  if (isPending && !pageData) {
+    return <div className="flex items-center justify-center h-40 text-gray-400 text-sm">Loading...</div>;
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-gray-900">Government Visitor Data</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
-            Import & manage government tourism statistics by country
-            <SyncBadge timestamp={data[0]?.data_synced_at} />
-          </p>
-        </div>
+    <div className={"space-y-5 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
+      <div>
+        <h1 className="text-xl font-bold text-gray-900">Government Visitor Data</h1>
+        <p className="text-sm text-gray-500 mt-0.5">
+          Import & manage government tourism statistics by country
+          <SyncBadge timestamp={allData[0]?.data_synced_at} />
+        </p>
       </div>
 
-      {/* Upload section */}
+      {/* Import */}
       <div className="bg-white rounded-lg border border-gray-200 p-5">
-        <div className="flex items-center gap-4">
-          <div className="flex-1">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Import Excel File</label>
-            <p className="text-xs text-gray-400 mb-2">
-              Upload an .xlsx file with sheets named by destination (e.g. Taiwan, Japan, Vietnam).
-              Each sheet: columns = #, Country, Jan–Dec, Sum. Existing data for matching destinations will be replaced.
-            </p>
-            <div className="flex items-center gap-3">
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".xlsx,.xls"
-                className="block w-full text-sm text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
-              />
-              <button
-                onClick={handleUpload}
-                disabled={uploading}
-                className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
-              >
-                {uploading ? "Importing..." : "Import"}
-              </button>
-              <a
-                href="/api/gov-visitor/template"
-                download
-                className="px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded hover:bg-gray-50 whitespace-nowrap flex items-center gap-1.5"
-              >
-                <span className="text-base leading-none">&#8615;</span> Template
-              </a>
-            </div>
-          </div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Import Excel File</label>
+        <p className="text-xs text-gray-400 mb-3">
+          Upload an .xlsx file with sheets named by destination (e.g. Taiwan, Japan, Vietnam).
+          Each sheet: columns = #, Country, Jan–Dec, Sum. Existing data for the matching destination + year will be replaced.
+        </p>
+        <div className="flex items-center gap-3 flex-wrap">
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".xlsx,.xls"
+            className="block text-sm text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+          />
+          <select
+            value={importYear}
+            onChange={e => setImportYear(Number(e.target.value))}
+            className="border border-gray-300 rounded px-3 py-2 text-sm font-medium"
+          >
+            {IMPORT_YEARS.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button
+            onClick={handleUpload}
+            disabled={uploading}
+            className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
+          >
+            {uploading ? "Importing..." : "Import"}
+          </button>
+          <a
+            href="/api/gov-visitor/template"
+            download
+            className="px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded hover:bg-gray-50 flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <span className="text-base leading-none">&#8615;</span> Template
+          </a>
         </div>
         {msg && (
           <div className={`mt-3 text-sm px-3 py-2 rounded ${msg.type === "ok" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600"}`}>
@@ -150,77 +190,381 @@ export default function GovVisitorData() {
         )}
       </div>
 
-      {/* Filter by destination */}
-      <div className="flex items-center gap-3">
-        <label className="text-sm font-medium text-gray-700">Filter:</label>
-        <select
-          value={selectedDest}
-          onChange={(e) => setSelectedDest(e.target.value)}
-          className="border border-gray-300 rounded px-3 py-1.5 text-sm"
-        >
-          <option value="">All Destinations</option>
-          {destinations.map((d) => (
-            <option key={d} value={d}>{d}</option>
+      {/* Manual input */}
+      <ManualAddForm
+        destinations={destinations}
+        years={years}
+        defaultYear={selectedYear}
+        onSaved={() => queryClient.invalidateQueries({ queryKey: ["gov-visitor-data"] })}
+      />
+
+      {/* Filters + view mode */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-gray-600">Destination:</label>
+          <select value={selectedDest} onChange={e => setSelectedDest(e.target.value)}
+            className="border border-gray-300 rounded px-3 py-1.5 text-sm">
+            <option value="">All</option>
+            {destinations.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-gray-600">Year:</label>
+          <select value={selectedYear ?? ""} onChange={e => setSelectedYear(Number(e.target.value) || null)}
+            className="border border-gray-300 rounded px-3 py-1.5 text-sm">
+            <option value="">All</option>
+            {years.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+
+        {viewMode === "yoy" && (
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-gray-600">vs:</label>
+            <select value={compareYear ?? ""} onChange={e => setCompareYear(Number(e.target.value) || null)}
+              className="border border-gray-300 rounded px-3 py-1.5 text-sm">
+              <option value="">—</option>
+              {years.filter(y => y !== selectedYear).map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+        )}
+
+        <div className="ml-auto flex items-center gap-1">
+          {[
+            { key: "raw", label: "Data" },
+            { key: "yoy", label: "YoY" },
+            { key: "mom", label: "MoM" },
+          ].map(({ key, label }) => (
+            <button key={key} onClick={() => setViewMode(key)}
+              className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors ${
+                viewMode === key
+                  ? "bg-indigo-600 text-white"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}>
+              {label}
+            </button>
           ))}
-        </select>
+        </div>
       </div>
 
-      {loading && (
-        <div className="flex items-center justify-center h-40 text-gray-400 text-sm">Loading...</div>
-      )}
-
-      {!loading && data.length === 0 && (
+      {allData.length === 0 && (
         <div className="text-center py-16 text-gray-400">
           No government visitor data yet. Import an Excel file to get started.
         </div>
       )}
 
-      {!loading && Object.entries(grouped).map(([dest, rows]) => (
-        <div key={dest} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3 bg-gray-50 border-b">
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-gray-800">{dest}</span>
-              <span className="text-xs text-gray-400">{rows.length} countries</span>
-            </div>
-            <button
-              onClick={() => handleDeleteDest(dest)}
-              className="text-xs text-red-500 hover:text-red-700 font-medium"
-            >
-              Delete All
-            </button>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="text-xs text-gray-500 bg-gray-50 border-b">
-                  <th className="px-3 py-2 text-left w-8">#</th>
-                  <th className="px-3 py-2 text-left">Source Country</th>
-                  {MONTH_LABELS.map((m) => (
-                    <th key={m} className="px-3 py-2 text-right">{m}</th>
-                  ))}
-                  <th className="px-3 py-2 text-right font-bold">Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} className="border-b hover:bg-gray-50">
-                    <td className="px-3 py-2 text-xs text-gray-400">{r.rank}</td>
-                    <td className="px-3 py-2 text-sm font-medium text-gray-800">{r.source_country}</td>
-                    {MONTHS.map((m) => (
-                      <td key={m} className="px-3 py-2 text-xs text-right font-mono text-gray-600">
-                        {fmt(r[m])}
-                      </td>
-                    ))}
-                    <td className="px-3 py-2 text-xs text-right font-mono font-bold text-gray-800">
-                      {fmt(r.total)}
+      {/* RAW / MOM view */}
+      {viewMode !== "yoy" && rawGroups.map(({ dest, year, rows }) => (
+        <RawTable
+          key={`${dest}-${year}`}
+          dest={dest}
+          year={year}
+          rows={rows}
+          viewMode={viewMode}
+          onDelete={() => handleDeleteDest(dest, year)}
+        />
+      ))}
+
+      {/* YoY view */}
+      {viewMode === "yoy" && Object.entries(yoyGroups)
+        .filter(([dest]) => !selectedDest || dest === selectedDest)
+        .filter(([, { curRows, priorRows }]) => curRows.length > 0 || priorRows.length > 0)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([dest, { curRows, priorRows }]) => (
+          <YoyTable
+            key={dest}
+            dest={dest}
+            curYear={selectedYear}
+            priorYear={compareYear}
+            curRows={curRows}
+            priorRows={priorRows}
+            onDelete={(y) => handleDeleteDest(dest, y)}
+          />
+        ))
+      }
+    </div>
+  );
+}
+
+function RawTable({ dest, year, rows, viewMode, onDelete }) {
+  const isMom = viewMode === "mom";
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3 bg-gray-50 border-b">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-gray-800">{dest}</span>
+          {year != null
+            ? <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-semibold">{year}</span>
+            : <span className="text-xs bg-gray-200 text-gray-500 px-2 py-0.5 rounded-full">year unknown</span>
+          }
+          <span className="text-xs text-gray-400">{rows.length} countries</span>
+          {isMom && <span className="text-xs bg-amber-50 text-amber-600 px-2 py-0.5 rounded-full font-medium">MoM trend</span>}
+        </div>
+        <button onClick={onDelete} className="text-xs text-red-500 hover:text-red-700 font-medium">Delete</button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr className="text-xs text-gray-500 bg-gray-50 border-b">
+              <th className="px-3 py-2 text-left w-8">#</th>
+              <th className="px-3 py-2 text-left">Source Country</th>
+              {MONTH_LABELS.map(m => <th key={m} className="px-3 py-2 text-right">{m}</th>)}
+              <th className="px-3 py-2 text-right font-bold">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.id} className="border-b hover:bg-gray-50">
+                <td className="px-3 py-2 text-xs text-gray-400">{r.rank}</td>
+                <td className="px-3 py-2 text-sm font-medium text-gray-800">{r.source_country}</td>
+                {MONTHS.map((m, i) => {
+                  const delta = isMom && i > 0 ? pct(r[m] || 0, r[MONTHS[i - 1]] || 0) : null;
+                  return (
+                    <td key={m} className="px-3 py-2 text-right">
+                      <div className="text-xs font-mono text-gray-600">{fmt(r[m])}</div>
+                      {isMom && delta != null && <DeltaBadge value={delta} />}
                     </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                  );
+                })}
+                <td className="px-3 py-2 text-xs text-right font-mono font-bold text-gray-800">{fmt(r.total)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ManualAddForm({ destinations, years, defaultYear, onSaved }) {
+  const EMPTY = { destination: "", source_country: "", rank: "",
+    ...Object.fromEntries(MONTHS.map(m => [m, ""])), data_year: "" };
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(EMPTY);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  useEffect(() => {
+    if (defaultYear) setForm(f => ({ ...f, data_year: String(defaultYear) }));
+  }, [defaultYear]);
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const total = MONTHS.reduce((s, m) => s + (parseInt(form[m]) || 0), 0);
+
+  const handleSave = async () => {
+    if (!form.destination || !form.source_country) {
+      setMsg({ type: "err", text: "Destination and Source Country are required" });
+      return;
+    }
+    setSaving(true);
+    setMsg(null);
+    const body = {
+      destination: form.destination,
+      source_country: form.source_country,
+      rank: form.rank ? parseInt(form.rank) : null,
+      data_year: form.data_year ? parseInt(form.data_year) : null,
+      ...Object.fromEntries(MONTHS.map(m => [m, parseInt(form[m]) || 0])),
+      total,
+    };
+    const token = localStorage.getItem("hid_token");
+    try {
+      const j = await fetch("/api/gov-visitor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(body),
+      }).then(r => r.json());
+      if (j.success) {
+        setMsg({ type: "ok", text: `Added ${form.source_country} → ${form.destination} (${form.data_year || "no year"})` });
+        setForm({ ...EMPTY, destination: form.destination, data_year: form.data_year });
+        onSaved();
+      } else {
+        setMsg({ type: "err", text: j.error || "Save failed" });
+      }
+    } catch {
+      setMsg({ type: "err", text: "Network error" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-5 py-3 text-left hover:bg-gray-50 transition-colors"
+      >
+        <span className="text-sm font-medium text-gray-700">+ Add Row Manually</span>
+        <span className="text-gray-400 text-xs">{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div className="px-5 pb-5 border-t">
+          {/* Top fields */}
+          <div className="grid grid-cols-2 gap-3 mt-4 sm:grid-cols-4">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Destination *</label>
+              <input
+                list="dest-list"
+                value={form.destination}
+                onChange={e => set("destination", e.target.value)}
+                placeholder="e.g. Japan"
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+              <datalist id="dest-list">
+                {destinations.map(d => <option key={d} value={d} />)}
+              </datalist>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Source Country *</label>
+              <input
+                value={form.source_country}
+                onChange={e => set("source_country", e.target.value)}
+                placeholder="e.g. Korea"
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Year</label>
+              <input
+                list="year-list"
+                value={form.data_year}
+                onChange={e => set("data_year", e.target.value)}
+                placeholder="2025"
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+              <datalist id="year-list">
+                {IMPORT_YEARS.map(y => <option key={y} value={y} />)}
+              </datalist>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Rank</label>
+              <input
+                type="number"
+                value={form.rank}
+                onChange={e => set("rank", e.target.value)}
+                placeholder="1"
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+            </div>
+          </div>
+
+          {/* Monthly inputs */}
+          <div className="mt-3 grid grid-cols-6 gap-2 sm:grid-cols-12">
+            {MONTHS.map((m, i) => (
+              <div key={m}>
+                <label className="block text-[10px] text-gray-400 mb-1 text-center">{MONTH_LABELS[i]}</label>
+                <input
+                  type="number"
+                  value={form[m]}
+                  onChange={e => set(m, e.target.value)}
+                  placeholder="0"
+                  className="w-full border border-gray-300 rounded px-1.5 py-1.5 text-xs text-right font-mono"
+                />
+              </div>
+            ))}
+          </div>
+
+          {/* Total + save */}
+          <div className="mt-3 flex items-center justify-between">
+            <div className="text-sm text-gray-500">
+              Total: <span className="font-mono font-semibold text-gray-800">{fmt(total)}</span>
+            </div>
+            <div className="flex items-center gap-3">
+              {msg && (
+                <span className={`text-xs ${msg.type === "ok" ? "text-green-600" : "text-red-500"}`}>{msg.text}</span>
+              )}
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {saving ? "Saving..." : "Save Row"}
+              </button>
+            </div>
           </div>
         </div>
-      ))}
+      )}
+    </div>
+  );
+}
+
+function YoyTable({ dest, curYear, priorYear, curRows, priorRows, onDelete }) {
+  const priorMap = {};
+  priorRows.forEach(r => { priorMap[r.source_country] = r; });
+
+  // All countries: cur first, then prior-only
+  const allCountries = [
+    ...curRows,
+    ...priorRows.filter(r => !curRows.find(c => c.source_country === r.source_country)).map(r => ({ ...r, _priorOnly: true })),
+  ];
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3 bg-gray-50 border-b">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-semibold text-gray-800">{dest}</span>
+          <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-semibold">{curYear ?? "?"}</span>
+          <span className="text-xs text-gray-400">vs</span>
+          <span className="text-xs bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full font-semibold">{priorYear ?? "?"}</span>
+          <span className="text-xs text-gray-400">{allCountries.length} countries</span>
+        </div>
+        <div className="flex gap-3">
+          {curYear && <button onClick={() => onDelete(curYear)} className="text-xs text-red-400 hover:text-red-600">Delete {curYear}</button>}
+          {priorYear && <button onClick={() => onDelete(priorYear)} className="text-xs text-red-400 hover:text-red-600">Delete {priorYear}</button>}
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="px-5 py-2 border-b bg-white flex items-center gap-4 text-[11px] text-gray-500">
+        <span><span className="font-mono text-gray-700">1,234</span> = {curYear ?? "current"}</span>
+        <span><span className="font-mono text-gray-400">1,234</span> = {priorYear ?? "prior"}</span>
+        <span><span className="text-emerald-600">▲ +x%</span> / <span className="text-red-500">▼ -x%</span> = YoY change</span>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr className="text-xs text-gray-500 bg-gray-50 border-b">
+              <th className="px-3 py-2 text-left sticky left-0 bg-gray-50">Source Country</th>
+              {MONTH_LABELS.map(m => <th key={m} className="px-3 py-2 text-right min-w-[72px]">{m}</th>)}
+              <th className="px-3 py-2 text-right font-bold min-w-[80px]">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {allCountries.map(r => {
+              const prior = priorMap[r.source_country];
+              const isPriorOnly = r._priorOnly;
+              return (
+                <tr key={r.id} className={`border-b hover:bg-gray-50 ${isPriorOnly ? "opacity-60" : ""}`}>
+                  <td className="px-3 py-2 text-sm font-medium text-gray-800 sticky left-0 bg-white">
+                    {r.source_country}
+                    {isPriorOnly && <span className="ml-1 text-[10px] text-gray-400">({priorYear} only)</span>}
+                  </td>
+                  {MONTHS.map(m => {
+                    const curVal = isPriorOnly ? null : (r[m] ?? 0);
+                    const priorVal = prior ? (prior[m] ?? 0) : null;
+                    const delta = curVal != null && priorVal != null ? pct(curVal, priorVal) : null;
+                    return (
+                      <td key={m} className="px-3 py-2 text-right">
+                        {curVal != null && <div className="text-xs font-mono text-gray-700">{fmt(curVal)}</div>}
+                        {priorVal != null && <div className="text-[11px] font-mono text-gray-400">{fmt(priorVal)}</div>}
+                        <DeltaBadge value={delta} />
+                      </td>
+                    );
+                  })}
+                  <td className="px-3 py-2 text-right">
+                    {!isPriorOnly && <div className="text-xs font-mono font-bold text-gray-800">{fmt(r.total)}</div>}
+                    {prior && <div className="text-[11px] font-mono text-gray-400">{fmt(prior.total)}</div>}
+                    <DeltaBadge value={!isPriorOnly && prior ? pct(r.total, prior.total) : null} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

@@ -2,7 +2,8 @@
  * CRM Dashboard — Revenue & Booking analytics for CRM room types.
  * Queries reservations where room_type contains "CRM".
  */
-import { useEffect, useState, useMemo } from "react";
+import { useState, useMemo } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import {
   getCRMSummary,
@@ -48,15 +49,6 @@ export default function CRMDashboard() {
   const [dateTo, setDateTo] = useState(today);
   const [tab, setTab] = useState("overview");
 
-  const [loading, setLoading] = useState(true);
-  const [summary, setSummary] = useState(null);
-  const [daily, setDaily] = useState([]);
-  const [monthly, setMonthly] = useState([]);
-  const [byBranch, setByBranch] = useState([]);
-  const [bySource, setBySource] = useState([]);
-  const [roomTypes, setRoomTypes] = useState([]);
-  const [reservations, setReservations] = useState({ items: [], total: 0 });
-
   const branchMap = useMemo(() => {
     const m = {};
     for (const b of branches) {
@@ -71,39 +63,46 @@ export default function CRMDashboard() {
     return p;
   }, [dateFrom, dateTo, selected, isAll]);
 
-  // Fetch data based on active tab
-  useEffect(() => {
-    setLoading(true);
-
-    if (tab === "overview") {
+  const { data: overviewData, isPending: overviewPending, isPlaceholderData: overviewIsPlaceholder } = useQuery({
+    queryKey: ["crm-overview", params],
+    queryFn: () =>
       Promise.all([
         getCRMSummary(params),
         getCRMDaily(params),
         getCRMByBranch({ date_from: dateFrom, date_to: dateTo }),
         getCRMBySource(params),
         getCRMRoomTypes(params),
-      ])
-        .then(([s, d, b, src, rt]) => {
-          setSummary(s);
-          setDaily(d || []);
-          setByBranch(b || []);
-          setBySource(src || []);
-          setRoomTypes(rt || []);
-        })
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    } else if (tab === "monthly") {
-      getCRMMonthly(params)
-        .then(d => setMonthly(d || []))
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    } else if (tab === "reservations") {
-      getCRMReservations({ ...params, limit: 100 })
-        .then(d => setReservations(d || { items: [], total: 0 }))
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    }
-  }, [tab, params, dateFrom, dateTo]);
+      ]).then(([s, d, b, src, rt]) => ({ summary: s, daily: d || [], byBranch: b || [], bySource: src || [], roomTypes: rt || [] })),
+    enabled: tab === "overview",
+    placeholderData: keepPreviousData,
+  });
+
+  const { data: monthlyData, isPending: monthlyPending, isPlaceholderData: monthlyIsPlaceholder } = useQuery({
+    queryKey: ["crm-monthly", params],
+    queryFn: () => getCRMMonthly(params).then(d => d || []),
+    enabled: tab === "monthly",
+    placeholderData: keepPreviousData,
+  });
+
+  const { data: reservationsData, isPending: reservationsPending, isPlaceholderData: reservationsIsPlaceholder } = useQuery({
+    queryKey: ["crm-reservations", params],
+    queryFn: () => getCRMReservations({ ...params, limit: 100 }).then(d => d || { items: [], total: 0 }),
+    enabled: tab === "reservations",
+    placeholderData: keepPreviousData,
+  });
+
+  const isPending =
+    (tab === "overview" && overviewPending && !overviewData) ||
+    (tab === "monthly" && monthlyPending && !monthlyData) ||
+    (tab === "reservations" && reservationsPending && !reservationsData);
+
+  const summary = overviewData?.summary;
+  const daily = overviewData?.daily ?? [];
+  const byBranch = overviewData?.byBranch ?? [];
+  const bySource = overviewData?.bySource ?? [];
+  const roomTypes = overviewData?.roomTypes ?? [];
+  const monthly = monthlyData ?? [];
+  const reservations = reservationsData ?? { items: [], total: 0 };
 
   return (
     <div className="space-y-6">
@@ -137,7 +136,7 @@ export default function CRMDashboard() {
         ))}
       </div>
 
-      {loading ? (
+      {isPending ? (
         <div className="text-gray-400 animate-pulse">Loading...</div>
       ) : tab === "overview" ? (
         <OverviewTab
@@ -147,18 +146,19 @@ export default function CRMDashboard() {
           bySource={bySource}
           roomTypes={roomTypes}
           branchMap={branchMap}
+          isPlaceholderData={overviewIsPlaceholder}
         />
       ) : tab === "monthly" ? (
-        <MonthlyTab monthly={monthly} />
+        <MonthlyTab monthly={monthly} isPlaceholderData={monthlyIsPlaceholder} />
       ) : (
-        <ReservationsTab reservations={reservations} branchMap={branchMap} />
+        <ReservationsTab reservations={reservations} branchMap={branchMap} isPlaceholderData={reservationsIsPlaceholder} />
       )}
     </div>
   );
 }
 
 /* ── Overview Tab ─────────────────────────────────────────────────────────── */
-function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap }) {
+function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap, isPlaceholderData }) {
   if (!summary) {
     return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No CRM data for this range.</div>;
   }
@@ -173,7 +173,7 @@ function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap 
   ];
 
   return (
-    <div className="space-y-6">
+    <div className={"space-y-6 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {kpis.map(k => (
@@ -305,7 +305,7 @@ function OverviewTab({ summary, daily, byBranch, bySource, roomTypes, branchMap 
 }
 
 /* ── Monthly Tab ──────────────────────────────────────────────────────────── */
-function MonthlyTab({ monthly }) {
+function MonthlyTab({ monthly, isPlaceholderData }) {
   if (monthly.length === 0) {
     return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No monthly CRM data.</div>;
   }
@@ -317,7 +317,7 @@ function MonthlyTab({ monthly }) {
   }));
 
   return (
-    <div className="space-y-6">
+    <div className={"space-y-6 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <TrendChart
           title="Monthly Revenue"
@@ -373,7 +373,7 @@ function MonthlyTab({ monthly }) {
 }
 
 /* ── Reservations Tab ─────────────────────────────────────────────────────── */
-function ReservationsTab({ reservations, branchMap }) {
+function ReservationsTab({ reservations, branchMap, isPlaceholderData }) {
   const { items, total } = reservations;
 
   if (items.length === 0) {
@@ -388,7 +388,7 @@ function ReservationsTab({ reservations, branchMap }) {
   };
 
   return (
-    <div className="space-y-3">
+    <div className={"space-y-3 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <p className="text-sm text-gray-500">{total} total reservations</p>
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
         <table className="w-full text-sm">

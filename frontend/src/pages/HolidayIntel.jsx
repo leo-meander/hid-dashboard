@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { getSeasonMatrix, getCountryHolidays } from "../api/holidayIntel";
 
 /* ── Country metadata ──────────────────────────────────────────────────── */
@@ -106,7 +107,7 @@ function CountrySearch({ value, onChange }) {
                   onClick={() => onChange(active ? value.filter(c => c !== code) : [...value, code])}
                   className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-gray-50 transition-colors ${active ? "bg-indigo-50" : ""}`}>
                   <span className={`w-4 h-4 rounded border flex items-center justify-center text-xs ${active ? "bg-indigo-600 border-indigo-600 text-white" : "border-gray-300"}`}>
-                    {active && "\u2713"}
+                    {active && "✓"}
                   </span>
                   <span>{FLAG[code]}</span>
                   <span className="text-gray-700">{COUNTRY_NAME[code]}</span>
@@ -124,33 +125,30 @@ function CountrySearch({ value, onChange }) {
 
 /* ═══════════════════════════════════════════════════════════════════════ */
 export default function HolidayIntel() {
-  const [matrix, setMatrix] = useState([]);
-  const [loading, setLoading] = useState(true);
-
   // Filter + expand state
   const [visibleCountries, setVisibleCountries] = useState(ALL_COUNTRIES);
   const [expandedCountry, setExpandedCountry] = useState(null);
   const [expandedMonth, setExpandedMonth] = useState(null);   // null = show all, 1-12 = filter
-  const [expandedHolidays, setExpandedHolidays] = useState([]);
 
   // ── Load initial data ─────────────────────────────────────────────
-  useEffect(() => {
-    getSeasonMatrix()
-      .then(m => setMatrix(m))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  const { data: matrix, isPending: matrixPending, isPlaceholderData: matrixPlaceholder } = useQuery({
+    queryKey: ["holiday-season-matrix"],
+    queryFn: () => getSeasonMatrix(),
+    placeholderData: keepPreviousData,
+  });
 
   // ── Load holiday detail when a country is expanded ────────────────
-  useEffect(() => {
-    if (!expandedCountry) { setExpandedHolidays([]); return; }
-    getCountryHolidays(expandedCountry).then(setExpandedHolidays).catch(() => setExpandedHolidays([]));
-  }, [expandedCountry]);
+  const { data: expandedHolidays, isPlaceholderData: holidaysPlaceholder } = useQuery({
+    queryKey: ["holiday-country-detail", expandedCountry],
+    queryFn: () => getCountryHolidays(expandedCountry),
+    enabled: !!expandedCountry,
+    placeholderData: keepPreviousData,
+  });
 
   // ── Build heatmap lookup ──────────────────────────────────────────
   const matrixMap = useMemo(() => {
     const m = {};
-    matrix.forEach(r => { m[`${r.country_code}_${r.month}`] = r; });
+    (matrix || []).forEach(r => { m[`${r.country_code}_${r.month}`] = r; });
     return m;
   }, [matrix]);
 
@@ -171,8 +169,9 @@ export default function HolidayIntel() {
 
   // Filter holidays by selected month (holiday spans month_start to month_end)
   const filteredHolidays = useMemo(() => {
-    if (!expandedMonth) return expandedHolidays;
-    return expandedHolidays.filter(h => {
+    const holidays = expandedHolidays || [];
+    if (!expandedMonth) return holidays;
+    return holidays.filter(h => {
       if (h.month_end >= h.month_start) {
         return expandedMonth >= h.month_start && expandedMonth <= h.month_end;
       }
@@ -183,7 +182,7 @@ export default function HolidayIntel() {
 
   const currentMonth = new Date().getMonth() + 1;
 
-  if (loading) {
+  if (matrixPending && !matrix) {
     return <div className="flex items-center justify-center h-64 text-gray-400 text-sm animate-pulse">Loading Holiday Intelligence...</div>;
   }
 
@@ -201,7 +200,7 @@ export default function HolidayIntel() {
           <h2 className="text-lg font-semibold text-gray-800">Season Heatmap</h2>
           <CountrySearch value={visibleCountries} onChange={setVisibleCountries} />
         </div>
-        <div className="overflow-x-auto">
+        <div className={"overflow-x-auto transition-opacity duration-150 " + (matrixPlaceholder ? "opacity-40 pointer-events-none" : "")}>
           <table className="w-full text-xs border-collapse">
             <thead>
               <tr>
@@ -214,13 +213,14 @@ export default function HolidayIntel() {
             <tbody>
               {visibleCountries.map(code => {
                 const isExpanded = expandedCountry === code;
+                const countryHolidays = isExpanded ? (expandedHolidays || []) : [];
                 return (
                   <Fragment key={code}>
                     <tr className={`border-t border-gray-100 cursor-pointer transition-colors ${isExpanded ? "bg-indigo-50" : "hover:bg-gray-50"}`}
                       onClick={() => toggleCountry(code)}>
                       <td className="py-1.5 px-2 sticky left-0 z-10" style={{ backgroundColor: isExpanded ? "rgb(238 242 255)" : "white" }}>
                         <div className="flex items-center gap-1.5">
-                          <span className="text-gray-400 text-[10px] w-3">{isExpanded ? "\u25BC" : "\u25B6"}</span>
+                          <span className="text-gray-400 text-[10px] w-3">{isExpanded ? "▼" : "▶"}</span>
                           <span className="text-sm">{FLAG[code]}</span>
                           <span className={`font-medium ${isExpanded ? "text-indigo-700" : "text-gray-700"}`}>{COUNTRY_NAME[code]}</span>
                         </div>
@@ -234,7 +234,7 @@ export default function HolidayIntel() {
                             title={cell ? `${days}d holidays | ${(cell.holiday_names||[]).join(", ")}` : "No holidays"}
                             onClick={(e) => { e.stopPropagation(); if (days > 0) clickMonthCell(code, m); }}>
                             <div className={`mx-auto w-11 py-1 rounded text-[11px] font-semibold transition-all ${durationColor(days)} ${days > 0 ? "hover:ring-2 hover:ring-indigo-400" : ""} ${isMonthSelected ? "ring-2 ring-indigo-600" : ""}`}>
-                              {durationLabel(days) || "\u2014"}
+                              {durationLabel(days) || "—"}
                             </div>
                           </td>
                         );
@@ -245,7 +245,7 @@ export default function HolidayIntel() {
                     {isExpanded && (
                       <tr>
                         <td colSpan={13} className="bg-indigo-50 px-4 py-3 border-b border-indigo-100">
-                          {expandedHolidays.length === 0 ? (
+                          {countryHolidays.length === 0 ? (
                             <p className="text-xs text-gray-400 animate-pulse">Loading holidays...</p>
                           ) : (
                             <div>
@@ -260,12 +260,12 @@ export default function HolidayIntel() {
                                       className="text-[10px] text-indigo-600 hover:underline">Show all</button>
                                   </>
                                 ) : (
-                                  <span className="text-xs text-gray-500">All holidays ({expandedHolidays.length}) — click a month cell above to filter</span>
+                                  <span className="text-xs text-gray-500">All holidays ({countryHolidays.length}) — click a month cell above to filter</span>
                                 )}
                               </div>
 
                               {/* Holiday cards */}
-                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
+                              <div className={"grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 transition-opacity duration-150 " + (holidaysPlaceholder ? "opacity-40 pointer-events-none" : "")}>
                                 {filteredHolidays.map(h => (
                                   <div key={h.id} className="bg-white border border-gray-200 rounded-lg p-2.5">
                                     <div className="flex items-start justify-between mb-1">

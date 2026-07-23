@@ -2,7 +2,8 @@
  * Marketing Activity — Consolidated view of Paid Ads, KOL, and CRM performance.
  * Month-based filter with MoM comparison.
  */
-import { useEffect, useState, useMemo } from "react";
+import { useState, useMemo } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 import { getMarketingActivitySummary, getCRMBranchComparison } from "../api/marketingActivity";
 import { getEmailSummary, getEmailByCampaign } from "../api/emailMarketing";
@@ -34,7 +35,7 @@ function fmtNum(val) {
 }
 
 function fmtMoney(val, cur) {
-  if (val == null) return "\u2014";
+  if (val == null) return "—";
   const sym = CURRENCY_SYMBOLS[cur] || "";
   return sym + new Intl.NumberFormat("en").format(Math.round(val));
 }
@@ -51,13 +52,13 @@ function ChangeBadge({ current, previous }) {
   const cls = isUp ? "text-green-600" : pct < 0 ? "text-red-600" : "text-gray-500";
   return (
     <span className={"text-xs font-medium " + cls}>
-      {isUp ? "\u25B2" : pct < 0 ? "\u25BC" : ""}{Math.abs(pct).toFixed(1)}%
+      {isUp ? "▲" : pct < 0 ? "▼" : ""}{Math.abs(pct).toFixed(1)}%
     </span>
   );
 }
 
 function RoasBadge({ value }) {
-  if (value == null || value === 0) return <span className="text-gray-400">{"\u2014"}</span>;
+  if (value == null || value === 0) return <span className="text-gray-400">{"—"}</span>;
   const cls =
     value >= 3 ? "text-green-700 bg-green-50"
     : value >= 1.5 ? "text-yellow-700 bg-yellow-50"
@@ -81,28 +82,47 @@ function KPICard({ label, value, sub, prev, prevLabel }) {
   );
 }
 
+function ytdBounds(year) {
+  const today = new Date();
+  const isCurrentYear = year === today.getFullYear();
+  const pad = (n) => String(n).padStart(2, "0");
+  const date_from = `${year}-01-01`;
+  const date_to = isCurrentYear
+    ? `${year}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
+    : `${year}-12-31`;
+  return { date_from, date_to };
+}
+
+function ytdPrevLabel(year) {
+  return `${year - 1} YTD`;
+}
+
 export default function MarketingActivity() {
   const { isAll, selected, currency: branchCurrency } = useBranch();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("overview");
+  const [viewMode, setViewMode] = useState("monthly"); // "monthly" | "ytd"
 
   const today = new Date();
   const currentMonthStr = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0");
   const [month, setMonth] = useState(currentMonthStr);
+  const [ytdYear, setYtdYear] = useState(today.getFullYear());
 
-  const load = () => {
-    setLoading(true);
-    const params = { month };
-    if (!isAll && selected) params.branch_id = selected;
-
-    getMarketingActivitySummary(params)
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(load, [selected, isAll, month]);
+  const { data, isPending, isPlaceholderData } = useQuery({
+    queryKey: ["marketing-activity", selected, isAll, month, ytdYear, viewMode],
+    queryFn: () => {
+      const params = {};
+      if (!isAll && selected) params.branch_id = selected;
+      if (viewMode === "ytd") {
+        const { date_from, date_to } = ytdBounds(ytdYear);
+        params.date_from = date_from;
+        params.date_to = date_to;
+      } else {
+        params.month = month;
+      }
+      return getMarketingActivitySummary(params);
+    },
+    placeholderData: keepPreviousData,
+  });
 
   const cur = isAll ? "VND" : (data?.currency || branchCurrency || "VND");
   const overview = data?.overview;
@@ -116,15 +136,42 @@ export default function MarketingActivity() {
     { key: "email-stat", label: "Email Stat" },
   ];
 
-  // Format prev month label
-  const prevLabel = prevMonth ? new Date(prevMonth + "-01").toLocaleDateString("en", { month: "short", year: "numeric" }) : "";
+  // Format comparison label
+  const prevLabel = viewMode === "ytd"
+    ? ytdPrevLabel(ytdYear)
+    : (prevMonth ? new Date(prevMonth + "-01").toLocaleDateString("en", { month: "short", year: "numeric" }) : "");
+
+  const minYear = 2024;
+  const maxYear = today.getFullYear();
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-lg font-bold text-gray-900">Marketing Activity</h1>
-        <input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
-          className="border rounded px-3 py-1.5 text-sm" />
+        <div className="flex items-center gap-2">
+          {/* Monthly / YTD toggle */}
+          <div className="flex gap-0.5 bg-gray-100 rounded-lg p-1">
+            {[{ key: "monthly", label: "Monthly" }, { key: "ytd", label: "YTD" }].map((v) => (
+              <button key={v.key} onClick={() => setViewMode(v.key)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                  viewMode === v.key ? "bg-white text-gray-800 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                }`}>
+                {v.label}
+              </button>
+            ))}
+          </div>
+          {viewMode === "monthly" ? (
+            <input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
+              className="border rounded px-3 py-1.5 text-sm" />
+          ) : (
+            <select value={ytdYear} onChange={(e) => setYtdYear(Number(e.target.value))}
+              className="border rounded px-3 py-1.5 text-sm">
+              {Array.from({ length: maxYear - minYear + 1 }, (_, i) => maxYear - i).map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          )}
+        </div>
       </div>
 
       <div className="flex gap-1 border-b">
@@ -140,34 +187,43 @@ export default function MarketingActivity() {
 
       {tab === "email-stat" ? (
         // Email Stat fetches its own data — independent of the activity API
-        <EmailStatTab month={month} onViewRevenue={() => setTab("crm-rate-plans")} />
-      ) : loading ? (
+        <EmailStatTab
+          month={viewMode === "ytd" ? null : month}
+          ytdBounds={viewMode === "ytd" ? ytdBounds(ytdYear) : null}
+          onViewRevenue={() => setTab("crm-rate-plans")}
+        />
+      ) : isPending && !data ? (
         <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>
       ) : !data ? (
         <div className="text-center text-gray-400 py-16 text-sm">No data available</div>
       ) : (
-        <>
-          {tab === "overview" && <OverviewTab overview={overview} prevOverview={prevOverview} prevLabel={prevLabel} cur={cur} />}
-          {tab === "crm-rate-plans" && <CRMRatePlansTab rows={crmRatePlans} cur={cur} month={month} />}
-        </>
+        <div className={"transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
+          {tab === "overview" && <OverviewTab overview={overview} prevOverview={prevOverview} prevLabel={prevLabel} cur={cur} isYtd={viewMode === "ytd"} ytdYear={ytdYear} />}
+          {tab === "crm-rate-plans" && <CRMRatePlansTab rows={crmRatePlans} cur={cur} month={viewMode === "ytd" ? currentMonthStr : month} />}
+        </div>
       )}
     </div>
   );
 }
 
 /* ── Overview Tab ──────────────────────────────────────────────────────────── */
-function OverviewTab({ overview, prevOverview, prevLabel, cur }) {
+function OverviewTab({ overview, prevOverview, prevLabel, cur, isYtd, ytdYear }) {
   if (!overview) return null;
   const { paid_ads, kol, crm, total } = overview;
   const prev = prevOverview?.total;
 
   return (
     <div className="space-y-6">
+      {isYtd && (
+        <p className="text-xs text-gray-500">
+          Year-to-date performance for <span className="font-semibold">{ytdYear}</span> (Jan 1 – today). Compared against the same period in {ytdYear - 1}.
+        </p>
+      )}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KPICard label="Total Bookings" value={fmtNum(total.bookings)} prev={prev?.bookings} prevLabel={prevLabel} />
         <KPICard label={`Total Revenue (${cur})`} value={fmtNum(total.revenue)} prev={prev?.revenue} prevLabel={prevLabel} />
         <KPICard label={`Total Cost (${cur})`} value={fmtNum(total.cost)} prev={prev?.cost} prevLabel={prevLabel} />
-        <KPICard label="Blended ROAS" value={total.roas ? total.roas.toFixed(2) + "x" : "\u2014"} />
+        <KPICard label="Blended ROAS" value={total.roas ? total.roas.toFixed(2) + "x" : "—"} />
       </div>
 
       <div className="bg-white rounded-lg border overflow-hidden">
@@ -194,11 +250,11 @@ function OverviewTab({ overview, prevOverview, prevLabel, cur }) {
                 </td>
                 <td className="px-4 py-3 text-right">{fmtNum(d.bookings)}</td>
                 <td className="px-4 py-3 text-right">{fmtNum(d.revenue)}</td>
-                <td className="px-4 py-3 text-right">{hasCost ? fmtNum(d.cost) : <span className="text-gray-400">{"\u2014"}</span>}</td>
+                <td className="px-4 py-3 text-right">{hasCost ? fmtNum(d.cost) : <span className="text-gray-400">{"—"}</span>}</td>
                 <td className="px-4 py-3 text-right">
                   {d.roas ? <RoasBadge value={d.roas} /> :
                     hasCost && d.cost > 0 ? <RoasBadge value={d.revenue / d.cost} /> :
-                    <span className="text-gray-400">{"\u2014"}</span>}
+                    <span className="text-gray-400">{"—"}</span>}
                 </td>
                 {prevOverview && (
                   <td className="px-4 py-3 text-right">
@@ -284,7 +340,7 @@ function CRMRatePlansTab({ rows, cur, month }) {
     <div className="space-y-4">
       {subToggle}
       <p className="text-sm text-gray-500">
-        CRM reservations (CRM / MEANDER&apos;S FRIEND / Travel Guide / Grand Open / Extension Promotion) broken down by Rate Plan Name,
+        CRM reservations (CRM / MEANDER&apos;S FRIEND / Travel Guide / Grand Open / Extension Promotion / WELCOME) broken down by Rate Plan Name,
         filtered by Date Booked (not Stay Date).
         Excludes cancelled bookings and non-paying sources (Blogger / House Use / Special Case).
       </p>
@@ -433,17 +489,13 @@ function ComparisonMatrix({ title, subtitle, branches, rows, rowLabel, metric })
 
 function CRMBranchComparison({ month }) {
   const { branches: allowedBranches } = useBranch();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [metric, setMetric] = useState("revenue");
 
-  useEffect(() => {
-    setLoading(true);
-    getCRMBranchComparison({ month, months_back: 6 })
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  }, [month]);
+  const { data, isPending, isPlaceholderData } = useQuery({
+    queryKey: ["crm-branch-comparison", month],
+    queryFn: () => getCRMBranchComparison({ month, months_back: 6 }),
+    placeholderData: keepPreviousData,
+  });
 
   // Only show branches this user is allowed to see, in the backend's display order.
   const branches = useMemo(() => {
@@ -452,7 +504,7 @@ function CRMBranchComparison({ month }) {
     return data.branches.filter((b) => allowedIds.size === 0 || allowedIds.has(b.branch_id));
   }, [data, allowedBranches]);
 
-  if (loading) {
+  if (isPending && !data) {
     return <div className="text-center text-gray-400 py-12 text-sm animate-pulse">Loading...</div>;
   }
   if (!data || branches.length === 0) {
@@ -463,7 +515,7 @@ function CRMBranchComparison({ month }) {
   const hasMonth = (data.by_month || []).length > 0;
 
   return (
-    <div className="space-y-4">
+    <div className={"space-y-4 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <div className="flex items-center justify-between flex-wrap gap-3">
         <p className="text-sm text-gray-500">
           CRM performance compared across branches. Revenue in VND for cross-branch parity.
@@ -523,11 +575,8 @@ function EmailKPI({ label, value, color = "text-gray-900" }) {
   );
 }
 
-function EmailStatTab({ month, onViewRevenue }) {
+function EmailStatTab({ month, ytdBounds: ytdB, onViewRevenue }) {
   const { currentBranch, isAll } = useBranch();
-  const [summary, setSummary] = useState(null);
-  const [campaigns, setCampaigns] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
 
   const ghlBranch = useMemo(
@@ -535,34 +584,31 @@ function EmailStatTab({ month, onViewRevenue }) {
     [currentBranch, isAll]
   );
 
-  useEffect(() => {
-    setLoading(true);
-    const { date_from, date_to } = monthBounds(month);
-    const params = { date_from, date_to };
-    if (ghlBranch) params.branch_name = ghlBranch;
+  const { data: emailData, isPending, isPlaceholderData } = useQuery({
+    queryKey: ["email-stat", month, ytdB, ghlBranch],
+    queryFn: () => {
+      const bounds = ytdB || monthBounds(month);
+      const params = { date_from: bounds.date_from, date_to: bounds.date_to };
+      if (ghlBranch) params.branch_name = ghlBranch;
+      return Promise.all([
+        getEmailSummary(params),
+        getEmailByCampaign(params),
+      ]).then(([summary, campaigns]) => ({ summary, campaigns: campaigns || [] }));
+    },
+    placeholderData: keepPreviousData,
+  });
 
-    Promise.all([
-      getEmailSummary(params),
-      getEmailByCampaign(params),
-    ])
-      .then(([s, c]) => {
-        setSummary(s);
-        setCampaigns(c || []);
-      })
-      .catch(() => {
-        setSummary(null);
-        setCampaigns([]);
-      })
-      .finally(() => setLoading(false));
-  }, [month, ghlBranch]);
+  const summary = emailData?.summary;
+  const campaigns = emailData?.campaigns || [];
 
-  if (loading) {
+  if (isPending && !emailData) {
     return <div className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading...</div>;
   }
   if (!summary || summary.total_sent === 0) {
+    const periodLabel = ytdB ? `${ytdB.date_from.slice(0, 4)} YTD` : "this month";
     return (
       <div className="text-center text-gray-400 py-16 text-sm">
-        No email data for this month{ghlBranch ? ` (${ghlBranch})` : ""}.
+        No email data for {periodLabel}{ghlBranch ? ` (${ghlBranch})` : ""}.
       </div>
     );
   }
@@ -575,7 +621,7 @@ function EmailStatTab({ month, onViewRevenue }) {
     : campaigns;
 
   return (
-    <div className="space-y-6">
+    <div className={"space-y-6 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
       <p className="text-xs text-gray-400">
         Workflow rows show LIFETIME totals (GHL doesn&apos;t expose per-day deltas);
         bulk rows are filtered to the selected month by schedule date.

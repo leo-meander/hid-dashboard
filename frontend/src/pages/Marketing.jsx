@@ -1,7 +1,8 @@
 /**
  * Marketing Activity Log — Phase 3
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import { useBranch } from "../context/BranchContext";
 
@@ -34,26 +35,23 @@ const EMPTY = {
 export default function Marketing() {
   const { branches, currentBranch, isAll, selected } = useBranch();
   const branchNameMap = Object.fromEntries(branches.map(b => [b.id, b.name]));
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [filterType, setFilterType] = useState("");
 
-  const load = () => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    if (!isAll && selected) params.set("branch_id", selected);
-    if (filterType) params.set("activity_type", filterType);
-    axios.get("/api/marketing?" + params)
-      .then(r => setRows(r.data.data || []))
-      .catch(() => setRows([]))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, [selected, filterType]);
+  const { data: rows, isPending, isPlaceholderData } = useQuery({
+    queryKey: ["marketing-activities", selected, filterType],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (!isAll && selected) params.set("branch_id", selected);
+      if (filterType) params.set("activity_type", filterType);
+      return axios.get("/api/marketing?" + params).then(r => r.data.data || []);
+    },
+    placeholderData: keepPreviousData,
+  });
 
   const openNew = () => {
     setForm({ ...EMPTY, branch_id: currentBranch?.id || "" });
@@ -85,7 +83,7 @@ export default function Marketing() {
         await axios.post("/api/marketing", form);
       }
       setShowForm(false);
-      load();
+      queryClient.invalidateQueries({ queryKey: ["marketing-activities"] });
     } catch (e) {
       alert("Save failed: " + (e.response?.data?.detail || e.message));
     } finally {
@@ -96,7 +94,7 @@ export default function Marketing() {
   const del = async (id) => {
     if (!confirm("Delete this activity?")) return;
     await axios.delete("/api/marketing/" + id);
-    load();
+    queryClient.invalidateQueries({ queryKey: ["marketing-activities"] });
   };
 
   return (
@@ -135,12 +133,12 @@ export default function Marketing() {
 
       {/* Table */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        {loading ? (
+        {isPending && !rows ? (
           <div className="p-8 text-center text-gray-400 animate-pulse">Loading…</div>
-        ) : rows.length === 0 ? (
+        ) : (rows || []).length === 0 ? (
           <div className="p-8 text-center text-gray-400">No activities yet. Click "+ Add Activity" to start.</div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className={"overflow-x-auto transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide text-left">
@@ -155,7 +153,7 @@ export default function Marketing() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {rows.map(row => (
+                {(rows || []).map(row => (
                   <tr key={row.id} className="hover:bg-gray-50">
                     <td className="px-5 py-3 text-gray-600 whitespace-nowrap">
                       {row.date_from || "—"}
