@@ -288,19 +288,26 @@ def get_marketing_activity_summary(
 
 
 def _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native):
-    """Local Cloudbeds aggregation — used as fallback when KOL Engine API
-    is unreachable. NOT de-duped against Ads Platform attribution, so the
-    card may inflate for May 2026+ data when the API returns None."""
+    """KOL revenue via KOLBooking → Reservation join — matches KOL Engine Insights.
+
+    KOLBooking rows are synced from the KOL tracking Google Sheet and link each
+    KOL collaboration to its Cloudbeds reservation. Filtering by room_type was
+    only catching a small subset; the join captures all KOL-attributed bookings.
+    Uses reservation_date (booking date) matching Insights "by reservation date".
+    """
+    from app.models.kol import KOLBooking
     rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
-    q = db.query(
-        func.count(Reservation.id).label("bookings"),
-        func.coalesce(func.sum(rev_col), 0).label("revenue"),
-    ).filter(
-        Reservation.room_type.ilike("%KOL_%"),
-        Reservation.reservation_date >= d_from,
-        Reservation.reservation_date <= d_to,
-        _status_filter(),
-        _revenue_source_filter(),
+    q = (
+        db.query(
+            func.count(Reservation.id).label("bookings"),
+            func.coalesce(func.sum(rev_col), 0).label("revenue"),
+        )
+        .join(KOLBooking, KOLBooking.reservation_id == Reservation.id)
+        .filter(
+            Reservation.reservation_date >= d_from,
+            Reservation.reservation_date <= d_to,
+            _status_filter(),
+        )
     )
     if branch_id:
         q = q.filter(Reservation.branch_id == branch_id)
@@ -309,52 +316,16 @@ def _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native):
 
 
 def _fetch_kol_totals_one_month(db, branch_id, branch_obj, hotel_id, year, month, use_native):
-    """Fetch KOL for a single (year, month) from the KOL Engine API.
+    """Fetch KOL revenue for a single (year, month) directly from Cloudbeds.
 
-    Returns (bookings, revenue) in the appropriate currency.
-    Falls back to Cloudbeds on API failure.
+    Previously called the KOL Engine /api/public/kol-revenue/ endpoint, but
+    that API excludes ads-attributed bookings (from 2026-05-01 onward), causing
+    numbers 5-8x lower than the KOL Engine dashboard. The dashboard itself reads
+    from Cloudbeds (check-in date), so we do the same here.
     """
     d_from = date(year, month, 1)
     d_to = date(year, month, calendar.monthrange(year, month)[1])
-
-    data = fetch_kol_revenue(
-        base_url=settings.KOL_ENGINE_URL,
-        org_slug=settings.KOL_TARGETS_ORG_SLUG,
-        api_key=settings.KOL_REVENUE_API_SECRET,
-        year=year,
-        month=month,
-        hotel_id=hotel_id,
-    )
-    if data is None:
-        log.warning(
-            "KOL revenue API unavailable for %s-%s — falling back to Cloudbeds",
-            year, month,
-        )
-        return _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native)
-
-    branches = data.get("branches") or []
-
-    if branch_id:
-        if not hotel_id:
-            return _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native)
-        match = next((b for b in branches if b.get("hotel_id") == hotel_id), None)
-        if not match:
-            return 0, 0.0
-        bookings = int(match.get("bookings") or 0)
-        # KOL Engine always returns revenue_vnd; convert to native if needed.
-        revenue_vnd = float(match.get("revenue_vnd") or match.get("revenue") or 0)
-        if use_native and branch_obj:
-            cur = (branch_obj.currency or "VND").upper()
-            rate = _get_rate_to_vnd(cur)
-            revenue = _vnd_to_native(revenue_vnd, cur, rate)
-        else:
-            revenue = revenue_vnd
-        return bookings, revenue
-
-    totals = data.get("totals") or {}
-    bookings = int(totals.get("bookings") or 0)
-    revenue = sum(float(b.get("revenue_vnd") or 0) for b in branches)
-    return bookings, revenue
+    return _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native)
 
 
 def _fetch_kol_totals(db, branch_id, d_from, d_to, use_native):
