@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 
 const BRANCH_OPTS = ["all", "saigon", "taipei", "oani", "osaka", "1948"];
@@ -65,13 +65,16 @@ export default function WebhookMonitor() {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [polling, setPolling] = useState(false);
   const [pollStatus, setPollStatus] = useState("");
+  const eventCountRef = useRef(0);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const params = branch !== "all" ? { branch, limit: 200 } : { limit: 200 };
       const res = await axios.get("/api/admin/webhook-events", { params });
-      setEvents(res.data.data || []);
+      const data = res.data.data || [];
+      setEvents(data);
+      eventCountRef.current = data.length;
       setLastRefresh(new Date());
     } catch {
       // ignore
@@ -130,12 +133,12 @@ export default function WebhookMonitor() {
               try {
                 await axios.post("/api/admin/poll-now", null, { params: { minutes: 60 } });
                 // Poll background job runs async — wait then retry until count changes
-                const before = events.length;
+                const before = eventCountRef.current;
                 for (let i = 0; i < 6; i++) {
                   await new Promise(r => setTimeout(r, 5000));
                   setPollStatus(`Chờ kết quả… (${(i + 1) * 5}s)`);
                   await load();
-                  if (events.length !== before) break;
+                  if (eventCountRef.current !== before) break;
                 }
                 setPollStatus("");
               } catch {
@@ -162,7 +165,7 @@ export default function WebhookMonitor() {
 
       {events.length === 0 ? (
         <div className="text-center py-20 text-gray-400">
-          {loading ? "Loading…" : "No events yet — waiting for Cloudbeds webhooks."}
+          {loading ? "Loading…" : "No events in memory — click Poll Now to fetch recent reservations."}
         </div>
       ) : (
         <div className="bg-white rounded-lg border overflow-x-auto">
