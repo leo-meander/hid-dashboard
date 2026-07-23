@@ -176,13 +176,12 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
     )
 
 
-def _process_reservation(property_id: str, reservation_id: str) -> None:
-    """Fetch a single reservation from Cloudbeds then fan out."""
-    logger.info("Processing reservation property=%s reservation=%s", property_id, reservation_id)
+def _fetch_full_reservation(property_id: str, reservation_id: str) -> dict | None:
+    """Call getReservation (singular) to get full data including guestEmail, guestList."""
     api_key = settings.get_api_key_for_property(str(property_id))
     if not api_key:
         logger.error("No Cloudbeds API key for propertyID=%s", property_id)
-        return
+        return None
     try:
         with httpx.Client(timeout=20) as client:
             resp = client.get(
@@ -194,11 +193,16 @@ def _process_reservation(property_id: str, reservation_id: str) -> None:
             body = resp.json()
             if not body.get("success"):
                 logger.error("getReservation failed: %s", body.get("message"))
-                return
-            reservation = body.get("data")
+                return None
+            return body.get("data")
     except Exception as e:
         logger.error("Error fetching reservation %s: %s", reservation_id, e)
-        return
+        return None
+
+
+def _process_reservation(property_id: str, reservation_id: str) -> None:
+    """Fetch a single reservation from Cloudbeds then fan out."""
+    reservation = _fetch_full_reservation(property_id, reservation_id)
     if reservation:
         _fan_out(property_id, reservation_id, reservation)
 
@@ -253,9 +257,12 @@ def poll_new_reservations() -> None:
                     rid = str(res.get("reservationID", ""))
                     if not rid or _mark_seen(rid):
                         continue
+                    full = _fetch_full_reservation(property_id, rid)
+                    if not full:
+                        continue
                     new_count += 1
                     logger.info("Poll: new reservation=%s property=%s", rid, property_id)
-                    _fan_out(property_id, rid, res)
+                    _fan_out(property_id, rid, full)
 
                 if new_count:
                     logger.info("Poll property=%s: processed %d new reservations", property_id, new_count)
@@ -357,8 +364,12 @@ def _poll_with_window(minutes: int) -> None:
                     reservations = list(reservations.values())
                 for res in reservations:
                     rid = str(res.get("reservationID", ""))
-                    if rid:
-                        logger.info("poll-now: processing reservation=%s property=%s", rid, property_id)
-                        _fan_out(property_id, rid, res)
+                    if not rid:
+                        continue
+                    full = _fetch_full_reservation(property_id, rid)
+                    if not full:
+                        continue
+                    logger.info("poll-now: processing reservation=%s property=%s", rid, property_id)
+                    _fan_out(property_id, rid, full)
         except Exception as e:
             logger.error("poll-now error property=%s: %s", property_id, e)
