@@ -452,14 +452,15 @@ function fmtNum(v, decimals = 1) {
 function aggregateRows(rows) {
   // rows: array of month dicts; produce annual aggregate
   if (!rows.length) return null;
-  const totals = { total_tasks: 0, completed: 0, on_time_count: 0, late_count: 0, overdue_count: 0 };
+  const totals = { total_tasks: 0, completed: 0, on_time_count: 0, on_time_filled: 0, late_count: 0, overdue_count: 0 };
   let ct_sum = 0, ct_n = 0, ed_sum = 0, ed_n = 0;
   for (const r of rows) {
-    totals.total_tasks   += r.total_tasks   ?? 0;
-    totals.completed     += r.completed     ?? 0;
-    totals.on_time_count += r.on_time_count ?? 0;
-    totals.late_count    += r.late_count    ?? 0;
-    totals.overdue_count += r.overdue_count ?? 0;
+    totals.total_tasks    += r.total_tasks    ?? 0;
+    totals.completed      += r.completed      ?? 0;
+    totals.on_time_count  += r.on_time_count  ?? 0;
+    totals.on_time_filled += r.on_time_filled ?? 0;
+    totals.late_count     += r.late_count     ?? 0;
+    totals.overdue_count  += r.overdue_count  ?? 0;
     if (r.cycle_time_avg != null) { ct_sum += r.cycle_time_avg; ct_n++; }
     if (r.estimated_avg  != null) { ed_sum += r.estimated_avg;  ed_n++; }
   }
@@ -467,7 +468,7 @@ function aggregateRows(rows) {
   const estimated_avg  = ed_n ? Math.round(ed_sum / ed_n * 10) / 10 : null;
   const cycle_ratio    = (cycle_time_avg && estimated_avg) ? Math.round(cycle_time_avg / estimated_avg * 1000) / 1000 : null;
   const completion_rate = totals.total_tasks > 0 ? Math.round(totals.completed / totals.total_tasks * 100 * 10) / 10 : null;
-  const on_time_rate    = totals.completed > 0   ? Math.round(totals.on_time_count / totals.completed * 100 * 10) / 10 : null;
+  const on_time_rate    = totals.on_time_filled > 0 ? Math.round(totals.on_time_count / totals.on_time_filled * 100 * 10) / 10 : null;
   return { ...totals, cycle_time_avg, estimated_avg, cycle_ratio, completion_rate, on_time_rate };
 }
 

@@ -600,6 +600,7 @@ def get_task_overview_yearly(year: int) -> dict:
         "completed": 0,
         "on_time_count": 0,
         "late_count": 0,
+        "on_time_filled": 0,  # tasks that have on-time field filled (denominator)
         "overdue_count": 0,
         "cycle_times": [],
         "estimated_days": [],
@@ -651,8 +652,11 @@ def get_task_overview_yearly(year: int) -> dict:
             on_time_val = on_time_val.strip().lower().replace("-", " ").replace("_", " ")
             if on_time_val in ("on time", "ontime", "yes", "true", "đúng hạn", "ok"):
                 bucket["on_time_count"] += 1
-            else:
+                bucket["on_time_filled"] += 1
+            elif on_time_val in ("late", "trễ", "no", "false", "over"):
                 bucket["late_count"] += 1
+                bucket["on_time_filled"] += 1
+            # empty / unfilled → not counted in on_time_filled
         else:
             # Overdue: deadline in a past month and still not completed
             if (year, month) < current_year_month:
@@ -705,7 +709,8 @@ def get_task_overview_yearly(year: int) -> dict:
                 "estimated_avg": ed_avg,
                 "cycle_ratio": cycle_ratio,
                 "completion_rate": round(comp / total * 100, 1) if total > 0 else None,
-                "on_time_rate": round(on_time / comp * 100, 1) if comp > 0 else None,
+                    "on_time_filled": b["on_time_filled"],
+                "on_time_rate": round(on_time / b["on_time_filled"] * 100, 1) if b["on_time_filled"] > 0 else None,
             }
         result[pic_id]["open_workload"] = open_workload.get(pic_id, 0)
         result[pic_id]["no_deadline_count"] = no_deadline.get(pic_id, 0)
