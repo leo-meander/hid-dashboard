@@ -216,11 +216,8 @@ def _build_contact_payload(reservation: dict, branch: str, is_update: bool = Fal
     if not is_update:
         payload["dnd"] = False
 
-    # Address — Osaka update only sets country; all other cases set full address
-    if is_update and branch == "osaka":
-        if country:
-            payload["address"] = {"country": country}
-    else:
+    # Address — only on create; GHL PUT /contacts/:id rejects the address field
+    if not is_update:
         address_payload: dict = {}
         if guest.get("guestCity"):
             address_payload["city"] = guest["guestCity"]
@@ -285,7 +282,7 @@ def update_contact(client: httpx.Client, contact_id: str, api_key: str, location
     try:
         resp = client.put(
             f"{GHL_BASE}/contacts/{contact_id}",
-            json={**payload, "locationId": location_id},
+            json=payload,
             headers=_headers(api_key),
             timeout=15,
         )
