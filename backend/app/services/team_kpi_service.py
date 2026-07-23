@@ -629,7 +629,10 @@ def build_monthly_summary(
                     # is_pct targets: take the first branch value (all branches share same target %)
                     targets_map.setdefault(key, raw_val)
                 else:
-                    targets_map[key] = targets_map.get(key, 0.0) + raw_val
+                    # Count KPIs (design_assets, videos_delivered, etc.) — summing across
+                    # branches produces misleading totals in All view. Skip per-branch rows;
+                    # only an explicit org-wide target (branch_id=NULL) will appear in All view.
+                    pass
                 # also keep per-branch copy for computed-target lookups
                 bk = BRANCH_UUID_TO_KEY.get(str(row.branch_id))
                 if bk:
