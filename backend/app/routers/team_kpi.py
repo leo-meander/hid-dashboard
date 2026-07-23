@@ -66,6 +66,17 @@ def debug_ads_tasks_jul():
     return {"success": True, "data": {"count": len(samples), "samples": samples}, "error": None}
 
 
+@router.get("/debug/kol-revenue-by-branch")
+def debug_kol_revenue_by_branch(year: int = Query(2026)):
+    """Show KOL revenue (mil VND) per branch per month from marketing_activity_cache."""
+    from app.services.team_kpi_service import _get_kol_actuals_for_year
+    data = _get_kol_actuals_for_year(year)
+    out = {}
+    for m, branches in sorted(data.items()):
+        out[str(m)] = {bk: round(v.get("kol_revenue", 0), 1) for bk, v in branches.items() if bk != "all"}
+    return {"success": True, "data": out, "error": None}
+
+
 @router.get("/debug/kol-targets")
 def debug_kol_targets(year: int = Query(2026), month: int = Query(7)):
     """Expose raw KOL Engine targets API response for one month."""

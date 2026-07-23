@@ -520,7 +520,11 @@ function TaskOverview({ year }) {
     });
     const rows = Object.entries(p.months).filter(([k]) => !isNaN(Number(k))).map(([, v]) => v);
     const agg = aggregateRows(rows);
-    return { name: p.name, monthScores, agg, score: computeScore(agg), open: p.open_workload, noDeadline: p.no_deadline_count ?? 0 };
+    const validMonthScores = monthScores.filter(s => s !== null);
+    const annualScore = validMonthScores.length
+      ? Math.round(validMonthScores.reduce((a, b) => a + b, 0) / validMonthScores.length * 10) / 10
+      : null;
+    return { name: p.name, monthScores, agg, score: annualScore, open: p.open_workload, noDeadline: p.no_deadline_count ?? 0 };
   });
 
   // Score → heatmap bg color

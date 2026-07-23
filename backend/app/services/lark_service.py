@@ -615,17 +615,17 @@ def get_task_overview_yearly(year: int) -> dict:
         status = str(rec.get("Status") or "").lower().strip()
         is_completed = status == "completed"
 
-        # Open workload: tasks not completed regardless of year
-        if not is_completed:
-            open_workload[pic_id] += 1
-
         # Deadline-based month grouping
         ym = _parse_month_year(rec.get("Deadline"))
         if not ym:
-            # No deadline set — count as missing
+            # No deadline set — count as missing, not in open workload
             if not is_completed:
                 no_deadline[pic_id] += 1
             continue
+
+        # Open workload: only incomplete tasks that have a deadline
+        if not is_completed:
+            open_workload[pic_id] += 1
         if ym[0] != year:
             continue
         _, month = ym
