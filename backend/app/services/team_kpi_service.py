@@ -167,12 +167,11 @@ def get_kol_actuals_yearly_db(
                 continue
             d_from = date(year, m, 1)
             d_to = date(year, m, calendar.monthrange(year, m)[1])
-            from app.models.kol import KOLBooking as _KOLBooking
             cb_rows = (
                 db.query(_Branch.name, _func.coalesce(_func.sum(Reservation.grand_total_vnd), 0))
                 .join(Reservation, Reservation.branch_id == _Branch.id)
-                .join(_KOLBooking, _KOLBooking.reservation_id == Reservation.id)
                 .filter(
+                    Reservation.room_type.ilike("%KOL_%"),
                     Reservation.reservation_date >= d_from,
                     Reservation.reservation_date <= d_to,
                     Reservation.status.notin_(["cancelled", "no_show"]),
