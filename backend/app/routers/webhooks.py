@@ -20,9 +20,10 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 
 from app.config import settings
+from app.routers.auth import require_admin
 from app.services.ghl_crm_service import upsert_contact_from_reservation
 from app.services.google_ads_service import upload_offline_conversion
 from app.services.meta_capi_service import send_purchase_event
@@ -310,15 +311,33 @@ async def cloudbeds_webhook(
 
 
 @router.get("/admin/webhook-events")
-async def get_webhook_events(branch: str | None = None, limit: int = 100) -> dict:
-    """Return recent webhook processing results from the in-memory ring buffer."""
+async def get_webhook_events(
+    branch: str | None = None,
+    limit: int = 100,
+    _admin=Depends(require_admin),
+) -> dict:
+    """Return recent webhook processing results. Admin only."""
     events = webhook_log.get_events(branch=branch, limit=min(limit, 500))
+    # Mask guest email before returning — show j***@gmail.com
+    for ev in events:
+        ev["guest_email"] = _mask_email(ev.get("guest_email", ""))
     return {"success": True, "data": events, "total": len(events)}
 
 
+def _mask_email(email: str) -> str:
+    if not email or "@" not in email:
+        return email
+    local, domain = email.split("@", 1)
+    return local[:2] + "***@" + domain
+
+
 @router.post("/admin/poll-now")
-async def poll_now(background_tasks: BackgroundTasks, minutes: int = 60) -> dict:
-    """Manually trigger a Cloudbeds poll for the last N minutes (default 60). Admin use only."""
+async def poll_now(
+    background_tasks: BackgroundTasks,
+    minutes: int = 60,
+    _admin=Depends(require_admin),
+) -> dict:
+    """Manually trigger a Cloudbeds poll for the last N minutes. Admin only."""
     background_tasks.add_task(_poll_with_window, minutes)
     return {"success": True, "message": f"Polling last {minutes} minutes in background"}
 
