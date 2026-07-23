@@ -226,16 +226,18 @@ def get_task_overview(year: int = Query(2026)):
 
     # Merge entries with the same display name (e.g. Nora has 2 record IDs)
     merged: dict[str, dict] = {}
-    for pic_id, months in data.items():
-        open_workload = months.pop("open_workload", 0)
-        no_deadline_count = months.pop("no_deadline_count", 0)
+    for pic_id, pic_data in data.items():
+        open_workload = pic_data.get("open_workload", 0)
+        no_deadline_count = pic_data.get("no_deadline_count", 0)
         name = PIC_NAME_MAP.get(pic_id, f"User {pic_id[-4:]}")
         if name not in merged:
             merged[name] = {"pic_id": pic_id, "name": name, "months": {}, "open_workload": 0, "no_deadline_count": 0}
         m = merged[name]
         m["open_workload"] += open_workload
         m["no_deadline_count"] += no_deadline_count
-        for month_key, stats in months.items():
+        for month_key, stats in pic_data.items():
+            if not isinstance(month_key, int) and not (isinstance(month_key, str) and month_key.isdigit()):
+                continue
             if month_key not in m["months"]:
                 m["months"][month_key] = {k: 0 for k in stats}
             for k, v in stats.items():
