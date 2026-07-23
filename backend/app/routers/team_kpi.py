@@ -68,18 +68,47 @@ def debug_ads_tasks_jul():
 
 @router.get("/debug/kol-revenue-by-branch")
 def debug_kol_revenue_by_branch(year: int = Query(2026)):
-    """Show KOL revenue (mil VND) per branch per month from marketing_activity_cache."""
+    """Show KOL revenue (raw VND) per branch per month: cached (KOL Engine) vs Cloudbeds."""
+    import calendar
+    from datetime import date
     from app.services.team_kpi_service import get_kol_actuals_yearly_db
+    from app.routers.marketing_activity import _fetch_kol_totals_cloudbeds, _month_range
+    from app.models.branch import Branch
     from app.database import SessionLocal
     db = SessionLocal()
     try:
         data = get_kol_actuals_yearly_db(db, year)
+        branches = db.query(Branch).filter(Branch.is_active.is_(True)).all()
+        BRANCH_KEYS = {"saigon", "taipei", "1948", "oani", "osaka"}
+
+        def branch_key(name):
+            nl = (name or "").lower()
+            for k in BRANCH_KEYS:
+                if k in nl:
+                    return k
+            return None
+
+        today = date.today()
+        cur_month = today.month if today.year == year else (12 if today.year > year else 0)
+
+        cloudbeds = {}
+        for m in range(1, cur_month + 1):
+            d_from, d_to = _month_range(f"{year}-{m:02d}")
+            cloudbeds[str(m)] = {}
+            for b in branches:
+                bk = branch_key(b.name)
+                if not bk:
+                    continue
+                _, rev = _fetch_kol_totals_cloudbeds(db, b.id, d_from, d_to, use_native=False)
+                cloudbeds[str(m)][bk] = round(rev, 0)
     finally:
         db.close()
-    out = {}
-    for m, branches in sorted(data.items()):
-        out[str(m)] = {bk: round(v.get("kol_revenue", 0), 1) for bk, v in branches.items() if bk != "all"}
-    return {"success": True, "data": out, "error": None}
+
+    cached = {}
+    for m, bmap in sorted(data.items()):
+        cached[str(m)] = {bk: round(v.get("kol_revenue", 0), 0) for bk, v in bmap.items() if bk != "all"}
+
+    return {"success": True, "data": {"kol_engine_cache": cached, "cloudbeds": cloudbeds}, "error": None}
 
 
 @router.get("/debug/kol-revenue-raw")
