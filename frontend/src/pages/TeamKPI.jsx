@@ -412,7 +412,7 @@ function MiniBar({ value, max, color = "#6366f1" }) {
   );
 }
 
-function computeScore(row) {
+function computeScoreDetail(row) {
   if (!row) return null;
   const on_time_rate = row.on_time_rate ?? 0;
   const cycle_ratio  = row.cycle_ratio;
@@ -423,8 +423,12 @@ function computeScore(row) {
   const s_overdue = overdue === 0 ? 10 : overdue <= 1 ? 8 : overdue <= 3 ? 6 : 4;
   const s_reopen  = 10;
 
-  const total = s_ontime * 0.35 + s_cycle * 0.25 + s_overdue * 0.25 + s_reopen * 0.15;
-  return Math.round(total * 10) / 10;
+  const score = Math.round((s_ontime * 0.35 + s_cycle * 0.25 + s_overdue * 0.25 + s_reopen * 0.15) * 10) / 10;
+  return { score, on_time_rate, cycle_ratio, overdue, s_ontime, s_cycle, s_overdue, s_reopen };
+}
+
+function computeScore(row) {
+  return computeScoreDetail(row)?.score ?? null;
 }
 
 function ratingLabel(score) {
@@ -515,19 +519,20 @@ function TaskOverview({ year }) {
 
   // ── Per-person monthly scores for heatmap + trend ────────────────────────
   const peopleMonthly = filtered.map(p => {
-    const monthScores = MONTH_NAMES.map((_, i) => {
+    const monthDetails = MONTH_NAMES.map((_, i) => {
       const m = i + 1;
       if (year === CURRENT_YEAR && m > CURRENT_MONTH) return null;
       const row = p.months[String(m)] ?? p.months[m] ?? null;
-      return computeScore(row);
+      return computeScoreDetail(row);
     });
+    const monthScores = monthDetails.map(d => d?.score ?? null);
     const rows = Object.entries(p.months).filter(([k]) => !isNaN(Number(k))).map(([, v]) => v);
     const agg = aggregateRows(rows);
     const validMonthScores = monthScores.filter(s => s !== null);
     const annualScore = validMonthScores.length
       ? Math.round(validMonthScores.reduce((a, b) => a + b, 0) / validMonthScores.length * 10) / 10
       : null;
-    return { name: p.name, monthScores, agg, score: annualScore, open: p.open_workload, noDeadline: p.no_deadline_count ?? 0 };
+    return { name: p.name, monthScores, monthDetails, agg, score: annualScore, open: p.open_workload, noDeadline: p.no_deadline_count ?? 0 };
   });
 
   // Score → heatmap bg color
@@ -684,7 +689,21 @@ function TaskOverview({ year }) {
 
       {/* ── Score heatmap: person × month ── */}
       <div className="bg-white rounded-xl border border-gray-200 p-4 overflow-x-auto">
-        <p className="text-xs font-semibold text-gray-600 mb-3">Performance Score — Heatmap</p>
+        <div className="flex items-center gap-2 mb-3 relative group/formula">
+          <p className="text-xs font-semibold text-gray-600">Performance Score — Heatmap</p>
+          <span className="text-[10px] text-gray-400 cursor-help underline decoration-dotted">formula ℹ</span>
+          <div className="absolute top-full left-0 mt-1 hidden group-hover/formula:block bg-gray-800 text-white text-[10px] rounded-lg p-2.5 z-20 w-64 leading-5 shadow-lg">
+            <div className="font-semibold mb-1">Score = weighted sum (0–10)</div>
+            <div>On-time rate ×<b>0.35</b></div>
+            <div className="text-gray-300 text-[9px] ml-2">≥90%→10 · ≥80%→8 · ≥70%→6 · else→4</div>
+            <div>Cycle efficiency ×<b>0.25</b></div>
+            <div className="text-gray-300 text-[9px] ml-2">ratio≤1→10 · ≤1.2→8 · ≤1.5→6 · else→4</div>
+            <div>Overdue tasks ×<b>0.25</b></div>
+            <div className="text-gray-300 text-[9px] ml-2">0→10 · 1→8 · ≤3→6 · else→4</div>
+            <div>Reopen rate ×<b>0.15</b></div>
+            <div className="text-gray-300 text-[9px] ml-2">fixed 10 (not yet tracked)</div>
+          </div>
+        </div>
         <table className="text-[11px] border-collapse w-full min-w-[520px]">
           <thead>
             <tr>
@@ -701,11 +720,21 @@ function TaskOverview({ year }) {
                 <td className="pr-3 py-1 font-medium text-gray-700 whitespace-nowrap">{d.name}</td>
                 {d.monthScores.map((score, i) => {
                   const { bg, text } = heatColor(score);
+                  const det = d.monthDetails[i];
                   return (
-                    <td key={i} className="px-0.5 py-1 text-center">
-                      <div className="rounded text-[10px] font-semibold py-1 px-0.5" style={{ backgroundColor: bg, color: text, minWidth: 32 }}>
+                    <td key={i} className="px-0.5 py-1 text-center relative group/cell">
+                      <div className="rounded text-[10px] font-semibold py-1 px-0.5 cursor-default" style={{ backgroundColor: bg, color: text, minWidth: 32 }}>
                         {score !== null ? score.toFixed(1) : "·"}
                       </div>
+                      {det && (
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover/cell:block bg-gray-800 text-white text-[9px] rounded-lg p-2 z-20 whitespace-nowrap shadow-lg leading-[1.6]">
+                          <div className="font-semibold text-[10px] mb-0.5">{MONTH_NAMES[i]} score: {det.score.toFixed(1)}</div>
+                          <div>On-time: <b>{det.on_time_rate.toFixed(0)}%</b> → {det.s_ontime} ×0.35</div>
+                          <div>Cycle: <b>{det.cycle_ratio != null ? det.cycle_ratio.toFixed(2) : "—"}</b> → {det.s_cycle} ×0.25</div>
+                          <div>Overdue: <b>{det.overdue}</b> → {det.s_overdue} ×0.25</div>
+                          <div>Reopen: <b>—</b> → 10 ×0.15 <span className="text-gray-400">(not tracked)</span></div>
+                        </div>
+                      )}
                     </td>
                   );
                 })}
