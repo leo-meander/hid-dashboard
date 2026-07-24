@@ -154,37 +154,37 @@ def get_kol_actuals_yearly_db(
             "kol_ads_collab":   0.0,
         }
 
-    # Fallback: for months not in cache, fetch from KOL Engine public revenue API.
-    # Uses the same logic as the Insights page (same kol_reservations data, same
-    # ads exclusion, same currency conversion) — avoids null grand_total_vnd issues
-    # that arise when querying HiD's own reservations table for TWD/JPY branches.
+    # Fetch org total per month (one call instead of 5 per-hotel calls):
+    #  - store totals.revenue in 'all' bucket for the All-branches view
+    #    (branches[] sums miss kol_reservations rows with null hotel_id)
+    #  - also fill per-branch revenue for months not in cache (branches[] rows)
     today = date.today()
     cur_month = today.month if today.year == year else (12 if today.year > year else 0)
     try:
         for m in range(1, cur_month + 1):
-            if m in cached_months:
+            org_data = fetch_kol_revenue(
+                base_url=settings.KOL_ENGINE_URL,
+                org_slug=settings.KOL_TARGETS_ORG_SLUG,
+                api_key=settings.KOL_REVENUE_API_SECRET,
+                year=year,
+                month=m,
+                hotel_id=None,
+            )
+            if org_data is None:
                 continue
-            for hotel_id, bk in HOTEL_TO_BRANCH_KEY.items():
-                data = fetch_kol_revenue(
-                    base_url=settings.KOL_ENGINE_URL,
-                    org_slug=settings.KOL_TARGETS_ORG_SLUG,
-                    api_key=settings.KOL_REVENUE_API_SECRET,
-                    year=year,
-                    month=m,
-                    hotel_id=hotel_id,
-                )
-                if data is None:
-                    continue
-                branches = data.get("branches") or []
-                rev_vnd = 0.0
-                for b in branches:
-                    rev_vnd += float(b.get("revenue_vnd") or 0)
-                out.setdefault(m, {})[bk] = {
-                    "kol_revenue":      rev_vnd,
-                    "kol_collaborated": 0.0,
-                    "kol_posted":       0.0,
-                    "kol_ads_collab":   0.0,
-                }
+            org_totals = org_data.get("totals") or {}
+            out.setdefault(m, {}).setdefault("all", {})["kol_revenue"] = float(org_totals.get("revenue") or 0)
+            if m not in cached_months:
+                for b in org_data.get("branches") or []:
+                    hotel_id = b.get("hotel_id")
+                    bk = HOTEL_TO_BRANCH_KEY.get(hotel_id)
+                    if bk:
+                        out.setdefault(m, {})[bk] = {
+                            "kol_revenue":      float(b.get("revenue_vnd") or 0),
+                            "kol_collaborated": 0.0,
+                            "kol_posted":       0.0,
+                            "kol_ads_collab":   0.0,
+                        }
     except Exception as exc:
         log.warning("KOL Engine revenue fallback failed: %s", exc)
 
@@ -722,23 +722,28 @@ def build_monthly_summary(
                     tot_spend = sum(float(month_actuals.get(bk, {}).get("ads_spend")   or 0) for bk in _ALL_BRANCH_KEYS)
                     raw = round(tot_rev / tot_spend, 2) if tot_spend > 0 else None
                 elif all_branches_view:
-                    # is_pct KPIs (e.g. data_fill_rate): average across branches
-                    # all other KPIs: sum across branches
-                    total = 0.0
-                    count = 0
-                    for bk in _ALL_BRANCH_KEYS:
-                        v = month_actuals.get(bk, {}).get(kpi_key)
-                        if v is None and kpi_key == "ads_material" and lark_ads_material:
-                            v = lark_ads_material.get(m, {}).get(bk, {}).get("ads_material")
-                        if v is not None:
-                            total += float(v)
-                            count += 1
-                    if count == 0:
-                        raw = None
-                    elif is_pct:
-                        raw = round(total / count, 2)
+                    # kol_revenue: use org total from 'all' bucket (includes null-hotel_id rows
+                    # that are missed when summing per-branch values from branches[]).
+                    if kpi_key == "kol_revenue" and role_key == "kol":
+                        raw = month_actuals.get("all", {}).get("kol_revenue") or None
                     else:
-                        raw = total
+                        # is_pct KPIs (e.g. data_fill_rate): average across branches
+                        # all other KPIs: sum across branches
+                        total = 0.0
+                        count = 0
+                        for bk in _ALL_BRANCH_KEYS:
+                            v = month_actuals.get(bk, {}).get(kpi_key)
+                            if v is None and kpi_key == "ads_material" and lark_ads_material:
+                                v = lark_ads_material.get(m, {}).get(bk, {}).get("ads_material")
+                            if v is not None:
+                                total += float(v)
+                                count += 1
+                        if count == 0:
+                            raw = None
+                        elif is_pct:
+                            raw = round(total / count, 2)
+                        else:
+                            raw = total
                 else:
                     raw = month_actuals.get(branch_key or "", {}).get(kpi_key)
                     # Merge Lark ads_material on top of paid_ads actuals

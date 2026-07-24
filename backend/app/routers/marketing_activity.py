@@ -338,7 +338,8 @@ def _fetch_kol_totals_one_month(db, branch_id, branch_obj, hotel_id, year, month
                 return bookings, rev
         return 0, 0.0
     else:
-        # All branches: totals.revenue is org-wide VND
+        # All branches: use org-wide totals (includes bookings with null hotel_id
+        # that would be missed if summing per-branch values from branches[]).
         totals = data.get("totals") or {}
         return int(totals.get("bookings") or 0), float(totals.get("revenue") or 0)
 
@@ -646,9 +647,14 @@ def _build_overview_from_cache(
     ads_bookings = ads_c.get("bookings", 0)
     ads_revenue_vnd = ads_c.get("revenue_vnd", 0.0)
 
-    kol_c = cached.get("kol", {})
-    kol_bookings = kol_c.get("bookings", 0)
-    kol_revenue_vnd = kol_c.get("revenue_vnd", 0.0)
+    # For all-branches view, the cached KOL values are a per-branch sum that
+    # misses kol_reservations rows with null hotel_id. Fetch the org total live.
+    if branch_id is None:
+        kol_bookings, kol_revenue_vnd = _fetch_kol_totals(db, None, d_from, d_to, False)
+    else:
+        kol_c = cached.get("kol", {})
+        kol_bookings = kol_c.get("bookings", 0)
+        kol_revenue_vnd = kol_c.get("revenue_vnd", 0.0)
 
     if use_native and branch_id:
         branch_obj = db.query(Branch).filter(Branch.id == branch_id).first()
@@ -1037,3 +1043,25 @@ def debug_paid_ads_sources(
         "local_db": local_summary,
         "ads_platform_api": api_results,
     })
+
+
+@router.get("/debug/kol-revenue-raw")
+def debug_kol_revenue_raw(
+    year: int = Query(...),
+    month: int = Query(...),
+    hotel_id: Optional[str] = Query(None),
+):
+    """Return the raw KOL Engine public kol-revenue API response for debugging.
+
+    Shows totals.revenue vs excluded.revenue so we can diagnose discrepancies
+    with the Insights page.
+    """
+    data = fetch_kol_revenue(
+        base_url=settings.KOL_ENGINE_URL,
+        org_slug=settings.KOL_TARGETS_ORG_SLUG,
+        api_key=settings.KOL_REVENUE_API_SECRET,
+        year=year,
+        month=month,
+        hotel_id=hotel_id or None,
+    )
+    return _envelope(data)
