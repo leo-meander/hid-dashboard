@@ -173,8 +173,7 @@ function EditableCell({ value, onSave, placeholder = "—", disabled }) {
   return (
     <button
       onClick={start}
-      disabled={disabled}
-      title={disabled ? undefined : "Click to edit"}
+      title={disabled ? "Locked (past month)" : "Click to edit"}
       className={`w-full text-center text-xs rounded px-1 py-0.5 transition-colors
         ${disabled ? "cursor-default text-gray-400" : "hover:bg-yellow-100 cursor-pointer text-gray-700"}
         ${value !== null && value !== undefined ? "font-medium" : "text-gray-300"}`}
