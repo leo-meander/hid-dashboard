@@ -285,7 +285,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                       ) : (
                         <EditableCell
                           value={m.target}
-                          disabled={m.is_future}
+                          disabled={year < CURRENT_YEAR || (year === CURRENT_YEAR && m.month < CURRENT_MONTH)}
                           onSave={val => saveTarget(kpi.key, m.month, val)}
                           placeholder="—"
                         />
@@ -361,7 +361,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                           <div className="flex flex-col items-center gap-0.5">
                             <EditableCell
                               value={m.actual}
-                              disabled={m.is_future}
+                              disabled={year < CURRENT_YEAR || (year === CURRENT_YEAR && m.month < CURRENT_MONTH)}
                               onSave={val => saveActual(kpi.key, m.month, val)}
                               placeholder="—"
                             />
