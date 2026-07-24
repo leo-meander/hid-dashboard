@@ -21,3 +21,7 @@ export const deleteTarget = (id) =>
 
 export const getTaskOverview = (year) =>
   axios.get(`${BASE}/task-overview`, { params: { year } }).then(r => r.data.data);
+
+export const getTaskDetail = (picName, year, month, category) =>
+  axios.get(`${BASE}/task-detail`, { params: { pic_name: picName, year, month, category } })
+    .then(r => r.data.data);

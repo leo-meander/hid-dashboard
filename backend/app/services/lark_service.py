@@ -575,6 +575,20 @@ def get_ads_material_yearly(year: int) -> dict[int, dict[str, dict]]:
     return out
 
 
+# ── Raw records cache (shared across overview + detail) ───────────────────────
+
+_raw_records_cache: dict = {}  # "all" → (fetched_at, records)
+
+
+def _get_cached_records() -> list[dict]:
+    cached = _raw_records_cache.get("all")
+    if cached and (time.time() - cached[0]) < _LARK_TTL:
+        return cached[1]
+    records = _fetch_all_records(cutoff_ms=None)
+    _raw_records_cache["all"] = (time.time(), records)
+    return records
+
+
 # ── Task Overview cache ───────────────────────────────────────────────────────
 
 _task_overview_cache: dict = {}  # year → (fetched_at, data)
@@ -600,7 +614,7 @@ def get_task_overview_yearly(year: int) -> dict:
     now_utc = _dt.datetime.now(tz=timezone.utc)
     current_year_month = (now_utc.year, now_utc.month)
 
-    records = _fetch_all_records(cutoff_ms=None)  # fetch all, we'll filter by deadline year
+    records = _get_cached_records()
 
     # agg[pic_id][month] → running totals
     from collections import defaultdict
@@ -741,3 +755,74 @@ def get_task_overview_yearly(year: int) -> dict:
 
     _task_overview_cache[year] = (time.time(), result)
     return result
+
+
+def get_task_detail(pic_name: str, year: int, month: int, category: str) -> list[dict]:
+    """Return individual task names for a person/month/category for drilldown."""
+    import datetime as _dt
+    now_utc = _dt.datetime.now(tz=timezone.utc)
+    current_year_month = (now_utc.year, now_utc.month)
+
+    target_pic_ids = {pid for pid, name in PIC_NAME_MAP.items() if name == pic_name}
+    if not target_pic_ids:
+        return []
+
+    records = _get_cached_records()
+    tasks = []
+
+    for rec in records:
+        pic_id = _extract_pic_key(rec.get("PIC"))
+        if not pic_id or pic_id not in target_pic_ids:
+            continue
+
+        status = str(rec.get("Status") or "").lower().strip()
+        is_completed = status == "completed"
+
+        ym = _parse_month_year(rec.get("Deadline"))
+        if not ym or ym[0] != year or ym[1] != month:
+            continue
+
+        task_val = rec.get("Task") or ""
+        task_name = ""
+        if isinstance(task_val, list) and task_val:
+            first = task_val[0]
+            task_name = first.get("text", "") if isinstance(first, dict) else str(first)
+        elif isinstance(task_val, str):
+            task_name = task_val
+
+        on_time_cat: Optional[str] = None
+        if is_completed:
+            raw_ot = rec.get("On-time vs Original") or ""
+            if isinstance(raw_ot, dict):
+                val_list = raw_ot.get("value", [])
+                ot_val = val_list[0].get("text", "") if (isinstance(val_list, list) and val_list and isinstance(val_list[0], dict)) else ""
+            elif isinstance(raw_ot, list):
+                ot_val = raw_ot[0].get("text", "") if (raw_ot and isinstance(raw_ot[0], dict)) else str(raw_ot[0]) if raw_ot else ""
+            else:
+                ot_val = str(raw_ot)
+            ot_val = ot_val.strip().lower().replace("-", " ").replace("_", " ")
+            if ot_val in ("on time", "ontime", "yes", "true", "đúng hạn", "ok"):
+                on_time_cat = "on_time"
+            elif ot_val in ("late", "trễ", "no", "false", "over"):
+                on_time_cat = "late"
+
+        include = False
+        if category == "total":
+            include = True
+        elif category == "done":
+            include = is_completed
+        elif category == "on_time":
+            include = is_completed and on_time_cat == "on_time"
+        elif category == "late":
+            include = is_completed and on_time_cat == "late"
+        elif category == "overdue":
+            include = not is_completed and (year, month) < current_year_month
+
+        if include:
+            tasks.append({
+                "name": task_name or "(no name)",
+                "status": "completed" if is_completed else "open",
+                "on_time": on_time_cat,
+            })
+
+    return tasks
