@@ -426,8 +426,11 @@ def _upsert_row(db: Session, role_key, branch_uuid, year, month, kpi_key, value)
         )
         .first()
     )
+    log.info("_upsert_row role=%s branch=%s year=%s month=%s kpi=%s value=%s found=%s",
+             role_key, branch_uuid, year, month, kpi_key, value, row is not None)
     if row:
         row.target_value = value
+        log.info("_upsert_row UPDATE id=%s old_val=%s → new_val=%s", row.id, row.target_value, value)
     else:
         db.add(TeamKPITarget(
             role_key=role_key,
@@ -437,7 +440,9 @@ def _upsert_row(db: Session, role_key, branch_uuid, year, month, kpi_key, value)
             kpi_key=kpi_key,
             target_value=value,
         ))
+        log.info("_upsert_row INSERT new row")
     db.commit()
+    log.info("_upsert_row commit done")
 
 
 def _row_out(row: TeamKPITarget) -> dict:
