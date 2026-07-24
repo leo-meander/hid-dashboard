@@ -321,6 +321,23 @@ def update_contact(client: httpx.Client, contact_id: str, api_key: str, location
         if resp.status_code in (200, 201):
             logger.info("GHL contact updated id=%s", contact_id)
             return True, None
+        # GHL rejects if phone already belongs to another contact (location dedup setting).
+        # Retry without phone field so the rest of the data still gets updated.
+        if resp.status_code == 400 and "duplicated contacts" in resp.text and "phone" in resp.text and "phone" in payload:
+            logger.warning("GHL update: phone duplicate detected for id=%s — retrying without phone", contact_id)
+            payload_no_phone = {k: v for k, v in payload.items() if k != "phone"}
+            resp2 = client.put(
+                f"{GHL_BASE}/contacts/{contact_id}",
+                json=payload_no_phone,
+                headers=_headers(api_key),
+                timeout=15,
+            )
+            if resp2.status_code in (200, 201):
+                logger.info("GHL contact updated (no phone) id=%s", contact_id)
+                return True, None
+            err = f"HTTP {resp2.status_code}: {resp2.text[:200]}"
+            logger.warning("GHL update (no phone) failed status=%d: %s", resp2.status_code, resp2.text[:300])
+            return False, err
         err = f"HTTP {resp.status_code}: {resp.text[:200]}"
         logger.warning("GHL update failed status=%d: %s", resp.status_code, resp.text[:300])
         return False, err
