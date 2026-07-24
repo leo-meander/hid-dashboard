@@ -329,32 +329,19 @@ def _fetch_kol_totals_one_month(db, branch_id, branch_obj, hotel_id, year, month
         log.warning("KOL Engine API unavailable for %s-%s — falling back to room_type filter", year, month)
         return _fetch_kol_totals_cloudbeds(db, branch_id, d_from, d_to, use_native)
 
-    # KOL Engine pre-filters bookings also claimed by the Ads Platform
-    # ("ads exclusion"). The Insights page does not apply this filter when
-    # the Ads Platform is unreachable, so its totals include those bookings.
-    # Add excluded.revenue back so HiD's KOL revenue matches the Insights page.
-    excluded = data.get("excluded") or {}
-    excl_rev_vnd = float(excluded.get("revenue") or 0)
-    excl_bookings = int(excluded.get("bookings") or 0)
-
     if hotel_id:
         # Single branch: find the matching branch entry
         for b in (data.get("branches") or []):
             if b.get("hotel_id") == hotel_id:
-                bookings = int(b.get("bookings") or 0) + excl_bookings
-                rev_vnd = float(b.get("revenue_vnd") or 0) + excl_rev_vnd
-                if use_native:
-                    rev = float(b.get("revenue") or 0) + excl_rev_vnd  # excl already in VND
-                else:
-                    rev = rev_vnd
+                bookings = int(b.get("bookings") or 0)
+                rev = float(b.get("revenue") if use_native else b.get("revenue_vnd") or 0)
                 return bookings, rev
         return 0, 0.0
     else:
-        # All branches: totals.revenue is org-wide VND
+        # All branches: use org-wide totals (includes bookings with null hotel_id
+        # that would be missed if summing per-branch values from branches[]).
         totals = data.get("totals") or {}
-        bookings = int(totals.get("bookings") or 0) + excl_bookings
-        rev = float(totals.get("revenue") or 0) + excl_rev_vnd
-        return bookings, rev
+        return int(totals.get("bookings") or 0), float(totals.get("revenue") or 0)
 
 
 def _fetch_kol_totals(db, branch_id, d_from, d_to, use_native):
@@ -660,9 +647,14 @@ def _build_overview_from_cache(
     ads_bookings = ads_c.get("bookings", 0)
     ads_revenue_vnd = ads_c.get("revenue_vnd", 0.0)
 
-    kol_c = cached.get("kol", {})
-    kol_bookings = kol_c.get("bookings", 0)
-    kol_revenue_vnd = kol_c.get("revenue_vnd", 0.0)
+    # For all-branches view, the cached KOL values are a per-branch sum that
+    # misses kol_reservations rows with null hotel_id. Fetch the org total live.
+    if branch_id is None:
+        kol_bookings, kol_revenue_vnd = _fetch_kol_totals(db, None, d_from, d_to, False)
+    else:
+        kol_c = cached.get("kol", {})
+        kol_bookings = kol_c.get("bookings", 0)
+        kol_revenue_vnd = kol_c.get("revenue_vnd", 0.0)
 
     if use_native and branch_id:
         branch_obj = db.query(Branch).filter(Branch.id == branch_id).first()
