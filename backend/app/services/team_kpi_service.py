@@ -88,7 +88,7 @@ BRANCH_CURRENCY: dict[str, str] = {
     "osaka":  "JPY",
     "taipei": "TWD",
     "1948":   "TWD",
-    "oani":   "TWD",
+    "oani":   "JPY",
 }
 
 # How to display revenue in each currency
@@ -564,8 +564,9 @@ def build_monthly_summary(
 
     targets_map: dict[tuple, float] = {}        # (kpi_key, month) → target value (summed for All)
     manual_actuals_map: dict[tuple, float] = {} # (kpi_key, month) → manual actual value
-    # Per-branch targets for computed-target KPIs that need branch-level data in All view
     per_branch_targets_map: dict[tuple, dict[str, float]] = {}  # (kpi_key, month) → {branch_key: value}
+    # Separate accumulator for branch revenue sums (merged after loop to avoid double-counting org-wide)
+    _branch_rev_sums: dict[tuple, float] = {}
     for row in q.all():
         if row.target_value is None:
             continue
@@ -582,34 +583,31 @@ def build_monthly_summary(
             if row.kpi_key in _bil_vnd_keys and raw_val < 1.0:
                 raw_val = round(raw_val * 1000, 3)
             if all_branches_view and row.branch_id is not None:
-                # For revenue KPIs: convert branch target to mil VND before summing
-                # (branches store targets in native currency: mil VND, TWD, or JPY)
                 if row.kpi_key in _revenue_keys:
                     bk_curr = BRANCH_CURRENCY.get(BRANCH_UUID_TO_KEY.get(str(row.branch_id), ""), "VND")
                     if bk_curr == "VND":
-                        vnd_val = raw_val * 1_000_000  # mil VND → VND
+                        vnd_val = raw_val * 1_000_000
                     else:
                         rate = get_cached_rate(bk_curr, "VND") or 1.0
-                        vnd_val = raw_val * rate  # native × VND/native → VND
-                    sum_val = vnd_val / 1_000_000  # back to mil VND for display
-                    targets_map[key] = targets_map.get(key, 0.0) + sum_val
+                        vnd_val = raw_val * rate
+                    sum_val = vnd_val / 1_000_000
+                    _branch_rev_sums[key] = _branch_rev_sums.get(key, 0.0) + sum_val
                 elif row.kpi_key in _pct_keys:
-                    # is_pct targets: take the first branch value (all branches share same target %)
                     targets_map.setdefault(key, raw_val)
                 else:
-                    # Count KPIs (design_assets, videos_delivered, etc.) — summing across
-                    # branches produces misleading totals in All view. Skip per-branch rows;
-                    # only an explicit org-wide target (branch_id=NULL) will appear in All view.
-                    pass
-                # also keep per-branch copy for computed-target lookups
+                    # Count KPIs: sum across branches
+                    targets_map[key] = targets_map.get(key, 0.0) + raw_val
                 bk = BRANCH_UUID_TO_KEY.get(str(row.branch_id))
                 if bk:
                     per_branch_targets_map.setdefault(key, {})[bk] = raw_val
             elif all_branches_view and row.branch_id is None:
-                # org-wide target (e.g. kol_invited) — use as-is, don't double-add
                 targets_map.setdefault(key, raw_val)
             else:
                 targets_map[key] = raw_val
+
+    # Merge branch revenue sums — overrides any org-wide setdefault value so branch targets always win
+    for rev_key, rev_sum in _branch_rev_sums.items():
+        targets_map[rev_key] = rev_sum
 
     # Fetch actuals
     actuals_yearly: dict[int, dict[str, dict]] = {}
