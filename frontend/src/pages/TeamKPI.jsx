@@ -13,6 +13,7 @@ const ROLES = [
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const CURRENT_YEAR = new Date().getFullYear();
+const CURRENT_MONTH = new Date().getMonth() + 1; // 1-indexed
 
 // ── Color helpers ─────────────────────────────────────────────────────────────
 
@@ -516,6 +517,7 @@ function TaskOverview({ year }) {
   const peopleMonthly = filtered.map(p => {
     const monthScores = MONTH_NAMES.map((_, i) => {
       const m = i + 1;
+      if (year === CURRENT_YEAR && m > CURRENT_MONTH) return null;
       const row = p.months[String(m)] ?? p.months[m] ?? null;
       return computeScore(row);
     });
