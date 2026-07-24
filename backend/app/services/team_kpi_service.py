@@ -590,8 +590,8 @@ def build_monthly_summary(
                     else:
                         rate = get_cached_rate(bk_curr, "VND") or 1.0
                         vnd_val = raw_val * rate
-                    sum_val = vnd_val / 1_000_000
-                    _branch_rev_sums[key] = _branch_rev_sums.get(key, 0.0) + sum_val
+                    sum_val = round(vnd_val / 1_000_000, 3)
+                    _branch_rev_sums[key] = round(_branch_rev_sums.get(key, 0.0) + sum_val, 3)
                 elif row.kpi_key in _pct_keys:
                     targets_map.setdefault(key, raw_val)
                 else:
