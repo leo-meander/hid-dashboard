@@ -299,6 +299,28 @@ def get_task_overview(year: int = Query(2026)):
     return {"success": True, "data": result, "error": None}
 
 
+@router.get("/task-detail")
+def get_task_detail_endpoint(
+    pic_name: str = Query(...),
+    year: int = Query(2026),
+    month: int = Query(...),
+    category: str = Query("total"),
+):
+    """Return individual task names for a person/month/category (drilldown)."""
+    from app.services.lark_service import get_task_detail
+    valid_categories = {"total", "done", "on_time", "late", "overdue"}
+    if category not in valid_categories:
+        raise HTTPException(400, f"category must be one of: {', '.join(sorted(valid_categories))}")
+    if not 1 <= month <= 12:
+        raise HTTPException(400, "month must be 1–12")
+    try:
+        tasks = get_task_detail(pic_name, year, month, category)
+    except Exception as exc:
+        log.exception("task_detail error pic=%s year=%s month=%s cat=%s", pic_name, year, month, category)
+        raise HTTPException(500, str(exc))
+    return {"success": True, "data": tasks, "error": None}
+
+
 @router.get("/roles")
 def get_roles():
     roles = []

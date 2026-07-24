@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
-import { getTeamKpiSummary, upsertTarget, upsertActual, getTaskOverview } from "../api/teamKpi";
+import { getTeamKpiSummary, upsertTarget, upsertActual, getTaskOverview, getTaskDetail } from "../api/teamKpi";
 
 const ROLES = [
   { key: "kol",      label: "KOL",       person: "Mel",   emoji: "🤝" },
@@ -489,13 +489,81 @@ function aggregateRows(rows) {
   return { ...totals, cycle_time_avg, estimated_avg, cycle_ratio, completion_rate, on_time_rate };
 }
 
+const CATEGORY_LABELS = {
+  total: "All tasks",
+  done: "Completed tasks",
+  on_time: "On-time tasks",
+  late: "Late tasks",
+  overdue: "Overdue tasks",
+};
+
+function TaskDetailModal({ drilldown, tasks, isLoading, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const monthName = MONTH_NAMES[drilldown.month - 1];
+  const catLabel = CATEGORY_LABELS[drilldown.category] ?? drilldown.category;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+          <div>
+            <div className="text-sm font-semibold text-gray-900">{drilldown.picName} — {monthName}</div>
+            <div className="text-[11px] text-gray-500 mt-0.5">{catLabel}</div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+        </div>
+        <div className="px-4 py-3 max-h-80 overflow-y-auto">
+          {isLoading ? (
+            <div className="flex justify-center py-6">
+              <div className="w-5 h-5 border-2 border-gray-300 border-t-gray-700 rounded-full animate-spin" />
+            </div>
+          ) : !tasks?.length ? (
+            <p className="text-sm text-gray-400 text-center py-4">No tasks found.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {tasks.map((t, i) => (
+                <li key={i} className="flex items-start gap-2 text-xs text-gray-700">
+                  <span className={`mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                    t.on_time === "on_time" ? "bg-green-500" :
+                    t.on_time === "late" ? "bg-red-400" :
+                    t.status === "open" ? "bg-orange-400" : "bg-gray-400"
+                  }`} />
+                  <span>{t.name}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="px-4 py-2 bg-gray-50 text-[10px] text-gray-400 border-t border-gray-100">
+          {!isLoading && tasks?.length ? `${tasks.length} task${tasks.length !== 1 ? "s" : ""}` : ""}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TaskOverview({ year }) {
   const [monthFilter, setMonthFilter] = useState(0); // 0 = All, 1–12 = specific month
   const [picFilter, setPicFilter] = useState("all"); // "all" or pic_id
+  const [drilldown, setDrilldown] = useState(null); // { picName, year, month, category }
 
   const { data, isPending, error } = useQuery({
     queryKey: ["task-overview", year],
     queryFn: () => getTaskOverview(year),
+  });
+
+  const { data: drillTasks, isPending: drillLoading } = useQuery({
+    queryKey: ["task-detail", drilldown?.picName, drilldown?.year, drilldown?.month, drilldown?.category],
+    queryFn: () => getTaskDetail(drilldown.picName, drilldown.year, drilldown.month, drilldown.category),
+    enabled: !!drilldown,
   });
 
   const thCls = "px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-200 whitespace-nowrap";
@@ -848,11 +916,20 @@ function TaskOverview({ year }) {
                       ) : ""}
                     </td>
                     <td className={tdCls + (isAnnual ? " text-gray-500 italic" : "")}>{monthLabel}</td>
-                    <td className={tdCls + " text-right"}>{row ? row.total_tasks : "—"}</td>
-                    <td className={tdCls + " text-right"}>{row ? `${row.completed} (${fmtNum(row.completion_rate)}%)` : "—"}</td>
-                    <td className={tdCls + " text-right"}>
+                    <td
+                      className={tdCls + " text-right" + (row && !isAnnual ? " cursor-pointer hover:text-blue-600" : "")}
+                      onClick={row && !isAnnual ? () => setDrilldown({ picName: person.name, year, month, category: "total" }) : undefined}
+                    >{row ? row.total_tasks : "—"}</td>
+                    <td
+                      className={tdCls + " text-right" + (row && !isAnnual ? " cursor-pointer hover:text-blue-600" : "")}
+                      onClick={row && !isAnnual ? () => setDrilldown({ picName: person.name, year, month, category: "done" }) : undefined}
+                    >{row ? `${row.completed} (${fmtNum(row.completion_rate)}%)` : "—"}</td>
+                    <td
+                      className={tdCls + " text-right" + (row?.on_time_rate != null && !isAnnual ? " cursor-pointer" : "")}
+                      onClick={row?.on_time_rate != null && !isAnnual ? () => setDrilldown({ picName: person.name, year, month, category: "on_time" }) : undefined}
+                    >
                       {row?.on_time_rate != null ? (
-                        <span className={row.on_time_rate >= 90 ? "text-green-600 font-medium" : row.on_time_rate >= 70 ? "text-yellow-600" : "text-red-500"}>
+                        <span className={(row.on_time_rate >= 90 ? "text-green-600 font-medium" : row.on_time_rate >= 70 ? "text-yellow-600" : "text-red-500") + " hover:underline"}>
                           {fmtNum(row.on_time_rate)}%
                         </span>
                       ) : "—"}
@@ -866,9 +943,12 @@ function TaskOverview({ year }) {
                         </span>
                       ) : "—"}
                     </td>
-                    <td className={tdCls + " text-right"}>
+                    <td
+                      className={tdCls + " text-right" + (row?.overdue_count != null && !isAnnual ? " cursor-pointer" : "")}
+                      onClick={row?.overdue_count != null && !isAnnual ? () => setDrilldown({ picName: person.name, year, month, category: "overdue" }) : undefined}
+                    >
                       {row?.overdue_count != null ? (
-                        <span className={row.overdue_count === 0 ? "text-green-600" : row.overdue_count <= 2 ? "text-yellow-600" : "text-red-500"}>
+                        <span className={(row.overdue_count === 0 ? "text-green-600" : row.overdue_count <= 2 ? "text-yellow-600" : "text-red-500") + (row.overdue_count > 0 ? " hover:underline" : "")}>
                           {row.overdue_count}
                         </span>
                       ) : "—"}
@@ -892,6 +972,14 @@ function TaskOverview({ year }) {
       <p className="text-[10px] text-gray-400">
         Score = On-time rate ×0.35 + Cycle/Estimate ×0.25 + Overdue ×0.25 + Reopen ×0.15 (Reopen not yet tracked in Lark)
       </p>
+      {drilldown && (
+        <TaskDetailModal
+          drilldown={drilldown}
+          tasks={drillTasks}
+          isLoading={drillLoading}
+          onClose={() => setDrilldown(null)}
+        />
+      )}
     </div>
   );
 }
