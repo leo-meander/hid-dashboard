@@ -442,6 +442,7 @@ def _upsert_row(db: Session, role_key, branch_uuid, year, month, kpi_key, value)
         ))
         log.info("_upsert_row INSERT new row")
     db.commit()
+    db.expire_all()  # clear session cache so subsequent reads in same session see new data
     log.info("_upsert_row commit done")
 
 
