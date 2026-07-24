@@ -417,14 +417,15 @@ function computeScoreDetail(row) {
   const on_time_rate = row.on_time_rate ?? 0;
   const cycle_ratio  = row.cycle_ratio;
   const overdue      = row.overdue_count ?? 0;
+  const reopen       = row.reopen_count ?? null; // null = not yet tracked
 
   const s_ontime  = on_time_rate >= 90 ? 10 : on_time_rate >= 80 ? 8 : on_time_rate >= 70 ? 6 : 4;
   const s_cycle   = cycle_ratio == null ? 10 : cycle_ratio <= 1 ? 10 : cycle_ratio <= 1.2 ? 8 : cycle_ratio <= 1.5 ? 6 : 4;
   const s_overdue = overdue === 0 ? 10 : overdue <= 1 ? 8 : overdue <= 3 ? 6 : 4;
-  const s_reopen  = 10;
+  const s_reopen  = reopen == null ? 10 : reopen === 0 ? 10 : reopen === 1 ? 8 : reopen <= 3 ? 6 : 4;
 
   const score = Math.round((s_ontime * 0.35 + s_cycle * 0.25 + s_overdue * 0.25 + s_reopen * 0.15) * 10) / 10;
-  return { score, on_time_rate, cycle_ratio, overdue, s_ontime, s_cycle, s_overdue, s_reopen };
+  return { score, on_time_rate, cycle_ratio, overdue, reopen, s_ontime, s_cycle, s_overdue, s_reopen };
 }
 
 function computeScore(row) {
@@ -578,7 +579,7 @@ function TaskOverview({ year }) {
     );
   }
 
-  const SCORE_TOOLTIP = "Score = On-time rate ×0.35 + Cycle efficiency ×0.25 + Overdue ×0.25 + Reopen ×0.15 (scale 0–10). Reopen not yet tracked → fixed at 10.";
+  const SCORE_TOOLTIP = "Score = On-time rate ×0.35 + Cycle efficiency ×0.25 + Overdue ×0.25 + Reopen ×0.15 (scale 0–10). Reopen: 0→10, 1→8, ≤3→6, else→4.";
 
   return (
     <div className="space-y-5">
@@ -700,8 +701,8 @@ function TaskOverview({ year }) {
             <div className="text-gray-300 text-[9px] ml-2">ratio≤1→10 · ≤1.2→8 · ≤1.5→6 · else→4</div>
             <div>Overdue tasks ×<b>0.25</b></div>
             <div className="text-gray-300 text-[9px] ml-2">0→10 · 1→8 · ≤3→6 · else→4</div>
-            <div>Reopen rate ×<b>0.15</b></div>
-            <div className="text-gray-300 text-[9px] ml-2">fixed 10 (not yet tracked)</div>
+            <div>Reopen count ×<b>0.15</b></div>
+            <div className="text-gray-300 text-[9px] ml-2">0→10 · 1→8 · ≤3→6 · else→4</div>
           </div>
         </div>
         <table className="text-[11px] border-collapse w-full min-w-[520px]">
@@ -732,7 +733,7 @@ function TaskOverview({ year }) {
                           <div>On-time: <b>{det.on_time_rate.toFixed(0)}%</b> → {det.s_ontime} ×0.35</div>
                           <div>Cycle: <b>{det.cycle_ratio != null ? det.cycle_ratio.toFixed(2) : "—"}</b> → {det.s_cycle} ×0.25</div>
                           <div>Overdue: <b>{det.overdue}</b> → {det.s_overdue} ×0.25</div>
-                          <div>Reopen: <b>—</b> → 10 ×0.15 <span className="text-gray-400">(not tracked)</span></div>
+                          <div>Reopen: <b>{det.reopen != null ? det.reopen : "—"}</b> → {det.s_reopen} ×0.15{det.reopen == null ? <span className="text-gray-400"> (–)</span> : ""}</div>
                         </div>
                       )}
                     </td>
@@ -862,7 +863,7 @@ function TaskOverview({ year }) {
                       ) : "—"}
                     </td>
                     <td className={tdCls + " text-right font-semibold cursor-help"}
-                      title={row ? `On-time: ${fmtNum(row.on_time_rate)}% ×0.35 | Cycle: ${fmtNum(row.cycle_ratio,2)}× ×0.25 | Overdue: ${row.overdue_count ?? 0} ×0.25 | Reopen: 10 ×0.15` : SCORE_TOOLTIP}>
+                      title={row ? `On-time: ${fmtNum(row.on_time_rate)}% ×0.35 | Cycle: ${fmtNum(row.cycle_ratio,2)}× ×0.25 | Overdue: ${row.overdue_count ?? 0} ×0.25 | Reopen: ${row.reopen_count ?? "—"} ×0.15` : SCORE_TOOLTIP}>
                       {score ?? "—"}
                     </td>
                     <td className={tdCls}>
