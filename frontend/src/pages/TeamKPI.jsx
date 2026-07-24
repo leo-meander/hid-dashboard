@@ -190,16 +190,18 @@ function EditableCell({ value, onSave, placeholder = "—", disabled }) {
 
 function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
   const [saving, setSaving] = useState(null); // "{kpi_key}-{month}-target|actual"
+  const [saveError, setSaveError] = useState(null);
 
   const saveTarget = async (kpiKey, month, value) => {
     const key = `${kpiKey}-${month}-target`;
     setSaving(key);
+    setSaveError(null);
     try {
       await upsertTarget({ role_key: roleKey, branch_id: branchId || null, year, month, kpi_key: kpiKey, target_value: value });
-      onRefresh();
+      await onRefresh();
     } catch (e) {
       console.error("save target failed", e);
-      alert("Save failed: " + (e?.response?.data?.detail || e?.response?.data?.error || e?.message || "unknown error"));
+      setSaveError(e?.response?.data?.detail || e?.response?.data?.error || e?.message || "Save failed");
     } finally {
       setSaving(null);
     }
@@ -208,12 +210,13 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
   const saveActual = async (kpiKey, month, value) => {
     const key = `${kpiKey}-${month}-actual`;
     setSaving(key);
+    setSaveError(null);
     try {
       await upsertActual({ role_key: roleKey, branch_id: branchId || null, year, month, kpi_key: kpiKey, actual_value: value });
-      onRefresh();
+      await onRefresh();
     } catch (e) {
       console.error("save actual failed", e);
-      alert("Save failed: " + (e?.response?.data?.detail || e?.response?.data?.error || e?.message || "unknown error"));
+      setSaveError(e?.response?.data?.detail || e?.response?.data?.error || e?.message || "Save failed");
     } finally {
       setSaving(null);
     }
@@ -222,6 +225,12 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
   if (!kpis?.length) return null;
 
   return (
+    <div>
+    {saveError && (
+      <div className="mb-2 px-3 py-2 text-xs bg-red-50 border border-red-200 text-red-700 rounded-lg">
+        Save failed: {saveError}
+      </div>
+    )}
     <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
       <table className="min-w-full text-xs border-collapse">
         <thead>
@@ -391,6 +400,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
           })}
         </tbody>
       </table>
+    </div>
     </div>
   );
 }
@@ -1107,7 +1117,7 @@ export default function TeamKPI() {
             branchId={branchId}
             year={year}
             autoActuals={data.auto_actuals}
-            onRefresh={() => queryClient.invalidateQueries({ queryKey: ["team-kpi"] })}
+            onRefresh={() => queryClient.refetchQueries({ queryKey: ["team-kpi", role, year, branchId] })}
           />
           )}
 
