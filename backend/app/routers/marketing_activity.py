@@ -1037,3 +1037,25 @@ def debug_paid_ads_sources(
         "local_db": local_summary,
         "ads_platform_api": api_results,
     })
+
+
+@router.get("/debug/kol-revenue-raw")
+def debug_kol_revenue_raw(
+    year: int = Query(...),
+    month: int = Query(...),
+    hotel_id: Optional[str] = Query(None),
+):
+    """Return the raw KOL Engine public kol-revenue API response for debugging.
+
+    Shows totals.revenue vs excluded.revenue so we can diagnose discrepancies
+    with the Insights page.
+    """
+    data = fetch_kol_revenue(
+        base_url=settings.KOL_ENGINE_URL,
+        org_slug=settings.KOL_TARGETS_ORG_SLUG,
+        api_key=settings.KOL_REVENUE_API_SECRET,
+        year=year,
+        month=month,
+        hotel_id=hotel_id or None,
+    )
+    return _envelope(data)
