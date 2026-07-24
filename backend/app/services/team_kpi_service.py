@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.team_kpi import TeamKPITarget
 from app.services.currency import get_cached_rate
-from app.services.kol_engine import HOTEL_TO_BRANCH_KEY, fetch_kol_reservation_ids
+from app.services.kol_engine import HOTEL_TO_BRANCH_KEY, fetch_kol_revenue
 from app.services.upstream_actuals import BRANCH_TO_KOL_HOTEL_ID
 
 log = logging.getLogger(__name__)
@@ -154,71 +154,39 @@ def get_kol_actuals_yearly_db(
             "kol_ads_collab":   0.0,
         }
 
-    # Fallback: for months not in cache, query via KOL Engine reservation IDs
+    # Fallback: for months not in cache, fetch from KOL Engine public revenue API.
+    # Uses the same logic as the Insights page (same kol_reservations data, same
+    # ads exclusion, same currency conversion) — avoids null grand_total_vnd issues
+    # that arise when querying HiD's own reservations table for TWD/JPY branches.
     today = date.today()
     cur_month = today.month if today.year == year else (12 if today.year > year else 0)
     try:
-        from sqlalchemy import func as _func
-        from app.models.reservation import Reservation
-        from app.models.branch import Branch as _Branch
-        BRANCH_KEYS_ALL = ("saigon", "taipei", "1948", "oani", "osaka")
         for m in range(1, cur_month + 1):
             if m in cached_months:
                 continue
-            res_ids = fetch_kol_reservation_ids(
-                base_url=settings.KOL_ENGINE_URL,
-                org_slug=settings.KOL_TARGETS_ORG_SLUG,
-                api_key=settings.KOL_REVENUE_API_SECRET,
-                year=year,
-                month=m,
-            )
-            if res_ids is None:
-                # New endpoint unavailable — fall back to room_type filter
-                d_from = date(year, m, 1)
-                d_to = date(year, m, calendar.monthrange(year, m)[1])
-                cb_rows = (
-                    db.query(_Branch.name, _func.coalesce(_func.sum(Reservation.grand_total_vnd), 0))
-                    .join(Reservation, Reservation.branch_id == _Branch.id)
-                    .filter(
-                        Reservation.room_type.ilike("%KOL_%"),
-                        Reservation.reservation_date >= d_from,
-                        Reservation.reservation_date <= d_to,
-                        Reservation.status.notin_(["cancelled", "no_show"]),
-                    )
-                    .group_by(_Branch.name)
-                    .all()
+            for hotel_id, bk in HOTEL_TO_BRANCH_KEY.items():
+                data = fetch_kol_revenue(
+                    base_url=settings.KOL_ENGINE_URL,
+                    org_slug=settings.KOL_TARGETS_ORG_SLUG,
+                    api_key=settings.KOL_REVENUE_API_SECRET,
+                    year=year,
+                    month=m,
+                    hotel_id=hotel_id,
                 )
-            elif not res_ids:
-                continue
-            else:
-                cb_rows = (
-                    db.query(_Branch.name, _func.coalesce(_func.sum(Reservation.grand_total_vnd), 0))
-                    .join(Reservation, Reservation.branch_id == _Branch.id)
-                    .filter(
-                        Reservation.cloudbeds_reservation_id.in_(res_ids),
-                        Reservation.status.notin_(["cancelled", "no_show"]),
-                    )
-                    .group_by(_Branch.name)
-                    .all()
-                )
-            if not cb_rows:
-                continue
-            for bname, rev in cb_rows:
-                bk = None
-                for k in BRANCH_KEYS_ALL:
-                    if k in (bname or "").lower():
-                        bk = k
-                        break
-                if not bk:
+                if data is None:
                     continue
+                branches = data.get("branches") or []
+                rev_vnd = 0.0
+                for b in branches:
+                    rev_vnd += float(b.get("revenue_vnd") or 0)
                 out.setdefault(m, {})[bk] = {
-                    "kol_revenue":      float(rev),
+                    "kol_revenue":      rev_vnd,
                     "kol_collaborated": 0.0,
                     "kol_posted":       0.0,
                     "kol_ads_collab":   0.0,
                 }
     except Exception as exc:
-        log.warning("KOL Cloudbeds fallback failed: %s", exc)
+        log.warning("KOL Engine revenue fallback failed: %s", exc)
 
     # Ensure every month up to today has an 'all' key (for kol_invited)
     today = date.today()
