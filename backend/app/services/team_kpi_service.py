@@ -603,7 +603,15 @@ def build_monthly_summary(
             elif all_branches_view and row.branch_id is None:
                 targets_map.setdefault(key, raw_val)
             else:
-                targets_map[key] = raw_val
+                # Single-branch view: branch-specific row wins over org-wide fallback
+                if row.branch_id is not None:
+                    targets_map[key] = raw_val
+                else:
+                    targets_map.setdefault(key, raw_val)
+
+    # Merge branch revenue sums — overrides any org-wide setdefault value so branch targets always win
+    for rev_key, rev_sum in _branch_rev_sums.items():
+        targets_map[rev_key] = rev_sum
 
     # Merge branch revenue sums — overrides any org-wide setdefault value so branch targets always win
     for rev_key, rev_sum in _branch_rev_sums.items():
