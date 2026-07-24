@@ -15,7 +15,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -375,26 +374,7 @@ def upsert_target(body: UpsertTargetBody, db: Session = Depends(get_db)):
         raise HTTPException(400, "month must be 1–12")
 
     branch_uuid = UUID(body.branch_id) if body.branch_id else None
-
-    index_name = "uq_team_kpi_org_wide" if branch_uuid is None else "uq_team_kpi_branch"
-    stmt = (
-        pg_insert(TeamKPITarget)
-        .values(
-            role_key=body.role_key,
-            branch_id=branch_uuid,
-            year=body.year,
-            month=body.month,
-            kpi_key=body.kpi_key,
-            target_value=body.target_value,
-        )
-        .on_conflict_do_update(
-            index_elements=_conflict_cols(branch_uuid),
-            index_where=_conflict_where(branch_uuid),
-            set_={"target_value": body.target_value},
-        )
-    )
-    db.execute(stmt)
-    db.commit()
+    _upsert_row(db, body.role_key, branch_uuid, body.year, body.month, body.kpi_key, body.target_value)
     return {"success": True, "data": body.model_dump(), "error": None}
 
 
@@ -425,42 +405,39 @@ def upsert_actual(body: UpsertActualBody, db: Session = Depends(get_db)):
     as the target so we don't need a separate table for Phase 1."""
     if body.role_key not in VALID_ROLES:
         raise HTTPException(400, f"Invalid role_key: {body.role_key}")
-    # For now we store manual actuals in a separate key: "{kpi_key}__actual"
-    # This keeps the schema simple without adding an actual_value column.
     actual_kpi_key = f"{body.kpi_key}__actual"
     branch_uuid = UUID(body.branch_id) if body.branch_id else None
-
-    stmt = (
-        pg_insert(TeamKPITarget)
-        .values(
-            role_key=body.role_key,
-            branch_id=branch_uuid,
-            year=body.year,
-            month=body.month,
-            kpi_key=actual_kpi_key,
-            target_value=body.actual_value,
-        )
-        .on_conflict_do_update(
-            index_elements=_conflict_cols(branch_uuid),
-            index_where=_conflict_where(branch_uuid),
-            set_={"target_value": body.actual_value},
-        )
-    )
-    db.execute(stmt)
-    db.commit()
+    _upsert_row(db, body.role_key, branch_uuid, body.year, body.month, actual_kpi_key, body.actual_value)
     return {"success": True, "data": None, "error": None}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _conflict_cols(branch_uuid):
-    if branch_uuid is None:
-        return ["role_key", "year", "month", "kpi_key"]
-    return ["role_key", "branch_id", "year", "month", "kpi_key"]
-
-def _conflict_where(branch_uuid):
-    from sqlalchemy import text
-    return text("branch_id IS NULL") if branch_uuid is None else text("branch_id IS NOT NULL")
+def _upsert_row(db: Session, role_key, branch_uuid, year, month, kpi_key, value):
+    """SELECT + UPDATE or INSERT — avoids partial-index ON CONFLICT dependency."""
+    row = (
+        db.query(TeamKPITarget)
+        .filter(
+            TeamKPITarget.role_key == role_key,
+            TeamKPITarget.branch_id == branch_uuid,
+            TeamKPITarget.year == year,
+            TeamKPITarget.month == month,
+            TeamKPITarget.kpi_key == kpi_key,
+        )
+        .first()
+    )
+    if row:
+        row.target_value = value
+    else:
+        db.add(TeamKPITarget(
+            role_key=role_key,
+            branch_id=branch_uuid,
+            year=year,
+            month=month,
+            kpi_key=kpi_key,
+            target_value=value,
+        ))
+    db.commit()
 
 
 def _row_out(row: TeamKPITarget) -> dict:
