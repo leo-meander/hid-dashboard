@@ -611,6 +611,7 @@ def get_task_overview_yearly(year: int) -> dict:
         "late_count": 0,
         "on_time_filled": 0,  # tasks that have on-time field filled (denominator)
         "overdue_count": 0,
+        "reopen_count": 0,
         "cycle_times": [],
         "estimated_days": [],
     }))
@@ -673,6 +674,17 @@ def get_task_overview_yearly(year: int) -> dict:
             if (year, month) < current_year_month:
                 bucket["overdue_count"] += 1
 
+        # Reopen count
+        rc_raw = rec.get("Reopen Count")
+        rc: int = 0
+        if isinstance(rc_raw, (int, float)) and rc_raw > 0:
+            rc = int(rc_raw)
+        elif isinstance(rc_raw, dict):
+            v = rc_raw.get("value") or rc_raw.get("number")
+            if isinstance(v, (int, float)) and v > 0:
+                rc = int(v)
+        bucket["reopen_count"] += rc
+
         # Cycle time
         ct_raw = rec.get("Cycle Time")
         ct: Optional[float] = None
@@ -716,6 +728,7 @@ def get_task_overview_yearly(year: int) -> dict:
                 "on_time_count": on_time,
                 "late_count": b["late_count"],
                 "overdue_count": b["overdue_count"],
+                "reopen_count": b["reopen_count"],
                 "cycle_time_avg": ct_avg,
                 "estimated_avg": ed_avg,
                 "cycle_ratio": cycle_ratio,
