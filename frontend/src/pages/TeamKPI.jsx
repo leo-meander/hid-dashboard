@@ -199,6 +199,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
       onRefresh();
     } catch (e) {
       console.error("save target failed", e);
+      alert("Save failed: " + (e?.response?.data?.detail || e?.response?.data?.error || e?.message || "unknown error"));
     } finally {
       setSaving(null);
     }
@@ -212,6 +213,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
       onRefresh();
     } catch (e) {
       console.error("save actual failed", e);
+      alert("Save failed: " + (e?.response?.data?.detail || e?.response?.data?.error || e?.message || "unknown error"));
     } finally {
       setSaving(null);
     }
