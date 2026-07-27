@@ -575,6 +575,22 @@ function EmailKPI({ label, value, color = "text-gray-900" }) {
   );
 }
 
+/* Roll campaign rows into the same shape /email/summary returns, so the KPI
+   cards can follow the campaign-name search instead of always showing all-up
+   totals. Rates mirror the backend: unique_opened / sent, unique_clicked / sent. */
+function rollupCampaigns(rows) {
+  const sum = (key) => rows.reduce((s, c) => s + (Number(c[key]) || 0), 0);
+  const sent = sum("sent");
+  const opened = sum("unique_opened");
+  const clicked = sum("unique_clicked");
+  return {
+    total_sent: sent,
+    open_rate: sent > 0 ? opened / sent : 0,
+    click_rate: sent > 0 ? clicked / sent : 0,
+    attributed_revenue_vnd: sum("attributed_revenue_vnd"),
+  };
+}
+
 function EmailStatTab({ month, ytdBounds: ytdB, onViewRevenue }) {
   const { currentBranch, isAll } = useBranch();
   const [search, setSearch] = useState("");
@@ -613,12 +629,14 @@ function EmailStatTab({ month, ytdBounds: ytdB, onViewRevenue }) {
     );
   }
 
-  const workflows = campaigns.filter(c => c.campaign_type === "workflow");
-  const bulks = campaigns.filter(c => c.campaign_type === "bulk");
   const q = search.trim().toLowerCase();
   const filteredCampaigns = q
     ? campaigns.filter(c => (c.workflow_name || "").toLowerCase().includes(q))
     : campaigns;
+  const workflows = filteredCampaigns.filter(c => c.campaign_type === "workflow");
+  const bulks = filteredCampaigns.filter(c => c.campaign_type === "bulk");
+  // With a search active every card reflects the matched campaigns only.
+  const kpi = q ? rollupCampaigns(filteredCampaigns) : summary;
 
   return (
     <div className={"space-y-6 transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
@@ -627,11 +645,17 @@ function EmailStatTab({ month, ytdBounds: ytdB, onViewRevenue }) {
         bulk rows are filtered to the selected month by schedule date.
       </p>
 
+      {q && (
+        <p className="text-xs font-medium text-indigo-600">
+          Showing totals for {filteredCampaigns.length} campaign{filteredCampaigns.length === 1 ? "" : "s"} matching &quot;{search.trim()}&quot;.
+        </p>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <EmailKPI label="Total Sent" value={fmtNum(summary.total_sent)} />
-        <EmailKPI label="Open Rate" value={pct(summary.open_rate)} color="text-green-700" />
-        <EmailKPI label="Click Rate" value={pct(summary.click_rate)} color="text-purple-700" />
-        <EmailKPI label="CRM Revenue (VND)" value={fmtNum(summary.attributed_revenue_vnd)} color="text-emerald-700" />
+        <EmailKPI label={q ? "Total Sent (filtered)" : "Total Sent"} value={fmtNum(kpi.total_sent)} />
+        <EmailKPI label="Open Rate" value={pct(kpi.open_rate)} color="text-green-700" />
+        <EmailKPI label="Click Rate" value={pct(kpi.click_rate)} color="text-purple-700" />
+        <EmailKPI label="CRM Revenue (VND)" value={fmtNum(kpi.attributed_revenue_vnd)} color="text-emerald-700" />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
