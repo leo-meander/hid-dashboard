@@ -38,13 +38,17 @@ KPI_DEFS: dict[str, list[dict]] = {
         {"key": "kol_invited",     "label": "KOLs Invited",          "unit": "KOLs",   "org_wide": True,  "higher_is_better": True},
         {"key": "kol_revenue",     "label": "Revenue via KOL",        "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True},
         {"key": "kol_collaborated","label": "KOLs Collaborated",      "unit": "KOLs",   "org_wide": False, "higher_is_better": True},
-        {"key": "kol_posted",      "label": "KOLs Posted",            "unit": "posts",  "org_wide": False, "higher_is_better": True},
-        {"key": "kol_ads_collab",  "label": "KOL Ads Collab",         "unit": "KOLs",   "org_wide": False, "higher_is_better": True},
+        {"key": "kol_posted",      "label": "KOLs Posted",            "unit": "posts",  "org_wide": False, "higher_is_better": True,
+         "computed_target": "kol_upstream", "computed_note": "= % of prev-month collab (KOL Engine)",
+         "computed_note_pct": "= {pct}% of prev-month collab (KOL Engine)"},
+        {"key": "kol_ads_collab",  "label": "KOL Ads Collab",         "unit": "KOLs",   "org_wide": False, "higher_is_better": True,
+         "computed_target": "kol_upstream", "computed_note": "= % of Posted target (KOL Engine)",
+         "computed_note_pct": "= {pct}% of Posted target (KOL Engine)"},
     ],
     "paid_ads": [
         {"key": "ads_material",    "label": "Variation Ads Material", "unit": "count",  "org_wide": False, "higher_is_better": True},
         {"key": "roas",            "label": "ROAS",                   "unit": "×",      "org_wide": False, "higher_is_better": True,  "decimals": 2},
-        {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True, "computed_target": "spend_x_roas"},
+        {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True, "computed_target": "spend_x_roas", "computed_note": "= spend × ROAS target"},
     ],
     "designer": [
         {"key": "design_assets",   "label": "Design Assets Completed","unit": "designs","org_wide": False, "higher_is_better": True},
@@ -97,6 +101,11 @@ _CURRENCY_DISPLAY: dict[str, dict] = {
     "JPY": {"unit": "JPY",     "scale": 1,          "decimals": 0},
     "TWD": {"unit": "TWD",     "scale": 1,          "decimals": 0},
 }
+
+def _fmt_pct(v: float) -> str:
+    """Percentage for display: 90.0 → '90', 92.5 → '92.5'."""
+    return str(int(v)) if float(v).is_integer() else f"{v:g}"
+
 
 # ── KOL actuals ─────────────────────────────────────────────────────────────
 
@@ -195,9 +204,18 @@ def get_kol_actuals_yearly_db(
         out.setdefault(m, {}).setdefault("all", {"kol_invited": 0.0, "kol_revenue": 0.0})
 
     # Step 2: merge counts + kol_invited from targets API — never fatal
+    #
+    # The same response also carries the KOL Engine's own posted / ads_allowed
+    # TARGETS (percentage-driven: posted = prev-month collab × posted_pct,
+    # ads_allowed = posted target × ads_pct). Those are stored under
+    # "<kpi_key>__target" so the Team KPI target row mirrors KOL Engine
+    # instead of a hand-entered HiD number.
+    #
+    # One month past today is fetched too: next month's posted target only
+    # depends on THIS month's collaborations, so it is already computable.
     try:
         from app.services.kol_engine import fetch_kol_targets
-        for m in range(1, min(cur_month + 1, 13)):
+        for m in range(1, min(cur_month + 2, 13)):
             tgt_data = fetch_kol_targets(
                 base_url=settings.KOL_ENGINE_URL,
                 org_slug=settings.KOL_TARGETS_ORG_SLUG,
@@ -210,7 +228,7 @@ def get_kol_actuals_yearly_db(
             # org-wide invited count
             inv = (tgt_data.get("totals") or {}).get("invited_proactive")
             inv_val = float(inv.get("actual") if isinstance(inv, dict) else (inv or 0))
-            out[m].setdefault("all", {})["kol_invited"] = inv_val
+            out.setdefault(m, {}).setdefault("all", {})["kol_invited"] = inv_val
 
             for br in tgt_data.get("branches") or []:
                 hotel_id = br.get("hotel_id") or br.get("id") or ""
@@ -221,14 +239,38 @@ def get_kol_actuals_yearly_db(
                         if k in name:
                             branch_key = k
                             break
-                if not branch_key or branch_key not in out.get(m, {}):
+                if not branch_key:
                     continue
-                def _v(field, _br=br):
+
+                def _v(field, sub="actual", _br=br):
+                    """Read branches[].<field>.<sub>; None when absent."""
                     v = _br.get(field)
-                    return float(v.get("actual") if isinstance(v, dict) else (v or 0))
-                out[m][branch_key]["kol_collaborated"] = _v("collaborated")
-                out[m][branch_key]["kol_posted"]       = _v("posted")
-                out[m][branch_key]["kol_ads_collab"]   = _v("ads_allowed")
+                    if isinstance(v, dict):
+                        raw = v.get(sub)
+                        return float(raw) if raw is not None else None
+                    # legacy scalar payload carries the actual only
+                    return float(v or 0) if sub == "actual" else None
+
+                # Counts only land on months that already have a branch bucket —
+                # keeps months with no revenue row blank instead of showing 0.
+                existing = out.get(m, {}).get(branch_key)
+                if existing is not None:
+                    existing["kol_collaborated"] = _v("collaborated") or 0.0
+                    existing["kol_posted"]       = _v("posted") or 0.0
+                    existing["kol_ads_collab"]   = _v("ads_allowed") or 0.0
+
+                # Targets always land, including on the month ahead.
+                bucket = out.setdefault(m, {}).setdefault(branch_key, {})
+                bucket["kol_posted__target"]     = _v("posted", "target")
+                bucket["kol_ads_collab__target"] = _v("ads_allowed", "target")
+                # The % rules behind those targets — only for labelling the
+                # target row. Absent on older KOL Engine deploys; the label
+                # then falls back to its generic wording.
+                def _pct(field, _br=br):
+                    v = _br.get(field)
+                    return float(v) if v is not None else None
+                bucket["kol_posted__pct"]     = _pct("posted_pct")
+                bucket["kol_ads_collab__pct"] = _pct("ads_allowed_pct")
     except Exception as exc:
         log.warning("kol targets API merge failed (counts will be 0): %s", exc)
 
@@ -678,6 +720,11 @@ def build_monthly_summary(
         no_target         = defn.get("no_target", False)       # display-only: suppress target editing
         computed_target_t = defn.get("computed_target")        # computed target type (e.g. "spend_x_roas")
 
+        # Percentage rules behind an upstream-owned target, collected while
+        # resolving the months so the target row can be labelled with the
+        # actual number (e.g. "= 90% of prev-month collab").
+        upstream_pcts: set[float] = set()
+
         monthly = []
         for m in range(1, 13):
             is_future = (m > cur_month)
@@ -708,6 +755,23 @@ def build_monthly_summary(
                             target = round(rev_target_vnd / vnd_to_native_rate, decimals)
                         elif scale:
                             target = round(rev_target_vnd / scale, decimals or 1)
+            elif computed_target_t == "kol_upstream":
+                # Target owned by KOL Engine (percentage-driven, recomputed as
+                # collaborations land) — HiD mirrors it, never stores it.
+                m_act = actuals_yearly.get(m, {})
+                tgt_field = f"{kpi_key}__target"
+                src_keys = _ALL_BRANCH_KEYS if all_branches_view else (branch_key or "",)
+                if all_branches_view:
+                    vals = [m_act.get(bk, {}).get(tgt_field) for bk in _ALL_BRANCH_KEYS]
+                    total = sum(float(v) for v in vals if v is not None)
+                    target = round(total) if total > 0 else None
+                else:
+                    v = m_act.get(branch_key or "", {}).get(tgt_field)
+                    target = round(float(v)) if v is not None and float(v) > 0 else None
+                for bk in src_keys:
+                    p = m_act.get(bk, {}).get(f"{kpi_key}__pct")
+                    if p is not None:
+                        upstream_pcts.add(float(p))
             elif computed_target_t:
                 target = None  # future month or unknown computed type
             else:
@@ -792,6 +856,19 @@ def build_monthly_summary(
                 "has_target": target is not None,
             })
 
+        # Label the target row with the real percentage when upstream reports
+        # one; a single shared % reads "= 90% …", mixed per-branch settings in
+        # the All view read as a range.
+        note = defn.get("computed_note")
+        pct_tmpl = defn.get("computed_note_pct")
+        if pct_tmpl and upstream_pcts:
+            ordered = sorted(upstream_pcts)
+            shown = (
+                _fmt_pct(ordered[0]) if len(ordered) == 1
+                else f"{_fmt_pct(ordered[0])}–{_fmt_pct(ordered[-1])}"
+            )
+            note = pct_tmpl.format(pct=shown)
+
         kpis_out.append({
             "key": kpi_key,
             "label": defn["label"],
@@ -803,6 +880,7 @@ def build_monthly_summary(
             "auto_actuals": kpi_auto,
             "no_target": no_target,
             "computed_target": computed_target_t is not None,
+            "computed_target_note": note,
             "monthly": monthly,
         })
 

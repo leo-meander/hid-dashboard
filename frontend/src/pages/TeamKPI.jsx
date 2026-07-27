@@ -42,6 +42,8 @@ const KPI_TOOLTIPS = {
   budget_utilisation:   "Marketing Budget Utilisation — total actual spend (Paid Ads + KOL + CRM) ÷ total allocated budget × 100 for the branch and month.",
   roas:                 "Return on Ad Spend — Revenue from Paid Ads ÷ Ad Spend. In the All view, this is a weighted average: total revenue across all branches ÷ total spend across all branches.",
   crm_revenue:          "Revenue attributed to CRM campaigns in that month. Enter targets in mil VND (e.g. enter 56 for 56 million VND).",
+  kol_posted:           "KOLs who published a post that month. Target is owned by KOL Engine → Set Targets → Posted: round(prev-month collaborated × Posted %). It moves as collaborations land, so it is read-only here.",
+  kol_ads_collab:       "KOLs with ads permission who published that month (KOL Engine 'Ads-Allowed'). Target is owned by KOL Engine → Set Targets → Ads-Allowed: round(Posted target × Ads-Allowed %). Read-only here.",
 };
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
@@ -274,14 +276,18 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                       <span className="text-[10px] text-blue-500 font-normal">org-wide</span>
                     )}
                     {kpi.computed_target && (
-                      <span className="text-[10px] text-gray-400 font-normal">= spend × ROAS target</span>
+                      <span className="text-[10px] text-gray-400 font-normal">
+                        {kpi.computed_target_note || "= spend × ROAS target"}
+                      </span>
                     )}
                   </td>
                   <td className="px-2 py-1.5 text-center text-gray-400" rowSpan={2}>{kpi.unit}</td>
                   <td className="px-2 py-1.5 text-center">
                     <span
                       className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-yellow-100 text-yellow-700"
-                      title={kpi.computed_target ? "Computed: actual spend × ROAS target" : undefined}
+                      title={kpi.computed_target
+                        ? `Computed ${kpi.computed_target_note || "= spend × ROAS target"} — read-only`
+                        : undefined}
                     >T</span>
                   </td>
                   {kpi.monthly.map(m => (
