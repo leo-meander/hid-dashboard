@@ -41,6 +41,8 @@ FAKE_ACTUALS = {
             "kol_ads_collab": 3.0,
             "kol_posted__target": 9.0,       # 10 collabs in Dec × 90%
             "kol_ads_collab__target": 5.0,   # 9 × 50% → 4.5 → 5
+            "kol_posted__pct": 90.0,
+            "kol_ads_collab__pct": 50.0,
         },
         "taipei": {
             "kol_revenue": 0.0,
@@ -49,6 +51,8 @@ FAKE_ACTUALS = {
             "kol_ads_collab": 1.0,
             "kol_posted__target": 4.0,
             "kol_ads_collab__target": 2.0,
+            "kol_posted__pct": 90.0,
+            "kol_ads_collab__pct": 50.0,
         },
     }
 }
@@ -71,7 +75,7 @@ def test_branch_view_uses_engine_target(patched):
     posted = _kpi(out, "kol_posted")
     jan = posted["monthly"][0]
     assert posted["computed_target"] is True
-    assert posted["computed_target_note"] == "= % of prev-month collab (KOL Engine)"
+    assert posted["computed_target_note"] == "= 90% of prev-month collab (KOL Engine)"
     assert jan["target"] == 9
     assert jan["actual"] == 7.0
     assert jan["pct"] == pytest.approx(77.8)
@@ -86,6 +90,28 @@ def test_all_branches_view_sums_engine_targets(patched):
 
     assert _kpi(out, "kol_posted")["monthly"][0]["target"] == 13      # 9 + 4
     assert _kpi(out, "kol_ads_collab")["monthly"][0]["target"] == 7   # 5 + 2
+    # Both branches share the same rule → a single % in the label.
+    assert _kpi(out, "kol_ads_collab")["computed_target_note"] == "= 50% of Posted target (KOL Engine)"
+
+
+def test_label_shows_a_range_when_branches_differ(monkeypatch, patched):
+    mixed = {1: {k: dict(v) for k, v in FAKE_ACTUALS[1].items()}}
+    mixed[1]["taipei"]["kol_posted__pct"] = 75.5
+    monkeypatch.setattr(svc, "get_kol_actuals_yearly_db", lambda db, year: mixed)
+
+    out = svc.build_monthly_summary(_FakeSession(), "kol", patched, None)
+    assert _kpi(out, "kol_posted")["computed_target_note"] == "= 75.5–90% of prev-month collab (KOL Engine)"
+
+
+def test_label_falls_back_when_engine_omits_the_pct(monkeypatch, patched):
+    """Older KOL Engine deploys return targets but no posted_pct."""
+    without = {1: {k: {kk: vv for kk, vv in v.items() if not kk.endswith("__pct")}
+                   for k, v in FAKE_ACTUALS[1].items()}}
+    monkeypatch.setattr(svc, "get_kol_actuals_yearly_db", lambda db, year: without)
+
+    out = svc.build_monthly_summary(_FakeSession(), "kol", patched, SAIGON_UUID)
+    assert _kpi(out, "kol_posted")["computed_target_note"] == "= % of prev-month collab (KOL Engine)"
+    assert _kpi(out, "kol_posted")["monthly"][0]["target"] == 9  # target still works
 
 
 def test_month_without_engine_target_has_no_target(patched):
@@ -132,6 +158,8 @@ def _engine_payload():
             "collaborated": {"actual": 10, "target": 12, "pct": 83.3},
             "posted": {"actual": 7, "target": 9, "pct": 77.8},
             "ads_allowed": {"actual": 3, "target": 5, "pct": 60.0},
+            "posted_pct": 90,
+            "ads_allowed_pct": 50,
         }],
     }
 
@@ -154,6 +182,8 @@ def test_engine_targets_land_without_a_revenue_row(monkeypatch):
     saigon = out[1]["saigon"]
     assert saigon["kol_posted__target"] == 9.0
     assert saigon["kol_ads_collab__target"] == 5.0
+    assert saigon["kol_posted__pct"] == 90.0
+    assert saigon["kol_ads_collab__pct"] == 50.0
     # No revenue row → counts stay absent (blank), not a misleading 0.
     assert "kol_posted" not in saigon
 

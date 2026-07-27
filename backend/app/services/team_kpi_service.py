@@ -39,9 +39,11 @@ KPI_DEFS: dict[str, list[dict]] = {
         {"key": "kol_revenue",     "label": "Revenue via KOL",        "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True},
         {"key": "kol_collaborated","label": "KOLs Collaborated",      "unit": "KOLs",   "org_wide": False, "higher_is_better": True},
         {"key": "kol_posted",      "label": "KOLs Posted",            "unit": "posts",  "org_wide": False, "higher_is_better": True,
-         "computed_target": "kol_upstream", "computed_note": "= % of prev-month collab (KOL Engine)"},
+         "computed_target": "kol_upstream", "computed_note": "= % of prev-month collab (KOL Engine)",
+         "computed_note_pct": "= {pct}% of prev-month collab (KOL Engine)"},
         {"key": "kol_ads_collab",  "label": "KOL Ads Collab",         "unit": "KOLs",   "org_wide": False, "higher_is_better": True,
-         "computed_target": "kol_upstream", "computed_note": "= % of Posted target (KOL Engine)"},
+         "computed_target": "kol_upstream", "computed_note": "= % of Posted target (KOL Engine)",
+         "computed_note_pct": "= {pct}% of Posted target (KOL Engine)"},
     ],
     "paid_ads": [
         {"key": "ads_material",    "label": "Variation Ads Material", "unit": "count",  "org_wide": False, "higher_is_better": True},
@@ -99,6 +101,11 @@ _CURRENCY_DISPLAY: dict[str, dict] = {
     "JPY": {"unit": "JPY",     "scale": 1,          "decimals": 0},
     "TWD": {"unit": "TWD",     "scale": 1,          "decimals": 0},
 }
+
+def _fmt_pct(v: float) -> str:
+    """Percentage for display: 90.0 → '90', 92.5 → '92.5'."""
+    return str(int(v)) if float(v).is_integer() else f"{v:g}"
+
 
 # ── KOL actuals ─────────────────────────────────────────────────────────────
 
@@ -256,6 +263,14 @@ def get_kol_actuals_yearly_db(
                 bucket = out.setdefault(m, {}).setdefault(branch_key, {})
                 bucket["kol_posted__target"]     = _v("posted", "target")
                 bucket["kol_ads_collab__target"] = _v("ads_allowed", "target")
+                # The % rules behind those targets — only for labelling the
+                # target row. Absent on older KOL Engine deploys; the label
+                # then falls back to its generic wording.
+                def _pct(field, _br=br):
+                    v = _br.get(field)
+                    return float(v) if v is not None else None
+                bucket["kol_posted__pct"]     = _pct("posted_pct")
+                bucket["kol_ads_collab__pct"] = _pct("ads_allowed_pct")
     except Exception as exc:
         log.warning("kol targets API merge failed (counts will be 0): %s", exc)
 
@@ -705,6 +720,11 @@ def build_monthly_summary(
         no_target         = defn.get("no_target", False)       # display-only: suppress target editing
         computed_target_t = defn.get("computed_target")        # computed target type (e.g. "spend_x_roas")
 
+        # Percentage rules behind an upstream-owned target, collected while
+        # resolving the months so the target row can be labelled with the
+        # actual number (e.g. "= 90% of prev-month collab").
+        upstream_pcts: set[float] = set()
+
         monthly = []
         for m in range(1, 13):
             is_future = (m > cur_month)
@@ -740,6 +760,7 @@ def build_monthly_summary(
                 # collaborations land) — HiD mirrors it, never stores it.
                 m_act = actuals_yearly.get(m, {})
                 tgt_field = f"{kpi_key}__target"
+                src_keys = _ALL_BRANCH_KEYS if all_branches_view else (branch_key or "",)
                 if all_branches_view:
                     vals = [m_act.get(bk, {}).get(tgt_field) for bk in _ALL_BRANCH_KEYS]
                     total = sum(float(v) for v in vals if v is not None)
@@ -747,6 +768,10 @@ def build_monthly_summary(
                 else:
                     v = m_act.get(branch_key or "", {}).get(tgt_field)
                     target = round(float(v)) if v is not None and float(v) > 0 else None
+                for bk in src_keys:
+                    p = m_act.get(bk, {}).get(f"{kpi_key}__pct")
+                    if p is not None:
+                        upstream_pcts.add(float(p))
             elif computed_target_t:
                 target = None  # future month or unknown computed type
             else:
@@ -831,6 +856,19 @@ def build_monthly_summary(
                 "has_target": target is not None,
             })
 
+        # Label the target row with the real percentage when upstream reports
+        # one; a single shared % reads "= 90% …", mixed per-branch settings in
+        # the All view read as a range.
+        note = defn.get("computed_note")
+        pct_tmpl = defn.get("computed_note_pct")
+        if pct_tmpl and upstream_pcts:
+            ordered = sorted(upstream_pcts)
+            shown = (
+                _fmt_pct(ordered[0]) if len(ordered) == 1
+                else f"{_fmt_pct(ordered[0])}–{_fmt_pct(ordered[-1])}"
+            )
+            note = pct_tmpl.format(pct=shown)
+
         kpis_out.append({
             "key": kpi_key,
             "label": defn["label"],
@@ -842,7 +880,7 @@ def build_monthly_summary(
             "auto_actuals": kpi_auto,
             "no_target": no_target,
             "computed_target": computed_target_t is not None,
-            "computed_target_note": defn.get("computed_note"),
+            "computed_target_note": note,
             "monthly": monthly,
         })
 
