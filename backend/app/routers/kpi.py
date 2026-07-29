@@ -402,8 +402,13 @@ def kpi_yearly_grid(
             cloudbeds_actual = actual_map.get((bid, mo), 0)
             raw_actual = override if override is not None else cloudbeds_actual
             adj = branch_adj.get(bid, {"deduct_mult": 1.0, "other_rev": 0.0})
-            # Apply same formula as home page: actual × (1 − deduct%) + other_revenue
-            actual = raw_actual * adj["deduct_mult"] + adj["other_rev"]
+            # A manual override IS the final number — accounting already netted it.
+            # Never re-apply deduct%/other_rev on top of it. Only the Cloudbeds
+            # actual gets the adjustment: actual × (1 − deduct%) + other_revenue.
+            if override is not None:
+                actual = raw_actual
+            else:
+                actual = raw_actual * adj["deduct_mult"] + adj["other_rev"]
             hit_pct = round(actual / target * 100, 1) if target > 0 else None
 
             branch_data.append({

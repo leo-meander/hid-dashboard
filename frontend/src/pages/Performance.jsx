@@ -479,7 +479,7 @@ function BranchCells({ data, currency, isTotal, month, onSave }) {
       <td
         className={`px-2 py-2 text-right tabular-nums ${bg} ${!isTotal ? "cursor-pointer hover:bg-indigo-50" : ""}`}
         onClick={startEdit}
-        title={!isTotal ? (data.is_override ? "Manually overridden (click to edit) · Adjusted = raw × (1−deduct%) + other rev" : "Click to override · Adjusted = raw × (1−deduct%) + other rev") : undefined}
+        title={!isTotal ? (data.is_override ? "Manually overridden (click to edit) · Shown exactly as entered — no deduct%/other rev applied" : "Click to override · Cloudbeds actual × (1−deduct%) + other rev") : undefined}
       >
         {editing ? (
           <input

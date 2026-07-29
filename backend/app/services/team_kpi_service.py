@@ -527,7 +527,11 @@ def get_pm_actuals_yearly(db: Session, year: int) -> dict[int, dict[str, dict]]:
         target = meta["target"]
         cloudbeds = daily_map.get((bid, month), 0.0)
         raw = meta["override"] if meta["override"] is not None else cloudbeds
-        actual = raw * meta["deduct_mult"] + meta["other_rev"]
+        # Manual override = final number as typed. No deduct%/other_rev on top.
+        if meta["override"] is not None:
+            actual = raw
+        else:
+            actual = raw * meta["deduct_mult"] + meta["other_rev"]
         hit_pct = round(actual / target * 100, 1) if target > 0 else None
 
         alloc, spent = budget_map.get((bid, month), (0.0, 0.0))
