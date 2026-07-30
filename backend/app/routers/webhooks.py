@@ -57,6 +57,12 @@ def _mark_seen(reservation_id: str) -> bool:
 
 # ── Core fan-out (shared by polling + webhook paths) ─────────────────────────
 
+def _meta_error_message(result: dict) -> str | None:
+    """Pull Meta's human-readable error out of the Graph API error envelope."""
+    err = (result.get("response") or {}).get("error") or {}
+    return err.get("error_user_msg") or err.get("message")
+
+
 def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
     """Process one reservation: fan out to GHL, Meta, Google Ads, TikTok."""
     branch = settings.cloudbeds_property_to_branch.get(str(property_id))
@@ -88,13 +94,87 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
     else:
         ghl_log = {"success": None, "action": "skipped_no_config"}
 
-    # ── Meta CAPI + Google Ads — disabled pending rebuild ────────────────────
-    meta_log = {"success": None, "action": "skipped_disabled"}
-    gads_log = {"success": None, "action": "skipped_disabled"}
+    # ── Meta CAPI Purchase event ─────────────────────────────────────────────
+    # Website bookings already fire Purchase from the browser pixel; sending the
+    # offline event too would double-count them.
+    if is_website_source:
+        meta_log = {"success": None, "action": "skipped_website_source"}
+    elif not (cfg["meta_pixel_id"] and cfg["meta_access_token"]):
+        meta_log = {"success": None, "action": "skipped_no_config"}
+    else:
+        try:
+            result = send_purchase_event(
+                reservation=reservation,
+                pixel_id=cfg["meta_pixel_id"],
+                access_token=cfg["meta_access_token"],
+                currency=cfg["currency"],
+                tz_offset_hours=cfg["tz_offset_hours"],
+                event_time_extra_offset=cfg["event_time_extra_offset"],
+                phone_country_code=cfg["phone_country_code"],
+            )
+            meta_log = {
+                "success": result["success"],
+                "action": "purchase" if result["success"] else None,
+                "error": result.get("error") or _meta_error_message(result),
+            }
+        except Exception as e:
+            logger.error("Meta CAPI error branch=%s reservation=%s: %s", branch, reservation_id, e)
+            meta_log = {"success": False, "error": str(e)}
 
-    # ── TikTok Events API — disabled pending rebuild ─────────────────────────
+    # ── Google Ads offline conversion (Data Manager API) ─────────────────────
+    # Website-sourced bookings already convert through the site tag, so only
+    # non-Website sources are uploaded — same gate as the original Make flow.
+    if is_website_source:
+        gads_log = {"success": None, "action": "skipped_website_source"}
+    elif not (cfg["google_ads_refresh_token"] and cfg["google_ads_customer_id"]):
+        gads_log = {"success": None, "action": "skipped_no_config"}
+    else:
+        try:
+            result = upload_offline_conversion(
+                reservation=reservation,
+                customer_id=cfg["google_ads_customer_id"],
+                client_id=settings.datamanager_client_id,
+                client_secret=settings.datamanager_client_secret,
+                refresh_token=cfg["google_ads_refresh_token"],
+                conversion_action_single=cfg["google_ads_conversion_single"],
+                conversion_action_both=cfg["google_ads_conversion_both"],
+                conversion_action_phone=cfg["google_ads_conversion_phone"],
+                login_customer_id=settings.GOOGLE_LOGIN_CUSTOMER_ID,
+                currency=cfg["currency"],
+                tz_offset_hours=cfg["tz_offset_hours"],
+                event_time_extra_offset=cfg["event_time_extra_offset"],
+                phone_country_code=cfg["phone_country_code"],
+            )
+            gads_log = {
+                "success": result["success"],
+                "action": result.get("case"),
+                "error": result.get("error"),
+            }
+        except Exception as e:
+            logger.error("Google Ads upload error branch=%s reservation=%s: %s", branch, reservation_id, e)
+            gads_log = {"success": False, "error": str(e)}
+
+    # ── TikTok Events API — Saigon only ──────────────────────────────────────
     if branch == "saigon":
-        tiktok_log = {"success": None, "action": "skipped_disabled"}
+        if is_website_source:
+            tiktok_log = {"success": None, "action": "skipped_website_source"}
+        elif not (cfg["tiktok_access_token"] and cfg["tiktok_event_source_id"]):
+            tiktok_log = {"success": None, "action": "skipped_no_config"}
+        else:
+            try:
+                result = send_complete_payment_event(
+                    reservation=reservation,
+                    access_token=cfg["tiktok_access_token"],
+                    event_source_id=cfg["tiktok_event_source_id"],
+                )
+                tiktok_log = {
+                    "success": result["success"],
+                    "action": "complete_payment" if result["success"] else None,
+                    "error": result.get("error") or (result.get("response") or {}).get("message"),
+                }
+            except Exception as e:
+                logger.error("TikTok CAPI error reservation=%s: %s", reservation_id, e)
+                tiktok_log = {"success": False, "error": str(e)}
 
     webhook_log.record(
         reservation_id=reservation_id,

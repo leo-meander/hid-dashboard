@@ -66,9 +66,19 @@ class Settings(BaseSettings):
     META_PIXEL_ID_OSAKA: str = ""
     META_ACCESS_TOKEN_OSAKA: str = ""
 
-    # Google Ads offline conversion — shared OAuth, per-branch customer/conversion IDs
-    # Reuses GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN (same OAuth app)
-    # GOOGLE_DEVELOPER_TOKEN and GOOGLE_LOGIN_CUSTOMER_ID already set in env (MCC manager account)
+    # Google Ads offline conversion — Data Manager API (Ads API path blocked 2026-06-15).
+    # Reuses GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (same OAuth app), but NOT
+    # GOOGLE_REFRESH_TOKEN: that token is scoped for Sheets/Gmail and Data Manager
+    # needs its own scope (auth/datamanager). Mint a second refresh token for it.
+    # Until GOOGLE_DATAMANAGER_REFRESH_TOKEN is set, the fan-out skips Google Ads.
+    GOOGLE_DATAMANAGER_REFRESH_TOKEN: str = ""
+    # Optional dedicated OAuth client. Set these when Data Manager uses its own
+    # client (recommended — revoking consent on one client then can't take down
+    # the Sheets/Gmail token). Empty falls back to the shared GOOGLE_CLIENT_*.
+    GOOGLE_DATAMANAGER_CLIENT_ID: str = ""
+    GOOGLE_DATAMANAGER_CLIENT_SECRET: str = ""
+    # Unused by Data Manager (no developer-token header); kept so existing envs
+    # don't break and in case the Ads API reporting path needs it later.
     GOOGLE_DEVELOPER_TOKEN: str = ""
     GOOGLE_LOGIN_CUSTOMER_ID: str = ""
     GOOGLE_ADS_CUSTOMER_ID_1948: str = ""
@@ -234,13 +244,15 @@ class Settings(BaseSettings):
         # Per-branch timezone and currency (mirrors Make.com blueprint formulas)
         # tz_offset_hours: UTC offset of the branch local time
         # event_time_extra_offset: hours subtracted on top (Make's addHours value)
+        # phone_country_code: assumed country when guestPhone has no "+" prefix,
+        #   used to build E.164 before hashing for Data Manager
         branch_meta = {
-            "1948":   {"currency": "TWD", "tz_offset_hours": 8, "event_time_extra_offset": 1},
-            "taipei": {"currency": "TWD", "tz_offset_hours": 8, "event_time_extra_offset": 1},
-            "oani":   {"currency": "TWD", "tz_offset_hours": 8, "event_time_extra_offset": 1},
-            "osaka":  {"currency": "JPY", "tz_offset_hours": 9, "event_time_extra_offset": 2},
-            "saigon": {"currency": "VND", "tz_offset_hours": 7, "event_time_extra_offset": 0},
-        }.get(b, {"currency": "TWD", "tz_offset_hours": 8, "event_time_extra_offset": 1})
+            "1948":   {"currency": "TWD", "tz_offset_hours": 8, "event_time_extra_offset": 1, "phone_country_code": "886"},
+            "taipei": {"currency": "TWD", "tz_offset_hours": 8, "event_time_extra_offset": 1, "phone_country_code": "886"},
+            "oani":   {"currency": "TWD", "tz_offset_hours": 8, "event_time_extra_offset": 1, "phone_country_code": "886"},
+            "osaka":  {"currency": "JPY", "tz_offset_hours": 9, "event_time_extra_offset": 2, "phone_country_code": "81"},
+            "saigon": {"currency": "VND", "tz_offset_hours": 7, "event_time_extra_offset": 0, "phone_country_code": "84"},
+        }.get(b, {"currency": "TWD", "tz_offset_hours": 8, "event_time_extra_offset": 1, "phone_country_code": "886"})
 
         return {
             "ghl_location_id": ghl_loc[0],
@@ -251,9 +263,11 @@ class Settings(BaseSettings):
             "google_ads_conversion_single": gads_single,
             "google_ads_conversion_phone": gads_phone,
             "google_ads_conversion_both": gads_both,
+            "google_ads_refresh_token": self.GOOGLE_DATAMANAGER_REFRESH_TOKEN,
             "currency": branch_meta["currency"],
             "tz_offset_hours": branch_meta["tz_offset_hours"],
             "event_time_extra_offset": branch_meta["event_time_extra_offset"],
+            "phone_country_code": branch_meta["phone_country_code"],
             # TikTok — Saigon only
             "tiktok_access_token": self.TIKTOK_ACCESS_TOKEN_SAIGON if b == "saigon" else "",
             "tiktok_event_source_id": self.TIKTOK_EVENT_SOURCE_ID_SAIGON if b == "saigon" else "",
@@ -263,6 +277,14 @@ class Settings(BaseSettings):
         return self.property_api_key_map.get(str(property_id)) or (
             self.CLOUDBEDS_API_KEY if self.CLOUDBEDS_API_KEY != "placeholder_key" else None
         )
+
+    @property
+    def datamanager_client_id(self) -> str:
+        return self.GOOGLE_DATAMANAGER_CLIENT_ID or self.GOOGLE_CLIENT_ID
+
+    @property
+    def datamanager_client_secret(self) -> str:
+        return self.GOOGLE_DATAMANAGER_CLIENT_SECRET or self.GOOGLE_CLIENT_SECRET
 
     @property
     def email_recipients_list(self) -> List[str]:
