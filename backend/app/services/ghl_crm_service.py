@@ -97,12 +97,37 @@ def _get_location_field_map(
     return {}
 
 
+# ISO 3166-1 alpha-2. A two-letter shape is not enough: GHL validates the value
+# against the real list and rejects the whole create with "country must be
+# valid", so codes like UK (should be GB) or Cloudbeds' own placeholders have to
+# be filtered out here rather than sent and hoped for.
+_ISO_3166_ALPHA2 = frozenset("""
+AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL
+BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV
+CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD
+GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM
+IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK
+LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW
+MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR
+PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS
+ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY
+UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW
+""".split())
+
+# Non-ISO codes seen in the wild that have an unambiguous ISO equivalent.
+_COUNTRY_ALIASES = {"UK": "GB", "EL": "GR"}
+
+
 def _clean_country(raw: Optional[str]) -> Optional[str]:
-    """Only pass 2-letter ISO codes; anything else is discarded."""
+    """Return a valid ISO 3166-1 alpha-2 code, or None if it isn't one."""
     if not raw:
         return None
     s = raw.strip().upper()
-    return s if len(s) == 2 else None
+    s = _COUNTRY_ALIASES.get(s, s)
+    if s in _ISO_3166_ALPHA2:
+        return s
+    logger.debug("GHL: dropping unrecognised country code %r", raw)
+    return None
 
 
 def _first_guest(guest_list) -> dict:
@@ -304,6 +329,33 @@ def create_contact(
             contact = resp.json().get("contact") or {}
             logger.info("GHL contact created id=%s", contact.get("id"))
             return contact.get("id"), None
+
+        # GHL rejects the create when the phone already belongs to another
+        # contact (location dedup setting). OTAs hand out proxy phone numbers
+        # that repeat across guests, so the match is often a different person —
+        # updating that contact would overwrite someone else's record. Create
+        # without the phone instead, same as update_contact does.
+        if (
+            resp.status_code == 400
+            and "duplicated contacts" in resp.text
+            and "phone" in resp.text
+            and "phone" in body
+        ):
+            logger.warning("GHL create: phone duplicate detected — retrying without phone")
+            resp2 = client.post(
+                f"{GHL_BASE}/contacts/",
+                json={k: v for k, v in body.items() if k != "phone"},
+                headers=_headers(api_key),
+                timeout=15,
+            )
+            if resp2.status_code in (200, 201):
+                contact = resp2.json().get("contact") or {}
+                logger.info("GHL contact created (no phone) id=%s", contact.get("id"))
+                return contact.get("id"), None
+            err = f"HTTP {resp2.status_code}: {resp2.text[:200]}"
+            logger.warning("GHL create (no phone) failed status=%d: %s", resp2.status_code, resp2.text[:300])
+            return None, err
+
         err = f"HTTP {resp.status_code}: {resp.text[:200]}"
         logger.warning("GHL create failed status=%d: %s", resp.status_code, resp.text[:300])
         return None, err
