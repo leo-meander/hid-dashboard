@@ -36,6 +36,7 @@ from app.models.rate_plan_quota import RatePlanQuota, RatePlanQuotaStatus
 from app.models.weekly_report_cache import WeeklyReportCache
 from app.models.weekly_report_comment import WeeklyReportComment
 from app.models.weekly_report_archive import WeeklyReportArchive
+from app.models.webhook_event import WebhookEvent
 
 __all__ = [
     "Branch", "KPITarget", "Reservation", "DailyMetrics", "Event",
@@ -53,4 +54,5 @@ __all__ = [
     "RatePlanQuota", "RatePlanQuotaStatus",
     "WeeklyReportCache",
     "WeeklyReportComment", "WeeklyReportArchive",
+    "WebhookEvent",
 ]

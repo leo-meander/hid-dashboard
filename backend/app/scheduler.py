@@ -2,6 +2,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.executors.asyncio import AsyncIOExecutor
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,20 @@ def setup_scheduler(app):
             poll_new_reservations,
             trigger=IntervalTrigger(minutes=10),
             id="cloudbeds_reservation_poll",
+            replace_existing=True,
+            executor="default",
+        )
+
+        # Webhook monitor history is a debugging aid, not a record — prune it
+        # so the table can't grow without bound.
+        def _purge_webhook_events():
+            from app.services import webhook_log
+            webhook_log.purge_old()
+
+        scheduler.add_job(
+            _purge_webhook_events,
+            trigger=CronTrigger(hour=4, minute=0),
+            id="webhook_events_purge",
             replace_existing=True,
             executor="default",
         )

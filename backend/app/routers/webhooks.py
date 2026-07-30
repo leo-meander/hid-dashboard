@@ -16,7 +16,6 @@ Trigger modes:
 import hashlib
 import hmac
 import logging
-from collections import deque
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -36,22 +35,15 @@ router = APIRouter()
 CLOUDBEDS_API_BASE = "https://hotels.cloudbeds.com/api/v1.3"
 WEBSITE_SOURCES = {"website", "booking engine"}
 
-# Dedup: remember the last 2000 reservation IDs we processed so the 10-min
-# polling window overlap never double-fires the same reservation.
-_seen_reservation_ids: deque = deque(maxlen=2000)
-_seen_set: set = set()
-
-
 def _mark_seen(reservation_id: str) -> bool:
-    """Return True if already seen (duplicate). Otherwise mark and return False."""
-    if reservation_id in _seen_set:
+    """Return True if already seen (duplicate). Otherwise mark and return False.
+
+    Backed by webhook_events rather than a process-local set, so a redeploy no
+    longer makes the next poll re-fan-out everything inside its window.
+    """
+    if webhook_log.has_seen(reservation_id):
         return True
-    _seen_reservation_ids.append(reservation_id)
-    _seen_set.add(reservation_id)
-    # Keep set in sync with bounded deque
-    if len(_seen_reservation_ids) == 2000:
-        oldest = _seen_reservation_ids[0]
-        _seen_set.discard(oldest)
+    webhook_log.mark_seen(reservation_id)
     return False
 
 
@@ -332,10 +324,20 @@ async def cloudbeds_webhook(
 async def get_webhook_events(
     branch: str | None = None,
     limit: int = 100,
+    days: int | None = None,
+    failures_only: bool = False,
     _admin=Depends(require_admin),
 ) -> dict:
-    """Return recent webhook processing results. Admin only."""
-    events = webhook_log.get_events(branch=branch, limit=min(limit, 500))
+    """Return recent webhook processing results. Admin only.
+
+    History is kept for webhook_log.RETENTION_DAYS; `days` narrows within that.
+    """
+    events = webhook_log.get_events(
+        branch=branch,
+        limit=min(limit, 500),
+        days=days,
+        failures_only=failures_only,
+    )
     # Mask guest email before returning — show j***@gmail.com
     for ev in events:
         ev["guest_email"] = _mask_email(ev.get("guest_email", ""))
