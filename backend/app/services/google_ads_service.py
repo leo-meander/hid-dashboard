@@ -100,6 +100,33 @@ def _parse_conversion_time(
         return None
 
 
+def _describe_error(result: dict) -> Optional[str]:
+    """
+    Flatten a Google API error envelope into one readable line.
+
+    The top-level `message` for a rejected ingest is the generic "There was a
+    problem with the request." — everything actionable (which field, which
+    account, which permission) lives in `error.details[]`, so surface that too
+    or the webhook log says nothing useful.
+    """
+    err = (result or {}).get("error") or {}
+    parts = [err.get("message")] if err.get("message") else []
+
+    for detail in err.get("details") or []:
+        for violation in detail.get("fieldViolations") or []:
+            field = violation.get("field") or "?"
+            parts.append(f"{field}: {violation.get('description')}")
+        if detail.get("reason"):
+            metadata = detail.get("metadata") or {}
+            meta_str = " ".join(f"{k}={v}" for k, v in metadata.items())
+            parts.append(f"{detail['reason']} {meta_str}".strip())
+        if detail.get("errors"):
+            for sub in detail["errors"]:
+                parts.append(str(sub.get("message") or sub))
+
+    return " | ".join(p for p in parts if p) or None
+
+
 def _first_guest(guest_list: dict) -> dict:
     if not guest_list or not isinstance(guest_list, dict):
         return {}
@@ -249,7 +276,7 @@ def upload_offline_conversion(
                     "success": False,
                     "case": case,
                     "status_code": resp.status_code,
-                    "error": (result.get("error") or {}).get("message"),
+                    "error": _describe_error(result) or f"HTTP {resp.status_code}",
                     "response": result,
                 }
 
