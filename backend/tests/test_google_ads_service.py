@@ -81,6 +81,9 @@ class TestUploadOfflineConversion:
         event = payload["events"][0]
         assert event["transactionId"] == "R-1"
         assert event["eventTimestamp"] == "2026-07-30T01:21:00Z"
+        # Required by the API for offline conversions despite the schema
+        # marking it optional — omitting it is a hard 400.
+        assert event["eventSource"] == "OTHER"
         assert event["conversionValue"] == 1500.5
         assert event["currency"] == "TWD"
         assert payload["encoding"] == "HEX"

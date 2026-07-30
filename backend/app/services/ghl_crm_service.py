@@ -248,19 +248,19 @@ def _build_contact_payload(
     if not is_update:
         payload["dnd"] = False
 
-    # Address — only on create; GHL PUT /contacts/:id rejects the address field
+    # Address — GHL v2 takes these as flat top-level fields. A nested "address"
+    # object is rejected outright ("property address should not exist"), which
+    # was failing every create. Sent on create only: PUT /contacts/:id rejects
+    # them.
     if not is_update:
-        address_payload: dict = {}
         if guest.get("guestCity"):
-            address_payload["city"] = guest["guestCity"]
+            payload["city"] = guest["guestCity"]
         if guest.get("guestState"):
-            address_payload["state"] = guest["guestState"]
+            payload["state"] = guest["guestState"]
         if country:
-            address_payload["country"] = country
+            payload["country"] = country
         if guest.get("guestZip"):
-            address_payload["postalCode"] = guest["guestZip"]
-        if address_payload:
-            payload["address"] = address_payload
+            payload["postalCode"] = guest["guestZip"]
 
     custom_fields = _build_custom_fields(reservation, guest, location_id, api_key, client)
     if custom_fields:
@@ -288,8 +288,10 @@ def search_contact(client: httpx.Client, location_id: str, api_key: str, email: 
         return None
 
 
-def create_contact(client: httpx.Client, location_id: str, api_key: str, payload: dict) -> Optional[str]:
-    """Create a new GHL contact. Returns the new contact ID or None."""
+def create_contact(
+    client: httpx.Client, location_id: str, api_key: str, payload: dict
+) -> tuple[str | None, str | None]:
+    """Create a new GHL contact. Returns (contact_id, error_message)."""
     body = {**payload, "locationId": location_id}
     try:
         resp = client.post(
@@ -301,12 +303,13 @@ def create_contact(client: httpx.Client, location_id: str, api_key: str, payload
         if resp.status_code in (200, 201):
             contact = resp.json().get("contact") or {}
             logger.info("GHL contact created id=%s", contact.get("id"))
-            return contact.get("id")
+            return contact.get("id"), None
+        err = f"HTTP {resp.status_code}: {resp.text[:200]}"
         logger.warning("GHL create failed status=%d: %s", resp.status_code, resp.text[:300])
-        return None
+        return None, err
     except Exception as e:
         logger.error("GHL create error: %s", e)
-        return None
+        return None, str(e)
 
 
 def update_contact(client: httpx.Client, contact_id: str, api_key: str, location_id: str, payload: dict) -> tuple[bool, str | None]:
@@ -354,7 +357,13 @@ def upsert_contact_from_reservation(
 ) -> dict:
     """
     Main entry point: upsert a GHL contact from Cloudbeds reservation data.
-    Returns {"action": "created"|"updated"|"update_failed"|"skipped", "contact_id": str|None}.
+    Returns {"action": "created"|"updated"|"create_failed"|"update_failed"|"skipped",
+             "contact_id": str|None, "error": str|None}.
+
+    A failed create reports "create_failed", not "created" with a null id — the
+    webhook monitor treats anything outside created/updated as a failure, and a
+    green "created" row for a contact that was never created is worse than no
+    row at all.
     """
     email = (reservation.get("guestEmail") or "").strip()
     if not email or email.upper() in ("N/A", "NA"):
@@ -370,7 +379,9 @@ def upsert_contact_from_reservation(
         existing = search_contact(client, location_id, api_key, email)
 
         if existing is None:
-            contact_id = create_contact(client, location_id, api_key, create_payload)
+            contact_id, err = create_contact(client, location_id, api_key, create_payload)
+            if not contact_id:
+                return {"action": "create_failed", "contact_id": None, "error": err}
             return {"action": "created", "contact_id": contact_id}
         else:
             contact_id = existing.get("id")

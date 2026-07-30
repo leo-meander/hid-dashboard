@@ -35,6 +35,15 @@ DATA_MANAGER_INGEST_URL = "https://datamanager.googleapis.com/v1/events:ingest"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 DATA_MANAGER_SCOPE = "https://www.googleapis.com/auth/datamanager"
 
+# eventSource is documented as optional in the Event schema but the API rejects
+# offline conversions without it ("events[0].event_source: Required field is
+# missing"). Valid values: WEB, APP, IN_STORE, PHONE, MESSAGE, OTHER.
+#
+# These bookings arrive through OTAs and the booking engine and are recorded in
+# Cloudbeds, so none of the specific sources fit: the guest was not in a store,
+# not on our site, and not on the phone. OTHER is the honest classification.
+DEFAULT_EVENT_SOURCE = "OTHER"
+
 
 def _sha256(value: Optional[str]) -> Optional[str]:
     """SHA-256 of a normalized value, hex-encoded (request sets encoding=HEX)."""
@@ -149,6 +158,7 @@ def upload_offline_conversion(
     conversion_action_phone: str = "",
     phone_country_code: str = "886",
     validate_only: bool = False,
+    event_source: str = DEFAULT_EVENT_SOURCE,
 ) -> dict:
     """
     Send one reservation to Google Ads as an offline conversion via Data Manager.
@@ -249,6 +259,7 @@ def upload_offline_conversion(
             {
                 "transactionId": order_id,
                 "eventTimestamp": conversion_time,
+                "eventSource": event_source,
                 "conversionValue": value,
                 "currency": currency,
                 "userData": {"userIdentifiers": user_identifiers},
