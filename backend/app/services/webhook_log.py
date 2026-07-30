@@ -39,6 +39,25 @@ def _is_failure(result: Optional[dict]) -> bool:
     return bool(result) and result.get("success") is False
 
 
+# Service outcomes that mean "there was nothing to send", not "the send
+# failed". The upload services report these as success=False because from
+# their side nothing was delivered, but a reservation carrying no contact
+# details is routine — walk-ins and OTA bookings with masked guests do it
+# constantly. Logged as failures they buried the real incidents: 51 rows
+# behind the failure filter, almost none of them worth looking at.
+_NOTHING_TO_SEND = {"no_user_data", "skipped_no_identifiers"}
+
+
+def is_nothing_to_send(result: dict) -> bool:
+    """True when a service had no data to send, as opposed to failing to send."""
+    if not result:
+        return False
+    return (
+        result.get("error") in _NOTHING_TO_SEND
+        or str(result.get("case") or "").startswith("skipped")
+    )
+
+
 def record(
     reservation_id: str,
     branch: str,

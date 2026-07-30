@@ -79,7 +79,17 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
                 branch=branch,
             )
             logger.info("GHL upsert branch=%s action=%s contact_id=%s", branch, result["action"], result["contact_id"])
-            ghl_log = {"success": result["action"] in ("created", "updated"), "action": result["action"], "error": result.get("error")}
+            action = result["action"]
+            if action == "skipped":
+                # No guest email — nothing to upsert. A deliberate skip, not a
+                # failure; counting it as one drowns the failure filter.
+                ghl_log = {"success": None, "action": "skipped_no_email"}
+            else:
+                ghl_log = {
+                    "success": action in ("created", "updated"),
+                    "action": action,
+                    "error": result.get("error"),
+                }
         except Exception as e:
             logger.error("GHL upsert error branch=%s reservation=%s: %s", branch, reservation_id, e)
             ghl_log = {"success": False, "error": str(e)}
@@ -104,13 +114,16 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
                 event_time_extra_offset=cfg["event_time_extra_offset"],
                 phone_country_code=cfg["phone_country_code"],
             )
-            meta_log = {
-                "success": result["success"],
-                "action": "purchase" if result["success"] else None,
-                "error": None if result["success"] else (
-                    result.get("error") or _meta_error_message(result)
-                ),
-            }
+            if webhook_log.is_nothing_to_send(result):
+                meta_log = {"success": None, "action": "skipped_no_user_data"}
+            else:
+                meta_log = {
+                    "success": result["success"],
+                    "action": "purchase" if result["success"] else None,
+                    "error": None if result["success"] else (
+                        result.get("error") or _meta_error_message(result)
+                    ),
+                }
         except Exception as e:
             logger.error("Meta CAPI error branch=%s reservation=%s: %s", branch, reservation_id, e)
             meta_log = {"success": False, "error": str(e)}
@@ -139,12 +152,15 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
                 event_time_extra_offset=cfg["event_time_extra_offset"],
                 phone_country_code=cfg["phone_country_code"],
             )
-            gads_log = {
-                "success": result["success"],
-                "action": result.get("case"),
-                "status_code": result.get("status_code"),
-                "error": None if result["success"] else result.get("error"),
-            }
+            if webhook_log.is_nothing_to_send(result):
+                gads_log = {"success": None, "action": "skipped_no_identifiers"}
+            else:
+                gads_log = {
+                    "success": result["success"],
+                    "action": result.get("case"),
+                    "status_code": result.get("status_code"),
+                    "error": None if result["success"] else result.get("error"),
+                }
         except Exception as e:
             logger.error("Google Ads upload error branch=%s reservation=%s: %s", branch, reservation_id, e)
             gads_log = {"success": False, "error": str(e)}
@@ -162,15 +178,18 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
                     access_token=cfg["tiktok_access_token"],
                     event_source_id=cfg["tiktok_event_source_id"],
                 )
-                tiktok_log = {
-                    "success": result["success"],
-                    "action": "complete_payment" if result["success"] else None,
-                    # TikTok returns message="OK" on success — only a failure
-                    # should put anything in the error column.
-                    "error": None if result["success"] else (
-                        result.get("error") or (result.get("response") or {}).get("message")
-                    ),
-                }
+                if webhook_log.is_nothing_to_send(result):
+                    tiktok_log = {"success": None, "action": "skipped_no_user_data"}
+                else:
+                    tiktok_log = {
+                        "success": result["success"],
+                        "action": "complete_payment" if result["success"] else None,
+                        # TikTok returns message="OK" on success — only a failure
+                        # should put anything in the error column.
+                        "error": None if result["success"] else (
+                            result.get("error") or (result.get("response") or {}).get("message")
+                        ),
+                    }
             except Exception as e:
                 logger.error("TikTok CAPI error reservation=%s: %s", reservation_id, e)
                 tiktok_log = {"success": False, "error": str(e)}
