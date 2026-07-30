@@ -115,7 +115,9 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
             meta_log = {
                 "success": result["success"],
                 "action": "purchase" if result["success"] else None,
-                "error": result.get("error") or _meta_error_message(result),
+                "error": None if result["success"] else (
+                    result.get("error") or _meta_error_message(result)
+                ),
             }
         except Exception as e:
             logger.error("Meta CAPI error branch=%s reservation=%s: %s", branch, reservation_id, e)
@@ -148,7 +150,8 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
             gads_log = {
                 "success": result["success"],
                 "action": result.get("case"),
-                "error": result.get("error"),
+                "status_code": result.get("status_code"),
+                "error": None if result["success"] else result.get("error"),
             }
         except Exception as e:
             logger.error("Google Ads upload error branch=%s reservation=%s: %s", branch, reservation_id, e)
@@ -170,7 +173,11 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
                 tiktok_log = {
                     "success": result["success"],
                     "action": "complete_payment" if result["success"] else None,
-                    "error": result.get("error") or (result.get("response") or {}).get("message"),
+                    # TikTok returns message="OK" on success — only a failure
+                    # should put anything in the error column.
+                    "error": None if result["success"] else (
+                        result.get("error") or (result.get("response") or {}).get("message")
+                    ),
                 }
             except Exception as e:
                 logger.error("TikTok CAPI error reservation=%s: %s", reservation_id, e)
