@@ -63,6 +63,7 @@ export default function WebhookMonitor() {
   const [loading, setLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [failuresOnly, setFailuresOnly] = useState(false);
   const [polling, setPolling] = useState(false);
   const [pollStatus, setPollStatus] = useState("");
   const eventCountRef = useRef(0);
@@ -70,7 +71,11 @@ export default function WebhookMonitor() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = branch !== "all" ? { branch, limit: 200 } : { limit: 200 };
+      // failures_only is filtered server-side: failures older than the 200-row
+      // page would otherwise be invisible, which is exactly when you need them.
+      const params = { limit: 200 };
+      if (branch !== "all") params.branch = branch;
+      if (failuresOnly) params.failures_only = true;
       const res = await axios.get("/api/admin/webhook-events", { params });
       const data = res.data.data || [];
       setEvents(data);
@@ -81,7 +86,7 @@ export default function WebhookMonitor() {
     } finally {
       setLoading(false);
     }
-  }, [branch]);
+  }, [branch, failuresOnly]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -95,10 +100,6 @@ export default function WebhookMonitor() {
 
   return (
     <div className="max-w-7xl mx-auto">
-      <div className="mb-4 px-3 py-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-700 space-y-0.5">
-        <p><span className="font-semibold">Google Ads:</span> Migrated to Data Manager API. Uploads stay skipped until <code>GOOGLE_DATAMANAGER_REFRESH_TOKEN</code> is set — the token needs the <code>auth/datamanager</code> scope.</p>
-        <p><span className="font-semibold">Meta CAPI &amp; TikTok:</span> Re-enabled. Website-sourced bookings are skipped on purpose — the browser pixel already fires those.</p>
-      </div>
       {pollStatus && (
         <div className="mb-3 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded text-sm text-emerald-700">
           ⏳ {pollStatus}
@@ -108,12 +109,31 @@ export default function WebhookMonitor() {
         <div>
           <h1 className="text-xl font-semibold text-gray-800">Webhook Monitor</h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            {events.length} events in memory
-            {failCount > 0 && <span className="ml-2 text-red-600 font-medium">· {failCount} failed</span>}
+            {failuresOnly
+              ? `${events.length} failed`
+              : `${events.length} events · last 7 days`}
+            {!failuresOnly && failCount > 0 && (
+              <button
+                onClick={() => setFailuresOnly(true)}
+                className="ml-2 text-red-600 font-medium hover:underline"
+              >
+                · {failCount} failed
+              </button>
+            )}
             {lastRefresh && <span className="ml-2 text-gray-400">· refreshed {lastRefresh.toLocaleTimeString("en-GB")}</span>}
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => setFailuresOnly(f => !f)}
+            className={`text-sm px-3 py-1.5 rounded border font-medium ${
+              failuresOnly
+                ? "bg-red-600 border-red-600 text-white"
+                : "bg-white border-gray-300 text-gray-600 hover:bg-gray-50"
+            }`}
+          >
+            {failuresOnly ? "✗ Failed only" : "Failed only"}
+          </button>
           <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none">
             <input
               type="checkbox"
@@ -169,7 +189,11 @@ export default function WebhookMonitor() {
 
       {events.length === 0 ? (
         <div className="text-center py-20 text-gray-400">
-          {loading ? "Loading…" : "No events in memory — click Poll Now to fetch recent reservations."}
+          {loading
+            ? "Loading…"
+            : failuresOnly
+              ? "No failures in the last 7 days."
+              : "No events yet — click Poll Now to fetch recent reservations."}
         </div>
       ) : (
         <div className="bg-white rounded-lg border overflow-x-auto">
