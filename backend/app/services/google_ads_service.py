@@ -268,9 +268,14 @@ def upload_offline_conversion(
             resp = client.post(DATA_MANAGER_INGEST_URL, json=payload, headers=headers)
             result = resp.json() if resp.text else {}
             if resp.status_code != 200:
+                # Google pretty-prints the error envelope, so the useful part of
+                # details[] sits well past the first few hundred characters —
+                # log the flattened form rather than a truncated blob.
                 logger.warning(
-                    "Google Ads ingest HTTP error reservation=%s case=%s status=%d: %s",
-                    order_id, case, resp.status_code, resp.text[:400],
+                    "Google Ads ingest HTTP error reservation=%s case=%s status=%d: %s | raw=%s",
+                    order_id, case, resp.status_code,
+                    _describe_error(result) or "no error detail",
+                    " ".join(resp.text.split())[:2000],
                 )
                 return {
                     "success": False,
