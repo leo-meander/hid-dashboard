@@ -461,14 +461,14 @@ def get_pm_actuals_yearly(db: Session, year: int) -> dict[int, dict[str, dict]]:
 
     # 1. Revenue KPI targets + overrides per branch/month
     kpi_rows = (
-        db.query(KPITarget, Branch.name)
+        db.query(KPITarget, Branch)
         .join(Branch, KPITarget.branch_id == Branch.id)
         .filter(KPITarget.year == year)
         .all()
     )
     target_meta: dict[tuple, dict] = {}
-    for kpi, branch_name in kpi_rows:
-        name_lower = (branch_name or "").lower()
+    for kpi, branch in kpi_rows:
+        name_lower = (branch.name or "").lower()
         branch_key = None
         for k in ("saigon", "taipei", "1948", "oani", "osaka"):
             if k in name_lower:
@@ -476,12 +476,16 @@ def get_pm_actuals_yearly(db: Session, year: int) -> dict[int, dict[str, dict]]:
                 break
         if not branch_key:
             continue
-        deduct = float(kpi.deduction_pct or 0) / 100
+        # deduct% / other revenue live on Branch — that's where the Summary page
+        # saves them and what the Revenue KPI grid reads. The same columns on
+        # KPITarget are legacy and never written; reading those made this metric
+        # disagree with Revenue KPI on months with no accounting override.
+        deduct = float(branch.deduction_pct or 0) / 100
         target_meta[(branch_key, kpi.month)] = {
             "target":      float(kpi.target_revenue_native or 0),
             "override":    float(kpi.actual_revenue_override) if kpi.actual_revenue_override is not None else None,
             "deduct_mult": 1.0 - deduct,
-            "other_rev":   float(kpi.other_revenue_native or 0),
+            "other_rev":   float(branch.other_revenue_native or 0),
             "branch_id":   str(kpi.branch_id),
         }
 
