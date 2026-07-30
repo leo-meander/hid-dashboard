@@ -7,10 +7,11 @@ PII fields are SHA256-hashed as required by Meta.
 """
 import hashlib
 import logging
-import re
 from typing import Optional
 
 import httpx
+
+from app.services.phone_utils import normalize_e164_digits
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +23,6 @@ def _sha256(value: Optional[str]) -> Optional[str]:
     if not value or not str(value).strip():
         return None
     return hashlib.sha256(value.strip().lower().encode()).hexdigest()
-
-
-def _clean_phone(raw: Optional[str]) -> Optional[str]:
-    """Strip non-digit chars (keep leading + for international)."""
-    if not raw:
-        return None
-    cleaned = re.sub(r"[+\-\s()]", "", raw.strip())
-    return cleaned if len(cleaned) > 5 else None
 
 
 def _parse_event_time(
@@ -69,6 +62,7 @@ def send_purchase_event(
     currency: str = "TWD",
     tz_offset_hours: int = 8,
     event_time_extra_offset: int = 1,
+    phone_country_code: str = "886",
 ) -> dict:
     """
     Send a Purchase event to Meta CAPI for the given reservation.
@@ -87,8 +81,7 @@ def send_purchase_event(
         logger.warning("Meta CAPI: could not parse dateCreated=%s", reservation.get("dateCreated"))
         return {"success": False, "error": "invalid_event_time"}
 
-    raw_phone = guest.get("guestPhone", "")
-    phone = _clean_phone(raw_phone)
+    phone = normalize_e164_digits(guest.get("guestPhone", ""), phone_country_code)
 
     dob_raw = guest.get("guestBirthDate") or guest.get("guestBirthdate") or ""
     dob = dob_raw.strip()[:10] if dob_raw.strip() else None

@@ -96,8 +96,8 @@ export default function WebhookMonitor() {
   return (
     <div className="max-w-7xl mx-auto">
       <div className="mb-4 px-3 py-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-700 space-y-0.5">
-        <p><span className="font-semibold">Google Ads:</span> Pending migration to Data Manager API (old uploadClickConversions API blocked by Google since Jun 15 2026).</p>
-        <p><span className="font-semibold">Meta CAPI (Osaka, Oani):</span> Access tokens expired — regenerate System User tokens in Meta Business Suite and update env vars.</p>
+        <p><span className="font-semibold">Google Ads:</span> Migrated to Data Manager API. Uploads stay skipped until <code>GOOGLE_DATAMANAGER_REFRESH_TOKEN</code> is set — the token needs the <code>auth/datamanager</code> scope.</p>
+        <p><span className="font-semibold">Meta CAPI &amp; TikTok:</span> Re-enabled. Website-sourced bookings are skipped on purpose — the browser pixel already fires those.</p>
       </div>
       {pollStatus && (
         <div className="mb-3 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded text-sm text-emerald-700">

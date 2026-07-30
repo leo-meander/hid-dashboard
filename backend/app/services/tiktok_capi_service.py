@@ -6,28 +6,26 @@ Mirrors the Make.com TikTok branch in the SGN blueprint.
 """
 import hashlib
 import logging
-import re
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import httpx
 
+from app.services.phone_utils import normalize_e164_digits
+
 logger = logging.getLogger(__name__)
 
 TIKTOK_EVENTS_URL = "https://business-api.tiktok.com/open_api/v1.3/event/track/"
+
+# Saigon is the only branch on TikTok — guest phones without a country code are
+# assumed Vietnamese.
+SAIGON_PHONE_COUNTRY_CODE = "84"
 
 
 def _sha256(value: Optional[str]) -> Optional[str]:
     if not value or not str(value).strip():
         return None
     return hashlib.sha256(value.strip().lower().encode()).hexdigest()
-
-
-def _clean_phone(raw: Optional[str]) -> Optional[str]:
-    if not raw:
-        return None
-    cleaned = re.sub(r"[+\-\s()]", "", raw.strip())
-    return cleaned if len(cleaned) > 5 else None
 
 
 def _parse_event_time(date_created: Optional[str]) -> Optional[int]:
@@ -64,8 +62,7 @@ def send_complete_payment_event(
     email = (reservation.get("guestEmail") or "").strip()
     guest_list = reservation.get("guestList") or {}
     guest = _first_guest(guest_list)
-    raw_phone = guest.get("guestPhone", "")
-    phone = _clean_phone(raw_phone)
+    phone = normalize_e164_digits(guest.get("guestPhone", ""), SAIGON_PHONE_COUNTRY_CODE)
 
     event_time = _parse_event_time(reservation.get("dateCreated"))
     if not event_time:
