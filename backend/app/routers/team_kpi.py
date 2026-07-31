@@ -259,13 +259,28 @@ def debug_lark():
     from app.services.lark_service import list_field_definitions
     result["field_definitions"] = list_field_definitions()
 
-    # Sample raw "On-time vs Original" values to debug on-time detection
-    ot_samples = []
-    for rec in records[:50]:
-        v = rec.get("On-time vs Original")
-        if v is not None:
-            ot_samples.append(repr(v)[:60])
-    result["on_time_field_samples"] = list(dict.fromkeys(ot_samples))[:10]
+    # Sample raw values per field so parsing bugs are visible. Formula fields
+    # (Cycle Time, On-time vs Original, ...) come back in a different shape
+    # than hand-entered ones, and a mismatched parser reads them as empty.
+    sampled_fields = [
+        "On-time vs Original", "On-time vs Current", "Cycle Time", "Estimated Days",
+        "Days Late", "Late Reason", "Original Deadline", "Start date",
+        "Complete date", "Extension Count", "Extension Reason", "Validation",
+    ]
+    raw_samples: dict = {}
+    for fname in sampled_fields:
+        seen, filled = [], 0
+        for rec in records:
+            v = rec.get(fname)
+            if v in (None, "", [], {}):
+                continue
+            filled += 1
+            r = repr(v)[:90]
+            if r not in seen and len(seen) < 5:
+                seen.append(r)
+        raw_samples[fname] = {"filled": filled, "of": len(records), "samples": seen}
+    result["raw_field_samples"] = raw_samples
+    result["on_time_field_samples"] = raw_samples.get("On-time vs Original", {}).get("samples", [])
 
     return {"success": True, "data": result, "error": None}
 
