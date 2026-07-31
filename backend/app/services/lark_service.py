@@ -932,6 +932,65 @@ def get_task_overview_yearly(year: int) -> dict:
     return result
 
 
+# Per-PIC totals that sit alongside the month keys in the overview result.
+# Listed in one place so a new one cannot be computed above and then silently
+# dropped while merging.
+_PIC_TOTAL_KEYS = ("open_workload", "no_deadline_count", "excluded_status_count")
+
+
+def merge_pic_overview(data: dict) -> list[dict]:
+    """Collapse per-record-ID stats into one row per person.
+
+    get_task_overview_yearly keys by Lark record ID and one person can hold
+    several (Nora has two), so their months, tallies and totals are summed.
+    Rates are recomputed from the merged counts rather than summed — adding two
+    percentages together produced a meaningless number.
+    """
+    merged: dict[str, dict] = {}
+    for pic_id, pic_data in data.items():
+        name = PIC_NAME_MAP.get(pic_id, f"User {pic_id[-4:]}")
+        if name not in merged:
+            merged[name] = {"pic_id": pic_id, "name": name, "months": {}}
+        m = merged[name]
+        for key in _PIC_TOTAL_KEYS:
+            m[key] = m.get(key, 0) + pic_data.get(key, 0)
+
+        for month_key, stats in pic_data.items():
+            is_month = isinstance(month_key, int) or (
+                isinstance(month_key, str) and month_key.isdigit()
+            )
+            if not is_month:
+                continue
+            if month_key not in m["months"]:
+                m["months"][month_key] = {
+                    k: ({} if isinstance(v, dict) else 0) for k, v in stats.items()
+                }
+            for k, v in stats.items():
+                if v is None:
+                    continue
+                prev = m["months"][month_key].get(k)
+                if isinstance(v, dict):
+                    counts = dict(prev or {})
+                    for rk, rv in v.items():
+                        counts[rk] = counts.get(rk, 0) + rv
+                    m["months"][month_key][k] = counts
+                else:
+                    m["months"][month_key][k] = (prev or 0) + v
+
+    for m in merged.values():
+        for stats in m["months"].values():
+            filled = stats.get("on_time_filled") or 0
+            total = stats.get("total_tasks") or 0
+            stats["on_time_rate"] = (
+                round(stats.get("on_time_count", 0) / filled * 100, 1) if filled else None
+            )
+            stats["completion_rate"] = (
+                round(stats.get("completed", 0) / total * 100, 1) if total else None
+            )
+
+    return [v for v in merged.values() if not v["name"].startswith("User ")]
+
+
 def get_task_detail(pic_name: str, year: int, month: Optional[int], category: str) -> list[dict]:
     """Return individual task names for a person/month/category for drilldown.
 
