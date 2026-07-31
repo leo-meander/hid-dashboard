@@ -248,7 +248,16 @@ def debug_lark():
         uid: {"count": len(tasks), "samples": tasks[:3]}
         for uid, tasks in pic_id_tasks.items()
     }
-    result["all_field_names"] = list(records[0].keys()) if records else []
+    # Union across all records — Lark omits empty fields per record, so the
+    # first record's keys alone under-report what the table actually has.
+    seen_keys: set = set()
+    for rec in records:
+        seen_keys.update(rec.keys())
+    result["all_field_names"] = sorted(seen_keys)
+
+    # Authoritative: field definitions from Lark, including never-filled ones
+    from app.services.lark_service import list_field_definitions
+    result["field_definitions"] = list_field_definitions()
 
     # Sample raw "On-time vs Original" values to debug on-time detection
     ot_samples = []

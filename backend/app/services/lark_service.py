@@ -336,6 +336,40 @@ def _get_link_map() -> dict:
     return result
 
 
+def list_field_definitions() -> list[dict]:
+    """Field definitions for the tasks table, straight from Lark.
+
+    Authoritative — unlike record keys, this lists fields that exist even when
+    every record leaves them empty.
+    """
+    token = _get_token()
+    if not token or not settings.LARK_BASE_APP_TOKEN or not settings.LARK_TASKS_TABLE_ID:
+        return []
+    try:
+        resp = requests.get(
+            _LARK_FIELDS_URL.format(
+                app_token=settings.LARK_BASE_APP_TOKEN,
+                table_id=settings.LARK_TASKS_TABLE_ID,
+            ),
+            headers={"Authorization": f"Bearer {token}"},
+            params={"page_size": 200},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("data", {}).get("items", [])
+        out = []
+        for f in items:
+            entry = {"name": f.get("field_name"), "type": f.get("type")}
+            opts = ((f.get("property") or {}).get("options")) or []
+            if opts:
+                entry["options"] = [o.get("name") for o in opts]
+            out.append(entry)
+        return out
+    except Exception as exc:
+        log.warning("Lark field definitions fetch failed: %s", exc)
+        return []
+
+
 def _resolve_project(raw_val) -> str:
     """Resolve a Project field value to its display name.
 
