@@ -509,6 +509,7 @@ const CATEGORY_LABELS = {
   late: "Late tasks",
   overdue: "Overdue tasks",
   excused: "Excused misses (not counted)",
+  no_deadline: "Open tasks with no deadline",
 };
 
 // Which Late Reason values are excused is decided by the backend — this is
@@ -529,7 +530,7 @@ function TaskDetailModal({ drilldown, tasks, isLoading, onClose }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const monthName = MONTH_NAMES[drilldown.month - 1];
+  const monthName = drilldown.month == null ? null : MONTH_NAMES[drilldown.month - 1];
   const catLabel = CATEGORY_LABELS[drilldown.category] ?? drilldown.category;
 
   return (
@@ -540,7 +541,9 @@ function TaskDetailModal({ drilldown, tasks, isLoading, onClose }) {
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
           <div>
-            <div className="text-sm font-semibold text-gray-900">{drilldown.picName} — {monthName}</div>
+            <div className="text-sm font-semibold text-gray-900">
+              {drilldown.picName}{monthName ? ` — ${monthName}` : ""}
+            </div>
             <div className="text-[11px] text-gray-500 mt-0.5">{catLabel}</div>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
@@ -569,9 +572,11 @@ function TaskDetailModal({ drilldown, tasks, isLoading, onClose }) {
                         {t.name} <span className="text-gray-300">↗</span>
                       </a>
                     ) : t.name}
-                    {t.deadline && (
+                    {t.deadline ? (
                       <span className="text-gray-400 ml-1.5">· due {t.deadline}</span>
-                    )}
+                    ) : t.lark_status ? (
+                      <span className="text-gray-400 ml-1.5">· {t.lark_status}</span>
+                    ) : null}
                     {t.late_reason && (
                       <span className={"block mt-0.5 text-[10px] " + (t.excused ? "text-blue-600" : "text-gray-500")}>
                         {t.late_reason}{t.excused ? " · not counted" : ""}
@@ -801,10 +806,13 @@ function TaskOverview({ year }) {
               )}
               <div className="text-[10px] text-gray-400">{d.agg?.total_tasks ?? 0} tasks · {d.open} open</div>
               {d.noDeadline > 0 && (
-                <div title={`${d.noDeadline} open task(s) have no deadline set — please add a deadline in Lark so they appear in the monthly breakdown.`}
-                  className="flex items-center gap-1 px-2 py-0.5 bg-red-50 border border-red-200 rounded-full text-[10px] text-red-600 font-medium cursor-help">
+                <button
+                  type="button"
+                  onClick={() => setDrilldown({ picName: d.name, year, month: null, category: "no_deadline" })}
+                  title={`${d.noDeadline} open task(s) have no deadline set — click to list them. Upcoming Tasks and Regular task are excluded.`}
+                  className="flex items-center gap-1 px-2 py-0.5 bg-red-50 border border-red-200 rounded-full text-[10px] text-red-600 font-medium cursor-pointer hover:bg-red-100 hover:underline">
                   ⚠ {d.noDeadline} no deadline
-                </div>
+                </button>
               )}
             </div>
           );

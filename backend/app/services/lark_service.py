@@ -932,8 +932,12 @@ def get_task_overview_yearly(year: int) -> dict:
     return result
 
 
-def get_task_detail(pic_name: str, year: int, month: int, category: str) -> list[dict]:
-    """Return individual task names for a person/month/category for drilldown."""
+def get_task_detail(pic_name: str, year: int, month: Optional[int], category: str) -> list[dict]:
+    """Return individual task names for a person/month/category for drilldown.
+
+    month is ignored for the "no_deadline" category — those tasks have no
+    deadline, so they belong to no month.
+    """
     today = _today_ict()
 
     target_pic_ids = {pid for pid, name in PIC_NAME_MAP.items() if name == pic_name}
@@ -954,7 +958,11 @@ def get_task_detail(pic_name: str, year: int, month: int, category: str) -> list
         is_completed = status == "completed"
 
         deadline = _parse_date(rec.get("Deadline"))
-        if not deadline or deadline.year != year or deadline.month != month:
+        if category == "no_deadline":
+            # Mirrors no_deadline_count: open tasks carrying no deadline at all.
+            if deadline or is_completed:
+                continue
+        elif not deadline or deadline.year != year or deadline.month != month:
             continue
 
         task_name = _extract_text(rec.get("Task"))
@@ -970,7 +978,10 @@ def get_task_detail(pic_name: str, year: int, month: int, category: str) -> list
 
         reason = _norm_reason(rec.get("Late Reason"))
         excused = _is_excused(reason)
-        missed = (is_completed and on_time_cat == "late") or (not is_completed and deadline < today)
+        missed = (
+            (is_completed and on_time_cat == "late")
+            or (not is_completed and deadline is not None and deadline < today)
+        )
 
         include = False
         if category == "total":
@@ -982,16 +993,19 @@ def get_task_detail(pic_name: str, year: int, month: int, category: str) -> list
         elif category == "late":
             include = is_completed and on_time_cat == "late" and not excused
         elif category == "overdue":
-            include = not is_completed and deadline < today and not excused
+            include = not is_completed and deadline is not None and deadline < today and not excused
         elif category == "excused":
             include = missed and excused
+        elif category == "no_deadline":
+            include = True  # already filtered above
 
         if include:
             tasks.append({
                 "name": task_name or "(no name)",
                 "status": "completed" if is_completed else "open",
+                "lark_status": _extract_text(rec.get("Status")),
                 "on_time": on_time_cat,
-                "deadline": deadline.isoformat(),
+                "deadline": deadline.isoformat() if deadline else None,
                 "late_reason": _extract_text(rec.get("Late Reason")),
                 "late_note": _extract_text(rec.get("Late Note")),
                 "excused": excused if missed else False,

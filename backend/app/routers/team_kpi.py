@@ -343,16 +343,20 @@ def get_task_overview(year: int = Query(2026)):
 def get_task_detail_endpoint(
     pic_name: str = Query(...),
     year: int = Query(2026),
-    month: int = Query(...),
+    month: Optional[int] = Query(None),
     category: str = Query("total"),
 ):
     """Return individual task names for a person/month/category (drilldown)."""
     from app.services.lark_service import get_task_detail
-    valid_categories = {"total", "done", "on_time", "late", "overdue", "excused"}
+    valid_categories = {"total", "done", "on_time", "late", "overdue", "excused", "no_deadline"}
     if category not in valid_categories:
         raise HTTPException(400, f"category must be one of: {', '.join(sorted(valid_categories))}")
-    if not 1 <= month <= 12:
-        raise HTTPException(400, "month must be 1–12")
+    # no_deadline tasks belong to no month, so month is not required for them
+    if category != "no_deadline":
+        if month is None:
+            raise HTTPException(400, "month is required for this category")
+        if not 1 <= month <= 12:
+            raise HTTPException(400, "month must be 1–12")
     try:
         tasks = get_task_detail(pic_name, year, month, category)
     except Exception as exc:
