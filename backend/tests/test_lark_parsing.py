@@ -9,8 +9,10 @@ from datetime import date
 from app.services.lark_service import (
     _extract_number,
     _extract_text,
+    _is_excluded_status,
     _is_excused,
     _norm_reason,
+    _norm_status,
     _parse_date,
     _sane_days,
 )
@@ -77,11 +79,12 @@ class TestExtractText:
 
 
 class TestLateReason:
-    def test_the_two_excused_options(self):
+    def test_the_excused_options(self):
         assert _is_excused(_norm_reason("Waiting for approval"))
         assert _is_excused(_norm_reason("Scope / priority changed"))
+        assert _is_excused(_norm_reason("Tool / platform issue"))
 
-    def test_the_two_counted_options(self):
+    def test_the_counted_options(self):
         assert not _is_excused(_norm_reason("My own delay"))
         assert not _is_excused(_norm_reason("Waiting on someone else"))
 
@@ -95,6 +98,26 @@ class TestLateReason:
         assert not _is_excused(_norm_reason(""))
         assert not _is_excused(_norm_reason(None))
         assert not _is_excused(_norm_reason("Blocked – tool or leave"))
+
+
+class TestExcludedStatus:
+    def test_backlog_and_standing_work_are_out(self):
+        assert _is_excluded_status(_norm_status("Upcoming Tasks"))
+        assert _is_excluded_status(_norm_status("Regular task"))
+
+    def test_case_and_spacing_variants(self):
+        assert _is_excluded_status(_norm_status("  regular   task "))
+        assert _is_excluded_status(_norm_status("UPCOMING TASKS"))
+
+    def test_scored_statuses_stay_in(self):
+        for s in ("Completed", "Ongoing", "Not started", "Blocked",
+                  "Review", "Do Today", "Do This Week", "Do this Month",
+                  "Suspended", ""):
+            assert not _is_excluded_status(_norm_status(s)), s
+
+    def test_reads_the_single_select_shape(self):
+        raw = {"type": 1, "value": [{"text": "Regular task", "type": "text"}]}
+        assert _is_excluded_status(_norm_status(raw))
 
     def test_reads_the_single_select_shape(self):
         raw = {"type": 1, "value": [{"text": "Waiting for approval", "type": "text"}]}

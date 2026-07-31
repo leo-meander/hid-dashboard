@@ -246,6 +246,18 @@ def _extract_text(raw) -> str:
 _LATE_REASON_EXCUSED = {
     "waiting for approval",
     "scope/priority changed",
+    "tool/platform issue",
+}
+
+# Statuses that sit outside the KPI entirely: backlog and standing work, which
+# legitimately carry no deadline. Dropped from Task Overview before anything is
+# counted — no totals, no on-time rate, no overdue, no missing-deadline chase.
+# Every other status without a deadline stays in no_deadline_count.
+_EXCLUDED_STATUSES = {
+    "upcoming tasks",
+    "upcoming task",
+    "regular task",
+    "regular tasks",
 }
 
 
@@ -254,6 +266,15 @@ def _norm_reason(raw) -> str:
     s = _extract_text(raw).lower()
     s = re.sub(r"\s*/\s*", "/", s)
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _norm_status(raw) -> str:
+    return re.sub(r"\s+", " ", _extract_text(raw).lower()).strip()
+
+
+def _is_excluded_status(status_norm: str) -> bool:
+    """True when this task sits outside the Task Overview entirely."""
+    return status_norm in _EXCLUDED_STATUSES
 
 
 def _is_excused(reason_norm: str) -> bool:
@@ -792,13 +813,19 @@ def get_task_overview_yearly(year: int) -> dict:
     }))
     open_workload: dict[str, int] = defaultdict(int)
     no_deadline: dict[str, int] = defaultdict(int)
+    excluded_status: dict[str, int] = defaultdict(int)
 
     for rec in records:
         pic_id: Optional[str] = _extract_pic_key(rec.get("PIC"))
         if not pic_id:
             continue
 
-        status = str(rec.get("Status") or "").lower().strip()
+        status = _norm_status(rec.get("Status"))
+        if _is_excluded_status(status):
+            # Backlog / standing work — out of the KPI before anything counts.
+            # Tallied only so the rows are accounted for, never scored.
+            excluded_status[pic_id] += 1
+            continue
         is_completed = status == "completed"
 
         # Deadline-based month grouping
@@ -899,6 +926,7 @@ def get_task_overview_yearly(year: int) -> dict:
             }
         result[pic_id]["open_workload"] = open_workload.get(pic_id, 0)
         result[pic_id]["no_deadline_count"] = no_deadline.get(pic_id, 0)
+        result[pic_id]["excluded_status_count"] = excluded_status.get(pic_id, 0)
 
     _task_overview_cache[year] = (time.time(), result)
     return result
@@ -920,7 +948,9 @@ def get_task_detail(pic_name: str, year: int, month: int, category: str) -> list
         if not pic_id or pic_id not in target_pic_ids:
             continue
 
-        status = str(rec.get("Status") or "").lower().strip()
+        status = _norm_status(rec.get("Status"))
+        if _is_excluded_status(status):
+            continue
         is_completed = status == "completed"
 
         deadline = _parse_date(rec.get("Deadline"))
