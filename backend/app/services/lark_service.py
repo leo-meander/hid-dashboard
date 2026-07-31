@@ -17,14 +17,17 @@ from __future__ import annotations
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 
 from app.config import settings
 
 log = logging.getLogger(__name__)
+
+_ICT_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 # ── PIC name mapping (record_id OR email → display name) ─────────────────────
 # Lark PIC field can be either a linked-record type (returns link_record_ids)
@@ -126,8 +129,13 @@ def _parse_branch_from_project(project_val) -> Optional[str]:
     return key if key in _KNOWN else None
 
 
-def _parse_month_year(val) -> Optional[tuple[int, int]]:
-    """Parse date field (ms timestamp, ISO string, or Lark date dict) → (year, month)."""
+def _parse_date(val) -> Optional[date]:
+    """Parse date field (ms timestamp, ISO string, or Lark date dict) → date.
+
+    Timestamps are read in ICT: Lark stores day-granularity dates at local
+    midnight, so reading them in UTC would shift the day (and sometimes the
+    month) one back.
+    """
     if val is None:
         return None
     # Lark date fields return {"date": "2026-07-15"} or {"timestamp": <ms>}
@@ -140,18 +148,26 @@ def _parse_month_year(val) -> Optional[tuple[int, int]]:
             return None
     if isinstance(val, (int, float)):
         try:
-            dt = datetime.fromtimestamp(val / 1000, tz=timezone.utc)
-            return dt.year, dt.month
+            return datetime.fromtimestamp(val / 1000, tz=_ICT_TZ).date()
         except Exception:
             return None
     if isinstance(val, str) and val.strip():
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
             try:
-                dt = datetime.strptime(val.strip()[:19], fmt)
-                return dt.year, dt.month
+                return datetime.strptime(val.strip()[:19], fmt).date()
             except ValueError:
                 continue
     return None
+
+
+def _parse_month_year(val) -> Optional[tuple[int, int]]:
+    """Parse date field (ms timestamp, ISO string, or Lark date dict) → (year, month)."""
+    d = _parse_date(val)
+    return (d.year, d.month) if d else None
+
+
+def _today_ict() -> date:
+    return datetime.now(tz=_ICT_TZ).date()
 
 
 def _get_token() -> Optional[str]:
@@ -610,9 +626,7 @@ def get_task_overview_yearly(year: int) -> dict:
     if cached and (time.time() - cached[0]) < _LARK_TTL:
         return cached[1]
 
-    import datetime as _dt
-    now_utc = _dt.datetime.now(tz=timezone.utc)
-    current_year_month = (now_utc.year, now_utc.month)
+    today = _today_ict()
 
     records = _get_cached_records()
 
@@ -641,8 +655,8 @@ def get_task_overview_yearly(year: int) -> dict:
         is_completed = status == "completed"
 
         # Deadline-based month grouping
-        ym = _parse_month_year(rec.get("Deadline"))
-        if not ym:
+        deadline = _parse_date(rec.get("Deadline"))
+        if not deadline:
             # No deadline set — count as missing, not in open workload
             if not is_completed:
                 no_deadline[pic_id] += 1
@@ -651,9 +665,9 @@ def get_task_overview_yearly(year: int) -> dict:
         # Open workload: only incomplete tasks that have a deadline
         if not is_completed:
             open_workload[pic_id] += 1
-        if ym[0] != year:
+        if deadline.year != year:
             continue
-        _, month = ym
+        month = deadline.month
         if month < _LARK_START_MONTH:
             continue
 
@@ -684,8 +698,9 @@ def get_task_overview_yearly(year: int) -> dict:
                 bucket["on_time_filled"] += 1
             # empty / unfilled → not counted in on_time_filled
         else:
-            # Overdue: deadline in a past month and still not completed
-            if (year, month) < current_year_month:
+            # Overdue: deadline date already passed and still not completed.
+            # Day-level, not month-level — a task due earlier this month counts.
+            if deadline < today:
                 bucket["overdue_count"] += 1
 
         # Reopen count
@@ -759,9 +774,7 @@ def get_task_overview_yearly(year: int) -> dict:
 
 def get_task_detail(pic_name: str, year: int, month: int, category: str) -> list[dict]:
     """Return individual task names for a person/month/category for drilldown."""
-    import datetime as _dt
-    now_utc = _dt.datetime.now(tz=timezone.utc)
-    current_year_month = (now_utc.year, now_utc.month)
+    today = _today_ict()
 
     target_pic_ids = {pid for pid, name in PIC_NAME_MAP.items() if name == pic_name}
     if not target_pic_ids:
@@ -778,8 +791,8 @@ def get_task_detail(pic_name: str, year: int, month: int, category: str) -> list
         status = str(rec.get("Status") or "").lower().strip()
         is_completed = status == "completed"
 
-        ym = _parse_month_year(rec.get("Deadline"))
-        if not ym or ym[0] != year or ym[1] != month:
+        deadline = _parse_date(rec.get("Deadline"))
+        if not deadline or deadline.year != year or deadline.month != month:
             continue
 
         task_val = rec.get("Task") or ""
@@ -816,13 +829,14 @@ def get_task_detail(pic_name: str, year: int, month: int, category: str) -> list
         elif category == "late":
             include = is_completed and on_time_cat == "late"
         elif category == "overdue":
-            include = not is_completed and (year, month) < current_year_month
+            include = not is_completed and deadline < today
 
         if include:
             tasks.append({
                 "name": task_name or "(no name)",
                 "status": "completed" if is_completed else "open",
                 "on_time": on_time_cat,
+                "deadline": deadline.isoformat(),
             })
 
     return tasks

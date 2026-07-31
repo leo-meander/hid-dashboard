@@ -542,7 +542,12 @@ function TaskDetailModal({ drilldown, tasks, isLoading, onClose }) {
                     t.on_time === "late" ? "bg-red-400" :
                     t.status === "open" ? "bg-orange-400" : "bg-gray-400"
                   }`} />
-                  <span>{t.name}</span>
+                  <span>
+                    {t.name}
+                    {t.deadline && (
+                      <span className="text-gray-400 ml-1.5">· due {t.deadline}</span>
+                    )}
+                  </span>
                 </li>
               ))}
             </ul>
