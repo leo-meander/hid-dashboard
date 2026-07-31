@@ -170,6 +170,69 @@ def _today_ict() -> date:
     return datetime.now(tz=_ICT_TZ).date()
 
 
+def _extract_text(raw) -> str:
+    """Read a Lark text / single-select field into a plain string.
+
+    Lark returns these in three shapes depending on field type and API version:
+      {'type': 1, 'value': [{'text': 'On-time', 'type': 'text'}]}
+      [{'text': 'On-time'}]
+      'On-time'
+    """
+    if not raw:
+        return ""
+    if isinstance(raw, dict):
+        val_list = raw.get("value", [])
+        if isinstance(val_list, list) and val_list:
+            first = val_list[0]
+            return (first.get("text", "") if isinstance(first, dict) else str(first)).strip()
+        if isinstance(val_list, str):
+            return val_list.strip()
+        return ""
+    if isinstance(raw, list):
+        if not raw:
+            return ""
+        first = raw[0]
+        return (first.get("text", "") if isinstance(first, dict) else str(first)).strip()
+    return str(raw).strip()
+
+
+# ── Late Reason ───────────────────────────────────────────────────────────────
+# Single-select on the Lark task table. Which reasons excuse a miss is decided
+# HERE, never in Lark — the base has no field-level locking on the Standard
+# plan, so an "excused" flag living in Lark could be set by the person being
+# measured. Staff pick a reason; this table decides what it costs them.
+_LATE_REASON_EXCUSED = {
+    "waiting for approval",
+    "scope/priority changed",
+}
+
+
+def _norm_reason(raw) -> str:
+    """Normalize a Late Reason value for comparison (case, spacing, slashes)."""
+    s = _extract_text(raw).lower()
+    s = re.sub(r"\s*/\s*", "/", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _is_excused(reason_norm: str) -> bool:
+    """True when this reason should not count against the assignee.
+
+    Unknown / empty reasons are NOT excused — a miss costs by default, so a
+    renamed or newly added option can never silently forgive a whole month.
+    """
+    return reason_norm in _LATE_REASON_EXCUSED
+
+
+def _lark_record_url(record_id: str) -> str:
+    """Deep link to a single record in the Lark base. Empty if not configured."""
+    if not (record_id and settings.LARK_BASE_APP_TOKEN and settings.LARK_TASKS_TABLE_ID):
+        return ""
+    return (
+        f"https://{settings.LARK_WORKSPACE_DOMAIN}/base/{settings.LARK_BASE_APP_TOKEN}"
+        f"?table={settings.LARK_TASKS_TABLE_ID}&record={record_id}"
+    )
+
+
 def _get_token() -> Optional[str]:
     if not (settings.LARK_APP_ID and settings.LARK_APP_SECRET):
         log.warning("LARK_APP_ID / LARK_APP_SECRET not configured")
@@ -354,7 +417,9 @@ def _fetch_all_records(cutoff_ms: Optional[int] = None) -> list[dict]:
             if resp.json().get("code", 0) != 0:
                 raise RuntimeError(f"Lark search error: {resp.json()}")
             for item in data.get("items", []):
-                records.append(item.get("fields", {}))
+                fields = item.get("fields", {})
+                fields["_record_id"] = item.get("record_id", "")
+                records.append(fields)
             if not data.get("has_more"):
                 break
             page_token = data.get("page_token")
@@ -371,7 +436,9 @@ def _fetch_all_records(cutoff_ms: Optional[int] = None) -> list[dict]:
             resp.raise_for_status()
             data = resp.json().get("data", {})
             for item in data.get("items", []):
-                records.append(item.get("fields", {}))
+                fields = item.get("fields", {})
+                fields["_record_id"] = item.get("record_id", "")
+                records.append(fields)
             if not data.get("has_more"):
                 break
             page_token = data.get("page_token")
@@ -639,6 +706,9 @@ def get_task_overview_yearly(year: int) -> dict:
         "late_count": 0,
         "on_time_filled": 0,  # tasks that have on-time field filled (denominator)
         "overdue_count": 0,
+        "late_excused_count": 0,     # completed late, reason excuses it
+        "overdue_excused_count": 0,  # still open past deadline, reason excuses it
+        "reason_counts": defaultdict(int),  # every reason seen on a missed task
         "reopen_count": 0,
         "cycle_times": [],
         "estimated_days": [],
@@ -674,34 +744,37 @@ def get_task_overview_yearly(year: int) -> dict:
         bucket = agg[pic_id][month]
         bucket["total_tasks"] += 1
 
+        reason = _norm_reason(rec.get("Late Reason"))
+        excused = _is_excused(reason)
+
         if is_completed:
             bucket["completed"] += 1
-            raw_ot = rec.get("On-time vs Original") or ""
-            # Field format: {'type': 1, 'value': [{'text': 'On-time', 'type': 'text'}]}
-            if isinstance(raw_ot, dict):
-                val_list = raw_ot.get("value", [])
-                if isinstance(val_list, list) and val_list:
-                    first = val_list[0]
-                    on_time_val = first.get("text", "") if isinstance(first, dict) else str(first)
-                else:
-                    on_time_val = ""
-            elif isinstance(raw_ot, list):
-                on_time_val = raw_ot[0].get("text", "") if raw_ot and isinstance(raw_ot[0], dict) else str(raw_ot[0]) if raw_ot else ""
-            else:
-                on_time_val = str(raw_ot)
-            on_time_val = on_time_val.strip().lower().replace("-", " ").replace("_", " ")
+            on_time_val = _extract_text(rec.get("On-time vs Original"))
+            on_time_val = on_time_val.lower().replace("-", " ").replace("_", " ")
             if on_time_val in ("on time", "ontime", "yes", "true", "đúng hạn", "ok"):
                 bucket["on_time_count"] += 1
                 bucket["on_time_filled"] += 1
             elif on_time_val in ("late", "trễ", "no", "false", "over"):
-                bucket["late_count"] += 1
-                bucket["on_time_filled"] += 1
+                if reason:
+                    bucket["reason_counts"][reason] += 1
+                if excused:
+                    # Out of the assignee's hands — drop from numerator AND
+                    # denominator so it neither helps nor hurts the rate.
+                    bucket["late_excused_count"] += 1
+                else:
+                    bucket["late_count"] += 1
+                    bucket["on_time_filled"] += 1
             # empty / unfilled → not counted in on_time_filled
         else:
             # Overdue: deadline date already passed and still not completed.
             # Day-level, not month-level — a task due earlier this month counts.
             if deadline < today:
-                bucket["overdue_count"] += 1
+                if reason:
+                    bucket["reason_counts"][reason] += 1
+                if excused:
+                    bucket["overdue_excused_count"] += 1
+                else:
+                    bucket["overdue_count"] += 1
 
         # Reopen count
         rc_raw = rec.get("Reopen Count")
@@ -757,6 +830,9 @@ def get_task_overview_yearly(year: int) -> dict:
                 "on_time_count": on_time,
                 "late_count": b["late_count"],
                 "overdue_count": b["overdue_count"],
+                "late_excused_count": b["late_excused_count"],
+                "overdue_excused_count": b["overdue_excused_count"],
+                "reason_counts": dict(b["reason_counts"]),
                 "reopen_count": b["reopen_count"],
                 "cycle_time_avg": ct_avg,
                 "estimated_avg": ed_avg,
@@ -795,29 +871,20 @@ def get_task_detail(pic_name: str, year: int, month: int, category: str) -> list
         if not deadline or deadline.year != year or deadline.month != month:
             continue
 
-        task_val = rec.get("Task") or ""
-        task_name = ""
-        if isinstance(task_val, list) and task_val:
-            first = task_val[0]
-            task_name = first.get("text", "") if isinstance(first, dict) else str(first)
-        elif isinstance(task_val, str):
-            task_name = task_val
+        task_name = _extract_text(rec.get("Task"))
 
         on_time_cat: Optional[str] = None
         if is_completed:
-            raw_ot = rec.get("On-time vs Original") or ""
-            if isinstance(raw_ot, dict):
-                val_list = raw_ot.get("value", [])
-                ot_val = val_list[0].get("text", "") if (isinstance(val_list, list) and val_list and isinstance(val_list[0], dict)) else ""
-            elif isinstance(raw_ot, list):
-                ot_val = raw_ot[0].get("text", "") if (raw_ot and isinstance(raw_ot[0], dict)) else str(raw_ot[0]) if raw_ot else ""
-            else:
-                ot_val = str(raw_ot)
-            ot_val = ot_val.strip().lower().replace("-", " ").replace("_", " ")
+            ot_val = _extract_text(rec.get("On-time vs Original")).lower()
+            ot_val = ot_val.replace("-", " ").replace("_", " ")
             if ot_val in ("on time", "ontime", "yes", "true", "đúng hạn", "ok"):
                 on_time_cat = "on_time"
             elif ot_val in ("late", "trễ", "no", "false", "over"):
                 on_time_cat = "late"
+
+        reason = _norm_reason(rec.get("Late Reason"))
+        excused = _is_excused(reason)
+        missed = (is_completed and on_time_cat == "late") or (not is_completed and deadline < today)
 
         include = False
         if category == "total":
@@ -827,9 +894,11 @@ def get_task_detail(pic_name: str, year: int, month: int, category: str) -> list
         elif category == "on_time":
             include = is_completed and on_time_cat == "on_time"
         elif category == "late":
-            include = is_completed and on_time_cat == "late"
+            include = is_completed and on_time_cat == "late" and not excused
         elif category == "overdue":
-            include = not is_completed and deadline < today
+            include = not is_completed and deadline < today and not excused
+        elif category == "excused":
+            include = missed and excused
 
         if include:
             tasks.append({
@@ -837,6 +906,10 @@ def get_task_detail(pic_name: str, year: int, month: int, category: str) -> list
                 "status": "completed" if is_completed else "open",
                 "on_time": on_time_cat,
                 "deadline": deadline.isoformat(),
+                "late_reason": _extract_text(rec.get("Late Reason")),
+                "late_note": _extract_text(rec.get("Late Note")),
+                "excused": excused if missed else False,
+                "lark_url": _lark_record_url(rec.get("_record_id", "")),
             })
 
     return tasks

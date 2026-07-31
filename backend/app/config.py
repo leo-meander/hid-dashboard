@@ -123,6 +123,9 @@ class Settings(BaseSettings):
     LARK_APP_SECRET: str = ""
     LARK_BASE_APP_TOKEN: str = ""
     LARK_TASKS_TABLE_ID: str = ""
+    # Tenant domain used to build deep links to individual Lark records.
+    # Copy it from the address bar when a Base record is open.
+    LARK_WORKSPACE_DOMAIN: str = "www.larksuite.com"
     GHL_BASE_URL: str = "https://services.leadconnectorhq.com"
     # Legacy single-location (kept for backward compat)
     GHL_LOCATION_ID: str = ""

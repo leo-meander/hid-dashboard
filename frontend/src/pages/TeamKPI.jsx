@@ -475,7 +475,9 @@ function fmtNum(v, decimals = 1) {
 function aggregateRows(rows) {
   // rows: array of month dicts; produce annual aggregate
   if (!rows.length) return null;
-  const totals = { total_tasks: 0, completed: 0, on_time_count: 0, on_time_filled: 0, late_count: 0, overdue_count: 0 };
+  const totals = { total_tasks: 0, completed: 0, on_time_count: 0, on_time_filled: 0, late_count: 0,
+                   overdue_count: 0, late_excused_count: 0, overdue_excused_count: 0 };
+  const reason_counts = {};
   let ct_sum = 0, ct_n = 0, ed_sum = 0, ed_n = 0;
   for (const r of rows) {
     totals.total_tasks    += r.total_tasks    ?? 0;
@@ -484,6 +486,11 @@ function aggregateRows(rows) {
     totals.on_time_filled += r.on_time_filled ?? 0;
     totals.late_count     += r.late_count     ?? 0;
     totals.overdue_count  += r.overdue_count  ?? 0;
+    totals.late_excused_count    += r.late_excused_count    ?? 0;
+    totals.overdue_excused_count += r.overdue_excused_count ?? 0;
+    for (const [k, v] of Object.entries(r.reason_counts ?? {})) {
+      reason_counts[k] = (reason_counts[k] ?? 0) + v;
+    }
     if (r.cycle_time_avg != null) { ct_sum += r.cycle_time_avg; ct_n++; }
     if (r.estimated_avg  != null) { ed_sum += r.estimated_avg;  ed_n++; }
   }
@@ -492,7 +499,7 @@ function aggregateRows(rows) {
   const cycle_ratio    = (cycle_time_avg && estimated_avg) ? Math.round(cycle_time_avg / estimated_avg * 1000) / 1000 : null;
   const completion_rate = totals.total_tasks > 0 ? Math.round(totals.completed / totals.total_tasks * 100 * 10) / 10 : null;
   const on_time_rate    = totals.on_time_filled > 0 ? Math.round(totals.on_time_count / totals.on_time_filled * 100 * 10) / 10 : null;
-  return { ...totals, cycle_time_avg, estimated_avg, cycle_ratio, completion_rate, on_time_rate };
+  return { ...totals, reason_counts, cycle_time_avg, estimated_avg, cycle_ratio, completion_rate, on_time_rate };
 }
 
 const CATEGORY_LABELS = {
@@ -501,7 +508,19 @@ const CATEGORY_LABELS = {
   on_time: "On-time tasks",
   late: "Late tasks",
   overdue: "Overdue tasks",
+  excused: "Excused misses (not counted)",
 };
+
+// Which Late Reason values are excused is decided by the backend — this is
+// display only. Keep the labels in sync with the Lark single-select options.
+const REASON_LABELS = {
+  "my own delay": "My own delay",
+  "waiting on someone else": "Waiting on someone else",
+  "waiting for approval": "Waiting for approval",
+  "scope/priority changed": "Scope / priority changed",
+};
+
+const prettyReason = (key) => REASON_LABELS[key] ?? key;
 
 function TaskDetailModal({ drilldown, tasks, isLoading, onClose }) {
   useEffect(() => {
@@ -534,18 +553,32 @@ function TaskDetailModal({ drilldown, tasks, isLoading, onClose }) {
           ) : !tasks?.length ? (
             <p className="text-sm text-gray-400 text-center py-4">No tasks found.</p>
           ) : (
-            <ul className="space-y-1.5">
+            <ul className="space-y-2">
               {tasks.map((t, i) => (
                 <li key={i} className="flex items-start gap-2 text-xs text-gray-700">
-                  <span className={`mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                  <span className={`mt-1 w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                    t.excused ? "bg-blue-400" :
                     t.on_time === "on_time" ? "bg-green-500" :
                     t.on_time === "late" ? "bg-red-400" :
                     t.status === "open" ? "bg-orange-400" : "bg-gray-400"
                   }`} />
-                  <span>
-                    {t.name}
+                  <span className="min-w-0">
+                    {t.lark_url ? (
+                      <a href={t.lark_url} target="_blank" rel="noreferrer"
+                         className="hover:underline hover:text-blue-600" title="Open in Lark">
+                        {t.name} <span className="text-gray-300">↗</span>
+                      </a>
+                    ) : t.name}
                     {t.deadline && (
                       <span className="text-gray-400 ml-1.5">· due {t.deadline}</span>
+                    )}
+                    {t.late_reason && (
+                      <span className={"block mt-0.5 text-[10px] " + (t.excused ? "text-blue-600" : "text-gray-500")}>
+                        {t.late_reason}{t.excused ? " · not counted" : ""}
+                      </span>
+                    )}
+                    {t.late_note && (
+                      <span className="block text-[10px] text-gray-400 italic">{t.late_note}</span>
                     )}
                   </span>
                 </li>
@@ -885,6 +918,10 @@ function TaskOverview({ year }) {
               <th className={thCls + " text-right"}>Avg Estimate</th>
               <th className={thCls + " text-right"}>Cycle/Est.</th>
               <th className={thCls + " text-right"}>Overdue</th>
+              <th className={thCls + " text-right cursor-help"}
+                  title="Missed deadlines excused by their Late Reason (Waiting for approval, Scope / priority changed). Excluded from on-time rate and Overdue — shown so process bottlenecks stay visible.">
+                Excused ⓘ
+              </th>
               <th className={thCls + " text-right cursor-help"} title={SCORE_TOOLTIP}>Score ⓘ</th>
               <th className={thCls}>Rating</th>
             </tr>
@@ -964,6 +1001,24 @@ function TaskOverview({ year }) {
                         </span>
                       ) : "—"}
                     </td>
+                    {(() => {
+                      const excused = row ? (row.late_excused_count ?? 0) + (row.overdue_excused_count ?? 0) : null;
+                      const breakdown = Object.entries(row?.reason_counts ?? {})
+                        .map(([k, v]) => `${prettyReason(k)}: ${v}`).join("\n");
+                      return (
+                        <td
+                          className={tdCls + " text-right" + (excused > 0 && !isAnnual ? " cursor-pointer" : "")}
+                          title={breakdown || undefined}
+                          onClick={excused > 0 && !isAnnual ? () => setDrilldown({ picName: person.name, year, month, category: "excused" }) : undefined}
+                        >
+                          {excused != null ? (
+                            <span className={excused > 0 ? "text-blue-600 hover:underline" : "text-gray-300"}>
+                              {excused}
+                            </span>
+                          ) : "—"}
+                        </td>
+                      );
+                    })()}
                     <td className={tdCls + " text-right font-semibold cursor-help"}
                       title={row ? `On-time: ${fmtNum(row.on_time_rate)}% ×0.35 | Cycle: ${fmtNum(row.cycle_ratio,2)}× ×0.25 | Overdue: ${row.overdue_count ?? 0} ×0.25 | Reopen: ${row.reopen_count ?? "—"} ×0.15` : SCORE_TOOLTIP}>
                       {score ?? "—"}

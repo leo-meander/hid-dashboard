@@ -288,12 +288,28 @@ def get_task_overview(year: int = Query(2026)):
             if not isinstance(month_key, int) and not (isinstance(month_key, str) and month_key.isdigit()):
                 continue
             if month_key not in m["months"]:
-                m["months"][month_key] = {k: 0 for k in stats}
+                m["months"][month_key] = {k: ({} if isinstance(v, dict) else 0) for k, v in stats.items()}
             for k, v in stats.items():
                 if v is None:
                     continue
                 prev = m["months"][month_key].get(k)
-                m["months"][month_key][k] = (prev or 0) + v
+                if isinstance(v, dict):
+                    # reason_counts: merge per-reason tallies across PIC records
+                    merged_counts = dict(prev or {})
+                    for rk, rv in v.items():
+                        merged_counts[rk] = merged_counts.get(rk, 0) + rv
+                    m["months"][month_key][k] = merged_counts
+                else:
+                    m["months"][month_key][k] = (prev or 0) + v
+
+    # Rates were computed per pic_id, so merging summed them (Nora has 2 record
+    # IDs). Recompute from the merged counts instead.
+    for m in merged.values():
+        for stats in m["months"].values():
+            filled = stats.get("on_time_filled") or 0
+            total = stats.get("total_tasks") or 0
+            stats["on_time_rate"] = round(stats.get("on_time_count", 0) / filled * 100, 1) if filled else None
+            stats["completion_rate"] = round(stats.get("completed", 0) / total * 100, 1) if total else None
 
     result = [v for v in merged.values() if not v["name"].startswith("User ")]
     return {"success": True, "data": result, "error": None}
@@ -308,7 +324,7 @@ def get_task_detail_endpoint(
 ):
     """Return individual task names for a person/month/category (drilldown)."""
     from app.services.lark_service import get_task_detail
-    valid_categories = {"total", "done", "on_time", "late", "overdue"}
+    valid_categories = {"total", "done", "on_time", "late", "overdue", "excused"}
     if category not in valid_categories:
         raise HTTPException(400, f"category must be one of: {', '.join(sorted(valid_categories))}")
     if not 1 <= month <= 12:
