@@ -170,6 +170,48 @@ def _today_ict() -> date:
     return datetime.now(tz=_ICT_TZ).date()
 
 
+def _extract_number(raw) -> Optional[float]:
+    """Read a Lark number / numeric-formula field into a float.
+
+    Formula fields wrap the number in a list: {'type': 2, 'value': [8]}.
+    Hand-entered number fields come back bare. Reading only the bare shape
+    silently treated every formula field as empty.
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, dict):
+        return _extract_number(raw.get("value", raw.get("number")))
+    if isinstance(raw, list):
+        return _extract_number(raw[0]) if raw else None
+    if isinstance(raw, str):
+        try:
+            return float(raw.strip())
+        except ValueError:
+            return None
+    return None
+
+
+# Estimated Days / Cycle Time are formulas in Lark and currently emit some
+# nonsense (negative values, 46112). Anything outside this range is a broken
+# formula result, not a real estimate — dropped from averages and counted in
+# `bad_duration_count` so it stays visible rather than silently vanishing.
+_MAX_SANE_DAYS = 365
+
+
+def _sane_days(raw) -> tuple[Optional[float], bool]:
+    """Return (value, was_rejected). Value is None unless 0 < v <= 365."""
+    v = _extract_number(raw)
+    if v is None:
+        return None, False
+    if v <= 0 or v > _MAX_SANE_DAYS:
+        return None, True
+    return v, False
+
+
 def _extract_text(raw) -> str:
     """Read a Lark text / single-select field into a plain string.
 
@@ -743,6 +785,7 @@ def get_task_overview_yearly(year: int) -> dict:
         "late_excused_count": 0,     # completed late, reason excuses it
         "overdue_excused_count": 0,  # still open past deadline, reason excuses it
         "reason_counts": defaultdict(int),  # every reason seen on a missed task
+        "bad_duration_count": 0,  # Cycle Time / Estimated Days outside 0–365
         "reopen_count": 0,
         "cycle_times": [],
         "estimated_days": [],
@@ -810,40 +853,18 @@ def get_task_overview_yearly(year: int) -> dict:
                 else:
                     bucket["overdue_count"] += 1
 
-        # Reopen count
-        rc_raw = rec.get("Reopen Count")
-        rc: int = 0
-        if isinstance(rc_raw, (int, float)) and rc_raw > 0:
-            rc = int(rc_raw)
-        elif isinstance(rc_raw, dict):
-            v = rc_raw.get("value") or rc_raw.get("number")
-            if isinstance(v, (int, float)) and v > 0:
-                rc = int(v)
-        bucket["reopen_count"] += rc
+        rc = _extract_number(rec.get("Reopen Count"))
+        if rc and rc > 0:
+            bucket["reopen_count"] += int(rc)
 
-        # Cycle time
-        ct_raw = rec.get("Cycle Time")
-        ct: Optional[float] = None
-        if isinstance(ct_raw, (int, float)) and ct_raw > 0:
-            ct = float(ct_raw)
-        elif isinstance(ct_raw, dict):
-            v = ct_raw.get("value") or ct_raw.get("number")
-            if isinstance(v, (int, float)) and v > 0:
-                ct = float(v)
+        ct, ct_bad = _sane_days(rec.get("Cycle Time"))
         if ct is not None:
             bucket["cycle_times"].append(ct)
-
-        # Estimated days
-        ed_raw = rec.get("Estimated Days")
-        ed: Optional[float] = None
-        if isinstance(ed_raw, (int, float)) and ed_raw > 0:
-            ed = float(ed_raw)
-        elif isinstance(ed_raw, dict):
-            v = ed_raw.get("value") or ed_raw.get("number")
-            if isinstance(v, (int, float)) and v > 0:
-                ed = float(v)
+        ed, ed_bad = _sane_days(rec.get("Estimated Days"))
         if ed is not None:
             bucket["estimated_days"].append(ed)
+        if ct_bad or ed_bad:
+            bucket["bad_duration_count"] += 1
 
     # Build final output
     result: dict = {}
@@ -867,6 +888,7 @@ def get_task_overview_yearly(year: int) -> dict:
                 "late_excused_count": b["late_excused_count"],
                 "overdue_excused_count": b["overdue_excused_count"],
                 "reason_counts": dict(b["reason_counts"]),
+                "bad_duration_count": b["bad_duration_count"],
                 "reopen_count": b["reopen_count"],
                 "cycle_time_avg": ct_avg,
                 "estimated_avg": ed_avg,
