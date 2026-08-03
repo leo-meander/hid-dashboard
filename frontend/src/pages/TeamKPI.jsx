@@ -656,7 +656,12 @@ function TaskOverview({ year }) {
     const annualScore = validMonthScores.length
       ? Math.round(validMonthScores.reduce((a, b) => a + b, 0) / validMonthScores.length * 10) / 10
       : null;
-    return { name: p.name, monthScores, monthDetails, agg, score: annualScore, open: p.open_workload, noDeadline: p.no_deadline_count ?? 0 };
+    return {
+      name: p.name, monthScores, monthDetails, agg, score: annualScore,
+      open: p.open_workload,
+      noDeadline: p.no_deadline_count ?? 0,
+      excluded: p.excluded_status_count ?? 0,
+    };
   });
 
   // Score → heatmap bg color
@@ -777,10 +782,54 @@ function TaskOverview({ year }) {
           const ringColor = onTimeRate >= 90 ? "#22c55e" : onTimeRate >= 70 ? "#eab308" : "#ef4444";
           const radius = 28, circ = 2 * Math.PI * radius;
           const filled = Math.min(onTimeRate / 100, 1) * circ;
+
+          const onTimeN = d.agg?.on_time_count ?? 0;
+          const scoredN = d.agg?.on_time_filled ?? 0;
+          const excusedN = (d.agg?.late_excused_count ?? 0) + (d.agg?.overdue_excused_count ?? 0);
+
+          const lateN = d.agg?.late_count ?? 0;
+          const rateTip = [
+            `On-time rate = on-time ÷ scored`,
+            scoredN
+              ? `${onTimeN} ÷ ${scoredN} = ${onTimeRate.toFixed(1)}%`
+              : `No scored tasks yet — nothing completed with an on-time result.`,
+            ``,
+            `Scored = completed tasks marked On-time or Late.`,
+            `Not scored: tasks still open${excusedN ? `, and ${excusedN} miss(es) carrying a Late Reason` : ""}.`,
+            ``,
+            `Late is not Overdue — they never overlap:`,
+            `  Late (${lateN}) — finished, but after the deadline. Hits this rate.`,
+            `  Overdue — still unfinished with the deadline gone. Hits the Overdue column.`,
+            `Finish everything late and this rate drops while Overdue stays 0.`,
+          ].join("\n");
+
+          const monthList = d.monthDetails
+            .map((det, i) => (det ? `${MONTH_NAMES[i]} ${det.score.toFixed(1)}` : null))
+            .filter(Boolean);
+          const scoreTip = [
+            `Score ${d.score?.toFixed(1)} = average of ${monthList.length} monthly score(s)`,
+            monthList.join("  ·  "),
+            ``,
+            `Each month = On-time ×0.35 + Cycle/Est. ×0.25 + Overdue ×0.25 + Reopen ×0.15`,
+            `Averaged per month, so it won't match the annual on-time rate above.`,
+            `Cycle and Reopen score 10 when Lark has no data for them.`,
+          ].join("\n");
+
+          const tasksTip = [
+            `${d.agg?.total_tasks ?? 0} tasks — have a deadline in ${year}, grouped by deadline month.`,
+            `${d.open} open — not Completed yet, deadline set.`,
+            d.excluded
+              ? `${d.excluded} task(s) hidden: status Upcoming Tasks / Regular task, outside the KPI.`
+              : null,
+            d.noDeadline
+              ? `${d.noDeadline} open task(s) have no deadline, so they fall in no month — see the red badge.`
+              : null,
+          ].filter(Boolean).join("\n");
+
           return (
             <div key={d.name} className="bg-white rounded-xl border border-gray-200 p-3 flex flex-col items-center gap-2">
               <p className="text-xs font-semibold text-gray-700">{d.name}</p>
-              <div className="relative w-16 h-16">
+              <div className="relative w-16 h-16 cursor-help" title={rateTip}>
                 <svg className="w-full h-full -rotate-90" viewBox="0 0 72 72">
                   <circle cx="36" cy="36" r={radius} fill="none" stroke="#e5e7eb" strokeWidth="7" />
                   {onTimeRate > 0 && (
@@ -793,13 +842,15 @@ function TaskOverview({ year }) {
                   <span className="text-[9px] text-gray-400 leading-none">{d.agg?.on_time_count ?? 0}/{d.agg?.on_time_filled ?? 0}</span>
                 </div>
               </div>
-              <div className="text-[10px] text-gray-400">On-time rate</div>
+              <div className="text-[10px] text-gray-400 cursor-help" title={rateTip}>On-time rate ⓘ</div>
               {d.score !== null && (
-                <span className={`px-2 py-0.5 rounded-full text-[10px] ${rCls}`}>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] cursor-help ${rCls}`} title={scoreTip}>
                   {d.score.toFixed(1)} · {ratingLabel(d.score)}
                 </span>
               )}
-              <div className="text-[10px] text-gray-400">{d.agg?.total_tasks ?? 0} tasks · {d.open} open</div>
+              <div className="text-[10px] text-gray-400 cursor-help" title={tasksTip}>
+                {d.agg?.total_tasks ?? 0} tasks · {d.open} open
+              </div>
               {d.noDeadline > 0 && (
                 <button
                   type="button"
