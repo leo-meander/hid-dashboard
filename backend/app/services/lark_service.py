@@ -810,6 +810,7 @@ def get_task_overview_yearly(year: int) -> dict:
     from collections import defaultdict
     agg: dict[str, dict[int, dict]] = defaultdict(lambda: defaultdict(lambda: {
         "total_tasks": 0,
+        "open_count": 0,      # not Completed, deadline inside this month
         "completed": 0,
         "on_time_count": 0,
         "late_count": 0,
@@ -820,6 +821,7 @@ def get_task_overview_yearly(year: int) -> dict:
         "reason_counts": defaultdict(int),  # every reason seen on a missed task
         "bad_duration_count": 0,  # Cycle Time / Estimated Days outside 0–365
         "reopen_count": 0,
+        "reopen_filled": 0,   # records that actually carried a Reopen Count
         "cycle_times": [],
         "estimated_days": [],
     }))
@@ -850,17 +852,23 @@ def get_task_overview_yearly(year: int) -> dict:
                 no_deadline[pic_id] += 1
             continue
 
-        # Open workload: only incomplete tasks that have a deadline
-        if not is_completed:
-            open_workload[pic_id] += 1
         if deadline.year != year:
             continue
         month = deadline.month
         if month < _LARK_START_MONTH:
             continue
 
+        # Open workload is scoped exactly like total_tasks — same year, same
+        # start month. Counting it before these filters let a person show more
+        # open tasks than tasks ("13 tasks · 15 open"), because the workload
+        # swept in deadlines from other years and pre-July months.
+        if not is_completed:
+            open_workload[pic_id] += 1
+
         bucket = agg[pic_id][month]
         bucket["total_tasks"] += 1
+        if not is_completed:
+            bucket["open_count"] += 1
 
         reason = _norm_reason(rec.get("Late Reason"))
         excused = _is_excused(reason)
@@ -894,9 +902,14 @@ def get_task_overview_yearly(year: int) -> dict:
                 else:
                     bucket["overdue_count"] += 1
 
+        # Reopen Count is absent from most rows in the Lark base. Track how many
+        # records actually carried it, so the score can tell "zero reopens" from
+        # "nobody fills this field" instead of handing out a free 10.
         rc = _extract_number(rec.get("Reopen Count"))
-        if rc and rc > 0:
-            bucket["reopen_count"] += int(rc)
+        if rc is not None:
+            bucket["reopen_filled"] += 1
+            if rc > 0:
+                bucket["reopen_count"] += int(rc)
 
         ct, ct_bad = _sane_days(rec.get("Cycle Time"))
         if ct is not None:
@@ -922,6 +935,7 @@ def get_task_overview_yearly(year: int) -> dict:
             on_time = b["on_time_count"]
             result[pic_id][month] = {
                 "total_tasks": total,
+                "open_count": b["open_count"],
                 "completed": comp,
                 "on_time_count": on_time,
                 "late_count": b["late_count"],
@@ -931,6 +945,7 @@ def get_task_overview_yearly(year: int) -> dict:
                 "reason_counts": dict(b["reason_counts"]),
                 "bad_duration_count": b["bad_duration_count"],
                 "reopen_count": b["reopen_count"],
+                "reopen_filled": b["reopen_filled"],
                 "cycle_time_avg": ct_avg,
                 "estimated_avg": ed_avg,
                 "cycle_ratio": cycle_ratio,

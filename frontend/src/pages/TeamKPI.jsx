@@ -434,23 +434,54 @@ function MiniBar({ value, max, color = "#6366f1" }) {
 // includes misses carrying a Late Reason — those sit in Excused.
 const missedCount = (row) => (row?.late_count ?? 0) + (row?.overdue_count ?? 0);
 
+// Nominal weight of each scoring component.
+const SCORE_WEIGHTS = { ontime: 0.35, cycle: 0.25, overdue: 0.25, reopen: 0.15 };
+
+// A component Lark has no data for is dropped and its weight spread over the
+// components that do have data. Scoring a blank field as a perfect 10 handed
+// everybody free points — Reopen Count is unfilled on nearly every row, so
+// 15% of the score was a gift, and Cycle Time is missing often enough to
+// matter too. Effective weights are returned so the tooltips can show what
+// actually applied instead of the nominal 0.35 / 0.25 / 0.25 / 0.15.
 function computeScoreDetail(row) {
   if (!row) return null;
-  const on_time_rate = row.on_time_rate ?? 0;
-  const cycle_ratio  = row.cycle_ratio;
+  const on_time_rate = row.on_time_rate ?? null;  // null = nothing scored yet
+  const cycle_ratio  = row.cycle_ratio ?? null;
   // Overdue and Late are one figure: every blown deadline without a Late
-  // Reason, whether or not the task was eventually finished.
-  const overdue      = missedCount(row);
-  const reopen       = row.reopen_count ?? null; // null = not yet tracked
+  // Reason, whether or not the task was eventually finished. Only meaningful
+  // once the person has at least one task in the period.
+  const overdue      = (row.total_tasks ?? 0) > 0 ? missedCount(row) : null;
+  // reopen_filled counts records that actually carried a Reopen Count, so a 0
+  // here means "field never filled", not "no reopens".
+  const reopen       = (row.reopen_filled ?? 0) > 0 ? (row.reopen_count ?? 0) : null;
 
-  const s_ontime  = on_time_rate >= 90 ? 10 : on_time_rate >= 80 ? 8 : on_time_rate >= 70 ? 6 : 4;
-  const s_cycle   = cycle_ratio == null ? 10 : cycle_ratio <= 1 ? 10 : cycle_ratio <= 1.2 ? 8 : cycle_ratio <= 1.5 ? 6 : 4;
-  const s_overdue = overdue === 0 ? 10 : overdue <= 1 ? 8 : overdue <= 3 ? 6 : 4;
-  const s_reopen  = reopen == null ? 10 : reopen === 0 ? 10 : reopen === 1 ? 8 : reopen <= 3 ? 6 : 4;
+  const s_ontime  = on_time_rate == null ? null : on_time_rate >= 90 ? 10 : on_time_rate >= 80 ? 8 : on_time_rate >= 70 ? 6 : 4;
+  const s_cycle   = cycle_ratio  == null ? null : cycle_ratio <= 1 ? 10 : cycle_ratio <= 1.2 ? 8 : cycle_ratio <= 1.5 ? 6 : 4;
+  const s_overdue = overdue      == null ? null : overdue === 0 ? 10 : overdue <= 1 ? 8 : overdue <= 3 ? 6 : 4;
+  const s_reopen  = reopen       == null ? null : reopen === 0 ? 10 : reopen === 1 ? 8 : reopen <= 3 ? 6 : 4;
 
-  const score = Math.round((s_ontime * 0.35 + s_cycle * 0.25 + s_overdue * 0.25 + s_reopen * 0.15) * 10) / 10;
-  return { score, on_time_rate, cycle_ratio, overdue, reopen, s_ontime, s_cycle, s_overdue, s_reopen };
+  const scored = { ontime: s_ontime, cycle: s_cycle, overdue: s_overdue, reopen: s_reopen };
+  const live = Object.keys(SCORE_WEIGHTS).filter(k => scored[k] !== null);
+  const totalW = live.reduce((a, k) => a + SCORE_WEIGHTS[k], 0);
+
+  const weights = { ontime: null, cycle: null, overdue: null, reopen: null };
+  let score = null;
+  if (totalW > 0) {
+    let sum = 0;
+    for (const k of live) {
+      const w = SCORE_WEIGHTS[k] / totalW;
+      weights[k] = w;
+      sum += scored[k] * w;
+    }
+    score = Math.round(sum * 10) / 10;
+  }
+
+  return { score, on_time_rate, cycle_ratio, overdue, reopen, s_ontime, s_cycle, s_overdue, s_reopen, weights };
 }
+
+// Effective weight for a tooltip: "×0.41", or "—" when the component was
+// dropped for lack of data.
+const fmtWeight = (w) => (w == null ? "— (no data)" : `×${w.toFixed(2)}`);
 
 function computeScore(row) {
   return computeScoreDetail(row)?.score ?? null;
@@ -482,17 +513,21 @@ function fmtNum(v, decimals = 1) {
 function aggregateRows(rows) {
   // rows: array of month dicts; produce annual aggregate
   if (!rows.length) return null;
-  const totals = { total_tasks: 0, completed: 0, on_time_count: 0, on_time_filled: 0, late_count: 0,
-                   overdue_count: 0, late_excused_count: 0, overdue_excused_count: 0 };
+  const totals = { total_tasks: 0, open_count: 0, completed: 0, on_time_count: 0, on_time_filled: 0,
+                   late_count: 0, overdue_count: 0, late_excused_count: 0, overdue_excused_count: 0,
+                   reopen_count: 0, reopen_filled: 0 };
   const reason_counts = {};
   let ct_sum = 0, ct_n = 0, ed_sum = 0, ed_n = 0;
   for (const r of rows) {
     totals.total_tasks    += r.total_tasks    ?? 0;
+    totals.open_count     += r.open_count     ?? 0;
     totals.completed      += r.completed      ?? 0;
     totals.on_time_count  += r.on_time_count  ?? 0;
     totals.on_time_filled += r.on_time_filled ?? 0;
     totals.late_count     += r.late_count     ?? 0;
     totals.overdue_count  += r.overdue_count  ?? 0;
+    totals.reopen_count   += r.reopen_count   ?? 0;
+    totals.reopen_filled  += r.reopen_filled  ?? 0;
     totals.late_excused_count    += r.late_excused_count    ?? 0;
     totals.overdue_excused_count += r.overdue_excused_count ?? 0;
     for (const [k, v] of Object.entries(r.reason_counts ?? {})) {
@@ -649,24 +684,32 @@ function TaskOverview({ year }) {
   const filtered = picFilter === "all" ? allPeople : allPeople.filter(p => p.pic_id === picFilter);
   const displayMonths = monthFilter === 0 ? MONTH_NAMES.map((_, i) => i + 1) : [monthFilter];
 
+  const avgScore = (scores) => {
+    const valid = scores.filter(s => s !== null && s !== undefined);
+    return valid.length ? Math.round(valid.reduce((a, b) => a + b, 0) / valid.length * 10) / 10 : null;
+  };
+
   // ── Per-person monthly scores for heatmap + trend ────────────────────────
+  // monthDetails / monthScores stay full-year: the heatmap and trend below are
+  // month-by-month views and would be pointless filtered down to one column.
+  // agg and score follow the Month filter, because the scorecards above were
+  // silently showing the whole year no matter which month was picked.
   const peopleMonthly = filtered.map(p => {
+    const monthRow = (m) => p.months[String(m)] ?? p.months[m] ?? null;
     const monthDetails = MONTH_NAMES.map((_, i) => {
       const m = i + 1;
       if (year === CURRENT_YEAR && m > CURRENT_MONTH) return null;
-      const row = p.months[String(m)] ?? p.months[m] ?? null;
-      return computeScoreDetail(row);
+      const det = computeScoreDetail(monthRow(m));
+      // A month with no scoreable component at all is "no data", not a zero.
+      return det && det.score !== null ? det : null;
     });
     const monthScores = monthDetails.map(d => d?.score ?? null);
-    const rows = Object.entries(p.months).filter(([k]) => !isNaN(Number(k))).map(([, v]) => v);
-    const agg = aggregateRows(rows);
-    const validMonthScores = monthScores.filter(s => s !== null);
-    const annualScore = validMonthScores.length
-      ? Math.round(validMonthScores.reduce((a, b) => a + b, 0) / validMonthScores.length * 10) / 10
-      : null;
+    const agg = aggregateRows(displayMonths.map(monthRow).filter(Boolean));
     return {
-      name: p.name, monthScores, monthDetails, agg, score: annualScore,
-      open: p.open_workload,
+      name: p.name, monthScores, monthDetails, agg,
+      score: avgScore(displayMonths.map(m => monthScores[m - 1])),
+      annualScore: avgScore(monthScores),
+      open: agg?.open_count ?? 0,
       noDeadline: p.no_deadline_count ?? 0,
       excluded: p.excluded_status_count ?? 0,
     };
@@ -715,7 +758,9 @@ function TaskOverview({ year }) {
     );
   }
 
-  const SCORE_TOOLTIP = "Score = On-time rate ×0.35 + Cycle efficiency ×0.25 + Overdue/Late ×0.25 + Reopen ×0.15 (scale 0–10). Overdue/Late counts every blown deadline, finished or not. Reopen: 0→10, 1→8, ≤3→6, else→4.";
+  const SCORE_TOOLTIP = "Score = On-time rate ×0.35 + Cycle efficiency ×0.25 + Overdue/Late ×0.25 + Reopen ×0.15 (scale 0–10). Overdue/Late counts every blown deadline, finished or not. Reopen: 0→10, 1→8, ≤3→6, else→4.\n\nA component Lark has no data for is dropped and its weight shared out over the rest — a blank field no longer scores a free 10. Hover a month cell to see the weights that actually applied.";
+
+  const periodLabel = monthFilter === 0 ? `${year} (from Jul)` : `${MONTH_NAMES[monthFilter - 1]} ${year}`;
 
   return (
     <div className="space-y-5">
@@ -778,7 +823,7 @@ function TaskOverview({ year }) {
           </div>
         </div>
         <div className="px-4 py-2 text-[10px] text-gray-400">
-          Period grouped by task <strong className="text-gray-500">Deadline</strong> month · Workload tracked only — not scored · Reopen not yet available in Lark
+          Period grouped by task <strong className="text-gray-500">Deadline</strong> month · Cards show <strong className="text-gray-500">{periodLabel}</strong> · Data standardized from July, earlier months excluded · A component with no data in Lark is dropped and its weight shared out (Reopen is unfilled on most rows)
         </div>
       </div>
 
@@ -797,7 +842,8 @@ function TaskOverview({ year }) {
 
           const lateN = d.agg?.late_count ?? 0;
           const rateTip = [
-            `On-time rate = on-time ÷ scored`,
+            `On-time rate — ${periodLabel}`,
+            `= on-time ÷ scored`,
             scoredN
               ? `${onTimeN} ÷ ${scoredN} = ${onTimeRate.toFixed(1)}%`
               : `No scored tasks yet — nothing completed with an on-time result.`,
@@ -810,21 +856,25 @@ function TaskOverview({ year }) {
             `the task got finished afterwards or not.`,
           ].join("\n");
 
-          const monthList = d.monthDetails
-            .map((det, i) => (det ? `${MONTH_NAMES[i]} ${det.score.toFixed(1)}` : null))
+          const monthList = displayMonths
+            .map((m) => { const det = d.monthDetails[m - 1]; return det ? `${MONTH_NAMES[m - 1]} ${det.score.toFixed(1)}` : null; })
             .filter(Boolean);
           const scoreTip = [
-            `Score ${d.score?.toFixed(1)} = average of ${monthList.length} monthly score(s)`,
-            monthList.join("  ·  "),
+            `Score ${d.score?.toFixed(1)} — ${periodLabel}`,
+            monthList.length > 1
+              ? `= average of ${monthList.length} monthly scores: ${monthList.join("  ·  ")}`
+              : monthList.join(""),
             ``,
             `Each month = On-time ×0.35 + Cycle/Est. ×0.25 + Overdue/Late ×0.25 + Reopen ×0.15`,
-            `Averaged per month, so it won't match the annual on-time rate above.`,
-            `Cycle and Reopen score 10 when Lark has no data for them.`,
-          ].join("\n");
+            `A component Lark has no data for is dropped and its weight shared`,
+            `out over the rest — Reopen is unfilled on most rows, so in practice`,
+            `On-time and Overdue/Late carry most of the score.`,
+            monthList.length > 1 ? `Averaged per month, so it won't match the on-time rate above.` : null,
+          ].filter(v => v !== null).join("\n");
 
           const tasksTip = [
-            `${d.agg?.total_tasks ?? 0} tasks — have a deadline in ${year}, grouped by deadline month.`,
-            `${d.open} open — not Completed yet, deadline set.`,
+            `${d.agg?.total_tasks ?? 0} tasks — deadline falls in ${periodLabel}.`,
+            `${d.open} open — not Completed yet, deadline in the same period.`,
             d.excluded
               ? `${d.excluded} task(s) hidden: status Upcoming Tasks / Regular task, outside the KPI.`
               : null,
@@ -887,6 +937,9 @@ function TaskOverview({ year }) {
             <div className="text-gray-300 text-[9px] ml-2">0→10 · 1→8 · ≤3→6 · else→4</div>
             <div>Reopen count ×<b>0.15</b></div>
             <div className="text-gray-300 text-[9px] ml-2">0→10 · 1→8 · ≤3→6 · else→4</div>
+            <div className="mt-1.5 pt-1.5 border-t border-gray-600 text-gray-300 text-[9px]">
+              A component with no data in Lark is dropped and its weight shared out over the rest, so weights are rescaled per month. Hover a cell for the ones that applied.
+            </div>
           </div>
         </div>
         <table className="text-[11px] border-collapse w-full min-w-[520px]">
@@ -914,19 +967,21 @@ function TaskOverview({ year }) {
                       {det && (
                         <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover/cell:block bg-gray-800 text-white text-[9px] rounded-lg p-2 z-20 whitespace-nowrap shadow-lg leading-[1.6]">
                           <div className="font-semibold text-[10px] mb-0.5">{MONTH_NAMES[i]} score: {det.score.toFixed(1)}</div>
-                          <div>On-time: <b>{det.on_time_rate.toFixed(0)}%</b> → {det.s_ontime} ×0.35</div>
-                          <div>Cycle: <b>{det.cycle_ratio != null ? det.cycle_ratio.toFixed(2) : "—"}</b> → {det.s_cycle} ×0.25</div>
-                          <div>Overdue/Late: <b>{det.overdue}</b> → {det.s_overdue} ×0.25</div>
-                          <div>Reopen: <b>{det.reopen != null ? det.reopen : "—"}</b> → {det.s_reopen} ×0.15{det.reopen == null ? <span className="text-gray-400"> (–)</span> : ""}</div>
+                          <div>On-time: <b>{det.on_time_rate != null ? `${det.on_time_rate.toFixed(0)}%` : "—"}</b> → {det.s_ontime ?? "—"} {fmtWeight(det.weights.ontime)}</div>
+                          <div>Cycle: <b>{det.cycle_ratio != null ? det.cycle_ratio.toFixed(2) : "—"}</b> → {det.s_cycle ?? "—"} {fmtWeight(det.weights.cycle)}</div>
+                          <div>Overdue/Late: <b>{det.overdue ?? "—"}</b> → {det.s_overdue ?? "—"} {fmtWeight(det.weights.overdue)}</div>
+                          <div>Reopen: <b>{det.reopen != null ? det.reopen : "—"}</b> → {det.s_reopen ?? "—"} {fmtWeight(det.weights.reopen)}</div>
                         </div>
                       )}
                     </td>
                   );
                 })}
                 <td className="pl-2 py-1 text-center">
-                  {(() => { const { bg, text } = heatColor(d.score); return (
+                  {/* Always the full year — this column is labelled Annual and
+                      must not follow the Month filter the cards above use. */}
+                  {(() => { const { bg, text } = heatColor(d.annualScore); return (
                     <div className="rounded text-[10px] font-bold py-1 px-1" style={{ backgroundColor: bg, color: text }}>
-                      {d.score !== null ? d.score.toFixed(1) : "—"}
+                      {d.annualScore !== null ? d.annualScore.toFixed(1) : "—"}
                     </div>
                   );})()}
                 </td>
@@ -953,9 +1008,9 @@ function TaskOverview({ year }) {
             <div key={d.name} className="border border-gray-100 rounded-lg p-3">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs font-medium text-gray-700">{d.name}</span>
-                {d.score !== null && (
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] ${ratingClasses(d.score)}`}>
-                    Avg {d.score.toFixed(1)}
+                {d.annualScore !== null && (
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] ${ratingClasses(d.annualScore)}`}>
+                    Avg {d.annualScore.toFixed(1)}
                   </span>
                 )}
               </div>
@@ -1092,10 +1147,22 @@ function TaskOverview({ year }) {
                         </td>
                       );
                     })()}
-                    <td className={tdCls + " text-right font-semibold cursor-help"}
-                      title={row ? `On-time: ${fmtNum(row.on_time_rate)}% ×0.35 | Cycle: ${fmtNum(row.cycle_ratio,2)}× ×0.25 | Overdue/Late: ${missedCount(row)} ×0.25 | Reopen: ${row.reopen_count ?? "—"} ×0.15` : SCORE_TOOLTIP}>
-                      {score ?? "—"}
-                    </td>
+                    {(() => {
+                      const det = computeScoreDetail(row);
+                      const tip = det
+                        ? [
+                            `On-time: ${fmtNum(det.on_time_rate)}% ${fmtWeight(det.weights.ontime)}`,
+                            `Cycle: ${fmtNum(det.cycle_ratio, 2)}× ${fmtWeight(det.weights.cycle)}`,
+                            `Overdue/Late: ${det.overdue ?? "—"} ${fmtWeight(det.weights.overdue)}`,
+                            `Reopen: ${det.reopen ?? "—"} ${fmtWeight(det.weights.reopen)}`,
+                          ].join("\n")
+                        : SCORE_TOOLTIP;
+                      return (
+                        <td className={tdCls + " text-right font-semibold cursor-help"} title={tip}>
+                          {score ?? "—"}
+                        </td>
+                      );
+                    })()}
                     <td className={tdCls}>
                       {score !== null ? (
                         <span className={`px-1.5 py-0.5 rounded text-[10px] ${rCls}`}>{ratingLabel(score)}</span>
@@ -1109,7 +1176,7 @@ function TaskOverview({ year }) {
         </table>
       </div>
       <p className="text-[10px] text-gray-400">
-        Score = On-time rate ×0.35 + Cycle/Estimate ×0.25 + Overdue/Late ×0.25 + Reopen ×0.15 (Reopen not yet tracked in Lark)
+        Score = On-time rate ×0.35 + Cycle/Estimate ×0.25 + Overdue/Late ×0.25 + Reopen ×0.15 — a component with no data in Lark is dropped and its weight shared out over the rest, so an unfilled field no longer scores a free 10.
       </p>
       {drilldown && (
         <TaskDetailModal
