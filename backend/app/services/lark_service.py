@@ -1049,6 +1049,10 @@ def get_task_detail(pic_name: str, year: int, month: Optional[int], category: st
             include = is_completed and on_time_cat == "late" and not excused
         elif category == "overdue":
             include = not is_completed and deadline is not None and deadline < today and not excused
+        elif category == "missed":
+            # Overdue and Late reported as one: every blown deadline without a
+            # Late Reason, whether the task got finished afterwards or not.
+            include = missed and not excused
         elif category == "excused":
             include = missed and excused
         elif category == "no_deadline":

@@ -429,11 +429,18 @@ function MiniBar({ value, max, color = "#6366f1" }) {
   );
 }
 
+// Missed deadlines, reported as one number. Late = finished after the
+// deadline; Overdue = still unfinished with the deadline gone. Neither
+// includes misses carrying a Late Reason — those sit in Excused.
+const missedCount = (row) => (row?.late_count ?? 0) + (row?.overdue_count ?? 0);
+
 function computeScoreDetail(row) {
   if (!row) return null;
   const on_time_rate = row.on_time_rate ?? 0;
   const cycle_ratio  = row.cycle_ratio;
-  const overdue      = row.overdue_count ?? 0;
+  // Overdue and Late are one figure: every blown deadline without a Late
+  // Reason, whether or not the task was eventually finished.
+  const overdue      = missedCount(row);
   const reopen       = row.reopen_count ?? null; // null = not yet tracked
 
   const s_ontime  = on_time_rate >= 90 ? 10 : on_time_rate >= 80 ? 8 : on_time_rate >= 70 ? 6 : 4;
@@ -508,6 +515,7 @@ const CATEGORY_LABELS = {
   on_time: "On-time tasks",
   late: "Late tasks",
   overdue: "Overdue tasks",
+  missed: "Missed deadlines (overdue + late)",
   excused: "Excused misses (not counted)",
   no_deadline: "Open tasks with no deadline",
 };
@@ -707,7 +715,7 @@ function TaskOverview({ year }) {
     );
   }
 
-  const SCORE_TOOLTIP = "Score = On-time rate ×0.35 + Cycle efficiency ×0.25 + Overdue ×0.25 + Reopen ×0.15 (scale 0–10). Reopen: 0→10, 1→8, ≤3→6, else→4.";
+  const SCORE_TOOLTIP = "Score = On-time rate ×0.35 + Cycle efficiency ×0.25 + Overdue/Late ×0.25 + Reopen ×0.15 (scale 0–10). Overdue/Late counts every blown deadline, finished or not. Reopen: 0→10, 1→8, ≤3→6, else→4.";
 
   return (
     <div className="space-y-5">
@@ -753,7 +761,7 @@ function TaskOverview({ year }) {
           {/* Weights */}
           <div className="flex items-center gap-3">
             <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Weights</span>
-            {[["On-time","35%"],["Cycle","25%"],["Overdue","25%"],["Reopen","15%"]].map(([label, pct]) => (
+            {[["On-time","35%"],["Cycle","25%"],["Overdue/Late","25%"],["Reopen","15%"]].map(([label, pct]) => (
               <span key={label} className="text-[11px] text-gray-600">{label} <span className="font-semibold text-gray-800">{pct}</span></span>
             ))}
           </div>
@@ -797,10 +805,9 @@ function TaskOverview({ year }) {
             `Scored = completed tasks marked On-time or Late.`,
             `Not scored: tasks still open${excusedN ? `, and ${excusedN} miss(es) carrying a Late Reason` : ""}.`,
             ``,
-            `Late is not Overdue — they never overlap:`,
-            `  Late (${lateN}) — finished, but after the deadline. Hits this rate.`,
-            `  Overdue — still unfinished with the deadline gone. Hits the Overdue column.`,
-            `Finish everything late and this rate drops while Overdue stays 0.`,
+            `${lateN} task(s) finished late still count here — they are also in`,
+            `the Overdue/Late column, which totals every blown deadline whether`,
+            `the task got finished afterwards or not.`,
           ].join("\n");
 
           const monthList = d.monthDetails
@@ -810,7 +817,7 @@ function TaskOverview({ year }) {
             `Score ${d.score?.toFixed(1)} = average of ${monthList.length} monthly score(s)`,
             monthList.join("  ·  "),
             ``,
-            `Each month = On-time ×0.35 + Cycle/Est. ×0.25 + Overdue ×0.25 + Reopen ×0.15`,
+            `Each month = On-time ×0.35 + Cycle/Est. ×0.25 + Overdue/Late ×0.25 + Reopen ×0.15`,
             `Averaged per month, so it won't match the annual on-time rate above.`,
             `Cycle and Reopen score 10 when Lark has no data for them.`,
           ].join("\n");
@@ -876,7 +883,7 @@ function TaskOverview({ year }) {
             <div className="text-gray-300 text-[9px] ml-2">≥90%→10 · ≥80%→8 · ≥70%→6 · else→4</div>
             <div>Cycle efficiency ×<b>0.25</b></div>
             <div className="text-gray-300 text-[9px] ml-2">ratio≤1→10 · ≤1.2→8 · ≤1.5→6 · else→4</div>
-            <div>Overdue tasks ×<b>0.25</b></div>
+            <div>Overdue/Late ×<b>0.25</b></div>
             <div className="text-gray-300 text-[9px] ml-2">0→10 · 1→8 · ≤3→6 · else→4</div>
             <div>Reopen count ×<b>0.15</b></div>
             <div className="text-gray-300 text-[9px] ml-2">0→10 · 1→8 · ≤3→6 · else→4</div>
@@ -909,7 +916,7 @@ function TaskOverview({ year }) {
                           <div className="font-semibold text-[10px] mb-0.5">{MONTH_NAMES[i]} score: {det.score.toFixed(1)}</div>
                           <div>On-time: <b>{det.on_time_rate.toFixed(0)}%</b> → {det.s_ontime} ×0.35</div>
                           <div>Cycle: <b>{det.cycle_ratio != null ? det.cycle_ratio.toFixed(2) : "—"}</b> → {det.s_cycle} ×0.25</div>
-                          <div>Overdue: <b>{det.overdue}</b> → {det.s_overdue} ×0.25</div>
+                          <div>Overdue/Late: <b>{det.overdue}</b> → {det.s_overdue} ×0.25</div>
                           <div>Reopen: <b>{det.reopen != null ? det.reopen : "—"}</b> → {det.s_reopen} ×0.15{det.reopen == null ? <span className="text-gray-400"> (–)</span> : ""}</div>
                         </div>
                       )}
@@ -971,9 +978,12 @@ function TaskOverview({ year }) {
               <th className={thCls + " text-right"}>Avg Cycle (days)</th>
               <th className={thCls + " text-right"}>Avg Estimate</th>
               <th className={thCls + " text-right"}>Cycle/Est.</th>
-              <th className={thCls + " text-right"}>Overdue</th>
               <th className={thCls + " text-right cursor-help"}
-                  title="Missed deadlines that carry a Late Reason. Any reason excuses the miss; leaving it blank does not. Excluded from on-time rate and Overdue — shown so process bottlenecks stay visible. Hover a number for the per-reason split.">
+                  title="Every blown deadline, counted as one figure. Late = finished after the deadline. Overdue = still unfinished with the deadline gone. Misses carrying a Late Reason are not here — they sit in Excused.">
+                Overdue / Late ⓘ
+              </th>
+              <th className={thCls + " text-right cursor-help"}
+                  title="Missed deadlines that carry a Late Reason. Any reason excuses the miss; leaving it blank does not. Excluded from on-time rate and Overdue/Late — shown so process bottlenecks stay visible. Hover a number for the per-reason split.">
                 Excused ⓘ
               </th>
               <th className={thCls + " text-right cursor-help"} title={SCORE_TOOLTIP}>Score ⓘ</th>
@@ -1045,16 +1055,25 @@ function TaskOverview({ year }) {
                         </span>
                       ) : "—"}
                     </td>
-                    <td
-                      className={tdCls + " text-right" + (row?.overdue_count != null && !isAnnual ? " cursor-pointer" : "")}
-                      onClick={row?.overdue_count != null && !isAnnual ? () => setDrilldown({ picName: person.name, year, month, category: "overdue" }) : undefined}
-                    >
-                      {row?.overdue_count != null ? (
-                        <span className={(row.overdue_count === 0 ? "text-green-600" : row.overdue_count <= 2 ? "text-yellow-600" : "text-red-500") + (row.overdue_count > 0 ? " hover:underline" : "")}>
-                          {row.overdue_count}
-                        </span>
-                      ) : "—"}
-                    </td>
+                    {(() => {
+                      const missed = row ? missedCount(row) : null;
+                      const tip = row
+                        ? `${row.late_count ?? 0} late (finished after the deadline) + ${row.overdue_count ?? 0} overdue (still unfinished)`
+                        : undefined;
+                      return (
+                        <td
+                          className={tdCls + " text-right" + (missed != null && !isAnnual ? " cursor-pointer" : "")}
+                          title={tip}
+                          onClick={missed != null && !isAnnual ? () => setDrilldown({ picName: person.name, year, month, category: "missed" }) : undefined}
+                        >
+                          {missed != null ? (
+                            <span className={(missed === 0 ? "text-green-600" : missed <= 2 ? "text-yellow-600" : "text-red-500") + (missed > 0 ? " hover:underline" : "")}>
+                              {missed}
+                            </span>
+                          ) : "—"}
+                        </td>
+                      );
+                    })()}
                     {(() => {
                       const excused = row ? (row.late_excused_count ?? 0) + (row.overdue_excused_count ?? 0) : null;
                       const breakdown = Object.entries(row?.reason_counts ?? {})
@@ -1074,7 +1093,7 @@ function TaskOverview({ year }) {
                       );
                     })()}
                     <td className={tdCls + " text-right font-semibold cursor-help"}
-                      title={row ? `On-time: ${fmtNum(row.on_time_rate)}% ×0.35 | Cycle: ${fmtNum(row.cycle_ratio,2)}× ×0.25 | Overdue: ${row.overdue_count ?? 0} ×0.25 | Reopen: ${row.reopen_count ?? "—"} ×0.15` : SCORE_TOOLTIP}>
+                      title={row ? `On-time: ${fmtNum(row.on_time_rate)}% ×0.35 | Cycle: ${fmtNum(row.cycle_ratio,2)}× ×0.25 | Overdue/Late: ${missedCount(row)} ×0.25 | Reopen: ${row.reopen_count ?? "—"} ×0.15` : SCORE_TOOLTIP}>
                       {score ?? "—"}
                     </td>
                     <td className={tdCls}>
@@ -1090,7 +1109,7 @@ function TaskOverview({ year }) {
         </table>
       </div>
       <p className="text-[10px] text-gray-400">
-        Score = On-time rate ×0.35 + Cycle/Estimate ×0.25 + Overdue ×0.25 + Reopen ×0.15 (Reopen not yet tracked in Lark)
+        Score = On-time rate ×0.35 + Cycle/Estimate ×0.25 + Overdue/Late ×0.25 + Reopen ×0.15 (Reopen not yet tracked in Lark)
       </p>
       {drilldown && (
         <TaskDetailModal
