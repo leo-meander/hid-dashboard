@@ -263,6 +263,7 @@ def debug_lark():
     # (Cycle Time, On-time vs Original, ...) come back in a different shape
     # than hand-entered ones, and a mismatched parser reads them as empty.
     sampled_fields = [
+        "Date Created", "Deadline",
         "On-time vs Original", "On-time vs Current", "Cycle Time", "Estimated Days",
         "Days Late", "Late Reason", "Original Deadline", "Start date",
         "Complete date", "Extension Count", "Extension Reason", "Validation",
@@ -280,6 +281,20 @@ def debug_lark():
                 seen.append(r)
         raw_samples[fname] = {"filled": filled, "of": len(records), "samples": seen}
     result["raw_field_samples"] = raw_samples
+
+    # When open tasks with no deadline were created — decides whether they are
+    # legacy (pre-standardization) or a real gap someone should fill in.
+    from app.services.lark_service import _norm_status, _is_excluded_status, _parse_date
+    by_created_month: dict = {}
+    for rec in records:
+        if _is_excluded_status(_norm_status(rec.get("Status"))):
+            continue
+        if _norm_status(rec.get("Status")) == "completed" or _parse_date(rec.get("Deadline")):
+            continue
+        created = _parse_date(rec.get("Date Created"))
+        key = created.strftime("%Y-%m") if created else "unparseable"
+        by_created_month[key] = by_created_month.get(key, 0) + 1
+    result["no_deadline_by_created_month"] = dict(sorted(by_created_month.items()))
     result["on_time_field_samples"] = raw_samples.get("On-time vs Original", {}).get("samples", [])
 
     return {"success": True, "data": result, "error": None}
