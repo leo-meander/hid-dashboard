@@ -26,6 +26,55 @@ def _sha256(value: Optional[str]) -> Optional[str]:
     return hashlib.sha256(value.strip().lower().encode()).hexdigest()
 
 
+# Meta hashes its own copy of a user's details *after* normalizing them, so any
+# field we hash in a different shape misses by definition — a wrong separator is
+# as fatal as a wrong value. Lowercasing alone (what _sha256 does) is enough for
+# em and ph but not for the fields below.
+
+
+def _alnum(value: Optional[str]) -> Optional[str]:
+    """
+    Lowercase and drop everything that is not a letter or digit.
+
+    Covers ct, st and zp: Meta normalizes those to bare lowercase strings, so
+    "Ho Chi Minh" has to be hashed as "hochiminh" and "700 000" as "700000".
+
+    Accented letters are kept as-is rather than folded to ASCII. Cloudbeds gets
+    city and state from the OTA channels, which send plain English in practice,
+    so folding would only change the rare case — and would change it on a guess
+    about how Meta stores non-Latin place names.
+    """
+    if not value:
+        return None
+    cleaned = "".join(ch for ch in str(value).lower() if ch.isalnum())
+    return cleaned or None
+
+
+def _birthdate(raw: Optional[str]) -> Optional[str]:
+    """
+    Cloudbeds ISO birthdate ("1990-01-15") to Meta's YYYYMMDD ("19900115").
+
+    Returns None for anything that does not yield at least 8 digits, which also
+    covers the empty string Cloudbeds sends when a channel supplies no birthday.
+    """
+    if not raw:
+        return None
+    digits = "".join(ch for ch in str(raw) if ch.isdigit())
+    return digits[:8] if len(digits) >= 8 else None
+
+
+# Cloudbeds sends 'M', 'F' or the literal 'N/A' (see services/cloudbeds.py).
+# Anything outside this map — 'N/A' included — means no usable gender, and must
+# be left out rather than hashed into a junk identifier.
+_GENDERS = {"m": "m", "male": "m", "f": "f", "female": "f"}
+
+
+def _gender(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    return _GENDERS.get(str(raw).strip().lower())
+
+
 def _parse_event_time(
     date_created: Optional[str],
     tz_offset_hours: int = 8,
@@ -87,28 +136,34 @@ def send_purchase_event(
 
     phone = normalize_e164_digits(guest.get("guestPhone", ""), phone_country_code)
 
-    dob_raw = guest.get("guestBirthDate") or guest.get("guestBirthdate") or ""
-    dob = dob_raw.strip()[:10] if dob_raw.strip() else None
+    dob = _birthdate(guest.get("guestBirthDate") or guest.get("guestBirthdate"))
+    gender = _gender(guest.get("guestGender"))
+    city = _alnum(guest.get("guestCity"))
+    state = _alnum(guest.get("guestState"))
+    zip_code = _alnum(guest.get("guestZip"))
 
     user_data: dict = {}
     if email:
         user_data["em"] = _sha256(email)
     if phone:
         user_data["ph"] = _sha256(phone)
+    # fn and ln are left to _sha256's lowercase-and-trim. Meta's own SDK strips
+    # names down to a-z, which would mangle the Vietnamese and Chinese names
+    # that make up most of this data, so that is not applied here.
     if guest.get("guestFirstName"):
         user_data["fn"] = _sha256(guest["guestFirstName"])
     if guest.get("guestLastName"):
         user_data["ln"] = _sha256(guest["guestLastName"])
-    if guest.get("guestGender"):
-        user_data["ge"] = _sha256(guest["guestGender"])
+    if gender:
+        user_data["ge"] = _sha256(gender)
     if dob:
         user_data["db"] = _sha256(dob)
-    if guest.get("guestCity"):
-        user_data["ct"] = _sha256(guest["guestCity"])
-    if guest.get("guestState"):
-        user_data["st"] = _sha256(guest["guestState"])
-    if guest.get("guestZip"):
-        user_data["zp"] = _sha256(guest["guestZip"])
+    if city:
+        user_data["ct"] = _sha256(city)
+    if state:
+        user_data["st"] = _sha256(state)
+    if zip_code:
+        user_data["zp"] = _sha256(zip_code)
     if guest.get("guestCountry"):
         country = guest["guestCountry"].strip()
         if len(country) == 2:
