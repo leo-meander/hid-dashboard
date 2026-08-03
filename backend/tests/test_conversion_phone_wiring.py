@@ -90,6 +90,51 @@ class TestMetaPhoneNormalization:
         assert user_data["em"] == _h("guest@example.com")
 
 
+class TestOtaAliasEmailIsDropped:
+    """OTA relay addresses are unmatchable — send the phone, drop the email."""
+
+    def test_meta_omits_alias_email_but_keeps_phone(self):
+        client = _client({"events_received": 1})
+        with patch("httpx.Client", return_value=client):
+            result = send_purchase_event(
+                _reservation(email="i5x9@guest.ctrip.com"),
+                pixel_id="PX",
+                access_token="tok",
+                phone_country_code="84",
+            )
+
+        user_data = client.post.call_args.kwargs["json"]["data"][0]["user_data"]
+        assert result["success"] is True
+        assert "em" not in user_data
+        assert user_data["ph"] == _h("84912345678")
+
+    def test_tiktok_omits_alias_email_but_keeps_phone(self):
+        client = _client({"code": 0})
+        with patch("httpx.Client", return_value=client):
+            result = send_complete_payment_event(
+                _reservation(email="i5x9@guest.trip.com"),
+                access_token="tok",
+                event_source_id="ES",
+            )
+
+        user = client.post.call_args.kwargs["json"]["data"][0]["user"]
+        assert result["success"] is True
+        assert "email" not in user
+        assert user["phone_number"] == [_h("84912345678")]
+
+    def test_tiktok_skips_when_alias_email_is_the_only_identifier(self):
+        client = _client({"code": 0})
+        with patch("httpx.Client", return_value=client):
+            result = send_complete_payment_event(
+                _reservation(email="i5x9@guest.ctrip.com", phone=""),
+                access_token="tok",
+                event_source_id="ES",
+            )
+
+        assert result == {"success": False, "error": "no_user_data"}
+        client.post.assert_not_called()
+
+
 class TestTikTokPhoneNormalization:
     def test_local_number_gets_vietnam_country_code(self):
         client = _client({"code": 0})

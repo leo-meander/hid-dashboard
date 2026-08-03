@@ -11,6 +11,7 @@ from typing import Optional
 
 import httpx
 
+from app.services.email_utils import usable_email
 from app.services.phone_utils import normalize_e164_digits
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,9 @@ def send_complete_payment_event(
     Send a CompletePayment offline event to TikTok Events API for the given reservation.
     Returns {"success": bool, "status_code": int, "response": dict}.
     """
-    email = (reservation.get("guestEmail") or "").strip()
+    # None for OTA alias addresses and Cloudbeds "N/A" placeholders — Saigon
+    # sells heavily through Ctrip, so this is most of the branch's volume.
+    email = usable_email(reservation.get("guestEmail"))
     guest_list = reservation.get("guestList") or {}
     guest = _first_guest(guest_list)
     phone = normalize_e164_digits(guest.get("guestPhone", ""), SAIGON_PHONE_COUNTRY_CODE)

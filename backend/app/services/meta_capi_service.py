@@ -11,6 +11,7 @@ from typing import Optional
 
 import httpx
 
+from app.services.email_utils import usable_email
 from app.services.phone_utils import normalize_e164_digits
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,10 @@ def send_purchase_event(
     Send a Purchase event to Meta CAPI for the given reservation.
     Returns {"success": bool, "status_code": int, "response": dict}.
     """
-    email = reservation.get("guestEmail", "").strip()
+    # None for OTA alias addresses and Cloudbeds "N/A" placeholders — hashing
+    # those only drags the reported match quality down. The phone carries the
+    # match for OTA bookings.
+    email = usable_email(reservation.get("guestEmail"))
     guest_list = reservation.get("guestList") or {}
     guest = _first_guest(guest_list)
 

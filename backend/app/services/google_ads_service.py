@@ -27,6 +27,7 @@ from typing import Optional
 
 import httpx
 
+from app.services.email_utils import usable_email
 from app.services.phone_utils import normalize_e164
 
 logger = logging.getLogger(__name__)
@@ -173,12 +174,15 @@ def upload_offline_conversion(
 
     Returns {"success": bool, "case": str, "response": dict}.
     """
-    email = (reservation.get("guestEmail") or "").strip()
+    # Phone first: OTA channels hand out per-booking alias addresses that can
+    # never match, so an unusable email must not pull the reservation into the
+    # "both identifiers" action when the phone is the only real identifier.
+    email = usable_email(reservation.get("guestEmail"))
     guest_list = reservation.get("guestList") or {}
     guest = _first_guest(guest_list)
     phone = normalize_e164(guest.get("guestPhone", ""), phone_country_code)
 
-    email_invalid = not email or "N/A" in email.upper()
+    email_invalid = not email
     phone_present = bool(phone)
 
     if email_invalid and not phone_present:

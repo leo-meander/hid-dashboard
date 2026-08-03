@@ -118,6 +118,30 @@ class TestUploadOfflineConversion:
         assert result["case"] == "phone_only"
         assert payload["destinations"][0]["productDestinationId"] == "1111"
 
+    def test_ota_alias_email_routes_to_phone_only(self):
+        """A Ctrip alias address must not pull the booking into the both action."""
+        client = self._post()
+        with patch("app.services.google_ads_service._get_access_token", return_value="tok"), \
+             patch("httpx.Client", return_value=client):
+            result = upload_offline_conversion(
+                self._reservation(email="i5x9@guest.ctrip.com"), **self.BASE_KWARGS
+            )
+
+        payload = client.post.call_args.kwargs["json"]
+        assert result["case"] == "phone_only"
+        assert payload["destinations"][0]["productDestinationId"] == "1111"
+        assert payload["events"][0]["userData"]["userIdentifiers"] == [
+            {"phoneNumber": _h("+886912345678")}
+        ]
+
+    def test_ota_alias_email_without_phone_skips_entirely(self):
+        with patch("app.services.google_ads_service._get_access_token") as token:
+            result = upload_offline_conversion(
+                self._reservation(email="i5x9@guest.trip.com", phone=""), **self.BASE_KWARGS
+            )
+        assert result == {"success": False, "case": "skipped_no_identifiers"}
+        token.assert_not_called()
+
     def test_phone_only_uses_dedicated_action_when_set(self):
         client = self._post()
         kwargs = {**self.BASE_KWARGS, "conversion_action_phone": "3333"}
