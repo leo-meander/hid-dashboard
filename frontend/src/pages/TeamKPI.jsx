@@ -512,16 +512,11 @@ const CATEGORY_LABELS = {
   no_deadline: "Open tasks with no deadline",
 };
 
-// Which Late Reason values are excused is decided by the backend — this is
-// display only. Keep the labels in sync with the Lark single-select options.
-const REASON_LABELS = {
-  "my own delay": "My own delay",
-  "waiting on someone else": "Waiting on someone else",
-  "waiting for approval": "Waiting for approval",
-  "scope/priority changed": "Scope / priority changed",
-};
-
-const prettyReason = (key) => REASON_LABELS[key] ?? key;
+// Reason keys arrive lower-cased and slash-collapsed from the backend. Any
+// Late Reason excuses a miss, so options can be added in Lark without touching
+// this — just title-case whatever comes back.
+const prettyReason = (key) =>
+  String(key).replace(/\//g, " / ").replace(/^./, (c) => c.toUpperCase());
 
 function TaskDetailModal({ drilldown, tasks, isLoading, onClose }) {
   useEffect(() => {
@@ -927,7 +922,7 @@ function TaskOverview({ year }) {
               <th className={thCls + " text-right"}>Cycle/Est.</th>
               <th className={thCls + " text-right"}>Overdue</th>
               <th className={thCls + " text-right cursor-help"}
-                  title="Missed deadlines excused by their Late Reason (Waiting for approval, Scope / priority changed). Excluded from on-time rate and Overdue — shown so process bottlenecks stay visible.">
+                  title="Missed deadlines that carry a Late Reason. Any reason excuses the miss; leaving it blank does not. Excluded from on-time rate and Overdue — shown so process bottlenecks stay visible. Hover a number for the per-reason split.">
                 Excused ⓘ
               </th>
               <th className={thCls + " text-right cursor-help"} title={SCORE_TOOLTIP}>Score ⓘ</th>

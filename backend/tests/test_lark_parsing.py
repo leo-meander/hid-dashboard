@@ -79,25 +79,30 @@ class TestExtractText:
 
 
 class TestLateReason:
-    def test_the_excused_options(self):
-        assert _is_excused(_norm_reason("Waiting for approval"))
-        assert _is_excused(_norm_reason("Scope / priority changed"))
-        assert _is_excused(_norm_reason("Tool / platform issue"))
+    def test_any_reason_excuses_the_miss(self):
+        for option in ("Waiting for approval", "Scope / priority changed",
+                       "Tool / platform issue"):
+            assert _is_excused(_norm_reason(option)), option
 
-    def test_the_counted_options(self):
-        assert not _is_excused(_norm_reason("My own delay"))
-        assert not _is_excused(_norm_reason("Waiting on someone else"))
+    def test_an_option_added_in_lark_needs_no_code_change(self):
+        assert _is_excused(_norm_reason("Sick / leave"))
+        assert _is_excused(_norm_reason("Waiting on external party"))
 
-    def test_spacing_and_case_variants_still_match(self):
-        for variant in ("scope/priority changed", "Scope/Priority Changed",
-                        "Scope  /  priority   changed"):
-            assert _is_excused(_norm_reason(variant)), variant
-
-    def test_unknown_or_empty_is_never_excused(self):
-        # A renamed option must not silently forgive a whole month
+    def test_no_reason_means_the_miss_counts(self):
+        # Silence is never forgiveness
         assert not _is_excused(_norm_reason(""))
         assert not _is_excused(_norm_reason(None))
-        assert not _is_excused(_norm_reason("Blocked – tool or leave"))
+        assert not _is_excused(_norm_reason("   "))
+
+    def test_reads_the_single_select_shape(self):
+        raw = {"type": 1, "value": [{"text": "Waiting for approval", "type": "text"}]}
+        assert _is_excused(_norm_reason(raw))
+
+    def test_reason_text_is_normalized_for_grouping(self):
+        # Feeds the per-reason breakdown, so variants must collapse to one key
+        assert _norm_reason("Scope  /  Priority   Changed") == "scope/priority changed"
+        assert _norm_reason({"type": 1, "value": [{"text": "Tool / platform issue"}]}) \
+            == "tool/platform issue"
 
 
 class TestExcludedStatus:
@@ -118,10 +123,6 @@ class TestExcludedStatus:
     def test_reads_the_single_select_shape(self):
         raw = {"type": 1, "value": [{"text": "Regular task", "type": "text"}]}
         assert _is_excluded_status(_norm_status(raw))
-
-    def test_reads_the_single_select_shape(self):
-        raw = {"type": 1, "value": [{"text": "Waiting for approval", "type": "text"}]}
-        assert _is_excused(_norm_reason(raw))
 
 
 class TestParseDate:

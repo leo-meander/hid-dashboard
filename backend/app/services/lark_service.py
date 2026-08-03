@@ -239,15 +239,11 @@ def _extract_text(raw) -> str:
 
 
 # ── Late Reason ───────────────────────────────────────────────────────────────
-# Single-select on the Lark task table. Which reasons excuse a miss is decided
-# HERE, never in Lark — the base has no field-level locking on the Standard
-# plan, so an "excused" flag living in Lark could be set by the person being
-# measured. Staff pick a reason; this table decides what it costs them.
-_LATE_REASON_EXCUSED = {
-    "waiting for approval",
-    "scope/priority changed",
-    "tool/platform issue",
-}
+# Single-select on the Lark task table. Every option it offers is a reason
+# outside the assignee's control, so picking any of them excuses the miss —
+# the gate is whether a reason was given at all, not which one. Keeping the
+# judgement out of the option values means adding an option in Lark needs no
+# code change here.
 
 # Statuses that sit outside the KPI entirely: backlog and standing work, which
 # legitimately carry no deadline. Dropped from Task Overview before anything is
@@ -278,12 +274,12 @@ def _is_excluded_status(status_norm: str) -> bool:
 
 
 def _is_excused(reason_norm: str) -> bool:
-    """True when this reason should not count against the assignee.
+    """True when a miss should not count against the assignee.
 
-    Unknown / empty reasons are NOT excused — a miss costs by default, so a
-    renamed or newly added option can never silently forgive a whole month.
+    Any Late Reason excuses it; leaving the field blank does not. A miss costs
+    by default, so silence is never forgiveness.
     """
-    return reason_norm in _LATE_REASON_EXCUSED
+    return bool(reason_norm)
 
 
 def _lark_record_url(record_id: str) -> str:
