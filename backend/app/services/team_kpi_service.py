@@ -46,7 +46,8 @@ KPI_DEFS: dict[str, list[dict]] = {
          "computed_note_pct": "= {pct}% of Posted target (KOL Engine)"},
     ],
     "paid_ads": [
-        {"key": "ads_material",    "label": "Variation Ads Material", "unit": "count",  "org_wide": False, "higher_is_better": True},
+        # Temporarily hidden (2026-08-03) — remove "hidden" to bring it back.
+        {"key": "ads_material",    "label": "Variation Ads Material", "unit": "count",  "org_wide": False, "higher_is_better": True, "hidden": True},
         {"key": "roas",            "label": "ROAS",                   "unit": "×",      "org_wide": False, "higher_is_better": True,  "decimals": 2},
         {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True, "computed_target": "spend_x_roas", "computed_note": "= spend × ROAS target"},
     ],
@@ -67,6 +68,15 @@ KPI_DEFS: dict[str, list[dict]] = {
         {"key": "budget_utilisation",   "label": "Budget Utilisation",      "unit": "%",   "org_wide": False,"higher_is_better": False, "decimals": 1, "is_pct": True},
     ],
 }
+
+def visible_kpi_defs(role_key: str) -> list[dict]:
+    """KPI defs for a role, minus any marked hidden (temporarily retired KPIs).
+
+    Targets/actuals for hidden KPIs stay in the DB untouched — dropping the
+    "hidden" flag in KPI_DEFS brings the row back with its history intact.
+    """
+    return [d for d in KPI_DEFS.get(role_key, []) if not d.get("hidden")]
+
 
 ROLE_META = {
     "kol":       {"label": "KOL",       "person": "Mel",   "emoji": "🤝", "auto_actuals": True},
@@ -587,7 +597,7 @@ def build_monthly_summary(
     today = date.today()
     cur_month = today.month if today.year == year else (12 if today.year > year else 0)
 
-    defs = KPI_DEFS.get(role_key, [])
+    defs = visible_kpi_defs(role_key)
     role_m = ROLE_META.get(role_key, {})
     auto = role_m.get("auto_actuals", False)
 
@@ -674,11 +684,13 @@ def build_monthly_summary(
         actuals_yearly = get_kol_actuals_yearly_db(db, year)
     elif auto and role_key == "paid_ads":
         actuals_yearly = get_paid_ads_actuals_yearly(db, year)
-        try:
-            from app.services.lark_service import get_ads_material_yearly
-            lark_ads_material = get_ads_material_yearly(year)
-        except Exception as exc:
-            log.warning("lark ads_material unavailable: %s", exc)
+        # Skip the Lark round-trip entirely while ads_material is hidden
+        if any(d["key"] == "ads_material" for d in defs):
+            try:
+                from app.services.lark_service import get_ads_material_yearly
+                lark_ads_material = get_ads_material_yearly(year)
+            except Exception as exc:
+                log.warning("lark ads_material unavailable: %s", exc)
     elif auto and role_key == "designer":
         from app.services.lark_service import get_designer_actuals_yearly
         actuals_yearly = get_designer_actuals_yearly(year)

@@ -20,9 +20,9 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.team_kpi import TeamKPITarget
 from app.services.team_kpi_service import (
-    KPI_DEFS,
     ROLE_META,
     build_monthly_summary,
+    visible_kpi_defs,
 )
 
 log = logging.getLogger(__name__)
@@ -337,7 +337,7 @@ def get_roles():
             "person": meta["person"],
             "emoji": meta["emoji"],
             "auto_actuals": meta["auto_actuals"],
-            "kpi_defs": KPI_DEFS.get(role_key, []),
+            "kpi_defs": visible_kpi_defs(role_key),
         })
     return {"success": True, "data": roles, "error": None}
 
