@@ -107,18 +107,19 @@ class TestLateReason:
 
 
 class TestExcludedStatus:
-    def test_backlog_and_standing_work_are_out(self):
+    def test_backlog_standing_and_blocked_work_are_out(self):
         assert _is_excluded_status(_norm_status("Upcoming Tasks"))
         assert _is_excluded_status(_norm_status("Regular task"))
+        assert _is_excluded_status(_norm_status("Blocked task"))
 
     def test_case_and_spacing_variants(self):
         assert _is_excluded_status(_norm_status("  regular   task "))
         assert _is_excluded_status(_norm_status("UPCOMING TASKS"))
+        assert _is_excluded_status(_norm_status("blocked tasks"))
 
     def test_scored_statuses_stay_in(self):
-        for s in ("Completed", "Ongoing", "Not started", "Blocked",
-                  "Review", "Do Today", "Do This Week", "Do this Month",
-                  "Suspended", ""):
+        # The rest of the live Status options, which are all scored
+        for s in ("Completed", "Ongoing", "Not started", "Review", "Do Today", ""):
             assert not _is_excluded_status(_norm_status(s)), s
 
     def test_reads_the_single_select_shape(self):

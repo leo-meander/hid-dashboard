@@ -245,15 +245,18 @@ def _extract_text(raw) -> str:
 # judgement out of the option values means adding an option in Lark needs no
 # code change here.
 
-# Statuses that sit outside the KPI entirely: backlog and standing work, which
-# legitimately carry no deadline. Dropped from Task Overview before anything is
-# counted — no totals, no on-time rate, no overdue, no missing-deadline chase.
-# Every other status without a deadline stays in no_deadline_count.
+# Statuses that sit outside the KPI entirely: backlog, standing work, and work
+# that cannot proceed. Dropped from Task Overview before anything is counted —
+# no totals, no on-time rate, no overdue, no missing-deadline chase. Every
+# other status without a deadline stays in no_deadline_count.
+# Singular/plural variants are listed because the Lark options get renamed.
 _EXCLUDED_STATUSES = {
     "upcoming tasks",
     "upcoming task",
     "regular task",
     "regular tasks",
+    "blocked task",
+    "blocked tasks",
 }
 
 
