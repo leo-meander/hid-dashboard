@@ -282,9 +282,21 @@ def debug_lark():
         raw_samples[fname] = {"filled": filled, "of": len(records), "samples": seen}
     result["raw_field_samples"] = raw_samples
 
+    from app.services.lark_service import _norm_status, _is_excluded_status, _parse_date
+
+    # How many records carry each status, and which ones the KPI drops. Tells
+    # a rule that changed nothing apart from a rule that isn't live yet.
+    status_counts: dict = {}
+    for rec in records:
+        st = _norm_status(rec.get("Status")) or "(empty)"
+        status_counts[st] = status_counts.get(st, 0) + 1
+    result["status_counts"] = dict(sorted(status_counts.items(), key=lambda kv: -kv[1]))
+    result["statuses_excluded_from_kpi"] = sorted(
+        s for s in status_counts if _is_excluded_status(s)
+    )
+
     # When open tasks with no deadline were created — decides whether they are
     # legacy (pre-standardization) or a real gap someone should fill in.
-    from app.services.lark_service import _norm_status, _is_excluded_status, _parse_date
     by_created_month: dict = {}
     for rec in records:
         if _is_excluded_status(_norm_status(rec.get("Status"))):
