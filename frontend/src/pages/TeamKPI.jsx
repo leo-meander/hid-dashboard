@@ -829,7 +829,7 @@ function TaskOverview({ year }) {
               ? `${d.excluded} task(s) hidden: status Upcoming Tasks / Regular task, outside the KPI.`
               : null,
             d.noDeadline
-              ? `${d.noDeadline} open task(s) have no deadline, so they fall in no month — see the red badge.`
+              ? `${d.noDeadline} open task(s) created since July have no deadline, so they fall in no month — see the red badge.`
               : null,
           ].filter(Boolean).join("\n");
 
@@ -862,7 +862,7 @@ function TaskOverview({ year }) {
                 <button
                   type="button"
                   onClick={() => setDrilldown({ picName: d.name, year, month: null, category: "no_deadline" })}
-                  title={`${d.noDeadline} open task(s) have no deadline set — click to list them. Upcoming Tasks and Regular task are excluded.`}
+                  title={`${d.noDeadline} open task(s) have no deadline set — click to list them. Only counts tasks created since July, when the base was standardized. Upcoming Tasks and Regular task are excluded.`}
                   className="flex items-center gap-1 px-2 py-0.5 bg-red-50 border border-red-200 rounded-full text-[10px] text-red-600 font-medium cursor-pointer hover:bg-red-100 hover:underline">
                   ⚠ {d.noDeadline} no deadline
                 </button>

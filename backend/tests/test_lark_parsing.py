@@ -7,6 +7,7 @@ every formula field look empty, which is what these tests pin down.
 from datetime import date
 
 from app.services.lark_service import (
+    _created_in_scope,
     _extract_number,
     _extract_text,
     _is_excluded_status,
@@ -123,6 +124,32 @@ class TestExcludedStatus:
     def test_reads_the_single_select_shape(self):
         raw = {"type": 1, "value": [{"text": "Regular task", "type": "text"}]}
         assert _is_excluded_status(_norm_status(raw))
+
+
+class TestCreatedInScope:
+    """Tasks with no deadline are only chased from the July 2026 cutoff on."""
+
+    def test_created_on_or_after_the_cutoff_month(self):
+        assert _created_in_scope("2026-07-01", 2026)
+        assert _created_in_scope("2026-07-20", 2026)
+        assert _created_in_scope("2026-12-31", 2026)
+
+    def test_created_before_the_cutoff_is_out(self):
+        assert not _created_in_scope("2026-06-30", 2026)
+        assert not _created_in_scope("2026-01-15", 2026)
+
+    def test_an_earlier_year_is_out(self):
+        assert not _created_in_scope("2025-11-01", 2026)
+
+    def test_unreadable_creation_date_stays_visible(self):
+        # Hiding a real gap is worse than surfacing a stale one
+        assert _created_in_scope(None, 2026)
+        assert _created_in_scope("", 2026)
+        assert _created_in_scope("not a date", 2026)
+
+    def test_reads_a_millisecond_timestamp(self):
+        assert _created_in_scope(1782838800000, 2026)       # 2026-07-01 ICT
+        assert not _created_in_scope(1780160400000, 2026)   # 2026-05-31 ICT
 
 
 class TestParseDate:

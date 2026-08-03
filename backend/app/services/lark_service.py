@@ -273,6 +273,22 @@ def _is_excluded_status(status_norm: str) -> bool:
     return status_norm in _EXCLUDED_STATUSES
 
 
+def _created_in_scope(raw, year: int) -> bool:
+    """True when a record was created inside the tracked window.
+
+    Task data is only standardized from _LARK_START_MONTH onward, so anything
+    created before that is legacy and not worth chasing. Used for tasks with no
+    deadline, which have no month of their own to filter on.
+
+    An unreadable creation date counts as in scope — surfacing a stale row is
+    the cheaper mistake compared to hiding a real one.
+    """
+    created = _parse_date(raw)
+    if created is None:
+        return True
+    return (created.year, created.month) >= (year, _LARK_START_MONTH)
+
+
 def _is_excused(reason_norm: str) -> bool:
     """True when a miss should not count against the assignee.
 
@@ -827,8 +843,10 @@ def get_task_overview_yearly(year: int) -> dict:
         # Deadline-based month grouping
         deadline = _parse_date(rec.get("Deadline"))
         if not deadline:
-            # No deadline set — count as missing, not in open workload
-            if not is_completed:
+            # No deadline set — flag as missing, but only for tasks created
+            # since the standardization cutoff. Older ones have no month to
+            # sit in and nobody is going back to fix them.
+            if not is_completed and _created_in_scope(rec.get("Date Created"), year):
                 no_deadline[pic_id] += 1
             continue
 
@@ -1014,8 +1032,11 @@ def get_task_detail(pic_name: str, year: int, month: Optional[int], category: st
 
         deadline = _parse_date(rec.get("Deadline"))
         if category == "no_deadline":
-            # Mirrors no_deadline_count: open tasks carrying no deadline at all.
+            # Mirrors no_deadline_count: open tasks carrying no deadline at
+            # all, created since the standardization cutoff.
             if deadline or is_completed:
+                continue
+            if not _created_in_scope(rec.get("Date Created"), year):
                 continue
         elif not deadline or deadline.year != year or deadline.month != month:
             continue
