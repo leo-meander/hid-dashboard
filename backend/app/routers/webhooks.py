@@ -16,6 +16,7 @@ Trigger modes:
 import hashlib
 import hmac
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -36,6 +37,8 @@ router = APIRouter()
 # for several properties, so it left scheduled polls without usable results.
 CLOUDBEDS_API_BASE = "https://hotels.cloudbeds.com/api/v1.2"
 WEBSITE_SOURCES = {"website", "booking engine"}
+RESERVATION_LIST_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
+RESERVATION_LIST_RETRY_DELAYS = (2, 5)
 
 
 def _poll_branches() -> list[tuple[str, str, str]]:
@@ -250,6 +253,48 @@ def _process_reservation(property_id: str, reservation_id: str) -> None:
         _fan_out(property_id, reservation_id, reservation)
 
 
+def _get_reservation_list(
+    property_id: str,
+    api_key: str,
+    date_from: str,
+    date_to: str,
+) -> tuple[httpx.Response, dict, int]:
+    """Fetch a small reservation list, retrying transient Cloudbeds failures.
+
+    The caller only needs reservation IDs, then fetches each new reservation in
+    sequence.  Deliberately omit ``includeGuestList`` here: it makes the list
+    response much larger without being used by the poller.
+    """
+    for attempt, delay in enumerate((*RESERVATION_LIST_RETRY_DELAYS, None), start=1):
+        try:
+            with httpx.Client(timeout=RESERVATION_LIST_TIMEOUT) as client:
+                response = client.get(
+                    f"{CLOUDBEDS_API_BASE}/getReservations",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    params={
+                        "propertyID": property_id,
+                        "dateCreatedFrom": date_from,
+                        "dateCreatedTo": date_to,
+                        "pageSize": 50,
+                    },
+                )
+            response.raise_for_status()
+            return response, response.json(), attempt
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            if delay is None:
+                raise
+            logger.warning(
+                "Cloudbeds list attempt %d failed property=%s; retrying in %ss: %s",
+                attempt,
+                property_id,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+
+    raise RuntimeError("unreachable")
+
+
 # ── Polling job (called by APScheduler every 10 min) ─────────────────────────
 
 def poll_new_reservations() -> None:
@@ -274,41 +319,29 @@ def poll_new_reservations() -> None:
         if not property_id or not api_key:
             continue
         try:
-            with httpx.Client(timeout=20) as client:
-                resp = client.get(
-                    f"{CLOUDBEDS_API_BASE}/getReservations",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    params={
-                        "propertyID": property_id,
-                        "dateCreatedFrom": date_from,
-                        "dateCreatedTo": date_to,
-                        "includeGuestList": "true",
-                        "pageSize": 50,
-                    },
-                )
-                body = resp.json()
-                if not body.get("success"):
-                    logger.warning("getReservations failed property=%s: %s", property_id, body.get("message"))
+            _, body, _ = _get_reservation_list(property_id, api_key, date_from, date_to)
+            if not body.get("success"):
+                logger.warning("getReservations failed property=%s: %s", property_id, body.get("message"))
+                continue
+
+            reservations = body.get("data") or []
+            if isinstance(reservations, dict):
+                reservations = list(reservations.values())
+
+            new_count = 0
+            for res in reservations:
+                rid = str(res.get("reservationID", ""))
+                if not rid or _mark_seen(rid):
                     continue
+                full = _fetch_full_reservation(property_id, rid)
+                if not full:
+                    continue
+                new_count += 1
+                logger.info("Poll: new reservation=%s property=%s", rid, property_id)
+                _fan_out(property_id, rid, full)
 
-                reservations = body.get("data") or []
-                if isinstance(reservations, dict):
-                    reservations = list(reservations.values())
-
-                new_count = 0
-                for res in reservations:
-                    rid = str(res.get("reservationID", ""))
-                    if not rid or _mark_seen(rid):
-                        continue
-                    full = _fetch_full_reservation(property_id, rid)
-                    if not full:
-                        continue
-                    new_count += 1
-                    logger.info("Poll: new reservation=%s property=%s", rid, property_id)
-                    _fan_out(property_id, rid, full)
-
-                if new_count:
-                    logger.info("Poll property=%s: processed %d new reservations", property_id, new_count)
+            if new_count:
+                logger.info("Poll property=%s: processed %d new reservations", property_id, new_count)
 
         except Exception as e:
             logger.error("Poll error property=%s: %s", property_id, e)
@@ -428,24 +461,11 @@ async def poll_diagnostic(
             branches.append(entry)
             continue
 
-        # The poller talks v1.3; the rest of the app talks v1.2. If a property's
-        # credentials are only authorized for one of them, the split shows here.
+        # Diagnose exactly the same Cloudbeds v1.2 request the poller uses.
         entry["versions"] = {}
-        for version in ("v1.3", "v1.2"):
+        for version in ("v1.2",):
             try:
-                with httpx.Client(timeout=20) as client:
-                    resp = client.get(
-                        f"https://hotels.cloudbeds.com/api/{version}/getReservations",
-                        headers={"Authorization": f"Bearer {api_key}"},
-                        params={
-                            "propertyID": property_id,
-                            "dateCreatedFrom": date_from,
-                            "dateCreatedTo": date_to,
-                            "includeGuestList": "true",
-                            "pageSize": 50,
-                        },
-                    )
-                body = resp.json()
+                resp, body, attempts = _get_reservation_list(property_id, api_key, date_from, date_to)
                 reservations = body.get("data") or []
                 if isinstance(reservations, dict):
                     reservations = list(reservations.values())
@@ -455,6 +475,7 @@ async def poll_diagnostic(
                     "status_code": resp.status_code,
                     "api_success": body.get("success"),
                     "message": body.get("message"),
+                    "attempts": attempts,
                     "returned": len(rids),
                     # A window full of already-processed reservations produces no
                     # new rows either — same blank monitor, different cause.
@@ -507,33 +528,21 @@ def _poll_with_window(minutes: int) -> None:
         if not property_id or not api_key:
             continue
         try:
-            with httpx.Client(timeout=20) as client:
-                resp = client.get(
-                    f"{CLOUDBEDS_API_BASE}/getReservations",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    params={
-                        "propertyID": property_id,
-                        "dateCreatedFrom": date_from,
-                        "dateCreatedTo": date_to,
-                        "includeGuestList": "true",
-                        "pageSize": 50,
-                    },
-                )
-                body = resp.json()
-                if not body.get("success"):
-                    logger.warning("poll-now getReservations failed property=%s: %s", property_id, body.get("message"))
+            _, body, _ = _get_reservation_list(property_id, api_key, date_from, date_to)
+            if not body.get("success"):
+                logger.warning("poll-now getReservations failed property=%s: %s", property_id, body.get("message"))
+                continue
+            reservations = body.get("data") or []
+            if isinstance(reservations, dict):
+                reservations = list(reservations.values())
+            for res in reservations:
+                rid = str(res.get("reservationID", ""))
+                if not rid:
                     continue
-                reservations = body.get("data") or []
-                if isinstance(reservations, dict):
-                    reservations = list(reservations.values())
-                for res in reservations:
-                    rid = str(res.get("reservationID", ""))
-                    if not rid:
-                        continue
-                    full = _fetch_full_reservation(property_id, rid)
-                    if not full:
-                        continue
-                    logger.info("poll-now: processing reservation=%s property=%s", rid, property_id)
-                    _fan_out(property_id, rid, full)
+                full = _fetch_full_reservation(property_id, rid)
+                if not full:
+                    continue
+                logger.info("poll-now: processing reservation=%s property=%s", rid, property_id)
+                _fan_out(property_id, rid, full)
         except Exception as e:
             logger.error("poll-now error property=%s: %s", property_id, e)
