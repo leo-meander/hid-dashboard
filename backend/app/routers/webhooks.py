@@ -35,6 +35,17 @@ router = APIRouter()
 CLOUDBEDS_API_BASE = "https://hotels.cloudbeds.com/api/v1.3"
 WEBSITE_SOURCES = {"website", "booking engine"}
 
+
+def _poll_branches() -> list[tuple[str, str, str]]:
+    """(branch, property_id, api_key) for every branch the poller covers."""
+    return [
+        ("saigon", settings.CB_PROPERTY_ID_SAIGON, settings.CB_API_KEY_SAIGON),
+        ("taipei", settings.CB_PROPERTY_ID_TAIPEI, settings.CB_API_KEY_TAIPEI),
+        ("1948", settings.CB_PROPERTY_ID_1948, settings.CB_API_KEY_1948),
+        ("oani", settings.CB_PROPERTY_ID_OANI, settings.CB_API_KEY_OANI),
+        ("osaka", settings.CB_PROPERTY_ID_OSAKA, settings.CB_API_KEY_OSAKA),
+    ]
+
 def _mark_seen(reservation_id: str) -> bool:
     """Return True if already seen (duplicate). Otherwise mark and return False.
 
@@ -368,6 +379,99 @@ def _mask_email(email: str) -> str:
         return email
     local, domain = email.split("@", 1)
     return local[:2] + "***@" + domain
+
+
+@router.get("/admin/poll-diagnostic")
+async def poll_diagnostic(
+    minutes: int = 60,
+    _admin=Depends(require_admin),
+) -> dict:
+    """Report why the poller is or isn't producing events, per branch.
+
+    `poll_new_reservations` swallows every failure into a log line and stays
+    silent when a window is simply empty, so from the monitor a dead API key, a
+    rejected API version and a quiet hour all look identical: no rows. This runs
+    the same getReservations request per branch and returns what actually came
+    back. It fans nothing out and writes nothing — safe to run any time.
+    """
+    from app.scheduler import scheduler
+
+    now_utc = datetime.now(timezone.utc)
+    from_dt = now_utc - timedelta(minutes=minutes)
+    date_from = from_dt.strftime("%Y-%m-%d %H:%M:%S")
+    date_to = now_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Is APScheduler even alive? If the job is missing or has no next run, the
+    # poll has not been firing at all and no per-branch result below matters.
+    job = scheduler.get_job("cloudbeds_reservation_poll")
+    scheduler_state = {
+        "running": scheduler.running,
+        "poll_job_registered": job is not None,
+        "poll_job_next_run": job.next_run_time.isoformat() if job and job.next_run_time else None,
+    }
+
+    branches = []
+    for branch, property_id, api_key in _poll_branches():
+        entry = {
+            "branch": branch,
+            "property_id": property_id or None,
+            # Never echo the key itself — presence and length are enough to tell
+            # "missing" apart from "present but rejected".
+            "api_key_present": bool(api_key),
+            "api_key_length": len(api_key) if api_key else 0,
+        }
+        if not property_id or not api_key:
+            # The poller's silent `continue` — the case that leaves no trace.
+            entry["skipped"] = "missing property_id or api_key"
+            branches.append(entry)
+            continue
+
+        # The poller talks v1.3; the rest of the app talks v1.2. If a property's
+        # credentials are only authorized for one of them, the split shows here.
+        entry["versions"] = {}
+        for version in ("v1.3", "v1.2"):
+            try:
+                with httpx.Client(timeout=20) as client:
+                    resp = client.get(
+                        f"https://hotels.cloudbeds.com/api/{version}/getReservations",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        params={
+                            "propertyID": property_id,
+                            "dateCreatedFrom": date_from,
+                            "dateCreatedTo": date_to,
+                            "includeGuestList": "true",
+                            "pageSize": 50,
+                        },
+                    )
+                body = resp.json()
+                reservations = body.get("data") or []
+                if isinstance(reservations, dict):
+                    reservations = list(reservations.values())
+                rids = [str(r.get("reservationID", "")) for r in reservations]
+                rids = [r for r in rids if r]
+                entry["versions"][version] = {
+                    "status_code": resp.status_code,
+                    "api_success": body.get("success"),
+                    "message": body.get("message"),
+                    "returned": len(rids),
+                    # A window full of already-processed reservations produces no
+                    # new rows either — same blank monitor, different cause.
+                    "already_seen": sum(1 for r in rids if webhook_log.has_seen(r)),
+                    "sample_ids": rids[:5],
+                }
+            except Exception as e:
+                entry["versions"][version] = {"error": f"{type(e).__name__}: {e}"}
+
+        branches.append(entry)
+
+    return {
+        "success": True,
+        "data": {
+            "window": {"from": date_from, "to": date_to, "minutes": minutes},
+            "scheduler": scheduler_state,
+            "branches": branches,
+        },
+    }
 
 
 @router.post("/admin/poll-now")

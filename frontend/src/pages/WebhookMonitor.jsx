@@ -66,6 +66,8 @@ export default function WebhookMonitor() {
   const [failuresOnly, setFailuresOnly] = useState(false);
   const [polling, setPolling] = useState(false);
   const [pollStatus, setPollStatus] = useState("");
+  const [diagnostic, setDiagnostic] = useState(null);
+  const [diagnosing, setDiagnosing] = useState(false);
   const eventCountRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -178,6 +180,24 @@ export default function WebhookMonitor() {
             {polling ? "Polling…" : "Poll Now"}
           </button>
           <button
+            onClick={async () => {
+              setDiagnosing(true);
+              try {
+                const res = await axios.get("/api/admin/poll-diagnostic", { params: { minutes: 60 } });
+                setDiagnostic(res.data.data);
+              } catch (e) {
+                setDiagnostic({ error: e.response?.data?.detail || e.message });
+              } finally {
+                setDiagnosing(false);
+              }
+            }}
+            disabled={diagnosing}
+            title="Ask Cloudbeds the same question the poller asks, and show the raw answer"
+            className="px-3 py-1.5 text-sm bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50"
+          >
+            {diagnosing ? "Checking…" : "Diagnose"}
+          </button>
+          <button
             onClick={load}
             disabled={loading}
             className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
@@ -186,6 +206,23 @@ export default function WebhookMonitor() {
           </button>
         </div>
       </div>
+
+      {diagnostic && (
+        <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-sm font-semibold text-amber-900">Poll diagnostic</h2>
+            <button
+              onClick={() => setDiagnostic(null)}
+              className="text-xs text-amber-700 hover:underline"
+            >
+              close
+            </button>
+          </div>
+          <pre className="text-xs text-amber-900 overflow-auto whitespace-pre-wrap max-h-[28rem]">
+            {JSON.stringify(diagnostic, null, 2)}
+          </pre>
+        </div>
+      )}
 
       {events.length === 0 ? (
         <div className="text-center py-20 text-gray-400">
