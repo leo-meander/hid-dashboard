@@ -28,7 +28,7 @@ from app.routers import rate_plan_quota
 from app.routers import chat
 from app.routers import webhooks
 from app.routers import team_kpi
-from app.scheduler import setup_scheduler
+from app.scheduler import start_scheduler, stop_scheduler
 from app.database import SessionLocal
 from app.models.branch import Branch
 from app.mcp_server import mcp_asgi_app, mcp_instance
@@ -52,7 +52,11 @@ async def lifespan(app: FastAPI):
     loop.run_in_executor(None, _patch_branch_currencies)
     loop.run_in_executor(None, _ensure_kpi_override_column)
     async with mcp_instance.session_manager.run():
-        yield
+        start_scheduler()
+        try:
+            yield
+        finally:
+            stop_scheduler()
 
 
 app = FastAPI(title="HiD — Hotel Intelligence Dashboard", version="5.0.0", lifespan=lifespan)
@@ -146,7 +150,6 @@ app.include_router(oauth.router, tags=["OAuth (MCP)"])
 # request raises "Task group is not initialized".
 app.mount("/mcp", mcp_asgi_app)
 
-setup_scheduler(app)
 
 
 # One-time currency patch — runs on every startup, safe to leave in

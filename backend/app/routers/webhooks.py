@@ -32,7 +32,9 @@ from app.services import webhook_log
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-CLOUDBEDS_API_BASE = "https://hotels.cloudbeds.com/api/v1.3"
+# The configured property credentials use the stable v1.2 API. v1.3 times out
+# for several properties, so it left scheduled polls without usable results.
+CLOUDBEDS_API_BASE = "https://hotels.cloudbeds.com/api/v1.2"
 WEBSITE_SOURCES = {"website", "booking engine"}
 
 
