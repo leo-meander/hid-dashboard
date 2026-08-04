@@ -18,6 +18,7 @@ import hmac
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
@@ -258,6 +259,7 @@ def _get_reservation_list(
     api_key: str,
     date_from: str,
     date_to: str,
+    page_number: int = 1,
 ) -> tuple[httpx.Response, dict, int]:
     """Fetch a small reservation list, retrying transient Cloudbeds failures.
 
@@ -275,6 +277,7 @@ def _get_reservation_list(
                         "propertyID": property_id,
                         "dateCreatedFrom": date_from,
                         "dateCreatedTo": date_to,
+                        "pageNumber": page_number,
                         "pageSize": 50,
                     },
                 )
@@ -293,6 +296,24 @@ def _get_reservation_list(
             time.sleep(delay)
 
     raise RuntimeError("unreachable")
+
+
+def _iter_reservation_pages(property_id: str, api_key: str, date_from: str, date_to: str):
+    """Yield every Cloudbeds list page for a historical date-created window."""
+    page_number = 1
+    while True:
+        _, body, _ = _get_reservation_list(
+            property_id, api_key, date_from, date_to, page_number=page_number
+        )
+        if not body.get("success"):
+            raise RuntimeError(body.get("message") or "Cloudbeds getReservations failed")
+        reservations = body.get("data") or []
+        if isinstance(reservations, dict):
+            reservations = list(reservations.values())
+        yield reservations
+        if len(reservations) < 50:
+            return
+        page_number += 1
 
 
 # ── Polling job (called by APScheduler every 10 min) ─────────────────────────
@@ -506,6 +527,62 @@ async def poll_now(
     """Manually trigger a Cloudbeds poll for the last N minutes. Admin only."""
     background_tasks.add_task(_poll_with_window, minutes)
     return {"success": True, "message": f"Polling last {minutes} minutes in background"}
+
+
+@router.post("/admin/reservation-backfill")
+async def reservation_backfill(
+    background_tasks: BackgroundTasks,
+    date_from: str,
+    date_to: str,
+    _admin=Depends(require_admin),
+) -> dict:
+    """Re-send all reservations created within an inclusive historical window.
+
+    This deliberately bypasses the normal seen check. It is for recovery after
+    an outage; downstream event IDs and CRM upserts make repeated delivery safe.
+    """
+    try:
+        vietnam_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+        start = datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=vietnam_tz)
+        end = datetime.strptime(date_to, "%Y-%m-%d").replace(
+            hour=23, minute=59, second=59, tzinfo=vietnam_tz
+        )
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date_from/date_to must use YYYY-MM-DD")
+    if end < start or end - start > timedelta(days=7):
+        raise HTTPException(status_code=422, detail="Choose an inclusive window from 1 to 7 days")
+
+    background_tasks.add_task(
+        _backfill_reservations,
+        start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        end.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    return {"success": True, "message": f"Backfill queued for {date_from} through {date_to}"}
+
+
+def _backfill_reservations(date_from: str, date_to: str) -> None:
+    """Fetch every page and fan out one reservation at a time."""
+    for branch, property_id, api_key in _poll_branches():
+        if not property_id or not api_key:
+            logger.warning("Backfill skipped branch=%s: missing Cloudbeds config", branch)
+            continue
+
+        processed = 0
+        try:
+            for reservations in _iter_reservation_pages(property_id, api_key, date_from, date_to):
+                for reservation in reservations:
+                    reservation_id = str(reservation.get("reservationID") or "")
+                    if not reservation_id:
+                        continue
+                    # Do not use _mark_seen: this is an explicit recovery run.
+                    full = _fetch_full_reservation(property_id, reservation_id)
+                    if not full:
+                        continue
+                    _fan_out(property_id, reservation_id, full)
+                    processed += 1
+            logger.info("Backfill complete branch=%s reservations=%d", branch, processed)
+        except Exception:
+            logger.exception("Backfill failed branch=%s after %d reservations", branch, processed)
 
 
 def _poll_with_window(minutes: int) -> None:

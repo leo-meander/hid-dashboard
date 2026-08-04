@@ -4,6 +4,7 @@ import axios from "axios";
 const BRANCH_OPTS = ["all", "saigon", "taipei", "oani", "osaka", "1948"];
 const SERVICES = ["ghl", "meta", "google_ads", "tiktok"];
 const SERVICE_LABELS = { ghl: "GHL CRM", meta: "Meta CAPI", google_ads: "Google Ads", tiktok: "TikTok" };
+const isoDateDaysAgo = (days) => new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
 
 function StatusBadge({ svc }) {
   if (!svc) return <span className="text-gray-300">—</span>;
@@ -68,6 +69,9 @@ export default function WebhookMonitor() {
   const [pollStatus, setPollStatus] = useState("");
   const [diagnostic, setDiagnostic] = useState(null);
   const [diagnosing, setDiagnosing] = useState(false);
+  const [backfillFrom, setBackfillFrom] = useState(() => isoDateDaysAgo(3));
+  const [backfillTo, setBackfillTo] = useState(() => isoDateDaysAgo(1));
+  const [backfilling, setBackfilling] = useState(false);
   const eventCountRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -178,6 +182,27 @@ export default function WebhookMonitor() {
             className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50 min-w-[90px]"
           >
             {polling ? "Polling…" : "Poll Now"}
+          </button>
+          <input type="date" value={backfillFrom} onChange={e => setBackfillFrom(e.target.value)} aria-label="Backfill start date" className="text-sm border border-gray-300 rounded px-2 py-1.5" />
+          <input type="date" value={backfillTo} onChange={e => setBackfillTo(e.target.value)} aria-label="Backfill end date" className="text-sm border border-gray-300 rounded px-2 py-1.5" />
+          <button
+            onClick={async () => {
+              setBackfilling(true);
+              setPollStatus(`Starting backfill for ${backfillFrom} to ${backfillTo}...`);
+              try {
+                const res = await axios.post("/api/admin/reservation-backfill", null, { params: { date_from: backfillFrom, date_to: backfillTo } });
+                setPollStatus(res.data.message || "Backfill started. Refresh to see results.");
+              } catch (e) {
+                setPollStatus(`Backfill error: ${e.response?.data?.detail || e.message}`);
+              } finally {
+                setBackfilling(false);
+              }
+            }}
+            disabled={backfilling || !backfillFrom || !backfillTo}
+            title="Re-send every reservation created in this inclusive date range"
+            className="px-3 py-1.5 text-sm bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50"
+          >
+            {backfilling ? "Starting..." : "Backfill"}
           </button>
           <button
             onClick={async () => {
