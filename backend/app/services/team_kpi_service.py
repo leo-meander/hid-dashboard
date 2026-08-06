@@ -58,6 +58,9 @@ KPI_DEFS: dict[str, list[dict]] = {
         {"key": "videos_delivered","label": "Videos Delivered",       "unit": "videos", "org_wide": False, "higher_is_better": True, "hidden": True},
         {"key": "design_ideas",    "label": "Design Ideas",           "unit": "ideas",  "org_wide": False, "higher_is_better": True,  "auto": False, "starts": "2026-08"},
         {"key": "ads_win_rate",    "label": "% Ads Win",              "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True, "starts": "2026-08"},
+        # Same number as Nora's Task Overview scorecard. Org-wide: Lark tasks
+        # carry no branch split. Starts with the Lark data (_LARK_START_MONTH).
+        {"key": "delivery_rate",   "label": "On-Time Delivery Rate",  "unit": "%",      "org_wide": True,  "higher_is_better": True,  "decimals": 1, "is_pct": True, "starts": "2026-07"},
     ],
     "crm": [
         {"key": "data_fill_rate",  "label": "Data Fill-Rate",         "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True, "auto": False},
@@ -685,6 +688,12 @@ def get_pm_actuals_yearly(db: Session, year: int) -> dict[int, dict[str, dict]]:
 
 # ── Core summary builder ──────────────────────────────────────────────────────
 
+def _merge_actuals(base: dict[int, dict[str, dict]], extra: dict[int, dict[str, dict]]) -> None:
+    """Fold one actuals source into another, in place, per month × bucket."""
+    for month, buckets in extra.items():
+        for bucket, values in buckets.items():
+            base.setdefault(month, {}).setdefault(bucket, {}).update(values)
+
 def build_monthly_summary(
     db: Session,
     role_key: str,
@@ -802,15 +811,18 @@ def build_monthly_summary(
             except Exception as exc:
                 log.warning("lark ads_material unavailable: %s", exc)
     elif auto and role_key == "designer":
-        # Lark only backs design_assets / videos_delivered — skip the round-trip
-        # entirely while both are hidden.
+        # Each source is fetched only when a visible KPI still needs it.
         if any(d["key"] in ("design_assets", "videos_delivered") for d in defs):
             from app.services.lark_service import get_designer_actuals_yearly
             actuals_yearly = get_designer_actuals_yearly(year)
         if any(d["key"] == "ads_win_rate" for d in defs):
-            for m, buckets in get_ads_win_actuals_yearly(year).items():
-                for bk, vals in buckets.items():
-                    actuals_yearly.setdefault(m, {}).setdefault(bk, {}).update(vals)
+            _merge_actuals(actuals_yearly, get_ads_win_actuals_yearly(year))
+        if any(d["key"] == "delivery_rate" for d in defs):
+            try:
+                from app.services.lark_service import get_delivery_rate_yearly
+                _merge_actuals(actuals_yearly, get_delivery_rate_yearly(year))
+            except Exception as exc:
+                log.warning("designer delivery_rate from Lark unavailable: %s", exc)
     elif auto and role_key == "crm":
         actuals_yearly = get_crm_actuals_yearly(db, year)
     elif auto and role_key == "pm":

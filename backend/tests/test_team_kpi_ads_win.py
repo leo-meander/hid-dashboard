@@ -173,17 +173,19 @@ def test_start_month_helper():
 
 def test_design_assets_and_videos_are_hidden():
     keys = [d["key"] for d in svc.visible_kpi_defs("designer")]
-    assert keys == ["design_ideas", "ads_win_rate"]
+    assert keys == ["design_ideas", "ads_win_rate", "delivery_rate"]
     # …but their defs (and DB history) are still there.
     all_keys = [d["key"] for d in svc.KPI_DEFS["designer"]]
     assert "design_assets" in all_keys and "videos_delivered" in all_keys
 
 
-def test_lark_is_not_called_while_both_lark_kpis_are_hidden(upstream, monkeypatch):
+def test_the_task_aggregation_is_not_fetched_while_both_its_kpis_are_hidden(upstream, monkeypatch):
+    """design_assets / videos_delivered are the only users of that Lark call."""
     import app.services.lark_service as lark
 
     def boom(*a, **kw):
-        raise AssertionError("Lark should not be called for the designer role")
+        raise AssertionError("get_designer_actuals_yearly should not be called")
 
     monkeypatch.setattr(lark, "get_designer_actuals_yearly", boom)
+    monkeypatch.setattr(lark, "get_task_overview_yearly", lambda year: {})
     svc.build_monthly_summary(_FakeSession(), "designer", YEAR, SAIGON_UUID)

@@ -685,43 +685,32 @@ def get_designer_actuals_yearly(year: int, nora_name: str = "Nora") -> dict[int,
 
 
 def get_delivery_rate_yearly(year: int, pic_name: str = "Nora") -> dict[int, dict[str, dict]]:
+    """Return ``{month: {'all': {delivery_rate}}}`` — one person's on-time rate.
+
+    Reads the same aggregation the Task Overview tab renders, so the Team KPI
+    row and the person's scorecard can never disagree: on-time ÷ scored, where
+    scored = completed tasks marked On-time or Late, minus misses carrying a
+    Late Reason (out of the assignee's hands — dropped from both sides).
+    Tasks are grouped by Deadline month and start at _LARK_START_MONTH.
+
+    Org-wide, with no branch split: Nora works across every branch and the
+    Lark tasks carry no reliable branch attribution.
+
+    A month the person had nothing scored in is omitted, not zeroed — the
+    caller renders it blank.
     """
-    Return {month: {'all': {delivery_rate}}}
-    delivery_rate = % of pic_name's completed tasks (with Deadline in that month)
-    where 'On-time vs Original' == 'On-time'. Reported as org-wide (no branch split)
-    since Nora works across all branches.
-    """
-    records = _fetch_all_records()
-    counts: dict[int, dict] = {}  # month → {on_time, total}
-
-    for rec in records:
-        pic_val = rec.get("PIC") or ""
-        pic_str = pic_val if isinstance(pic_val, str) else str(pic_val)
-        if pic_name.lower() not in pic_str.lower():
-            continue
-
-        status = str(rec.get("Status") or "").lower().strip()
-        if status != "completed":
-            continue
-
-        ym = _parse_month_year(rec.get("Deadline"))
-        if not ym or ym[0] != year:
-            continue
-        _, month = ym
-        if month < _LARK_START_MONTH:
-            continue
-
-        if month not in counts:
-            counts[month] = {"on_time": 0, "total": 0}
-        counts[month]["total"] += 1
-        on_time_val = str(rec.get("On-time vs Original") or "").strip().lower()
-        if on_time_val == "on-time":
-            counts[month]["on_time"] += 1
+    rows = merge_pic_overview(get_task_overview_yearly(year))
+    row = next((r for r in rows if r["name"] == pic_name), None)
+    if row is None:
+        log.warning("no Lark task rows for %s in %s; delivery_rate blank", pic_name, year)
+        return {}
 
     out: dict[int, dict[str, dict]] = {}
-    for month, c in counts.items():
-        rate = round(c["on_time"] / c["total"] * 100, 1) if c["total"] > 0 else None
-        out[month] = {"all": {"delivery_rate": rate}}
+    for month_key, stats in (row.get("months") or {}).items():
+        rate = stats.get("on_time_rate")
+        if rate is None:
+            continue
+        out[int(month_key)] = {"all": {"delivery_rate": float(rate)}}
     return out
 
 
