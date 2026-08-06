@@ -52,6 +52,17 @@ class TestDedupCache:
             assert webhook_log.has_seen("R-3") is True
             session.assert_not_called()
 
+    def test_reservation_table_hit_counts_as_seen(self):
+        # No webhook_events row (its history aged out), but the reservation
+        # already exists in the permanent `reservations` table — e.g. an old,
+        # checked-out booking Cloudbeds resurfaced via an edit. Must not be
+        # treated as a brand-new event.
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.side_effect = [None, ("row",)]
+        with patch.object(webhook_log, "SessionLocal", return_value=db):
+            assert webhook_log.has_seen("R-5") is True
+        db.close.assert_called_once()
+
     def test_lookup_failure_fails_open(self):
         # Re-processing is cheap (all three platforms dedupe on event id);
         # dropping a real booking is not. A broken lookup must not skip.
