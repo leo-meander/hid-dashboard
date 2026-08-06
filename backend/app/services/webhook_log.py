@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.database import SessionLocal
+from app.models.reservation import Reservation
 from app.models.webhook_event import WebhookEvent
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,16 @@ def record(
 
 
 def has_seen(reservation_id: str) -> bool:
-    """True if this reservation was already fanned out (survives restarts)."""
+    """True if this reservation was already fanned out (survives restarts).
+
+    Checks `webhook_events` first (recent fan-out history, pruned after
+    RETENTION_DAYS) and falls back to `reservations` (the permanent,
+    never-purged ingestion table). Without the second check, any reservation
+    whose webhook_events row aged out could resurface from Cloudbeds — a
+    guest editing details, a refund, a resync — and get treated as brand new,
+    re-firing a Purchase event with its true, years-old dateCreated straight
+    into Meta's 7-day staleness rejection.
+    """
     rid = str(reservation_id)
     if rid in _seen_cache:
         return True
@@ -103,6 +113,13 @@ def has_seen(reservation_id: str) -> bool:
             .first()
             is not None
         )
+        if not exists:
+            exists = (
+                db.query(Reservation.id)
+                .filter(Reservation.cloudbeds_reservation_id == rid)
+                .first()
+                is not None
+            )
     except Exception as e:
         # Fail open: re-processing is cheap (Meta dedupes on event_id, Google
         # on transactionId, TikTok on event_id), skipping a real booking is not.
