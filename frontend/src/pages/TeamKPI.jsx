@@ -36,7 +36,7 @@ const COLOR_CLASSES = {
 // ── Per-KPI formula tooltips ──────────────────────────────────────────────────
 
 const KPI_TOOLTIPS = {
-  delivery_rate:        "On-Time Delivery Rate — Nora's completed tasks with Deadline in that month where 'On-time vs Original' = On-time. Formula: on-time tasks ÷ total completed tasks × 100. Source: Lark Base.",
+  delivery_rate:        "On-Time Delivery Rate — the same number as Nora's card in Task Overview. Formula: on-time ÷ scored × 100, where scored = completed tasks marked On-time or Late, grouped by Deadline month. Misses carrying a Late Reason are dropped from both sides, and tasks still open are not scored. Source: Lark Base, from Jul 2026.",
   task_completion_rate: "Team Task Completion Rate — all tasks across the team with a Deadline in that month, regardless of assignee. Formula: completed tasks ÷ total tasks due × 100. Source: Lark Base.",
   branch_kpi_rate:      "Branch KPI Achievement Rate — actual revenue (Cloudbeds or manual override, after deductions) ÷ target revenue × 100. Mirrors the Revenue KPI page formula.",
   budget_utilisation:   "Marketing Budget Utilisation — total actual spend (Paid Ads + KOL + CRM) ÷ total allocated budget × 100 for the branch and month.",
