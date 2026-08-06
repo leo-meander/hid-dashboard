@@ -90,6 +90,42 @@ def fetch_paid_ads_yearly(branch_slug: str, year: int) -> dict[int, dict]:
     return out
 
 
+def fetch_winning_ads_monthly(
+    year: int,
+    branch: Optional[str] = None,
+    month: Optional[str] = None,
+) -> dict:
+    """Return the Ads Platform ``/api/export/winning-ads-monthly`` payload for
+    a year — the ``data`` envelope, i.e. ``{by_month, rows, total_wins, ...}``.
+
+    Same X-API-Key auth as :func:`fetch_paid_ads_yearly`; an empty dict on any
+    failure so the caller renders a blank cell rather than a wrong 0%.
+
+    ``branch`` is matched case-insensitively upstream, unlike the budget
+    endpoint. ``month`` is a ``YYYY-MM`` string.
+
+    Upstream freezes ad verdicts on a daily cron, so a plain GET is always
+    current — nothing to trigger before reading.
+    """
+    if not settings.ADS_PLATFORM_API_KEY:
+        log.warning("ADS_PLATFORM_API_KEY not configured; ads-win actuals blank")
+        return {}
+    base = settings.ADS_PLATFORM_BASE_URL.rstrip("/")
+    url = f"{base}/api/export/winning-ads-monthly?year={year}"
+    if branch:
+        url += f"&branch={branch}"
+    if month:
+        url += f"&month={month}"
+    body = _fetch_json(url, {
+        "X-API-Key": settings.ADS_PLATFORM_API_KEY,
+        "Accept": "application/json",
+    })
+    if not body:
+        return {}
+    data = body.get("data", body) if isinstance(body, dict) else {}
+    return data if isinstance(data, dict) else {}
+
+
 # ── KOL (KOL Media Engine) ───────────────────────────────────────────────────
 
 # Hardcoded fallback FX so we don't multiply by 1.0 when the live FX API

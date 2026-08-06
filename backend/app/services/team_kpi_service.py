@@ -52,9 +52,12 @@ KPI_DEFS: dict[str, list[dict]] = {
         {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True, "computed_target": "spend_x_roas", "computed_note": "= spend × ROAS target"},
     ],
     "designer": [
-        {"key": "design_assets",   "label": "Design Assets Completed","unit": "designs","org_wide": False, "higher_is_better": True},
-        {"key": "videos_delivered","label": "Videos Delivered",       "unit": "videos", "org_wide": False, "higher_is_better": True},
-        {"key": "design_ideas",    "label": "Design Ideas",           "unit": "ideas",  "org_wide": False, "higher_is_better": True,  "auto": False},
+        # Temporarily hidden (2026-08-06) — remove "hidden" to bring them back
+        # with their stored targets/actuals intact.
+        {"key": "design_assets",   "label": "Design Assets Completed","unit": "designs","org_wide": False, "higher_is_better": True, "hidden": True},
+        {"key": "videos_delivered","label": "Videos Delivered",       "unit": "videos", "org_wide": False, "higher_is_better": True, "hidden": True},
+        {"key": "design_ideas",    "label": "Design Ideas",           "unit": "ideas",  "org_wide": False, "higher_is_better": True,  "auto": False, "starts": "2026-08"},
+        {"key": "ads_win_rate",    "label": "% Ads Win",              "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True, "starts": "2026-08"},
     ],
     "crm": [
         {"key": "data_fill_rate",  "label": "Data Fill-Rate",         "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True, "auto": False},
@@ -78,6 +81,27 @@ def visible_kpi_defs(role_key: str) -> list[dict]:
     return [d for d in KPI_DEFS.get(role_key, []) if not d.get("hidden")]
 
 
+def kpi_start_month(defn: dict, year: int) -> Optional[int]:
+    """First month of `year` this KPI is live, from its "starts": "YYYY-MM".
+
+    None when the KPI has always been live (or the year is past its start);
+    13 when the whole year predates it. Months before the returned value are
+    rendered blank and locked instead of showing a misleading 0.
+    """
+    starts = defn.get("starts")
+    if not starts:
+        return None
+    s_year, _, s_month = str(starts).partition("-")
+    try:
+        s_year, s_month = int(s_year), int(s_month)
+    except ValueError:
+        log.warning("bad 'starts' on KPI %s: %r", defn.get("key"), starts)
+        return None
+    if year < s_year:
+        return 13
+    return s_month if year == s_year else None
+
+
 ROLE_META = {
     "kol":       {"label": "KOL",       "person": "Mel",   "emoji": "🤝", "auto_actuals": True},
     "paid_ads":  {"label": "Paid Ads",  "person": "Mason", "emoji": "📢", "auto_actuals": True},
@@ -96,6 +120,8 @@ BRANCH_KEY_TO_UUID: dict[str, str] = {v: k for k, v in {
 }.items()}
 
 BRANCH_UUID_TO_KEY: dict[str, str] = {v: k for k, v in BRANCH_KEY_TO_UUID.items()}
+
+BRANCH_KEYS: tuple[str, ...] = ("saigon", "taipei", "1948", "oani", "osaka")
 
 # Branches that use a non-VND currency; defaults to VND for all others
 BRANCH_CURRENCY: dict[str, str] = {
@@ -376,6 +402,90 @@ def get_paid_ads_actuals_yearly(
 
     _ads_actuals_cache[cache_key] = (time.time(), out)
     return out
+
+
+# ── % Ads Win actuals (Designer) ─────────────────────────────────────────────
+
+_ads_win_cache: dict[tuple, tuple[float, dict]] = {}
+_ADS_WIN_TTL = 600
+
+
+def get_ads_win_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
+    """Return ``{month: {branch_key|'all': {ads_win_rate, ...__provisional}}}``.
+
+    Source: Ads Platform ``/api/export/winning-ads-monthly``. An ad wins a
+    month when its ROAS that month beats the branch's blended CRTV ROAS for
+    the same month, with enough data behind it (> 4,500 clicks or ≥ 5
+    bookings); anything below that stays TEST and counts on neither side.
+    win_rate = wins / (wins + losses) among the ads decided that month.
+
+    Notes that shape the mapping below:
+      * upstream ``win_rate`` is a 0–1 fraction; HiD stores is_pct KPIs 0–100.
+      * ``null`` means nothing was decided that month (tested == 0) → blank,
+        not 0. A month where every tested ad lost really does return 0.0.
+      * the "All branches" figure is ``by_month[].win_rate``, never an average
+        of the branch percentages — the denominators differ.
+      * branch labels come back capitalised (``Saigon``, ``1948``, …);
+        ``Bread`` has no HiD branch and is dropped.
+      * ``in_progress`` marks the newest synced month: LOSE verdicts only
+        freeze once a month closes, so its rate is provisional and usually
+        inflated. Flagged for the UI, not suppressed.
+    """
+    cache_key = ("ads_win", year)
+    cached = _ads_win_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _ADS_WIN_TTL:
+        return cached[1]
+
+    from app.services.upstream_actuals import fetch_winning_ads_monthly
+
+    out: dict[int, dict[str, dict]] = {}
+    try:
+        data = fetch_winning_ads_monthly(year)
+        for entry in data.get("by_month") or []:
+            month = _parse_ym(entry.get("month"), year)
+            if month is None:
+                continue
+            provisional = bool(entry.get("in_progress"))
+
+            def _cell(src: dict) -> Optional[dict]:
+                # Absent (upstream predates the win/loss fields) or null
+                # (nothing decided) both mean "no ratio" → blank cell.
+                wr = src.get("win_rate")
+                if wr is None:
+                    return None
+                return {
+                    "ads_win_rate": round(float(wr) * 100, 2),
+                    "ads_win_rate__provisional": provisional,
+                }
+
+            org = _cell(entry)
+            if org is not None:
+                out.setdefault(month, {})["all"] = org
+            for br in entry.get("by_branch") or []:
+                branch_key = str(br.get("branch") or "").strip().lower()
+                if branch_key not in BRANCH_KEYS:
+                    continue  # "Bread" has no HiD branch
+                cell = _cell(br)
+                if cell is not None:
+                    out.setdefault(month, {})[branch_key] = cell
+    except Exception as exc:
+        log.warning("ads win-rate actuals unavailable: %s", exc)
+        return {}
+
+    _ads_win_cache[cache_key] = (time.time(), out)
+    return out
+
+
+def _parse_ym(value, year: int) -> Optional[int]:
+    """"2026-08" → 8, but only for the year asked for; None otherwise."""
+    y, _, m = str(value or "").partition("-")
+    try:
+        if int(y) != year:
+            return None
+        month = int(m)
+    except ValueError:
+        return None
+    return month if 1 <= month <= 12 else None
 
 
 # ── CRM actuals ───────────────────────────────────────────────────────────────
@@ -692,8 +802,15 @@ def build_monthly_summary(
             except Exception as exc:
                 log.warning("lark ads_material unavailable: %s", exc)
     elif auto and role_key == "designer":
-        from app.services.lark_service import get_designer_actuals_yearly
-        actuals_yearly = get_designer_actuals_yearly(year)
+        # Lark only backs design_assets / videos_delivered — skip the round-trip
+        # entirely while both are hidden.
+        if any(d["key"] in ("design_assets", "videos_delivered") for d in defs):
+            from app.services.lark_service import get_designer_actuals_yearly
+            actuals_yearly = get_designer_actuals_yearly(year)
+        if any(d["key"] == "ads_win_rate" for d in defs):
+            for m, buckets in get_ads_win_actuals_yearly(year).items():
+                for bk, vals in buckets.items():
+                    actuals_yearly.setdefault(m, {}).setdefault(bk, {}).update(vals)
     elif auto and role_key == "crm":
         actuals_yearly = get_crm_actuals_yearly(db, year)
     elif auto and role_key == "pm":
@@ -712,7 +829,7 @@ def build_monthly_summary(
         get_cached_rate(native_currency, "VND") if native_currency != "VND" else None
     )
 
-    _ALL_BRANCH_KEYS = ("saigon", "taipei", "1948", "oani", "osaka")
+    _ALL_BRANCH_KEYS = BRANCH_KEYS
 
     kpis_out = []
     all_pcts: list[float] = []
@@ -739,6 +856,7 @@ def build_monthly_summary(
         kpi_auto          = auto and defn.get("auto", True)   # per-KPI override via auto: False
         no_target         = defn.get("no_target", False)       # display-only: suppress target editing
         computed_target_t = defn.get("computed_target")        # computed target type (e.g. "spend_x_roas")
+        start_month       = kpi_start_month(defn, year)        # months before this are blank + locked
 
         # Percentage rules behind an upstream-owned target, collected while
         # resolving the months so the target row can be labelled with the
@@ -748,6 +866,20 @@ def build_monthly_summary(
         monthly = []
         for m in range(1, 13):
             is_future = (m > cur_month)
+
+            # KPI didn't exist yet: blank + locked, never a 0.
+            if start_month is not None and m < start_month:
+                monthly.append({
+                    "month": m,
+                    "target": None,
+                    "actual": None,
+                    "pct": None,
+                    "is_future": is_future,
+                    "has_target": False,
+                    "not_started": True,
+                    "provisional": False,
+                })
+                continue
 
             if no_target:
                 target = None
@@ -827,6 +959,10 @@ def build_monthly_summary(
                     # that are missed when summing per-branch values from branches[]).
                     if kpi_key == "kol_revenue" and role_key == "kol":
                         raw = month_actuals.get("all", {}).get("kol_revenue") or None
+                    elif kpi_key == "ads_win_rate":
+                        # Org-wide ratio from upstream. Averaging the branch
+                        # percentages would be wrong — different denominators.
+                        raw = month_actuals.get("all", {}).get("ads_win_rate")
                     else:
                         # is_pct KPIs (e.g. data_fill_rate): average across branches
                         # all other KPIs: sum across branches
@@ -859,6 +995,14 @@ def build_monthly_summary(
             if actual is None and not is_future:
                 actual = manual_actuals_map.get((kpi_key, m))
 
+            # Upstream flags a value it may still revise (see the KPI's own
+            # actuals fetcher for what "provisional" means for that source).
+            src_bucket = "all" if (org_wide or all_branches_view) else (branch_key or "")
+            provisional = bool(
+                actual is not None
+                and actuals_yearly.get(m, {}).get(src_bucket, {}).get(f"{kpi_key}__provisional")
+            )
+
             pct = None
             if target and target != 0 and actual is not None:
                 pct = round(actual / target * 100, 1)
@@ -874,6 +1018,8 @@ def build_monthly_summary(
                 "pct": pct,
                 "is_future": is_future,
                 "has_target": target is not None,
+                "not_started": False,
+                "provisional": provisional,
             })
 
         # Label the target row with the real percentage when upstream reports
@@ -901,6 +1047,7 @@ def build_monthly_summary(
             "no_target": no_target,
             "computed_target": computed_target_t is not None,
             "computed_target_note": note,
+            "starts": defn.get("starts"),
             "monthly": monthly,
         })
 

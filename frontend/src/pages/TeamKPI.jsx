@@ -44,7 +44,18 @@ const KPI_TOOLTIPS = {
   crm_revenue:          "Revenue attributed to CRM campaigns in that month. Enter targets in mil VND (e.g. enter 56 for 56 million VND).",
   kol_posted:           "KOLs who published a post that month. Target is owned by KOL Engine → Set Targets → Posted: round(prev-month collaborated × Posted %). It moves as collaborations land, so it is read-only here.",
   kol_ads_collab:       "KOLs with ads permission who published that month (KOL Engine 'Ads-Allowed'). Target is owned by KOL Engine → Set Targets → Ads-Allowed: round(Posted target × Ads-Allowed %). Read-only here.",
+  ads_win_rate:         "% Ads Win — an ad wins a month when its ROAS that month beats the branch's blended CRTV ROAS for the same month, with enough data behind it (over 4,500 clicks or 5+ bookings; below that it stays TEST and counts on neither side). Each ad is judged once, ever. Formula: wins ÷ (wins + losses) among the ads decided that month. Meta only, and only ads named with CRTV. Source: Ads Platform.",
 };
+
+// "2026-08" → "Aug 2026". Months before a KPI's start date show blank, not 0.
+function startLabel(starts) {
+  if (!starts) return null;
+  const [y, m] = String(starts).split("-").map(Number);
+  return m >= 1 && m <= 12 ? `${MONTHS[m - 1]} ${y}` : starts;
+}
+
+const PROVISIONAL_TITLE =
+  "Provisional — the month is still syncing upstream. Losing verdicts only freeze once a month closes, so this rate is usually inflated.";
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
 
@@ -280,6 +291,11 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                         {kpi.computed_target_note || "= spend × ROAS target"}
                       </span>
                     )}
+                    {kpi.starts && (
+                      <span className="block text-[10px] text-gray-400 font-normal">
+                        from {startLabel(kpi.starts)}
+                      </span>
+                    )}
                   </td>
                   <td className="px-2 py-1.5 text-center text-gray-400" rowSpan={2}>{kpi.unit}</td>
                   <td className="px-2 py-1.5 text-center">
@@ -292,7 +308,9 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                   </td>
                   {kpi.monthly.map(m => (
                     <td key={m.month} className="px-1 py-1.5 bg-yellow-50">
-                      {kpi.computed_target ? (
+                      {m.not_started ? (
+                        <div className="text-center text-gray-300" title={`Tracked from ${startLabel(kpi.starts)}`}>·</div>
+                      ) : kpi.computed_target ? (
                         <div className="text-center text-gray-600 font-medium text-xs">
                           {m.target !== null && m.target !== undefined
                             ? m.target.toLocaleString(undefined, { maximumFractionDigits: kpi.decimals ?? 1 })
@@ -345,6 +363,16 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     const cls = color ? COLOR_CLASSES[color] : null;
                     const isSaving = saving === `${kpi.key}-${m.month}-actual`;
 
+                    // Before the KPI existed — blank and locked, never a 0.
+                    if (m.not_started) {
+                      return (
+                        <td key={m.month} className="px-1 py-1.5 text-center bg-gray-50"
+                            title={`Tracked from ${startLabel(kpi.starts)}`}>
+                          <span className="text-gray-300">·</span>
+                        </td>
+                      );
+                    }
+
                     if ((autoActuals || kpi.auto_actuals) && kpi.auto_actuals !== false) {
                       // Read-only actual from API
                       return (
@@ -356,6 +384,9 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                                 {typeof m.actual === "number"
                                   ? m.actual.toLocaleString(undefined, { maximumFractionDigits: kpi.decimals ?? 0 })
                                   : m.actual}
+                                {m.provisional && (
+                                  <span className="text-gray-400 font-normal cursor-help" title={PROVISIONAL_TITLE}>*</span>
+                                )}
                               </span>
                               {m.pct !== null && m.has_target && kpi.unit !== "%" && (
                                 <span className={`text-[10px] px-1 rounded ${cls ? cls.badge : ""}`}>{m.pct}%</span>
