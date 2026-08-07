@@ -1017,6 +1017,10 @@ def get_task_detail(pic_name: str, year: int, month: Optional[int], category: st
 
     month is ignored for the "no_deadline" category — those tasks have no
     deadline, so they belong to no month.
+
+    month is optional everywhere else: passing None covers the year from
+    _LARK_START_MONTH on, which is exactly the period the scorecards aggregate
+    when the Month filter is All.
     """
     today = _today_ict()
 
@@ -1045,7 +1049,16 @@ def get_task_detail(pic_name: str, year: int, month: Optional[int], category: st
                 continue
             if not _created_in_scope(rec.get("Date Created"), year):
                 continue
-        elif not deadline or deadline.year != year or deadline.month != month:
+        elif not deadline or deadline.year != year:
+            continue
+        elif month is None:
+            # No month asked for = the scorecard's "All" period: the whole year
+            # from the standardization cutoff on, scoped exactly like
+            # total_tasks and open_count so a drilldown can never list tasks the
+            # card did not count.
+            if deadline.month < _LARK_START_MONTH:
+                continue
+        elif deadline.month != month:
             continue
 
         task_name = _extract_text(rec.get("Task"))
@@ -1083,6 +1096,8 @@ def get_task_detail(pic_name: str, year: int, month: Optional[int], category: st
             include = missed and not excused
         elif category == "excused":
             include = missed and excused
+        elif category == "open":
+            include = not is_completed
         elif category == "no_deadline":
             include = True  # already filtered above
 
@@ -1098,5 +1113,10 @@ def get_task_detail(pic_name: str, year: int, month: Optional[int], category: st
                 "excused": excused if missed else False,
                 "lark_url": _lark_record_url(rec.get("_record_id", "")),
             })
+
+    if month is None:
+        # Spans several months — oldest deadline first, so what is already
+        # overdue sits at the top of the list.
+        tasks.sort(key=lambda t: t["deadline"] or "")
 
     return tasks

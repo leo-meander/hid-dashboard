@@ -584,6 +584,7 @@ const CATEGORY_LABELS = {
   missed: "Missed deadlines (overdue + late)",
   excused: "Excused misses (not counted)",
   no_deadline: "Open tasks with no deadline",
+  open: "Open tasks — not Completed yet",
 };
 
 // Reason keys arrive lower-cased and slash-collapsed from the backend. Any
@@ -592,6 +593,173 @@ const CATEGORY_LABELS = {
 const prettyReason = (key) =>
   String(key).replace(/\//g, " / ").replace(/^./, (c) => c.toUpperCase());
 
+// The four components, the metric behind each one, and the value that earns
+// each band. Drives the formula modal so the bands cannot drift from
+// computeScoreDetail without the explanation drifting with them.
+const SCORE_COMPONENTS = [
+  { key: "ontime",  name: "On-time rate",     metric: "on-time ÷ scored tasks",              bands: ["≥ 90%", "≥ 80%", "≥ 70%", "< 70%"] },
+  { key: "cycle",   name: "Cycle efficiency", metric: "avg Cycle Time ÷ avg Estimated Days", bands: ["≤ 1.0", "≤ 1.2", "≤ 1.5", "> 1.5"] },
+  { key: "overdue", name: "Overdue / Late",   metric: "blown deadlines, no Late Reason",     bands: ["0", "1", "≤ 3", "> 3"] },
+  { key: "reopen",  name: "Reopen",           metric: "sum of Reopen Count",                 bands: ["0", "1", "≤ 3", "> 3"] },
+];
+
+// The full "how is this number made" panel. The header strip and the per-cell
+// tooltips only have room for the weights; the part people actually get stuck
+// on — which raw number earns which band, and what happens when Lark has no
+// data for a component — needs the space of a modal.
+function ScoreFormulaModal({ onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const Step = ({ n, title, children }) => (
+    <div className="flex gap-3">
+      <span className="flex-shrink-0 w-5 h-5 rounded-full bg-gray-900 text-white text-[10px] font-semibold flex items-center justify-center mt-0.5">{n}</span>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-semibold text-gray-800 mb-1.5">{title}</p>
+        {children}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between px-5 py-3.5 border-b border-gray-100">
+          <div>
+            <div className="text-sm font-semibold text-gray-900">How the Performance Score is calculated</div>
+            <div className="text-[11px] text-gray-500 mt-0.5">Scored per month, on a 0–10 scale</div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto space-y-5">
+
+          <Step n="1" title="Group the tasks by Deadline month">
+            <p className="text-[11px] text-gray-600 leading-5">
+              A task belongs to the month of its <b>Deadline</b>, not the month it was created or finished.
+              Months before July are excluded (the base was standardized then), and tasks with status
+              <b> Upcoming Tasks</b>, <b>Regular task</b> or <b>Blocked task</b> never enter the KPI at all.
+            </p>
+          </Step>
+
+          <Step n="2" title="Turn four raw numbers into 0–10">
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px] border-collapse">
+                <thead>
+                  <tr className="text-gray-400 text-[10px] uppercase tracking-wide">
+                    <th className="text-left font-medium pb-1.5 pr-3">Component</th>
+                    <th className="text-left font-medium pb-1.5 pr-3">Raw metric</th>
+                    <th className="text-center font-medium pb-1.5 px-1.5">10</th>
+                    <th className="text-center font-medium pb-1.5 px-1.5">8</th>
+                    <th className="text-center font-medium pb-1.5 px-1.5">6</th>
+                    <th className="text-center font-medium pb-1.5 px-1.5">4</th>
+                    <th className="text-right font-medium pb-1.5 pl-2">Weight</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {SCORE_COMPONENTS.map(c => (
+                    <tr key={c.key} className="border-t border-gray-100">
+                      <td className="py-1.5 pr-3 font-medium text-gray-800 whitespace-nowrap">{c.name}</td>
+                      <td className="py-1.5 pr-3 text-gray-500">{c.metric}</td>
+                      {c.bands.map((b, i) => (
+                        <td key={i} className="py-1.5 px-1.5 text-center text-gray-700 whitespace-nowrap"
+                            style={{ backgroundColor: ["#f0fdf4", "#f7fee7", "#fefce8", "#fef2f2"][i] }}>
+                          {b}
+                        </td>
+                      ))}
+                      <td className="py-1.5 pl-2 text-right font-semibold text-gray-800">
+                        {Math.round(SCORE_WEIGHTS[c.key] * 100)}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <ul className="mt-2 space-y-1 text-[11px] text-gray-500 leading-5 list-disc pl-4">
+              <li><b>Scored</b> = completed tasks marked On-time or Late. Tasks still open are not scored.</li>
+              <li>A miss carrying a <b>Late Reason</b> is excused — dropped from the on-time rate (top and bottom) and from Overdue/Late.</li>
+              <li><b>Overdue</b> = still open with the deadline past (checked by day). <b>Late</b> = finished after the deadline. One figure covers both.</li>
+              <li>Cycle Time / Estimated Days outside 0–365 days are ignored as data-entry errors.</li>
+            </ul>
+          </Step>
+
+          <Step n="3" title="Drop what Lark has no data for, share its weight out">
+            <p className="text-[11px] text-gray-600 leading-5">
+              A blank field used to score a perfect 10 — a free 15% for everyone, since Reopen Count is
+              unfilled on nearly every row. A component with no data is now dropped and the remaining
+              weights are rescaled: <code className="bg-gray-100 px-1 rounded">effective = weight ÷ sum of weights that have data</code>.
+            </p>
+            <div className="mt-2 bg-gray-50 rounded-lg px-3 py-2 text-[11px] text-gray-600 leading-5">
+              No Reopen data → live weights are 0.35 + 0.25 + 0.25 = <b>0.85</b>, so On-time becomes
+              0.35 ÷ 0.85 = <b>×0.41</b>, Cycle and Overdue/Late <b>×0.29</b> each.
+              Hover a heatmap cell to see the weights that actually applied that month.
+            </div>
+          </Step>
+
+          <Step n="4" title="Add it up — that is the month's score">
+            <div className="bg-gray-900 rounded-lg px-3 py-2.5 font-mono text-[11px] text-gray-100 leading-6 overflow-x-auto">
+              <div className="text-gray-400 text-[10px] mb-1">Example — a month with all four components filled</div>
+              <div>On-time 100%<span className="text-gray-500"> → </span>10 × 0.35 <span className="text-gray-500">=</span> 3.50</div>
+              <div>Cycle 0.71<span className="text-gray-500"> → </span>10 × 0.25 <span className="text-gray-500">=</span> 2.50</div>
+              <div>Overdue/Late 0<span className="text-gray-500"> → </span>10 × 0.25 <span className="text-gray-500">=</span> 2.50</div>
+              <div>Reopen 0<span className="text-gray-500"> → </span>10 × 0.15 <span className="text-gray-500">=</span> 1.50</div>
+              <div className="border-t border-gray-700 mt-1 pt-1">Score<span className="text-gray-500"> = </span><b>10.0</b> · Excellent</div>
+            </div>
+          </Step>
+
+          <Step n="5" title="The card averages the months in the period">
+            <p className="text-[11px] text-gray-600 leading-5">
+              With Month = All, the score on a card is the <b>average of that person's monthly scores</b>,
+              not a recount of the whole period — which is why it need not line up with the on-time ring
+              above it (the ring adds the counts up). The Annual column averages every month that has a score.
+            </p>
+          </Step>
+
+          <div className="pt-1 border-t border-gray-100">
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Rating</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              {[["≥ 9","Excellent","#15803d","#dcfce7"],["8–8.9","Good","#065f46","#d1fae5"],["7–7.9","Fair","#1d4ed8","#dbeafe"],["5.5–6.9","Pass","#854d0e","#fef9c3"],["< 5.5","Fail","#b91c1c","#fee2e2"]].map(([range, label, color, bg]) => (
+                <span key={label} className="flex items-center gap-1 text-[11px]">
+                  <span className="px-1.5 py-0.5 rounded font-semibold text-[10px]" style={{ backgroundColor: bg, color }}>{range}</span>
+                  <span className="text-gray-500">{label}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// "7 tasks" / "2 open" on a scorecard, clickable straight through to the list
+// behind the number. The drilldown carries the same period the card aggregated
+// — one month when the Month filter picks one, the whole tracked window when it
+// is All — so the list can be counted against the figure it came from.
+function CountLink({ n, label, category, picName, year, monthFilter, periodLabel, onOpen }) {
+  if (!n) return <>{n} {label}</>;
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen({
+        picName, year,
+        month: monthFilter === 0 ? null : monthFilter,
+        category,
+      })}
+      title={`Click to list the ${n} ${label} — ${periodLabel}`}
+      className="text-gray-500 underline decoration-dotted hover:text-indigo-600 cursor-pointer"
+    >
+      {n} {label}
+    </button>
+  );
+}
+
 function TaskDetailModal({ drilldown, tasks, isLoading, onClose }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -599,7 +767,12 @@ function TaskDetailModal({ drilldown, tasks, isLoading, onClose }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const monthName = drilldown.month == null ? null : MONTH_NAMES[drilldown.month - 1];
+  // No month = the whole tracked window. Spelled out in the header so a list
+  // spanning several months is never mistaken for one month's worth.
+  const monthName =
+    drilldown.month != null ? `${MONTH_NAMES[drilldown.month - 1]} ${drilldown.year}`
+    : drilldown.category === "no_deadline" ? null
+    : `${drilldown.year} (from Jul)`;
   const catLabel = CATEGORY_LABELS[drilldown.category] ?? drilldown.category;
 
   return (
@@ -672,6 +845,7 @@ function TaskOverview({ year }) {
   const [monthFilter, setMonthFilter] = useState(0); // 0 = All, 1–12 = specific month
   const [picFilter, setPicFilter] = useState("all"); // "all" or pic_id
   const [drilldown, setDrilldown] = useState(null); // { picName, year, month, category }
+  const [showFormula, setShowFormula] = useState(false);
 
   const { data, isPending, error } = useQuery({
     queryKey: ["task-overview", year],
@@ -853,8 +1027,16 @@ function TaskOverview({ year }) {
             ))}
           </div>
         </div>
-        <div className="px-4 py-2 text-[10px] text-gray-400">
-          Period grouped by task <strong className="text-gray-500">Deadline</strong> month · Cards show <strong className="text-gray-500">{periodLabel}</strong> · Data standardized from July, earlier months excluded · A component with no data in Lark is dropped and its weight shared out (Reopen is unfilled on most rows)
+        <div className="px-4 py-2 text-[10px] text-gray-400 flex flex-wrap items-center gap-x-1 gap-y-1">
+          <span>
+            Period grouped by task <strong className="text-gray-500">Deadline</strong> month · Cards show <strong className="text-gray-500">{periodLabel}</strong> · Data standardized from July, earlier months excluded · A component with no data in Lark is dropped and its weight shared out (Reopen is unfilled on most rows)
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowFormula(true)}
+            className="px-2 py-0.5 rounded-full border border-gray-200 text-[10px] text-gray-600 font-medium hover:border-gray-400 hover:text-gray-900">
+            How the score works ⓘ
+          </button>
         </div>
       </div>
 
@@ -932,12 +1114,26 @@ function TaskOverview({ year }) {
               </div>
               <div className="text-[10px] text-gray-400 cursor-help" title={rateTip}>On-time rate ⓘ</div>
               {d.score !== null && (
-                <span className={`px-2 py-0.5 rounded-full text-[10px] cursor-help ${rCls}`} title={scoreTip}>
+                <button
+                  type="button"
+                  onClick={() => setShowFormula(true)}
+                  title={`${scoreTip}\n\nClick for the full formula.`}
+                  className={`px-2 py-0.5 rounded-full text-[10px] cursor-pointer hover:ring-1 hover:ring-gray-300 ${rCls}`}>
                   {d.score.toFixed(1)} · {ratingLabel(d.score)}
-                </span>
+                </button>
               )}
               <div className="text-[10px] text-gray-400 cursor-help" title={tasksTip}>
-                {d.agg?.total_tasks ?? 0} tasks · {d.open} open
+                <CountLink
+                  n={d.agg?.total_tasks ?? 0} label="tasks" category="total"
+                  picName={d.name} year={year} monthFilter={monthFilter}
+                  periodLabel={periodLabel} onOpen={setDrilldown}
+                />
+                {" · "}
+                <CountLink
+                  n={d.open} label="open" category="open"
+                  picName={d.name} year={year} monthFilter={monthFilter}
+                  periodLabel={periodLabel} onOpen={setDrilldown}
+                />
               </div>
               {d.noDeadline > 0 && (
                 <button
@@ -955,23 +1151,14 @@ function TaskOverview({ year }) {
 
       {/* ── Score heatmap: person × month ── */}
       <div className="bg-white rounded-xl border border-gray-200 p-4 overflow-x-auto">
-        <div className="flex items-center gap-2 mb-3 relative group/formula">
+        <div className="flex items-center gap-2 mb-3">
           <p className="text-xs font-semibold text-gray-600">Performance Score — Heatmap</p>
-          <span className="text-[10px] text-gray-400 cursor-help underline decoration-dotted">formula ℹ</span>
-          <div className="absolute top-full left-0 mt-1 hidden group-hover/formula:block bg-gray-800 text-white text-[10px] rounded-lg p-2.5 z-20 w-64 leading-5 shadow-lg">
-            <div className="font-semibold mb-1">Score = weighted sum (0–10)</div>
-            <div>On-time rate ×<b>0.35</b></div>
-            <div className="text-gray-300 text-[9px] ml-2">≥90%→10 · ≥80%→8 · ≥70%→6 · else→4</div>
-            <div>Cycle efficiency ×<b>0.25</b></div>
-            <div className="text-gray-300 text-[9px] ml-2">ratio≤1→10 · ≤1.2→8 · ≤1.5→6 · else→4</div>
-            <div>Overdue/Late ×<b>0.25</b></div>
-            <div className="text-gray-300 text-[9px] ml-2">0→10 · 1→8 · ≤3→6 · else→4</div>
-            <div>Reopen count ×<b>0.15</b></div>
-            <div className="text-gray-300 text-[9px] ml-2">0→10 · 1→8 · ≤3→6 · else→4</div>
-            <div className="mt-1.5 pt-1.5 border-t border-gray-600 text-gray-300 text-[9px]">
-              A component with no data in Lark is dropped and its weight shared out over the rest, so weights are rescaled per month. Hover a cell for the ones that applied.
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowFormula(true)}
+            className="text-[10px] text-gray-400 underline decoration-dotted hover:text-indigo-600 cursor-pointer">
+            formula ℹ
+          </button>
         </div>
         <table className="text-[11px] border-collapse w-full min-w-[520px]">
           <thead>
@@ -1217,6 +1404,8 @@ function TaskOverview({ year }) {
           onClose={() => setDrilldown(null)}
         />
       )}
+
+      {showFormula && <ScoreFormulaModal onClose={() => setShowFormula(false)} />}
     </div>
   );
 }
