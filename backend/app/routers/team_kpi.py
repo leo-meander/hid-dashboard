@@ -337,15 +337,13 @@ def get_task_detail_endpoint(
     """Return individual task names for a person/month/category (drilldown)."""
     from app.services.lark_service import get_task_detail
     valid_categories = {"total", "done", "on_time", "late", "overdue", "missed",
-                        "excused", "no_deadline"}
+                        "excused", "no_deadline", "open"}
     if category not in valid_categories:
         raise HTTPException(400, f"category must be one of: {', '.join(sorted(valid_categories))}")
-    # no_deadline tasks belong to no month, so month is not required for them
-    if category != "no_deadline":
-        if month is None:
-            raise HTTPException(400, "month is required for this category")
-        if not 1 <= month <= 12:
-            raise HTTPException(400, "month must be 1–12")
+    # month is optional: omitting it means the whole tracked window (year from
+    # the July cutoff), which is what the scorecards show under Month = All.
+    if month is not None and not 1 <= month <= 12:
+        raise HTTPException(400, "month must be 1–12")
     try:
         tasks = get_task_detail(pic_name, year, month, category)
     except Exception as exc:
