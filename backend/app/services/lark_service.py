@@ -1,4 +1,4 @@
-"""Lark Base API client — fetches task records for Designer & Paid Ads KPI actuals.
+"""Lark Base API client — fetches task records for Designer KPI actuals.
 Also provides get_task_overview_yearly() for the Task Overview tab.
 
 Mirrors exactly what the Google Apps Script does:
@@ -10,7 +10,6 @@ Mirrors exactly what the Google Apps Script does:
 KPIs derived:
   Designer (Nora):  design_assets    = Design-only_Number of images
                     videos_delivered = Design-only_Number of video
-  Paid Ads (Mason): ads_material     = images + videos
 """
 from __future__ import annotations
 
@@ -741,21 +740,6 @@ def get_task_completion_rate_yearly(year: int) -> dict[int, dict[str, dict]]:
     for month, c in counts.items():
         rate = round(c["completed"] / c["total"] * 100, 1) if c["total"] > 0 else None
         out[month] = {"all": {"task_completion_rate": rate}}
-    return out
-
-
-def get_ads_material_yearly(year: int) -> dict[int, dict[str, dict]]:
-    """
-    Return {month: {branch_key: {ads_material}}}
-    ads_material = images + videos  (matches Paid Ads script: source='both')
-    """
-    agg = _get_yearly_agg(year)
-    out: dict[int, dict[str, dict]] = {}
-    for branch_key, months in agg.items():
-        for month, counts in months.items():
-            out.setdefault(month, {})[branch_key] = {
-                "ads_material": round(counts["images"] + counts["videos"]),
-            }
     return out
 
 

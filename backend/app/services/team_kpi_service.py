@@ -46,8 +46,6 @@ KPI_DEFS: dict[str, list[dict]] = {
          "computed_note_pct": "= {pct}% of Posted target (KOL Engine)"},
     ],
     "paid_ads": [
-        # Temporarily hidden (2026-08-03) — remove "hidden" to bring it back.
-        {"key": "ads_material",    "label": "Variation Ads Material", "unit": "count",  "org_wide": False, "higher_is_better": True, "hidden": True},
         {"key": "roas",            "label": "ROAS",                   "unit": "×",      "org_wide": False, "higher_is_better": True,  "decimals": 2},
         {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True, "computed_target": "spend_x_roas", "computed_note": "= spend × ROAS target"},
     ],
@@ -400,7 +398,6 @@ def get_paid_ads_actuals_yearly(
             "ads_revenue": revenue_vnd,
             "ads_spend":   spend,
             "roas":        roas,
-            "ads_material": None,  # filled from Lark in build_monthly_summary
         }
 
     _ads_actuals_cache[cache_key] = (time.time(), out)
@@ -798,18 +795,10 @@ def build_monthly_summary(
 
     # Fetch actuals
     actuals_yearly: dict[int, dict[str, dict]] = {}
-    lark_ads_material: dict[int, dict[str, dict]] = {}
     if auto and role_key == "kol":
         actuals_yearly = get_kol_actuals_yearly_db(db, year)
     elif auto and role_key == "paid_ads":
         actuals_yearly = get_paid_ads_actuals_yearly(db, year)
-        # Skip the Lark round-trip entirely while ads_material is hidden
-        if any(d["key"] == "ads_material" for d in defs):
-            try:
-                from app.services.lark_service import get_ads_material_yearly
-                lark_ads_material = get_ads_material_yearly(year)
-            except Exception as exc:
-                log.warning("lark ads_material unavailable: %s", exc)
     elif auto and role_key == "designer":
         # Each source is fetched only when a visible KPI still needs it.
         if any(d["key"] in ("design_assets", "videos_delivered") for d in defs):
@@ -982,8 +971,6 @@ def build_monthly_summary(
                         count = 0
                         for bk in _ALL_BRANCH_KEYS:
                             v = month_actuals.get(bk, {}).get(kpi_key)
-                            if v is None and kpi_key == "ads_material" and lark_ads_material:
-                                v = lark_ads_material.get(m, {}).get(bk, {}).get("ads_material")
                             if v is not None:
                                 total += float(v)
                                 count += 1
@@ -995,9 +982,6 @@ def build_monthly_summary(
                             raw = total
                 else:
                     raw = month_actuals.get(branch_key or "", {}).get(kpi_key)
-                    # Merge Lark ads_material on top of paid_ads actuals
-                    if raw is None and kpi_key == "ads_material" and lark_ads_material:
-                        raw = lark_ads_material.get(m, {}).get(branch_key or "", {}).get("ads_material")
                 if raw is not None:
                     actual = float(raw)
                     if is_revenue and native_currency != "VND" and vnd_to_native_rate:
