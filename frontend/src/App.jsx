@@ -28,6 +28,7 @@ import CountryDetail     from "./pages/CountryDetail";
 import CountryIntel from "./pages/CountryIntel";
 import Marketing from "./pages/Marketing";
 import Report    from "./pages/Report";
+import BiWeeklyReport from "./pages/BiWeeklyReport";
 import Settings  from "./pages/Settings";
 import Users     from "./pages/Users";
 
@@ -116,6 +117,7 @@ function AppRoutes() {
             <Route path="/country-intel" element={<CountryIntel />} />
             <Route path="/marketing" element={<Marketing />} />
             <Route path="/report"    element={<Report />} />
+            <Route path="/biweekly-report" element={<BiWeeklyReport />} />
 
             {/* Marketing Activity (consolidated) */}
             <Route path="/marketing-activity" element={<MarketingActivity />} />

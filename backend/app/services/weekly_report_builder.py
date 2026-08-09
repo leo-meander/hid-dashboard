@@ -61,6 +61,28 @@ def last_week_range(today: date) -> tuple[date, date]:
     return last_mon, last_sun
 
 
+def resolve_window(
+    today: date, window: Optional[tuple[date, date]] = None
+) -> tuple[date, date, date, date]:
+    """Return (start, end, prev_start, prev_end) for a report section.
+
+    With `window=None` this is exactly the weekly behaviour: last calendar
+    week, compared against the week before it. Passing an explicit window
+    lets the Bi-Weekly Branch Manager report drive the same section code
+    over a 14-day (occasionally 21-day) ISO-week pair.
+
+    The comparison window is always the same LENGTH as the reporting
+    window, placed immediately before it — so a 7-day window still yields
+    `prev_end = start − 1d`, `prev_start = prev_end − 6d`, byte-identical
+    to the hard-coded arithmetic this replaced.
+    """
+    start, end = window if window else last_week_range(today)
+    length = (end - start).days + 1
+    prev_end = start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=length - 1)
+    return start, end, prev_start, prev_end
+
+
 # ── Reservation query helpers ────────────────────────────────────────────────
 
 def _reservations_base(db: Session, branch_id: UUID):
@@ -116,6 +138,14 @@ def _pct_change(cur: Optional[float], prev: Optional[float]) -> Optional[float]:
     if cur is None or prev is None or prev == 0:
         return None
     return round((cur - prev) / prev * 100, 2)
+
+
+# Public aliases — these two are genuinely general-purpose (arbitrary date
+# range in, aggregate out) and are reused by the Bi-Weekly Branch Manager
+# report. Exported under non-underscore names rather than renamed, so the
+# ~40 existing call sites in this module stay untouched.
+range_metrics = _range_metrics
+pct_change = _pct_change
 
 
 def summary_metrics(db: Session, branch_id: UUID, total_rooms: int, today: date) -> dict:
@@ -417,7 +447,8 @@ def booking_behavior(db: Session, branch_id: UUID, today: date, days: int = 7) -
 
 # ── 4. Channel mix ──────────────────────────────────────────────────────────
 
-def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7) -> dict:
+def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7,
+                window: Optional[tuple[date, date]] = None) -> dict:
     """Room-nights + revenue share by source_category and by specific
     source — last calendar week vs prev calendar week.
 
@@ -433,9 +464,7 @@ def channel_mix(db: Session, branch_id: UUID, today: date, days: int = 7) -> dic
     week and dropped guests who checked in earlier but were still in-house
     — producing per-source drift in both directions vs Cloudbeds.)
     """
-    cutoff, end_date = last_week_range(today)
-    prev_end = cutoff - timedelta(days=1)
-    prev_start = prev_end - timedelta(days=6)
+    cutoff, end_date, prev_start, prev_end = resolve_window(today, window)
 
     def _daily_base(d_from: date, d_to: date):
         """reservation_daily rows in [d_from, d_to], cancelled/no-show excluded."""
@@ -1151,7 +1180,8 @@ def _build_country_perf(db: Session, branch: Branch,
 
 
 def paid_ads_section(db: Session, branch: Branch, today: date,
-                     days: int = 7) -> dict:
+                     days: int = 7,
+                     window: Optional[tuple[date, date]] = None) -> dict:
     """Paid Ads snapshot — last calendar week vs the week before it
     (apples-to-apples 7d vs 7d), plus channel breakdown, By Country
     table, and activity log. Sourced from local ads_performance for
@@ -1159,9 +1189,7 @@ def paid_ads_section(db: Session, branch: Branch, today: date,
     /api/export/spend/daily-by-country for the country breakdown.
     """
     branch_id = branch.id
-    week_start, week_end = last_week_range(today)
-    prev_end = week_start - timedelta(days=1)
-    prev_start = prev_end - timedelta(days=6)
+    week_start, week_end, prev_start, prev_end = resolve_window(today, window)
 
     last_week = _ads_window_aggregate(db, branch_id, week_start, week_end)
     prev_week = _ads_window_aggregate(db, branch_id, prev_start, prev_end)
@@ -1407,7 +1435,8 @@ def meta_country_correlation(db: Session, branch: Branch, today: date) -> dict:
 # ── 8. KOL — pipeline, ROI, expiring usage rights ───────────────────────────
 
 def kol_section(db: Session, branch_id: UUID, branch_name: str,
-                today: date, days: int = 7) -> dict:
+                today: date, days: int = 7,
+                window: Optional[tuple[date, date]] = None) -> dict:
     """KOL monthly progress (Invited / Collaborated / Posted vs target).
 
     The email previously showed pipeline counts, stuck deliverables,
@@ -1424,7 +1453,7 @@ def kol_section(db: Session, branch_id: UUID, branch_name: str,
     cost_mtd / organic_*) are still computed for backward compat with
     any other consumer, but the email no longer renders them.
     """
-    week_start, week_end = last_week_range(today)
+    week_start, week_end, _kol_prev_start, _kol_prev_end = resolve_window(today, window)
     expiry_horizon = today + timedelta(days=60)
 
     # KOL records for this branch
@@ -1690,12 +1719,11 @@ def _resolve_ghl_branch_name(branch_name: str) -> Optional[str]:
 
 
 def crm_section(db: Session, branch_id: UUID, branch_name: str,
-                today: date, days: int = 7) -> dict:
-    """CRM revenue from CRM-tagged reservations — last calendar week
-    vs the week before (apples-to-apples)."""
-    week_start, week_end = last_week_range(today)
-    prev_end = week_start - timedelta(days=1)
-    prev_start = prev_end - timedelta(days=6)
+                today: date, days: int = 7,
+                window: Optional[tuple[date, date]] = None) -> dict:
+    """CRM revenue from CRM-tagged reservations — the reporting window
+    vs the equally-long window before it (apples-to-apples)."""
+    week_start, week_end, prev_start, prev_end = resolve_window(today, window)
 
     # CRM revenue from reservations (last week vs prev week)
     rev_this = _crm_revenue(db, branch_id, week_start, week_end)
