@@ -98,6 +98,28 @@ class Settings(BaseSettings):
     GOOGLE_ADS_CONVERSION_SINGLE_OSAKA: str = ""
     GOOGLE_ADS_CONVERSION_BOTH_OSAKA: str = ""
 
+    # GA4 Data API v1beta — Purchase Conversion Rate KPI (Paid Ads).
+    # Service account JSON key, pasted whole. The service account email needs
+    # the Viewer role on every property below; without it runReport 403s and
+    # the KPI renders blank.
+    GA4_SERVICE_ACCOUNT_JSON: str = ""
+    # Property IDs are not secrets, so they ship as defaults and stay
+    # overridable per environment. The query layer never sees them directly —
+    # it reads ga4_property_map.
+    GA4_PROPERTY_ID_SAIGON: str = "284939713"
+    GA4_PROPERTY_ID_1948: str = "285135676"
+    GA4_PROPERTY_ID_TAIPEI: str = "295612616"
+    GA4_PROPERTY_ID_OSAKA: str = "482876806"
+    # Oani's property is 514380737, deliberately left unmapped: the Oani GA4
+    # tag is also deployed on the 1948 and Osaka websites, so this property's
+    # totals are three branches, not one (confirmed 2026-07-31 —
+    # 1948.staymeander.com reported ~25.9k sessions into it). Purchases fire on
+    # the Cloudbeds domain and hostName is event-scoped, so there is no
+    # query-side way to isolate Oani. Re-enabling once the tagging is corrected
+    # takes two deliberate steps: set this ID, and drop "oani" from the
+    # purchase_cvr "blocked" map in team_kpi_service.KPI_DEFS.
+    GA4_PROPERTY_ID_OANI: str = ""
+
     # TikTok Events API — Saigon only
     TIKTOK_ACCESS_TOKEN_SAIGON: str = ""
     TIKTOK_EVENT_SOURCE_ID_SAIGON: str = ""
@@ -280,6 +302,25 @@ class Settings(BaseSettings):
         return self.property_api_key_map.get(str(property_id)) or (
             self.CLOUDBEDS_API_KEY if self.CLOUDBEDS_API_KEY != "placeholder_key" else None
         )
+
+    @property
+    def ga4_property_map(self) -> Dict[str, str]:
+        """branch_key → GA4 property ID, for branches that have a usable one.
+
+        A branch with no ID configured is simply absent — that is how Oani stays
+        blank while its tagging is being fixed.
+        """
+        return {
+            key: value
+            for key, value in {
+                "saigon": self.GA4_PROPERTY_ID_SAIGON,
+                "1948":   self.GA4_PROPERTY_ID_1948,
+                "taipei": self.GA4_PROPERTY_ID_TAIPEI,
+                "osaka":  self.GA4_PROPERTY_ID_OSAKA,
+                "oani":   self.GA4_PROPERTY_ID_OANI,
+            }.items()
+            if str(value or "").strip()
+        }
 
     @property
     def datamanager_client_id(self) -> str:

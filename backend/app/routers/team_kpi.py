@@ -31,6 +31,55 @@ router = APIRouter()
 VALID_ROLES = set(ROLE_META.keys())
 
 
+# ── GA4 debug ─────────────────────────────────────────────────────────────────
+
+@router.get("/debug/ga4-purchase-rate")
+def debug_ga4_purchase_rate(
+    year: int = Query(2026),
+    month: Optional[int] = Query(None, ge=1, le=12, description="omit for Jan-1 → today"),
+    branch: Optional[str] = Query(None, description="branch key; omit for all mapped branches"),
+):
+    """Raw GA4 purchase-rate reading per branch, with both candidate denominators.
+
+    Two things this answers that the grid cannot:
+      * whether ``userKeyEventRate:purchase`` divides by ``totalUsers`` or
+        ``activeUsers`` — compare ``implied_purchasers_from_*`` against the
+        reported ``purchasing_users`` and see which one lands;
+      * why a cell is blank (no property mapped, 403, thresholded, no traffic).
+    """
+    import calendar
+    from datetime import date
+
+    from app.config import settings
+    from app.services.ga4_service import describe_purchase_report
+
+    property_map = settings.ga4_property_map
+    if branch:
+        key = branch.strip().lower()
+        property_map = {k: v for k, v in property_map.items() if k == key}
+
+    if month:
+        start = f"{year}-{month:02d}-01"
+        end = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
+    else:
+        today = date.today()
+        start = f"{year}-01-01"
+        end = today.isoformat() if today.year == year else f"{year}-12-31"
+
+    return {
+        "success": True,
+        "data": {
+            "window": {"start_date": start, "end_date": end},
+            "mapped_branches": sorted(settings.ga4_property_map),
+            "results": {
+                bk: describe_purchase_report(pid, start, end)
+                for bk, pid in property_map.items()
+            },
+        },
+        "error": None,
+    }
+
+
 # ── Lark debug ────────────────────────────────────────────────────────────────
 
 @router.get("/debug/ads-tasks-jul")

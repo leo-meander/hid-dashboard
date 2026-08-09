@@ -44,6 +44,7 @@ const KPI_TOOLTIPS = {
   crm_revenue:          "Revenue attributed to CRM campaigns in that month. Enter targets in mil VND (e.g. enter 56 for 56 million VND).",
   kol_posted:           "KOLs who published a post that month. Target is owned by KOL Engine → Set Targets → Posted: round(prev-month collaborated × Posted %). It moves as collaborations land, so it is read-only here.",
   kol_ads_collab:       "KOLs with ads permission who published that month (KOL Engine 'Ads-Allowed'). Target is owned by KOL Engine → Set Targets → Ads-Allowed: round(Posted target × Ads-Allowed %). Read-only here.",
+  purchase_cvr:         "Purchase Conversion Rate — GA4's own 'User key event rate (purchase)' for the whole property, the number under Reports → Acquisition → User acquisition. Counts every purchase the property sees, not paid traffic only. Each month is its own GA4 query over that month's dates: unique users de-duplicate over time, so a month can never be built from daily data and YTD is a separate Jan-1 query, not a sum of the months. Purchases fire on the Cloudbeds booking-engine domain, so the rate can only be read property-wide.",
   ads_win_rate:         "% Ads Win — an ad wins a month when its ROAS that month beats the branch's blended CRTV ROAS for the same month, with enough data behind it (over 4,500 clicks or 5+ bookings; below that it stays TEST and counts on neither side). Each ad is judged once, ever. Formula: wins ÷ (wins + losses) among the ads decided that month. Meta only, and only ads named with CRTV. Source: Ads Platform.",
 };
 
@@ -56,6 +57,18 @@ function startLabel(starts) {
 
 const PROVISIONAL_TITLE =
   "Provisional — the month is still syncing upstream. Losing verdicts only freeze once a month closes, so this rate is usually inflated.";
+
+// Value as the KPI wants it read: a rate that means 1.63% shows both decimals
+// and its own sign, while a count keeps the existing thousands formatting.
+function fmtValue(kpi, value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number") return String(value);
+  const decimals = kpi.decimals ?? 0;
+  const text = kpi.fixed_decimals
+    ? value.toFixed(decimals)
+    : value.toLocaleString(undefined, { maximumFractionDigits: decimals });
+  return kpi.value_suffix ? `${text}${kpi.value_suffix}` : text;
+}
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
 
@@ -263,7 +276,12 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
           {kpis.map((kpi, ki) => {
             // YTD and Avg% only count months that have a target set
             const targetedMonths = kpi.monthly.filter(m => !m.is_future && m.has_target);
-            const ytdActual = targetedMonths.filter(m => m.actual !== null).reduce((s, m) => s + m.actual, 0);
+            // A rate whose months cannot be added together carries its own
+            // year-to-date reading from the source; it stays blank when that
+            // reading is missing rather than falling back to a meaningless sum.
+            const ytdIsQuery = kpi.ytd_mode === "query";
+            const ytdSum = targetedMonths.filter(m => m.actual !== null).reduce((s, m) => s + m.actual, 0);
+            const ytdActual = ytdIsQuery ? kpi.ytd_actual : (ytdSum > 0 ? ytdSum : null);
             const actPcts = targetedMonths.filter(m => m.pct !== null).map(m => m.pct);
             const avgPct = actPcts.length ? Math.round(actPcts.reduce((a, b) => a + b, 0) / actPcts.length * 10) / 10 : null;
             const avgColor = pctColor(avgPct, kpi.higher_is_better);
@@ -296,6 +314,13 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                         from {startLabel(kpi.starts)}
                       </span>
                     )}
+                    {kpi.unavailable_note && (
+                      <Tooltip text={kpi.unavailable_note}>
+                        <span className="text-[10px] text-amber-600 font-normal cursor-help">
+                          not measurable here ⓘ
+                        </span>
+                      </Tooltip>
+                    )}
                   </td>
                   <td className="px-2 py-1.5 text-center text-gray-400" rowSpan={2}>{kpi.unit}</td>
                   <td className="px-2 py-1.5 text-center">
@@ -327,7 +352,9 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     </td>
                   ))}
                   <td className="px-2 py-1.5 text-center text-gray-400 font-medium">
-                    {kpi.monthly.filter(m => m.target).reduce((s, m) => s + (m.target || 0), 0) > 0
+                    {/* Same rule as the actual row: monthly targets for a rate
+                        are not addable, so that YTD cell stays empty. */}
+                    {!ytdIsQuery && kpi.monthly.filter(m => m.target).reduce((s, m) => s + (m.target || 0), 0) > 0
                       ? kpi.monthly.filter(m => m.target).reduce((s, m) => s + (m.target || 0), 0).toLocaleString(undefined, { maximumFractionDigits: 1 })
                       : "—"}
                   </td>
@@ -376,16 +403,18 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     if ((autoActuals || kpi.auto_actuals) && kpi.auto_actuals !== false) {
                       // Read-only actual from API
                       return (
-                        <td key={m.month} title={!m.has_target && m.actual !== null ? "No target set — excluded from YTD & Avg%" : undefined}
+                        <td key={m.month} title={
+                            kpi.unavailable_note ? kpi.unavailable_note
+                            : !m.has_target && m.actual !== null ? "No target set — excluded from YTD & Avg%"
+                            : undefined}
                           className={`px-1 py-1.5 text-center ${m.is_future ? "opacity-30" : ""} ${cls ? cls.bg : ""}`}>
                           {m.actual !== null ? (
                             <div className="flex flex-col items-center gap-0.5">
                               <span className={`font-semibold ${cls ? cls.text : "text-gray-400"}`}>
-                                {typeof m.actual === "number"
-                                  ? m.actual.toLocaleString(undefined, { maximumFractionDigits: kpi.decimals ?? 0 })
-                                  : m.actual}
+                                {fmtValue(kpi, m.actual)}
                                 {m.provisional && (
-                                  <span className="text-gray-400 font-normal cursor-help" title={PROVISIONAL_TITLE}>*</span>
+                                  <span className="text-gray-400 font-normal cursor-help"
+                                        title={kpi.provisional_note || PROVISIONAL_TITLE}>*</span>
                                 )}
                               </span>
                               {m.pct !== null && m.has_target && kpi.unit !== "%" && (
@@ -420,11 +449,10 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                       </td>
                     );
                   })}
-                  <td className="px-2 py-1.5 text-center">
-                    {ytdActual > 0 ? (
-                      <span className="font-semibold text-gray-700">
-                        {ytdActual.toLocaleString(undefined, { maximumFractionDigits: kpi.decimals ?? 0 })}
-                      </span>
+                  <td className="px-2 py-1.5 text-center"
+                      title={ytdIsQuery ? "Year-to-date is its own query over Jan 1 → today — these months cannot be added together" : undefined}>
+                    {ytdActual !== null && ytdActual !== undefined ? (
+                      <span className="font-semibold text-gray-700">{fmtValue(kpi, ytdActual)}</span>
                     ) : "—"}
                   </td>
                   <td className={`px-2 py-1.5 text-center font-semibold ${avgColor ? COLOR_CLASSES[avgColor].text : "text-gray-400"}`}>
