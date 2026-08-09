@@ -648,6 +648,39 @@ def _group_purchase_cvr(
     return round(purchasers / users * 100, 2) if users > 0 else None
 
 
+def _group_purchase_cvr_target(
+    per_branch_targets: dict[str, float],
+    actuals_yearly: dict[int, dict[str, dict]],
+    year: int,
+    month: int,
+) -> Optional[float]:
+    """Blend per-branch targets by traffic, matching how the actual is blended.
+
+    The generic is_pct path takes whichever branch row the database returned
+    first, which for targets of 1.5 / 2.5 / 3.0 makes the group achievement
+    percentage meaningless. A group target has to be weighted the same way the
+    group actual is, exactly as the ROAS row weights its branch targets by
+    spend.
+
+    Future months have no traffic yet, so they borrow the year-to-date mix —
+    a target that renders blank for the rest of the year would be worse than
+    one weighted on last-known proportions.
+    """
+    weights = actuals_yearly.get(month, {})
+    if not any(weights.get(bk, {}).get("purchase_cvr__users") for bk in per_branch_targets):
+        weights = actuals_yearly.get(GA4_YTD_MONTH, {})
+
+    weighted = total = 0.0
+    for branch_key, branch_target in per_branch_targets.items():
+        if not _counts_in_group_total(branch_key, year, month):
+            continue
+        users = weights.get(branch_key, {}).get("purchase_cvr__users")
+        if users:
+            weighted += float(users) * float(branch_target)
+            total += float(users)
+    return round(weighted / total, 2) if total > 0 else None
+
+
 def _parse_ym(value, year: int) -> Optional[int]:
     """"2026-08" → 8, but only for the year asked for; None otherwise."""
     y, _, m = str(value or "").partition("-")
@@ -1139,6 +1172,15 @@ def build_monthly_summary(
                             tot_weighted += spend * float(roas_tgt)
                             tot_spend += spend
                     target = round(tot_weighted / tot_spend, 2) if tot_spend > 0 else None
+                elif all_branches_view and kpi_key == "purchase_cvr":
+                    # Only when branch targets exist to blend; an org-wide row
+                    # entered against the All tab itself still wins otherwise.
+                    blended = _group_purchase_cvr_target(
+                        per_branch_targets_map.get((kpi_key, m), {}),
+                        actuals_yearly, year, m,
+                    )
+                    if blended is not None:
+                        target = blended
                 elif all_branches_view and kpi_key == "roas":
                     target = None
 

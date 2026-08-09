@@ -381,6 +381,74 @@ def run_purchase_report(
     return reading
 
 
+def describe_breakdown(
+    property_id: str,
+    start_date: str,
+    end_date: str,
+    dimension: str,
+    limit: int = 25,
+) -> dict:
+    """One dimension × users/sessions/purchases, for auditing a property.
+
+    A GA4 property is a tagging artefact, not a business entity — whatever tag
+    was deployed is what it contains. Breaking traffic down by ``hostName`` is
+    the instrument that catches a tag living on the wrong site, which is how
+    Oani's contamination was found.
+
+    Two things this is NOT for. The rows do not sum to the property total —
+    GA4 computes that independently — so never rebuild a total from here. And
+    the per-row rate below divides purchase EVENTS by users, which is not the
+    KPI's user-scoped rate; it is a directional signal for spotting which slice
+    of traffic converts, nothing more.
+    """
+    token, why = _access_token()
+    if not token:
+        return {"dimension": dimension, "rows": None, "error": why}
+
+    body = {
+        "dateRanges": [{"startDate": start_date, "endDate": end_date}],
+        "dimensions": [{"name": dimension}],
+        "metrics": [{"name": m} for m in ("activeUsers", "sessions", "keyEvents:purchase")],
+        "orderBys": [{"metric": {"metricName": "activeUsers"}, "desc": True}],
+        "limit": limit,
+    }
+    try:
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
+            resp = client.post(
+                f"{BASE_URL}/properties/{property_id}:runReport",
+                json=body,
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json"},
+            )
+    except Exception as exc:
+        return {"dimension": dimension, "rows": None, "error": str(exc)}
+    if resp.status_code != 200:
+        return {"dimension": dimension, "rows": None,
+                "error": f"HTTP {resp.status_code}: {resp.text[:250]}"}
+
+    payload = resp.json()
+    rows = []
+    for row in payload.get("rows") or []:
+        values = [v.get("value") for v in row.get("metricValues") or []]
+        users = _as_float(values[0] if values else 0)
+        purchases = _as_float(values[2] if len(values) > 2 else 0)
+        rows.append({
+            dimension: (row.get("dimensionValues") or [{}])[0].get("value"),
+            "active_users": users,
+            "sessions": _as_float(values[1] if len(values) > 1 else 0),
+            "purchase_events": purchases,
+            "purchases_per_100_users": round(purchases / users * 100, 2) if users else None,
+        })
+    return {
+        "dimension": dimension,
+        "property_id": property_id,
+        "window": {"start_date": start_date, "end_date": end_date},
+        "rows": rows,
+        "error": None,
+        "note": "Rows do not sum to the property total — GA4 computes that separately.",
+    }
+
+
 def describe_purchase_report(
     property_id: str,
     start_date: str,

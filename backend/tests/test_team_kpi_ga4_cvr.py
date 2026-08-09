@@ -364,6 +364,26 @@ def test_no_ga4_property_id_reaches_the_grid(ga4, branch_id):
         assert property_id not in rendered
 
 
+def test_the_group_target_is_weighted_by_traffic_not_picked_from_one_branch(branches):
+    """Branch targets of 1.5 / 2.5 / 2.5 / 3.0 over 1k / 9k / 1k / 1k users
+    blend to 2.46%. Taking whichever row the DB returned first — what the
+    generic is_pct path does — would make the achievement % meaningless."""
+    rows = [_FakeRow("purchase_cvr", CUR_MONTH, t, svc.BRANCH_KEY_TO_UUID[b])
+            for b, t in [("saigon", 1.5), ("1948", 2.5), ("taipei", 2.5), ("osaka", 3.0)]]
+    kpi = _kpi(svc.build_monthly_summary(_FakeSession(rows), "paid_ads", YEAR, None))
+    cell = kpi["monthly"][CUR_MONTH - 1]
+    assert cell["target"] == 2.46
+    assert cell["target"] not in (1.5, 2.5, 3.0)   # not any single branch's
+
+
+def test_a_future_group_target_borrows_the_year_to_date_traffic_mix(branches):
+    """Blank for the rest of the year would be worse than last-known weights."""
+    rows = [_FakeRow("purchase_cvr", 12, t, svc.BRANCH_KEY_TO_UUID[b])
+            for b, t in [("saigon", 1.5), ("1948", 2.5), ("taipei", 2.5), ("osaka", 3.0)]]
+    kpi = _kpi(svc.build_monthly_summary(_FakeSession(rows), "paid_ads", YEAR, None))
+    assert kpi["monthly"][11]["target"] == 2.46
+
+
 def test_a_group_target_is_read_back_unnormalised(ga4):
     """1.8 on the All tab means 1.8%, same as on a branch tab."""
     rows = [_FakeRow("purchase_cvr", CUR_MONTH, 1.8, None)]
