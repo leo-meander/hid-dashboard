@@ -13,7 +13,7 @@ export const PAGE_GROUPS = [
   { key: "performance", label: "Performance", hint: "Summary, Daily, Weekly, Monthly, OTA, Countries" },
   { key: "strategy",    label: "Strategy",    hint: "KPI, Targets, Country Intel, Holiday Intel" },
   { key: "marketing",   label: "Marketing",   hint: "Marketing Activity, Budget Planner, Persona, Email" },
-  { key: "reports",     label: "Reports",     hint: "Alerts, Rate Plan Quotas, Weekly Report" },
+  { key: "reports",     label: "Reports",     hint: "Alerts, Rate Plan Quotas, Weekly Report, Bi-Weekly Report" },
 ];
 
 const PAGE_GROUP_KEYS = PAGE_GROUPS.map((g) => g.key);
@@ -37,6 +37,7 @@ const ROUTE_GROUPS = [
   ["/alerts",             "reports"],
   ["/rate-plan-quotas",   "reports"],
   ["/report",             "reports"],
+  ["/biweekly-report",    "reports"],
   ["/marketing",          "admin"],
   ["/settings",           "admin"],
   ["/users",              "admin"],

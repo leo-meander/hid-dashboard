@@ -21,7 +21,7 @@ from __future__ import annotations
 import calendar
 import logging
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -645,3 +645,123 @@ def compute_kpi_summary(
         # Sync metadata — when was the Insights cache last refreshed
         "data_synced_at": _get_last_synced(db, str(branch_id), year, month),
     }
+
+
+# ── Period achievement (arbitrary date range) ────────────────────────────────
+#
+# Monthly targets are the only revenue goal the business sets, but reports
+# increasingly ask "did we hit target over THIS window" for windows that are
+# not months — a week, a 14-day ISO-week pair, a 90-day rollup. The answer is
+# a prorated one: every day carries 1/days_in_month of its month's target, and
+# a window's target is the sum of its days' goals. That handles the common
+# case of a window straddling a month boundary without special-casing it.
+#
+# The math lives here (rather than in the /kpi/period-achievement route it was
+# written for) so the Bi-Weekly Branch Manager report computes target
+# achievement exactly the way the KPI page does. The router keeps its batched
+# queries and calls `period_achievement_row`; single-branch callers use
+# `compute_period_achievement`, which loads its own inputs.
+
+
+def period_achievement_row(
+    branch,
+    date_from: date,
+    date_to: date,
+    monthly_targets: dict,
+    actual_revenue: float,
+    actual_revenue_vnd: float,
+    fx: float = 1.0,
+) -> dict:
+    """Prorated target vs actual for [date_from, date_to] for one branch.
+
+    `monthly_targets` maps (year, month) → (target_native, target_vnd).
+    Months with no target row contribute 0, which is what the KPI page has
+    always done — an unset target reads as "no goal", not as an error.
+
+    Both sides get the SAME branch adjustment before being compared:
+    value × (1 − deduction%) + prorated other_revenue. Applying it to only
+    one side would silently move the achievement %.
+    """
+    cur = branch.currency or getattr(branch, "native_currency", None) or "VND"
+    total_days = (date_to - date_from).days + 1
+
+    mult = 1 - float(branch.deduction_pct or 0) / 100
+    other_rev_month = float(branch.other_revenue_native or 0)
+    other_rev_month_vnd = other_rev_month * fx
+
+    period_target = 0.0
+    period_target_vnd = 0.0
+    other_rev_period = 0.0
+    other_rev_period_vnd = 0.0
+
+    d = date_from
+    while d <= date_to:
+        monthly_target, monthly_target_vnd = monthly_targets.get((d.year, d.month), (0, 0))
+        dim = calendar.monthrange(d.year, d.month)[1]
+        if dim > 0:
+            period_target += monthly_target / dim
+            period_target_vnd += monthly_target_vnd / dim
+            other_rev_period += other_rev_month / dim
+            other_rev_period_vnd += other_rev_month_vnd / dim
+        d += timedelta(days=1)
+
+    adj_target = max(0.0, period_target * mult + other_rev_period)
+    adj_actual = max(0.0, float(actual_revenue or 0) * mult + other_rev_period)
+    achievement_pct = round(adj_actual / adj_target, 4) if adj_target > 0 else None
+
+    adj_target_vnd = max(0.0, period_target_vnd * mult + other_rev_period_vnd)
+    adj_actual_vnd = max(0.0, float(actual_revenue_vnd or 0) * mult + other_rev_period_vnd)
+
+    return {
+        "branch_id": str(branch.id),
+        "branch_name": branch.name,
+        "currency": cur,
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "actual_revenue": round(adj_actual, 2),
+        "target_revenue": round(adj_target, 2),
+        "actual_revenue_vnd": round(adj_actual_vnd, 2),
+        "target_revenue_vnd": round(adj_target_vnd, 2),
+        "achievement_pct": achievement_pct,
+        "daily_goal": round(adj_target / total_days, 2) if total_days > 0 else 0,
+        "daily_actual": round(adj_actual / total_days, 2) if total_days > 0 else 0,
+        "total_days": total_days,
+    }
+
+
+def compute_period_achievement(db: Session, branch, date_from: date, date_to: date) -> dict:
+    """Single-branch `period_achievement_row` that loads its own inputs.
+
+    Two queries — targets for this branch, and the daily_metrics revenue sum
+    over the range. Callers reporting on many branches at once should batch
+    the loads themselves and call `period_achievement_row` directly.
+    """
+    from app.services.currency import get_cached_rate
+
+    targets = db.query(KPITarget).filter(KPITarget.branch_id == branch.id).all()
+    monthly_targets = {
+        (t.year, t.month): (
+            float(t.target_revenue_native or 0),
+            float(t.target_revenue_vnd or 0),
+        )
+        for t in targets
+    }
+
+    row = db.query(
+        func.coalesce(func.sum(DailyMetrics.revenue_native), 0),
+        func.coalesce(func.sum(DailyMetrics.revenue_vnd), 0),
+    ).filter(
+        DailyMetrics.branch_id == branch.id,
+        DailyMetrics.date >= date_from,
+        DailyMetrics.date <= date_to,
+    ).one()
+
+    cur = branch.currency or getattr(branch, "native_currency", None) or "VND"
+    fx = get_cached_rate(cur, "VND") or 1.0
+
+    return period_achievement_row(
+        branch, date_from, date_to, monthly_targets,
+        actual_revenue=float(row[0] or 0),
+        actual_revenue_vnd=float(row[1] or 0),
+        fx=fx,
+    )

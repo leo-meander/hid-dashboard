@@ -14,17 +14,6 @@ import textwrap
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional
 from uuid import UUID
-from zoneinfo import ZoneInfo
-
-_ICT_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-
-
-def _ict_today() -> date:
-    # Weekly cache cron fires 20:00 UTC Sunday = 03:00 ICT Monday. The server
-    # is UTC, so date.today() there returns Sunday and last_week_range rolls
-    # two weeks back. Always resolve "today" in ICT so the report tracks the
-    # team's calendar week.
-    return datetime.now(_ICT_TZ).date()
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
@@ -53,14 +42,23 @@ from app.services.kpi_engine import (
     _EXCLUDED_SOURCES,
 )
 from app.services.weekly_report_builder import build_branch_analytics, last_week_range
+from app.services.report_common import (
+    MONTHS_EN,
+    attr_escape as _attr_escape,
+    cell_attrs as _cell_attrs,
+    envelope as _envelope,
+    fmt as _fmt,
+    ict_today as _ict_today,
+    num as _num,
+    pct as _pct,
+    safe_section as _safe_section,
+    signed_pct as _signed_pct,
+)
 from app.models.gov_visitor import GovVisitorData
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
-
-MONTHS_EN = ["", "January", "February", "March", "April", "May", "June",
-             "July", "August", "September", "October", "November", "December"]
 
 
 def _week_start(today: date) -> date:
@@ -69,58 +67,6 @@ def _week_start(today: date) -> date:
     this date so threads stay anchored to the week the user was viewing.
     """
     return today - timedelta(days=today.weekday())
-
-
-def _cell_attrs(branch_id, metric_key: str, label: Optional[str] = None) -> str:
-    """Render the data-* attributes the frontend uses to detect a
-    clickable metric cell or row. Email clients ignore `class` and
-    `data-*` attributes that don't have inline styles backing them, so
-    this is safe to include in the same HTML the email send pipeline
-    produces.
-
-    `label`, when provided, is read by the frontend as a human-readable
-    drawer title — useful for dynamic keys (per-country, per-source rows)
-    where the static frontend label map can't enumerate every variation.
-    """
-    bid = f' data-branch-id="{branch_id}"' if branch_id else ''
-    lbl = f' data-metric-label="{_attr_escape(label)}"' if label else ''
-    return f' class="hid-metric-cell" data-metric-key="{metric_key}"{bid}{lbl}'
-
-
-def _attr_escape(value: str) -> str:
-    """Escape HTML attribute special characters so values containing
-    quotes/ampersands don't break the rendered tag.
-    """
-    return (
-        str(value)
-        .replace("&", "&amp;")
-        .replace('"', "&quot;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-
-
-def _safe_section(db: Session, label: str, fn, default):
-    """Run `fn()` and degrade to `default` on failure so one slow query
-    can't kill the whole weekly report. After a Postgres statement_timeout
-    the session is in an aborted-transaction state and every subsequent
-    query would fail — rollback() here clears it so the next section can
-    keep querying.
-    """
-    try:
-        return fn()
-    except Exception as e:
-        logger.warning("Report section '%s' failed: %s: %s", label, type(e).__name__, e)
-        try:
-            db.rollback()
-        except Exception:
-            pass
-        return default
-
-
-def _envelope(data):
-    return {"success": True, "data": data, "error": None,
-            "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 # ── Report cache (refreshed weekly Mon 03:00 ICT) ─────────────────────────────
@@ -173,36 +119,6 @@ def _get_report_with_cache(db: Session, force_fresh: bool = False) -> tuple[list
     payload = _build_report(db)
     computed_at = _save_cached_report(db, payload)
     return payload, computed_at
-
-
-def _fmt(val, currency=""):
-    """Full number with currency symbol, no K/M/B abbreviation (per team rule)."""
-    if val is None:
-        return "—"
-    sym = {"VND": "₫", "TWD": "NT$", "JPY": "¥"}.get(currency, currency + " ")
-    return f"{sym}{round(val):,}"
-
-
-def _pct(val):
-    """Percentage with 2 decimals (per team rule)."""
-    if val is None:
-        return "—"
-    return f"{val:.2f}%"
-
-
-def _num(val):
-    """Integer with thousands separator."""
-    if val is None:
-        return "—"
-    return f"{int(val):,}"
-
-
-def _signed_pct(val):
-    """Signed percentage with 2 decimals (e.g. +12.34% / -5.67%)."""
-    if val is None:
-        return "—"
-    sign = "+" if val >= 0 else ""
-    return f"{sign}{val:.2f}%"
 
 
 def _adjustment_formula_html(raw_forecast, deduct_pct, other_rev, currency):
@@ -2853,6 +2769,7 @@ def list_comments(
     """
     q = db.query(WeeklyReportComment).filter(
         WeeklyReportComment.week_start == week_start,
+        WeeklyReportComment.report_type == "weekly",
         WeeklyReportComment.is_deleted == False,  # noqa: E712
     )
     if branch_id is not None:
@@ -2885,6 +2802,7 @@ def comment_counts(
         )
         .filter(
             WeeklyReportComment.week_start == week_start,
+            WeeklyReportComment.report_type == "weekly",
             WeeklyReportComment.is_deleted == False,  # noqa: E712
             WeeklyReportComment.is_resolved == False,  # noqa: E712
         )
@@ -2920,12 +2838,13 @@ def create_comment(
         raise HTTPException(400, "metric_key is required")
     if body.parent_comment_id is not None:
         parent = db.query(WeeklyReportComment).filter_by(
-            id=body.parent_comment_id, is_deleted=False,
+            id=body.parent_comment_id, report_type="weekly", is_deleted=False,
         ).first()
         if not parent:
             raise HTTPException(404, "Parent comment not found")
     c = WeeklyReportComment(
         week_start=body.week_start,
+        report_type="weekly",
         branch_id=body.branch_id,
         metric_key=body.metric_key,
         parent_comment_id=body.parent_comment_id,
@@ -2949,7 +2868,9 @@ def update_comment(
     Resolving is open to any user (a thread reaching consensus is a team
     decision, not just the author's). Admins can edit anyone's body.
     """
-    c = db.query(WeeklyReportComment).filter_by(id=comment_id, is_deleted=False).first()
+    c = db.query(WeeklyReportComment).filter_by(
+        id=comment_id, report_type="weekly", is_deleted=False,
+    ).first()
     if not c:
         raise HTTPException(404, "Comment not found")
 
@@ -2991,7 +2912,9 @@ def delete_comment(
     """Soft-delete a comment. Author or admin only. Replies stay visible
     with a placeholder so the thread context isn't lost.
     """
-    c = db.query(WeeklyReportComment).filter_by(id=comment_id, is_deleted=False).first()
+    c = db.query(WeeklyReportComment).filter_by(
+        id=comment_id, report_type="weekly", is_deleted=False,
+    ).first()
     if not c:
         raise HTTPException(404, "Comment not found")
     if not (c.author_id == current.id or current.role == "admin"):
@@ -3026,7 +2949,10 @@ def list_archives(
             func.count(WeeklyReportComment.id).label("total"),
             func.sum(open_int).label("open"),
         )
-        .filter(WeeklyReportComment.is_deleted == False)  # noqa: E712
+        .filter(
+            WeeklyReportComment.report_type == "weekly",
+            WeeklyReportComment.is_deleted == False,  # noqa: E712
+        )
         .group_by(WeeklyReportComment.week_start)
         .all()
     )
