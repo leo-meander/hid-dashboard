@@ -408,7 +408,14 @@ def describe_breakdown(
     body = {
         "dateRanges": [{"startDate": start_date, "endDate": end_date}],
         "dimensions": [{"name": dimension}],
-        "metrics": [{"name": m} for m in ("activeUsers", "sessions", "keyEvents:purchase")],
+        # Engagement travels with the counts because a slice that converts at
+        # nearly zero has two very different explanations — traffic that never
+        # really arrived, versus real people the page failed. Only engagement
+        # separates them, and the fixes are not the same.
+        "metrics": [{"name": m} for m in (
+            "activeUsers", "sessions", "keyEvents:purchase",
+            "engagementRate", "averageSessionDuration", "screenPageViewsPerSession",
+        )],
         "orderBys": [{"metric": {"metricName": "activeUsers"}, "desc": True}],
         "limit": limit,
     }
@@ -430,14 +437,20 @@ def describe_breakdown(
     rows = []
     for row in payload.get("rows") or []:
         values = [v.get("value") for v in row.get("metricValues") or []]
-        users = _as_float(values[0] if values else 0)
-        purchases = _as_float(values[2] if len(values) > 2 else 0)
+
+        def metric(index: int) -> float:
+            return _as_float(values[index] if len(values) > index else 0)
+
+        users, purchases = metric(0), metric(2)
         rows.append({
             dimension: (row.get("dimensionValues") or [{}])[0].get("value"),
             "active_users": users,
-            "sessions": _as_float(values[1] if len(values) > 1 else 0),
+            "sessions": metric(1),
             "purchase_events": purchases,
             "purchases_per_100_users": round(purchases / users * 100, 2) if users else None,
+            "engagement_rate_pct": round(metric(3) * 100, 1),
+            "avg_session_seconds": round(metric(4), 1),
+            "pages_per_session": round(metric(5), 2),
         })
     return {
         "dimension": dimension,
