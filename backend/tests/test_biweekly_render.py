@@ -158,7 +158,8 @@ def _payload(branch_name="MEANDER Saigon"):
                 "organic_nights": 61, "organic_revenue_native": 102_500_000,
                 "roi": 8.4},
         "kol_reach": {"available": True, "posts": 11, "reach": 4916,
-                      "engagements": 1348, "engagement_rate_pct": 3.43},
+                      "engagements": 1348, "engagement_rate_pct": 3.43,
+                      "engagement_rate_posts": 3, "reason": "ok"},
         "crm": {"revenue_native": 306_000_000, "wow_revenue_pct": 22.0},
         "highlights": ["Room rate +30% vs same period."],
         "watchouts": ["Occupancy down 5.7 pts."],
@@ -209,7 +210,22 @@ class TestBuildHtml:
         html = self._render([_payload()])
         assert "Views / reach" in html
         assert "4,916" in html
+        # The rate covers 3 of 11 posts, and the row has to say so — the
+        # others are zero-view platforms excluded from the denominator.
+        assert "ER 3.43% · 3 of 11 posts" in html
+
+    def test_engagement_rate_row_is_unqualified_when_it_covers_everything(self):
+        p = _payload()
+        p["kol_reach"]["engagement_rate_posts"] = 11
+        html = self._render([p])
         assert "ER 3.43%" in html
+        assert "of 11 posts" not in html
+
+    def test_no_rate_says_so_instead_of_showing_a_dash(self):
+        p = _payload()
+        p["kol_reach"]["engagement_rate_pct"] = None
+        html = self._render([p])
+        assert "no post reported reach" in html
 
     def test_kol_reach_absent_is_not_reported_as_zero(self):
         p = _payload()

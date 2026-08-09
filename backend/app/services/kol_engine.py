@@ -180,39 +180,64 @@ def fetch_kol_insights(
     scored = False
     dated = 0
 
+    # Reach for the engagement rate is summed separately, over posts that
+    # actually report a view count. Xiaohongshu returns engagements with
+    # views=0, so dividing total engagements by total reach charges those
+    # engagements against a denominator they never contributed to — that is
+    # what produced a 61% engagement rate for Oani on the first deploy.
+    er_reach = er_engagements = er_posts = 0
+
     for r in mine:
-        # Prefer the collaboration's own publish date; fall back to any date
-        # the posts carry, since the two are populated by different jobs in
-        # the Engine and a collaboration can be scored before it is dated.
-        published = _as_date(r.get("published_at"))
         post_rows = r.get("posts") or []
-        candidates = [published] if published else [
-            _as_date(_post_date(pr)) for pr in post_rows
-        ]
-        in_window = [d for d in candidates if d and d_from <= d <= d_to]
-        if not in_window:
+
+        if post_rows:
+            # Count per POST, filtered on each post's own date. Counting a
+            # collaboration's lifetime `total_reach` because its header date
+            # landed in the window pulls in posts published outside it — the
+            # reason Oani read 8,182 reach against the Engine's 357.
+            matched = [
+                pr for pr in post_rows
+                if (d := _as_date(_post_date(pr))) and d_from <= d <= d_to
+            ]
+            if not matched:
+                continue
+            dated += 1
+            for pr in matched:
+                pr_reach = int(pr.get("reach") or pr.get("views") or 0)
+                pr_eng = int(pr.get("engagements") or pr.get("likes") or 0)
+                posts += 1
+                reach += pr_reach
+                engagements += pr_eng
+                if pr_reach or pr_eng:
+                    scored = True
+                if pr_reach > 0:
+                    er_reach += pr_reach
+                    er_engagements += pr_eng
+                    er_posts += 1
+            continue
+
+        # No post detail — fall back to the collaboration header.
+        published = _as_date(r.get("published_at"))
+        if not published or not (d_from <= published <= d_to):
             continue
         dated += 1
-
-        r_reach, r_eng = r.get("total_reach"), r.get("total_engagements")
-        if r_reach is None and r_eng is None and post_rows:
-            # Roll up from the posts when the collaboration total is unset.
-            r_reach = sum(int(pr.get("reach") or pr.get("views") or 0) for pr in post_rows)
-            r_eng = sum(int(pr.get("engagements") or pr.get("likes") or 0) for pr in post_rows)
-            posts += len(post_rows)
-        else:
-            posts += max(1, len(post_rows))
-
-        if r_reach or r_eng:
+        posts += 1
+        c_reach = int(r.get("total_reach") or 0)
+        c_eng = int(r.get("total_engagements") or 0)
+        reach += c_reach
+        engagements += c_eng
+        if c_reach or c_eng:
             scored = True
-        reach += int(r_reach or 0)
-        engagements += int(r_eng or 0)
+        if c_reach > 0:
+            er_reach += c_reach
+            er_engagements += c_eng
+            er_posts += 1
 
     if not dated:
         return empty("no_publish_dates_in_window", collaborations=len(mine))
     if not scored:
-        # Collaborations published in the window exist, but none carry
-        # performance numbers yet — still "no data", not "zero views".
+        # Posts published in the window exist, but none carry performance
+        # numbers yet — still "no data", not "zero views".
         return empty("published_but_unscored", posts=posts)
 
     return {
@@ -220,9 +245,15 @@ def fetch_kol_insights(
         "posts": posts,
         "reach": reach,
         "engagements": engagements,
+        # None, not 0, when nothing reported a view count: an engagement rate
+        # needs a denominator, and we would rather show nothing than a rate
+        # built from platforms that never reported reach.
         "engagement_rate_pct": (
-            round(engagements / reach * 100, 2) if reach > 0 else None
+            round(er_engagements / er_reach * 100, 2) if er_reach > 0 else None
         ),
+        # How many posts the rate is actually based on, so the renderer can
+        # say "3 of 11 posts" rather than implying it covers everything.
+        "engagement_rate_posts": er_posts,
         "reason": "ok",
     }
 
