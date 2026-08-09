@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from app.services.biweekly_period import Period, previous_period, yoy_window
+from app.services.country_codes import iso_code_for
 from app.services.report_common import (
     cell_attrs,
     fmt,
@@ -90,16 +91,21 @@ def _brand(b: dict) -> dict:
         "pale": _tint(primary, 0.10),
     }
 
-def _flag(country_code: Optional[str]) -> str:
-    """ISO-3166 alpha-2 → regional-indicator flag emoji.
+def _flag(country: Optional[str]) -> str:
+    """Country → regional-indicator flag emoji.
 
-    Built from the code rather than a lookup table: the two regional
-    indicator symbols sit at U+1F1E6 + the letter's offset from 'A', so any
-    valid pair renders. Unknown or placeholder codes get a globe instead of
-    a broken box.
+    Takes a country *name* as well as a code, because that is what the data
+    actually holds: `map_country_code` normalises everything on ingestion to
+    a canonical display name, so `reservations.guest_country_code` stores
+    "Taiwan", not "TW". Reading that column as an ISO code renders a globe
+    for every row — which is exactly what shipped the first time.
+
+    The emoji itself is computed, not tabulated: the two regional indicator
+    symbols sit at U+1F1E6 + the letter's offset from 'A'. Unrecognised
+    countries get a globe rather than a broken box.
     """
-    code = (country_code or "").strip().upper()
-    if len(code) != 2 or not code.isalpha():
+    code = iso_code_for(country)
+    if not code:
         return "🌐"
     return "".join(chr(0x1F1E6 + ord(ch) - ord("A")) for ch in code)
 
@@ -464,7 +470,7 @@ def _render_markets(b: dict) -> str:
         trs.append(
             f"<tr{attrs}>"
             f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>"
-            f"{_flag(r.get('country_code'))} {country}</td>"
+            f"{_flag(r.get('country_code') or country)} {country}</td>"
             f"<td style='{_TD}text-align:right;'>{fmt(r['revenue'], currency)}</td>"
             f"<td style='{_TD}text-align:right;'>{num(r['bookings'])}</td>"
             f"<td style='{_TD}text-align:right;'>{pill}</td></tr>"

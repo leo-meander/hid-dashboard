@@ -24,47 +24,11 @@ CHECKIN_FUTURE_DAYS = 180     # future: 6 months of upcoming check-ins
 # ── Mapping helpers ────────────────────────────────────────────────────────────
 
 # ISO 2-letter code → full name
-_ISO_TO_NAME: dict[str, str] = {
-    "US": "United States", "GB": "United Kingdom",
-    "AU": "Australia", "CA": "Canada", "NZ": "New Zealand",
-    "DE": "Germany", "FR": "France", "IT": "Italy", "ES": "Spain",
-    "NL": "Netherlands", "BE": "Belgium", "AT": "Austria", "CH": "Switzerland",
-    "SE": "Sweden", "NO": "Norway", "DK": "Denmark", "FI": "Finland",
-    "PT": "Portugal", "IE": "Ireland", "PL": "Poland", "CZ": "Czech Republic",
-    "RO": "Romania", "JP": "Japan", "KR": "South Korea", "CN": "China",
-    "TW": "Taiwan", "HK": "Hong Kong", "MO": "Macau",
-    "SG": "Singapore", "MY": "Malaysia", "TH": "Thailand", "VN": "Vietnam",
-    "PH": "Philippines", "ID": "Indonesia", "IN": "India",
-    "RU": "Russia", "BR": "Brazil", "MX": "Mexico",
-    "ZA": "South Africa", "SA": "Saudi Arabia", "AE": "United Arab Emirates",
-    "TR": "Turkey", "KH": "Cambodia", "MM": "Myanmar", "LK": "Sri Lanka",
-    "CY": "Cyprus", "UY": "Uruguay", "PE": "Peru", "AR": "Argentina",
-    "CO": "Colombia", "CL": "Chile", "EG": "Egypt", "IL": "Israel",
-    "QA": "Qatar", "LA": "Laos", "NP": "Nepal", "BD": "Bangladesh",
-    "GR": "Greece", "HR": "Croatia", "HU": "Hungary", "BG": "Bulgaria",
-    "RS": "Serbia", "SK": "Slovakia", "SI": "Slovenia", "LT": "Lithuania",
-    "LV": "Latvia", "EE": "Estonia", "IS": "Iceland",
-    "NG": "Nigeria", "KE": "Kenya", "GH": "Ghana",
-    "PK": "Pakistan", "LB": "Lebanon", "JO": "Jordan", "KW": "Kuwait",
-    "BH": "Bahrain", "OM": "Oman",
-}
+# Country tables live in country_codes.py so non-ingestion callers (the
+# bi-weekly report's flag rendering) can use them without importing this
+# module. Re-exported here because map_country_code below reads them.
+from app.services.country_codes import _ISO_TO_NAME, _NAME_ALIASES  # noqa: E402
 
-# Full name aliases → canonical name
-_NAME_ALIASES: dict[str, str] = {
-    "United States of America": "United States",
-    "Republic of Korea": "South Korea",
-    "Korea, Republic of": "South Korea",
-    "Korea": "South Korea",
-    "Viet Nam": "Vietnam",
-    "Czechia": "Czech Republic",
-    "Russian Federation": "Russia",
-    "Türkiye": "Turkey",
-    "Turkiye": "Turkey",
-    "Hong Kong SAR China": "Hong Kong",
-    "Macao": "Macau",
-    "Macau SAR China": "Macau",
-    "Taiwan, Province of China": "Taiwan",
-}
 
 
 def map_country_code(raw: Optional[str]) -> str:

@@ -147,12 +147,16 @@ def fetch_kol_insights(
     because a zero here would read as "the KOLs got no views", which is a
     very different claim from "we have no numbers".
     """
-    empty = {
-        "available": False, "posts": 0, "reach": 0,
-        "engagements": 0, "engagement_rate_pct": None,
-    }
+    def empty(reason: str, **extra) -> dict:
+        # `reason` is carried into the report payload. The first deploy of
+        # this returned a bare "unavailable" for all five branches with no way
+        # to tell an unset API key from a date-field mismatch without server
+        # log access, which cost a whole extra deploy cycle to diagnose.
+        return {"available": False, "posts": 0, "reach": 0, "engagements": 0,
+                "engagement_rate_pct": None, "reason": reason, **extra}
+
     if not api_key:
-        return empty
+        return empty("no_api_key")
 
     key = (base_url, org_id)
     now = time.time()
@@ -164,28 +168,52 @@ def fetch_kol_insights(
             records = fetch_kol_data(base_url, org_id, api_key)
         except Exception as e:
             log.warning("KOL Engine insights unavailable: %s: %s", type(e).__name__, e)
-            return empty
+            return empty(f"fetch_failed:{type(e).__name__}")
         _kol_insights_cache[key] = (now, records)
+
+    mine = [r for r in records if r.get("branch_key") == branch_key]
+    if not mine:
+        return empty("no_collaborations_for_branch")
 
     d_from, d_to = date_from.isoformat(), date_to.isoformat()
     posts = reach = engagements = 0
     scored = False
-    for r in records:
-        if r.get("branch_key") != branch_key:
-            continue
-        published = _as_date(r.get("published_at"))
-        if not published or not (d_from <= published <= d_to):
-            continue
-        posts += 1
-        if r.get("total_reach") is not None or r.get("total_engagements") is not None:
-            scored = True
-        reach += int(r.get("total_reach") or 0)
-        engagements += int(r.get("total_engagements") or 0)
+    dated = 0
 
+    for r in mine:
+        # Prefer the collaboration's own publish date; fall back to any date
+        # the posts carry, since the two are populated by different jobs in
+        # the Engine and a collaboration can be scored before it is dated.
+        published = _as_date(r.get("published_at"))
+        post_rows = r.get("posts") or []
+        candidates = [published] if published else [
+            _as_date(_post_date(pr)) for pr in post_rows
+        ]
+        in_window = [d for d in candidates if d and d_from <= d <= d_to]
+        if not in_window:
+            continue
+        dated += 1
+
+        r_reach, r_eng = r.get("total_reach"), r.get("total_engagements")
+        if r_reach is None and r_eng is None and post_rows:
+            # Roll up from the posts when the collaboration total is unset.
+            r_reach = sum(int(pr.get("reach") or pr.get("views") or 0) for pr in post_rows)
+            r_eng = sum(int(pr.get("engagements") or pr.get("likes") or 0) for pr in post_rows)
+            posts += len(post_rows)
+        else:
+            posts += max(1, len(post_rows))
+
+        if r_reach or r_eng:
+            scored = True
+        reach += int(r_reach or 0)
+        engagements += int(r_eng or 0)
+
+    if not dated:
+        return empty("no_publish_dates_in_window", collaborations=len(mine))
     if not scored:
         # Collaborations published in the window exist, but none carry
         # performance numbers yet — still "no data", not "zero views".
-        return {**empty, "posts": posts}
+        return empty("published_but_unscored", posts=posts)
 
     return {
         "available": True,
@@ -195,7 +223,16 @@ def fetch_kol_insights(
         "engagement_rate_pct": (
             round(engagements / reach * 100, 2) if reach > 0 else None
         ),
+        "reason": "ok",
     }
+
+
+def _post_date(post: dict):
+    """A post's publish date, whatever the Engine happens to call it."""
+    for k in ("published_at", "posted_at", "post_date", "publish_date", "created_at"):
+        if post.get(k):
+            return post[k]
+    return None
 
 
 # ── Public targets API ─────────────────────────────────────────────────────
