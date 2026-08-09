@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from app.routers import kpi, sync
 from app.routers import metrics, events, website_metrics, countries, branches
 from app.routers import marketing, ads, kol, angles, insights, report
+from app.routers import biweekly_report
 from app.routers import auth
 from app.routers import creative_angles, creative_copies, creative_materials, combos
 from app.routers import ad_analyzer
@@ -90,6 +91,7 @@ app.include_router(kol.router, prefix="/api/kol", tags=["KOL"])
 app.include_router(angles.router, prefix="/api/angles", tags=["Angles"])
 app.include_router(insights.router, prefix="/api/insights", tags=["Insights"])
 app.include_router(report.router, prefix="/api/report", tags=["Report"])
+app.include_router(biweekly_report.router, prefix="/api/biweekly", tags=["Bi-Weekly Report"])
 
 # Phase 4 — Creative Intelligence Library
 app.include_router(creative_angles.router, prefix="/api/creative-angles", tags=["Creative Angles"])

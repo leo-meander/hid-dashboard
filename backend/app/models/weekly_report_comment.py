@@ -27,6 +27,12 @@ class WeeklyReportComment(Base):
     __tablename__ = "weekly_report_comments"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 'weekly' | 'biweekly' — which report a thread belongs to. The Bi-Weekly
+    # Branch Manager report keys its threads by the period's start Monday,
+    # which can collide with a weekly week_start; without this discriminator
+    # its threads would appear in the Weekly Report's comment panel.
+    report_type = Column(String(16), nullable=False, default="weekly",
+                         server_default="weekly")
     week_start = Column(Date, nullable=False)
     branch_id = Column(UUID(as_uuid=True),
                        ForeignKey("branches.id", ondelete="CASCADE"),
