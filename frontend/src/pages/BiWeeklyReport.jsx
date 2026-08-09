@@ -17,11 +17,51 @@ import {
   getPreviewHtml,
   getNotes,
   createNote,
+  updateNote,
   deleteNote,
 } from "../api/biweekly";
 import { useAuth } from "../context/AuthContext";
 
-const GENERAL_KEY = "bw._general";
+/**
+ * The three note boards under each branch.
+ *
+ * All three are rows in the same comments table, separated only by
+ * `metric_key` — no schema change was needed to add the second and third.
+ * `bw._general` is the original board, so its key must not be renamed:
+ * notes already written by managers are stored under it.
+ *
+ * `resolvable` turns on the Done toggle. Only the support board has it: an
+ * ask of the branch team is the one kind of note that has a finished state,
+ * and it maps onto the `is_resolved` column the weekly report already uses.
+ */
+const NOTE_BOARDS = [
+  {
+    key: "bw._general",
+    icon: "📝",
+    title: "Branch Manager's Notes",
+    hint: "Operational context the data can't show — renovations, local events, rate changes, group bookings.",
+    placeholder: "e.g. Lift out of service Jul 18–22, 8 rooms blocked.",
+    resolvable: false,
+  },
+  {
+    key: "bw._growth",
+    icon: "📈",
+    title: "Growth Team — What We Did & How It Went",
+    hint: "Campaigns, tests and changes the Growth team ran this period, and the result each one produced.",
+    placeholder:
+      "e.g. Raised Meta budget on Couple PH by 30% from Jul 15 — bookings +18%, ROAS held at 4.2×.",
+    resolvable: false,
+  },
+  {
+    key: "bw._support",
+    icon: "🙋",
+    title: "Support Needed From The Branch",
+    hint: "What Growth needs the branch team to do. Mark Done once it's handled so the next period starts clean.",
+    placeholder:
+      "e.g. Need 6 fresh photos of the renovated dorm by Aug 20 for the new ad set.",
+    resolvable: true,
+  },
+];
 
 /** Slice the rendered report into a header plus one block per branch. */
 function parseBiweeklyHtml(htmlText) {
@@ -52,21 +92,29 @@ function ErrorBox({ title, detail, onRetry }) {
   );
 }
 
-/** Manager's notes for one (period, branch). */
-function ManagerNotes({ period, branchId, branchName }) {
+/** One note board for a (period, branch, metric_key). */
+function NoteBoard({ board, period, branchId }) {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
-  const key = ["biweekly-notes", period, branchId];
+  // metric_key is part of the cache key, or the three boards on screen would
+  // share one entry and overwrite each other's contents.
+  const key = ["biweekly-notes", period, branchId, board.key];
   const { data: notes = [], isPending } = useQuery({
     queryKey: key,
-    queryFn: () => getNotes(period, branchId),
+    queryFn: () => getNotes(period, branchId, board.key),
     enabled: Boolean(period && branchId),
     placeholderData: keepPreviousData,
   });
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: key });
+
+  function fail(e, fallback) {
+    setError(e?.response?.data?.detail || e?.message || fallback);
+  }
 
   async function submit() {
     const body = draft.trim();
@@ -74,54 +122,106 @@ function ManagerNotes({ period, branchId, branchName }) {
     setBusy(true);
     setError(null);
     try {
-      await createNote({ period, branch_id: branchId, body, metric_key: GENERAL_KEY });
+      await createNote({ period, branch_id: branchId, body, metric_key: board.key });
       setDraft("");
-      queryClient.invalidateQueries({ queryKey: key });
+      refresh();
     } catch (e) {
-      setError(e?.response?.data?.detail || e.message || "Could not save the note");
+      fail(e, "Could not save the note");
     } finally {
       setBusy(false);
     }
   }
 
-  async function remove(id) {
+  async function toggleDone(note) {
+    setError(null);
     try {
-      await deleteNote(id);
-      queryClient.invalidateQueries({ queryKey: key });
+      await updateNote(note.id, { is_resolved: !note.is_resolved });
+      refresh();
     } catch (e) {
-      setError(e?.response?.data?.detail || e.message || "Could not delete the note");
+      fail(e, "Could not update the note");
     }
   }
 
+  async function remove(id) {
+    setError(null);
+    try {
+      await deleteNote(id);
+      refresh();
+    } catch (e) {
+      fail(e, "Could not delete the note");
+    }
+  }
+
+  const openCount = board.resolvable
+    ? notes.filter(n => !n.is_resolved).length
+    : 0;
+
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5 mt-6">
-      <h3 className="font-semibold text-gray-800 text-sm">
-        📝 Branch Manager's Notes — {branchName}
-      </h3>
-      <p className="text-[11px] text-gray-500 mt-0.5 mb-3">
-        Operational context the data can't show — renovations, local events, rate
-        changes, group bookings. Saved against {period} and visible to the team.
-      </p>
+    <div className="bg-white rounded-xl border border-gray-200 p-5">
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="font-semibold text-gray-800 text-sm">
+          {board.icon} {board.title}
+        </h3>
+        {board.resolvable && notes.length > 0 && (
+          <span
+            className={
+              "text-[11px] px-2 py-0.5 rounded-full shrink-0 " +
+              (openCount > 0
+                ? "bg-amber-100 text-amber-800"
+                : "bg-green-100 text-green-800")
+            }
+          >
+            {openCount > 0 ? `${openCount} open` : "All done"}
+          </span>
+        )}
+      </div>
+      <p className="text-[11px] text-gray-500 mt-0.5 mb-3">{board.hint}</p>
 
       {isPending ? (
-        <p className="text-xs text-gray-400">Loading notes…</p>
+        <p className="text-xs text-gray-400">Loading…</p>
       ) : notes.length === 0 ? (
-        <p className="text-xs text-gray-400 italic">No notes for this period yet.</p>
+        <p className="text-xs text-gray-400 italic">Nothing noted for this period yet.</p>
       ) : (
         <ul className="space-y-2 mb-3">
           {notes.map(n => (
-            <li key={n.id} className="bg-gray-50 border border-gray-100 rounded-lg p-3">
+            <li
+              key={n.id}
+              className={
+                "border rounded-lg p-3 " +
+                (n.is_resolved
+                  ? "bg-green-50/60 border-green-100"
+                  : "bg-gray-50 border-gray-100")
+              }
+            >
               <div className="flex justify-between items-start gap-3">
-                <p className="text-sm text-gray-800 whitespace-pre-wrap flex-1">{n.body}</p>
-                {(n.author_id === user?.id || user?.role === "admin") && (
-                  <button
-                    onClick={() => remove(n.id)}
-                    className="text-[11px] text-gray-400 hover:text-red-600 shrink-0"
-                    title="Delete this note"
-                  >
-                    Delete
-                  </button>
-                )}
+                <p
+                  className={
+                    "text-sm whitespace-pre-wrap flex-1 " +
+                    (n.is_resolved ? "text-gray-500 line-through" : "text-gray-800")
+                  }
+                >
+                  {n.body}
+                </p>
+                <div className="flex gap-2 shrink-0">
+                  {board.resolvable && (
+                    <button
+                      onClick={() => toggleDone(n)}
+                      className="text-[11px] text-gray-400 hover:text-green-700"
+                      title={n.is_resolved ? "Reopen this request" : "Mark as handled"}
+                    >
+                      {n.is_resolved ? "Reopen" : "Done"}
+                    </button>
+                  )}
+                  {(n.author_id === user?.id || user?.role === "admin") && (
+                    <button
+                      onClick={() => remove(n.id)}
+                      className="text-[11px] text-gray-400 hover:text-red-600"
+                      title="Delete this note"
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
               </div>
               <p className="text-[10px] text-gray-400 mt-1">
                 {n.author_name || "Unknown"}
@@ -136,7 +236,7 @@ function ManagerNotes({ period, branchId, branchName }) {
         value={draft}
         onChange={e => setDraft(e.target.value)}
         rows={3}
-        placeholder="Add a note for this period…"
+        placeholder={board.placeholder}
         className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
       />
       {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
@@ -146,9 +246,29 @@ function ManagerNotes({ period, branchId, branchName }) {
           disabled={busy || !draft.trim()}
           className="px-4 py-1.5 bg-teal-700 text-white text-sm rounded-lg hover:bg-teal-800 disabled:opacity-50"
         >
-          {busy ? "Saving…" : "Save note"}
+          {busy ? "Saving…" : "Save"}
         </button>
       </div>
+    </div>
+  );
+}
+
+/** All three note boards for one (period, branch). */
+function BranchNotes({ period, branchId, branchName }) {
+  return (
+    <div className="mt-6 space-y-4">
+      <p className="text-[11px] text-gray-500">
+        Notes below are saved against <b>{branchName}</b> for <b>{period}</b> and are
+        visible to the whole team.
+      </p>
+      {NOTE_BOARDS.map(board => (
+        <NoteBoard
+          key={board.key}
+          board={board}
+          period={period}
+          branchId={branchId}
+        />
+      ))}
     </div>
   );
 }
@@ -348,7 +468,7 @@ export default function BiWeeklyReport() {
                 className="hid-bw-body bg-[#FBF7F4] rounded-xl border border-gray-200 px-6 py-4"
                 dangerouslySetInnerHTML={{ __html: active.html }}
               />
-              <ManagerNotes
+              <BranchNotes
                 period={selectedPeriod}
                 branchId={active.id}
                 branchName={active.name}

@@ -24,10 +24,21 @@ export const getPreviewHtml = async (period, { fresh = false } = {}) => {
   return res.text();
 };
 
-export const getNotes = (period, branchId) =>
+/**
+ * Notes for one (period, branch, kind).
+ *
+ * `metricKey` is what separates the three note boards from each other — the
+ * backend stores them all as biweekly comments and filters on it, so a board
+ * is just a metric key with a heading. See NOTE_BOARDS in BiWeeklyReport.jsx.
+ */
+export const getNotes = (period, branchId, metricKey) =>
   axios
     .get(`${BASE}/comments`, {
-      params: { period, branch_id: branchId || undefined },
+      params: {
+        period,
+        branch_id: branchId || undefined,
+        metric_key: metricKey || undefined,
+      },
     })
     .then(r => r.data.data);
 
