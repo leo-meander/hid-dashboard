@@ -61,12 +61,21 @@ KPI_DEFS: dict[str, list[dict]] = {
          # Jan-1 → today GA4 query and is blank when that query has no answer.
          "ytd_mode": "query",
          "provisional_note": "GA4 withheld part of this window (Google Signals data thresholding), so the rate is approximate rather than a confident number.",
+         # Oani's tag was removed from the 1948 and Osaka sites on 2026-08-09
+         # (verified at the GTM container source, not just on the page). GA4
+         # never cleans history, so every month through August still measures
+         # three branches — September is the first month that is Oani alone.
+         "starts_by_branch": {
+             "oani": {
+                 "from": "2026-09",
+                 "why": "Oani's analytics tag was also live on the 1948 and Osaka websites until 9 Aug 2026, so earlier months measure three branches rather than Oani alone. GA4 cannot clean historical data, which makes September the first month this rate is really Oani's.",
+             },
+         },
          # Reader-facing text: branch names only. A GA4 property ID must never
          # surface in the KPI grid — the grid speaks in branches, and the
          # branch → property mapping stays in config.
          "blocked": {
-             "oani": "Oani's GA4 tag also fires on the 1948 and Osaka websites, so Oani's analytics measure three branches, not one. Purchases fire on the Cloudbeds domain and hostName is event-scoped, so there is no query-side way to isolate Oani. Blank until the GTM/GA4 tagging is corrected — 1948 and Osaka themselves are clean.",
-             "all":  "Each branch has its own separate GA4 analytics — a visitor cannot be de-duplicated across them, so there is no correct group-wide rate. Read this KPI per branch.",
+             "all": "Each branch has its own separate GA4 analytics — a visitor cannot be de-duplicated across them, so there is no correct group-wide rate. Read this KPI per branch.",
          }},
     ],
     "designer": [
@@ -102,14 +111,32 @@ def visible_kpi_defs(role_key: str) -> list[dict]:
     return [d for d in KPI_DEFS.get(role_key, []) if not d.get("hidden")]
 
 
-def kpi_start_month(defn: dict, year: int) -> Optional[int]:
-    """First month of `year` this KPI is live, from its "starts": "YYYY-MM".
+def kpi_branch_start(defn: dict, branch_key: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+    """The ("YYYY-MM", why) in force for one branch view.
+
+    A single branch can start later than the KPI itself — a branch whose
+    measurement was only corrected part-way through the year has no honest
+    history before the fix, even though its siblings do. `starts_by_branch`
+    carries that per branch, either as a bare month or as
+    ``{"from": ..., "why": ...}`` so the grid can say why the earlier months
+    are empty. Falls back to the KPI-wide "starts".
+    """
+    entry = (defn.get("starts_by_branch") or {}).get(branch_key or "")
+    if isinstance(entry, dict):
+        return entry.get("from"), entry.get("why")
+    if entry:
+        return str(entry), None
+    return defn.get("starts"), None
+
+
+def kpi_start_month(defn: dict, year: int, branch_key: Optional[str] = None) -> Optional[int]:
+    """First month of `year` this KPI is live for this branch view.
 
     None when the KPI has always been live (or the year is past its start);
     13 when the whole year predates it. Months before the returned value are
     rendered blank and locked instead of showing a misleading 0.
     """
-    starts = defn.get("starts")
+    starts, _why = kpi_branch_start(defn, branch_key)
     if not starts:
         return None
     s_year, _, s_month = str(starts).partition("-")
@@ -980,7 +1007,11 @@ def build_monthly_summary(
         kpi_auto          = auto and defn.get("auto", True)   # per-KPI override via auto: False
         no_target         = defn.get("no_target", False)       # display-only: suppress target editing
         computed_target_t = defn.get("computed_target")        # computed target type (e.g. "spend_x_roas")
-        start_month       = kpi_start_month(defn, year)        # months before this are blank + locked
+        # Months before this are blank + locked. Resolved per branch: one
+        # branch can have no honest history where its siblings do.
+        starts_view       = None if all_branches_view else branch_key
+        start_month       = kpi_start_month(defn, year, starts_view)
+        starts_str, starts_note = kpi_branch_start(defn, starts_view)
 
         # Views where this KPI cannot be measured honestly (e.g. a branch whose
         # GA4 tag is polluted). The actual row goes blank with the reason
@@ -1193,7 +1224,8 @@ def build_monthly_summary(
             "no_target": no_target,
             "computed_target": computed_target_t is not None,
             "computed_target_note": note,
-            "starts": defn.get("starts"),
+            "starts": starts_str,
+            "starts_note": starts_note,
             "ytd_mode": ytd_mode,
             "ytd_actual": ytd_actual,
             "unavailable_note": blocked_note,

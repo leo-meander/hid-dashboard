@@ -110,15 +110,12 @@ class Settings(BaseSettings):
     GA4_PROPERTY_ID_1948: str = "285135676"
     GA4_PROPERTY_ID_TAIPEI: str = "295612616"
     GA4_PROPERTY_ID_OSAKA: str = "482876806"
-    # Oani's property is 514380737, deliberately left unmapped: the Oani GA4
-    # tag is also deployed on the 1948 and Osaka websites, so this property's
-    # totals are three branches, not one (confirmed 2026-07-31 —
-    # 1948.staymeander.com reported ~25.9k sessions into it). Purchases fire on
-    # the Cloudbeds domain and hostName is event-scoped, so there is no
-    # query-side way to isolate Oani. Re-enabling once the tagging is corrected
-    # takes two deliberate steps: set this ID, and drop "oani" from the
-    # purchase_cvr "blocked" map in team_kpi_service.KPI_DEFS.
-    GA4_PROPERTY_ID_OANI: str = ""
+    # Oani's tag used to fire on the 1948 and Osaka websites too, so this
+    # property measured three branches. Removed from both GTM containers on
+    # 2026-08-09 and verified at the container source. GA4 does not clean
+    # history, so months up to and including August 2026 are still three
+    # branches — purchase_cvr gates Oani to 2026-09 via starts_by_branch.
+    GA4_PROPERTY_ID_OANI: str = "514380737"
 
     # TikTok Events API — Saigon only
     TIKTOK_ACCESS_TOKEN_SAIGON: str = ""

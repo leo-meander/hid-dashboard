@@ -254,19 +254,45 @@ def test_roas_keeps_summing_its_ytd(ga4):
 
 # ── Views where the number cannot be measured ────────────────────────────────
 
-def test_oani_is_blank_with_the_tagging_reason(ga4):
-    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, OANI_UUID))
-    assert all(m["actual"] is None for m in kpi["monthly"])
-    assert kpi["ytd_actual"] is None
-    assert "1948 and Osaka" in kpi["unavailable_note"]
-
-
-def test_oani_stays_blank_even_if_its_property_gets_mapped_by_accident(ga4, monkeypatch):
-    """The blocker is the polluted tag, not a missing config value."""
+def test_oani_starts_at_the_first_month_its_tag_was_clean(ga4, monkeypatch):
+    """The tag came off the 1948 and Osaka sites on 2026-08-09. GA4 keeps the
+    polluted history, so Jan–Aug measure three branches and stay locked."""
     monkeypatch.setattr(settings, "GA4_PROPERTY_ID_OANI", "514380737")
     svc._ga4_cvr_cache.clear()
-    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, OANI_UUID))
-    assert all(m["actual"] is None for m in kpi["monthly"])
+    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", 2026, OANI_UUID))
+
+    assert kpi["starts"] == "2026-09"
+    assert "1948 and Osaka" in kpi["starts_note"]
+    for cell in kpi["monthly"][:8]:                    # Jan–Aug
+        assert cell["not_started"] is True
+        assert cell["actual"] is None and cell["target"] is None
+    assert kpi["monthly"][8]["not_started"] is False   # September is live
+
+
+def test_the_clean_branches_keep_their_full_history(ga4):
+    """The Oani gate is per branch — Saigon was never polluted."""
+    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, SAIGON_UUID))
+    assert kpi["starts"] is None
+    assert kpi["starts_note"] is None
+    assert all(m["not_started"] is False for m in kpi["monthly"])
+
+
+def test_a_branch_gate_does_not_leak_into_the_all_view(ga4):
+    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, None))
+    assert kpi["starts"] is None
+
+
+def test_branch_start_helper():
+    defn = {"key": "x", "starts_by_branch": {"oani": {"from": "2026-09", "why": "polluted"}}}
+    assert svc.kpi_branch_start(defn, "oani") == ("2026-09", "polluted")
+    assert svc.kpi_branch_start(defn, "saigon") == (None, None)
+    assert svc.kpi_start_month(defn, 2026, "oani") == 9
+    assert svc.kpi_start_month(defn, 2026, "saigon") is None
+    # A bare month string is accepted too, and a KPI-wide "starts" still wins
+    # for branches with no entry of their own.
+    bare = {"key": "x", "starts": "2026-02", "starts_by_branch": {"oani": "2026-09"}}
+    assert svc.kpi_branch_start(bare, "oani") == ("2026-09", None)
+    assert svc.kpi_branch_start(bare, "saigon") == ("2026-02", None)
 
 
 def test_all_branches_has_no_group_wide_rate(ga4):
@@ -287,9 +313,11 @@ def test_no_ga4_property_id_reaches_the_grid(ga4, branch_id):
 
 
 def test_blocking_the_view_does_not_touch_the_stored_target(ga4):
-    rows = [_FakeRow("purchase_cvr", CUR_MONTH, 1.8, OANI_UUID)]
-    kpi = _kpi(svc.build_monthly_summary(_FakeSession(rows), "paid_ads", YEAR, OANI_UUID))
+    """The All tab is blank, but a target stored against it survives."""
+    rows = [_FakeRow("purchase_cvr", CUR_MONTH, 1.8, None)]
+    kpi = _kpi(svc.build_monthly_summary(_FakeSession(rows), "paid_ads", YEAR, None))
     assert kpi["monthly"][CUR_MONTH - 1]["target"] == 1.8
+    assert kpi["monthly"][CUR_MONTH - 1]["actual"] is None
 
 
 def test_the_other_paid_ads_rows_are_unaffected(ga4):

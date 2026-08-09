@@ -55,6 +55,13 @@ function startLabel(starts) {
   return m >= 1 && m <= 12 ? `${MONTHS[m - 1]} ${y}` : starts;
 }
 
+// Hover text for a month that predates the KPI on this tab. When the start
+// date is branch-specific there is a reason behind it worth carrying.
+function startsTitle(kpi) {
+  const base = `Tracked from ${startLabel(kpi.starts)}`;
+  return kpi.starts_note ? `${base} — ${kpi.starts_note}` : base;
+}
+
 const PROVISIONAL_TITLE =
   "Provisional — the month is still syncing upstream. Losing verdicts only freeze once a month closes, so this rate is usually inflated.";
 
@@ -311,7 +318,11 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     )}
                     {kpi.starts && (
                       <span className="block text-[10px] text-gray-400 font-normal">
-                        from {startLabel(kpi.starts)}
+                        {kpi.starts_note ? (
+                          <Tooltip text={kpi.starts_note}>
+                            <span className="cursor-help">from {startLabel(kpi.starts)} ⓘ</span>
+                          </Tooltip>
+                        ) : `from ${startLabel(kpi.starts)}`}
                       </span>
                     )}
                     {kpi.unavailable_note && (
@@ -334,7 +345,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                   {kpi.monthly.map(m => (
                     <td key={m.month} className="px-1 py-1.5 bg-yellow-50">
                       {m.not_started ? (
-                        <div className="text-center text-gray-300" title={`Tracked from ${startLabel(kpi.starts)}`}>·</div>
+                        <div className="text-center text-gray-300" title={startsTitle(kpi)}>·</div>
                       ) : kpi.computed_target ? (
                         <div className="text-center text-gray-600 font-medium text-xs">
                           {m.target !== null && m.target !== undefined
@@ -394,7 +405,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     if (m.not_started) {
                       return (
                         <td key={m.month} className="px-1 py-1.5 text-center bg-gray-50"
-                            title={`Tracked from ${startLabel(kpi.starts)}`}>
+                            title={startsTitle(kpi)}>
                           <span className="text-gray-300">·</span>
                         </td>
                       );
