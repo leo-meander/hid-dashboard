@@ -566,11 +566,22 @@ def _render_kol(b: dict) -> str:
     ]
     if reach.get("available"):
         er = reach.get("engagement_rate_pct")
+        er_posts = reach.get("engagement_rate_posts") or 0
+        total_posts = reach.get("posts") or 0
+        # Xiaohongshu reports engagements with no view count, so the rate is
+        # computed only over posts that reported reach. Say so on the row —
+        # an unqualified ER here invites comparison with the KOL Engine's
+        # headline figure, which is a per-post average, not this ratio.
+        if er is None:
+            er_note = "no post reported reach"
+        elif er_posts < total_posts:
+            er_note = f"ER {er:.2f}% · {er_posts} of {total_posts} posts"
+        else:
+            er_note = f"ER {er:.2f}%"
         rows += [
             ("Views / reach", num(reach.get("reach")),
-             f"{num(reach.get('posts'))} scored post(s)"),
-            ("Engagements", num(reach.get("engagements")),
-             f"ER {er:.2f}%" if er is not None else "—"),
+             f"{num(total_posts)} post(s) in period"),
+            ("Engagements", num(reach.get("engagements")), er_note),
         ]
     rows += [
         ("KOL-driven bookings", num(k.get("organic_bookings")), f"{num(k.get('organic_nights'))} nights"),

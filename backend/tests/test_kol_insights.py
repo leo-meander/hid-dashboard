@@ -79,7 +79,7 @@ class TestFailureModesAreDistinguishable:
 
 
 class TestAggregation:
-    def test_sums_collaboration_totals_in_the_window(self):
+    def test_sums_collaboration_totals_when_there_is_no_post_detail(self):
         out = _run([
             _collab(published_at="2026-07-15", reach=4000, engagements=1000),
             _collab(published_at="2026-07-20", reach=916, engagements=348),
@@ -88,7 +88,6 @@ class TestAggregation:
         assert out["available"] is True
         assert out["reach"] == 4916
         assert out["engagements"] == 1348
-        assert out["engagement_rate_pct"] == 27.42
 
     def test_window_boundaries_are_inclusive(self):
         out = _run([
@@ -102,9 +101,21 @@ class TestAggregation:
                             reach=100, engagements=10)])
         assert out["available"] is True
 
-    def test_falls_back_to_post_dates_when_the_collaboration_has_none(self):
-        """Publish date and score are populated by different Engine jobs, so
-        a scored collaboration can still be undated at the top level."""
+    def test_posts_are_filtered_on_their_own_date_not_the_collaboration_s(self):
+        """A collaboration's `total_reach` covers its whole life. Counting it
+        because the header date landed in the window pulls in posts published
+        outside it — Oani read 8,182 reach against the Engine's 357 that way.
+        """
+        out = _run([_collab(
+            published_at="2026-07-15", reach=8182, engagements=5008,
+            posts=[{"posted_at": "2026-07-18", "views": 357, "engagements": 85},
+                   {"posted_at": "2026-09-01", "views": 7825, "engagements": 4923}],
+        )])
+        assert out["reach"] == 357, "the September post must not be counted"
+        assert out["engagements"] == 85
+        assert out["posts"] == 1
+
+    def test_post_level_detail_wins_over_the_collaboration_header(self):
         out = _run([_collab(
             published_at=None, reach=None, engagements=None,
             posts=[{"posted_at": "2026-07-18", "reach": 500, "engagements": 60},
@@ -115,7 +126,38 @@ class TestAggregation:
         assert out["engagements"] == 100
         assert out["posts"] == 2
 
-    def test_engagement_rate_is_none_rather_than_a_division_error(self):
+
+class TestEngagementRate:
+    def test_zero_view_platforms_do_not_inflate_the_rate(self):
+        """Xiaohongshu returns engagements with views=0. Charging those
+        engagements against the other platforms' reach produced Oani's
+        nonsensical 61% on the first deploy."""
+        out = _run([_collab(posts=[
+            {"posted_at": "2026-07-18", "views": 357, "engagements": 85},   # youtube
+            {"posted_at": "2026-07-19", "views": 0, "engagements": 707},    # xhs
+        ])])
+        assert out["reach"] == 357
+        assert out["engagements"] == 792          # totals still report everything
+        assert out["engagement_rate_pct"] == 23.81   # 85/357, xhs excluded
+        assert out["engagement_rate_posts"] == 1
+
+    def test_rate_is_none_when_nothing_reported_reach(self):
+        out = _run([_collab(posts=[
+            {"posted_at": "2026-07-18", "views": 0, "engagements": 500},
+        ])])
+        assert out["available"] is True
+        assert out["engagements"] == 500
+        assert out["engagement_rate_pct"] is None
+
+    def test_rate_covers_every_post_when_all_report_reach(self):
+        out = _run([_collab(posts=[
+            {"posted_at": "2026-07-18", "views": 100, "engagements": 10},
+            {"posted_at": "2026-07-19", "views": 100, "engagements": 30},
+        ])])
+        assert out["engagement_rate_pct"] == 20.0
+        assert out["engagement_rate_posts"] == out["posts"] == 2
+
+    def test_collaboration_level_zero_reach_is_excluded_too(self):
         out = _run([_collab(published_at="2026-07-15", reach=0, engagements=5)])
         assert out["available"] is True
         assert out["engagement_rate_pct"] is None
