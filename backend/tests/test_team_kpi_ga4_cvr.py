@@ -7,6 +7,7 @@ view where the number cannot be measured honestly stays blank instead of
 showing a plausible one.
 """
 import calendar
+import json
 from datetime import date
 
 import pytest
@@ -272,7 +273,17 @@ def test_all_branches_has_no_group_wide_rate(ga4):
     """Five properties are five user namespaces — an average would be invented."""
     kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, None))
     assert all(m["actual"] is None for m in kpi["monthly"])
-    assert "user namespaces" in kpi["unavailable_note"]
+    assert "de-duplicated" in kpi["unavailable_note"]
+
+
+@pytest.mark.parametrize("branch_id", [SAIGON_UUID, OANI_UUID, None])
+def test_no_ga4_property_id_reaches_the_grid(ga4, branch_id):
+    """The grid speaks in branches. The branch → property mapping is config,
+    and must never surface in anything rendered to the reader."""
+    summary = svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, branch_id)
+    rendered = json.dumps(summary)
+    for property_id in ["284939713", "285135676", "295612616", "482876806", "514380737"]:
+        assert property_id not in rendered
 
 
 def test_blocking_the_view_does_not_touch_the_stored_target(ga4):

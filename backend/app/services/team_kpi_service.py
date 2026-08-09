@@ -61,9 +61,12 @@ KPI_DEFS: dict[str, list[dict]] = {
          # Jan-1 → today GA4 query and is blank when that query has no answer.
          "ytd_mode": "query",
          "provisional_note": "GA4 withheld part of this window (Google Signals data thresholding), so the rate is approximate rather than a confident number.",
+         # Reader-facing text: branch names only. A GA4 property ID must never
+         # surface in the KPI grid — the grid speaks in branches, and the
+         # branch → property mapping stays in config.
          "blocked": {
-             "oani": "Oani's GA4 tag (property 514380737) also fires on the 1948 and Osaka websites, so that property's users are three branches, not one. Purchases fire on the Cloudbeds domain and hostName is event-scoped, so there is no query-side way to isolate Oani. Blank until the GTM/GA4 tagging is corrected — the 1948 and Osaka properties themselves are clean.",
-             "all":  "Five GA4 properties are five separate user namespaces — a user cannot be de-duplicated across them, so there is no correct group-wide rate. Read this KPI per branch.",
+             "oani": "Oani's GA4 tag also fires on the 1948 and Osaka websites, so Oani's analytics measure three branches, not one. Purchases fire on the Cloudbeds domain and hostName is event-scoped, so there is no query-side way to isolate Oani. Blank until the GTM/GA4 tagging is corrected — 1948 and Osaka themselves are clean.",
+             "all":  "Each branch has its own separate GA4 analytics — a visitor cannot be de-duplicated across them, so there is no correct group-wide rate. Read this KPI per branch.",
          }},
     ],
     "designer": [

@@ -166,6 +166,18 @@ Osaka `482876806`. Oani (`514380737`) is deliberately unmapped: its tag also fir
 the 1948 and Osaka websites, so the property measures three branches. Its tab shows
 `—` with the reason. The 1948 and Osaka properties themselves are clean.
 
+The ID is unavoidable — it is in the request path and the Data API has no
+lookup-by-name — but it is a **static config table**, not discovered at runtime. The
+alternative, `analyticsadmin.googleapis.com/v1beta/accountSummaries` matched by display
+name, would add a second API dependency and a name-matching failure mode to resolve
+five values that change approximately never. Reconsider if branches start being added
+often.
+
+**A property ID must never surface in the KPI grid.** The grid speaks in branches;
+reader-facing strings (including the Oani and All-tab explanations) name branches only.
+Pinned by `test_no_ga4_property_id_reaches_the_grid`. The debug endpoint below is
+exempt — it exists for support, not for the reader.
+
 The **All** tab shows `—` too: five properties are five user namespaces, and a user
 cannot be de-duplicated across them, so no correct group-wide rate exists.
 
