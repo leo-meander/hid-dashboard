@@ -131,7 +131,7 @@ def test_the_decimal_rate_becomes_a_percentage(call):
 def test_the_supporting_counts_come_through(call):
     _sink, run = call
     reading = run()
-    assert (reading.total_users, reading.active_users, reading.purchasing_users) == (
+    assert (reading.total_users, reading.active_users, reading.purchase_events) == (
         10000.0, 9800.0, 163.0
     )
 

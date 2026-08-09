@@ -62,13 +62,14 @@ class _FakeSession:
 
 # ── GA4 stub ─────────────────────────────────────────────────────────────────
 
-def _reading(rate_pct=1.63, total_users=10000.0, active_users=9800.0,
-             purchasing_users=163.0, thresholded=False):
+def _reading(rate_pct=1.63, rate_raw=None, total_users=10000.0,
+             active_users=9800.0, purchase_events=163.0, thresholded=False):
     return ga4_service.Ga4PurchaseReading(
         rate_pct=rate_pct,
+        rate_raw=rate_pct / 100 if rate_raw is None else rate_raw,
         total_users=total_users,
         active_users=active_users,
-        purchasing_users=purchasing_users,
+        purchase_events=purchase_events,
         thresholded=thresholded,
     )
 
@@ -322,26 +323,42 @@ def test_the_other_paid_ads_rows_are_unaffected(ga4):
 
 
 # ── Which denominator GA4 actually uses (§6) ─────────────────────────────────
+#
+# The numerator is a whole number of people, so the real denominator is the one
+# rate × denominator lands on an integer for. Rates below are built from a
+# chosen purchasing-user count so the arithmetic is exact.
 
-def test_total_users_reproduces_the_rate():
-    assert ga4_service._implied_denominator(
-        _reading(rate_pct=1.63, total_users=10000, active_users=5000, purchasing_users=163)
-    ) == "totalUsers"
-
-
-def test_active_users_reproduces_the_rate():
-    assert ga4_service._implied_denominator(
-        _reading(rate_pct=1.63, total_users=5000, active_users=10000, purchasing_users=163)
-    ) == "activeUsers"
+def _rate_over(purchasing_users: float, denominator: float) -> float:
+    return purchasing_users / denominator
 
 
-def test_counts_too_close_to_tell_apart():
-    assert ga4_service._implied_denominator(
-        _reading(rate_pct=1.63, total_users=10000, active_users=9990, purchasing_users=163)
-    ) == "both"
+def test_total_users_is_identified():
+    assert ga4_service._implied_denominator(_reading(
+        rate_raw=_rate_over(41, 4564), total_users=4564, active_users=4001,
+    )) == "totalUsers"
 
 
-def test_neither_denominator_reproduces_a_thresholded_reading():
-    assert ga4_service._implied_denominator(
-        _reading(rate_pct=1.63, total_users=10000, active_users=9800, purchasing_users=40)
-    ) is None
+def test_active_users_is_identified():
+    assert ga4_service._implied_denominator(_reading(
+        rate_raw=_rate_over(41, 4539), total_users=4001, active_users=4539,
+    )) == "activeUsers"
+
+
+def test_counts_too_close_to_separate():
+    """4564 and 4563 both give near-whole numerators — say so, don't guess."""
+    assert ga4_service._implied_denominator(_reading(
+        rate_raw=_rate_over(41, 4564), total_users=4564, active_users=4563,
+    )) == "both"
+
+
+def test_purchase_events_never_enter_the_check():
+    """One guest booking twice must not make a healthy reading look broken —
+    the earlier version compared the numerator against this and always failed."""
+    assert ga4_service._implied_denominator(_reading(
+        rate_raw=_rate_over(41, 4564), total_users=4564, active_users=4001,
+        purchase_events=61,          # 1.49 events per purchasing user
+    )) == "totalUsers"
+
+
+def test_a_rate_of_zero_is_not_diagnosable():
+    assert ga4_service._implied_denominator(_reading(rate_pct=0.0, rate_raw=0.0)) is None

@@ -149,9 +149,19 @@ Service: `services/ga4_service.py`. Yearly assembly: `team_kpi_service.get_purch
 }
 ```
 
-Only the first metric is displayed (`"0.0163"` → `1.63%`). The other three let the
-pipeline self-verify — `round(rate × denominator)` should land on the purchasing-user
-count, and whichever denominator does is the real one (logged per reading).
+Only the first metric is displayed (`"0.0163"` → `1.63%`). The other three exist to
+self-verify and to debug a suspicious number without re-querying.
+
+Which denominator GA4 divides by — `totalUsers` or `activeUsers` — is not documented,
+and the two sit within a percent of each other. It is settled by integrality: the
+numerator is a whole number of people, so `rate × real_denominator` lands on an integer
+while the wrong one generally does not.
+
+**`keyEvents:purchase` counts events, not people.** A guest booking twice is two events
+and one purchasing user, so it is never the rate's numerator — measured on Saigon for
+Aug 2026, 0.90% of 4,564 users is 41 purchasers against 61 purchase events. An earlier
+version of the check compared the two and reported every healthy reading as
+unverifiable.
 
 ### Rules this integration cannot break
 - **No `dimensions`.** The KPI is one property-level number. GA4 computes its own

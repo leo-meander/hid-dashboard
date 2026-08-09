@@ -66,9 +66,16 @@ class Ga4PurchaseReading:
     """
 
     rate_pct: Optional[float]
+    # The same rate unrounded. Kept because rounding to 2dp destroys the only
+    # signal that distinguishes the two candidate denominators (see
+    # _implied_denominator) — they differ by well under a percentage point.
+    rate_raw: Optional[float]
     total_users: float
     active_users: float
-    purchasing_users: float
+    # keyEvents:purchase counts EVENTS, not people. One guest booking twice is
+    # two events and one purchasing user, so this is never the numerator of a
+    # user-scoped rate.
+    purchase_events: float
     thresholded: bool
 
 
@@ -215,33 +222,45 @@ def _as_float(raw) -> float:
 
 
 def _implied_denominator(reading: Ga4PurchaseReading) -> Optional[str]:
-    """Which user count actually reproduces the rate.
+    """Which user count GA4 divided by: ``totalUsers`` or ``activeUsers``.
 
-    GA4's docs do not spell out whether ``userKeyEventRate`` divides by
-    totalUsers or activeUsers, and the two are usually close but not identical.
-    Rather than guess, every reading checks both and reports what the response
-    itself shows: ``"totalUsers"``, ``"activeUsers"``, ``"both"`` (the counts
-    were too close to tell apart), or None when neither reproduces it — which
-    normally means the response was thresholded.
+    Google's docs do not say, and the two counts sit within a percent or two of
+    each other, so the answer has to be read off the numbers themselves.
+
+    It cannot be read off ``keyEvents:purchase``: that counts events, and one
+    guest booking twice is two events but one purchasing user. Comparing a rate
+    numerator against it is a category error — an earlier version of this
+    function made exactly that mistake and reported every healthy reading as
+    unverifiable.
+
+    What does work is integrality. The numerator is a whole number of people,
+    so ``rate × real_denominator`` lands on an integer while the same rate
+    against the wrong denominator generally does not. Returns None when both
+    land equally well (the counts were too close to separate) or neither does
+    (usually thresholding).
     """
-    if not reading.rate_pct or not reading.purchasing_users:
+    if not reading.rate_raw or reading.rate_raw <= 0:
         return None
-    fraction = reading.rate_pct / 100
-    tolerance = max(1.0, reading.purchasing_users * 0.02)
 
-    def reproduces(denominator: float) -> bool:
-        return (
-            denominator > 0
-            and abs(fraction * denominator - reading.purchasing_users) <= tolerance
-        )
+    def distance_from_whole(denominator: float) -> Optional[float]:
+        if denominator <= 0:
+            return None
+        implied = reading.rate_raw * denominator
+        return abs(implied - round(implied))
 
-    by_total = reproduces(reading.total_users)
-    by_active = reproduces(reading.active_users)
-    if by_total and by_active:
+    by_total = distance_from_whole(reading.total_users)
+    by_active = distance_from_whole(reading.active_users)
+    if by_total is None or by_active is None:
+        return None
+    # GA4 returns the rate to ~9 significant figures, so the true denominator
+    # lands far closer to whole than chance would allow.
+    tolerance = 0.01
+    total_fits, active_fits = by_total <= tolerance, by_active <= tolerance
+    if total_fits and active_fits:
         return "both"
-    if by_total:
+    if total_fits:
         return "totalUsers"
-    if by_active:
+    if active_fits:
         return "activeUsers"
     return None
 
@@ -303,26 +322,20 @@ def _run_purchase_report(
     raw_rate = values[0]
     reading = Ga4PurchaseReading(
         rate_pct=(round(_as_float(raw_rate) * 100, 2) if raw_rate is not None else None),
+        rate_raw=(_as_float(raw_rate) if raw_rate is not None else None),
         total_users=_as_float(values[1]),
         active_users=_as_float(values[2]),
-        purchasing_users=_as_float(values[3]),
+        purchase_events=_as_float(values[3]),
         thresholded=bool((payload.get("metadata") or {}).get("subjectToThresholding")),
     )
 
-    denominator = _implied_denominator(reading)
-    if denominator is None and reading.rate_pct:
-        log.warning(
-            "GA4 %s %s→%s: rate %.2f%% reproduces neither totalUsers (%.0f) nor "
-            "activeUsers (%.0f) against %.0f purchasing users — most likely "
-            "thresholding (subjectToThresholding=%s)",
-            property_id, start_date, end_date, reading.rate_pct,
-            reading.total_users, reading.active_users,
-            reading.purchasing_users, reading.thresholded,
-        )
-    else:
-        log.info("GA4 %s %s→%s: %.2f%% (denominator=%s, thresholded=%s)",
-                 property_id, start_date, end_date, reading.rate_pct or 0.0,
-                 denominator, reading.thresholded)
+    log.info(
+        "GA4 %s %s→%s: %.2f%% of %.0f users (denominator=%s), %.0f purchase "
+        "events, thresholded=%s",
+        property_id, start_date, end_date, reading.rate_pct or 0.0,
+        reading.total_users, _implied_denominator(reading) or "undetermined",
+        reading.purchase_events, reading.thresholded,
+    )
 
     return reading, None
 
@@ -371,18 +384,24 @@ def describe_purchase_report(
         "error": None,
         "reading": {
             "rate_pct": reading.rate_pct,
+            "rate_raw": reading.rate_raw,
             "total_users": reading.total_users,
             "active_users": reading.active_users,
-            "purchasing_users": reading.purchasing_users,
+            "purchase_events": reading.purchase_events,
             "thresholded": reading.thresholded,
         },
-        # round(rate × denominator) vs the reported purchasing-user count —
-        # whichever lands on it is the real denominator.
-        "implied_purchasers_from_total_users": round(
-            (reading.rate_pct or 0) / 100 * reading.total_users, 1
+        # rate × denominator is a whole number of people for the real
+        # denominator. Not comparable to purchase_events — that counts events,
+        # and one guest can book twice.
+        "implied_purchasing_users_from_total_users": round(
+            (reading.rate_raw or 0) * reading.total_users, 4
         ),
-        "implied_purchasers_from_active_users": round(
-            (reading.rate_pct or 0) / 100 * reading.active_users, 1
+        "implied_purchasing_users_from_active_users": round(
+            (reading.rate_raw or 0) * reading.active_users, 4
         ),
         "denominator": _implied_denominator(reading),
+        "purchase_events_per_purchasing_user": (
+            round(reading.purchase_events / ((reading.rate_raw or 0) * reading.total_users), 2)
+            if reading.rate_raw and reading.total_users else None
+        ),
     }

@@ -43,9 +43,13 @@ def debug_ga4_purchase_rate(
 
     Two things this answers that the grid cannot:
       * whether ``userKeyEventRate:purchase`` divides by ``totalUsers`` or
-        ``activeUsers`` — compare ``implied_purchasers_from_*`` against the
-        reported ``purchasing_users`` and see which one lands;
+        ``activeUsers`` — the numerator is a whole number of people, so
+        whichever ``implied_purchasing_users_from_*`` lands on an integer is
+        the real denominator;
       * why a cell is blank (no property mapped, 403, thresholded, no traffic).
+
+    Note ``purchase_events`` counts events, not people: a guest booking twice
+    is two events and one purchasing user, so it is never the rate's numerator.
     """
     import calendar
     from datetime import date
