@@ -128,6 +128,21 @@ class Settings(BaseSettings):
     # branches — purchase_cvr gates Oani to 2026-09 via starts_by_branch.
     GA4_PROPERTY_ID_OANI: str = "514380737"
 
+    # PageSpeed Insights API — Avg Website Load Speed KPI (Paid Ads).
+    # Free without a key at low volume (5 branches/month is well under the
+    # keyless rate limit), but an API key lifts the quota if that ever
+    # changes. Get one at https://developers.google.com/speed/docs/insights/v5/get-started
+    PAGESPEED_API_KEY: str = ""
+    # Branch URLs are not secrets, so they ship as defaults and stay
+    # overridable per environment. The query layer never sees them directly —
+    # it reads pagespeed_url_map. Source: docs/specs/integrations.md branch
+    # site map (staymeander.com/<branch>/en).
+    PAGESPEED_URL_SAIGON: str = "https://staymeander.com/meandersaigon/en"
+    PAGESPEED_URL_1948: str = "https://staymeander.com/meander1948/en"
+    PAGESPEED_URL_TAIPEI: str = "https://staymeander.com/meandertaipei/en"
+    PAGESPEED_URL_OSAKA: str = "https://staymeander.com/meanderosaka/en"
+    PAGESPEED_URL_OANI: str = "https://staymeander.com/oani/en"
+
     # TikTok Events API — Saigon only
     TIKTOK_ACCESS_TOKEN_SAIGON: str = ""
     TIKTOK_EVENT_SOURCE_ID_SAIGON: str = ""
@@ -326,6 +341,21 @@ class Settings(BaseSettings):
                 "taipei": self.GA4_PROPERTY_ID_TAIPEI,
                 "osaka":  self.GA4_PROPERTY_ID_OSAKA,
                 "oani":   self.GA4_PROPERTY_ID_OANI,
+            }.items()
+            if str(value or "").strip()
+        }
+
+    @property
+    def pagespeed_url_map(self) -> Dict[str, str]:
+        """branch_key → website URL to test, for branches that have one configured."""
+        return {
+            key: value
+            for key, value in {
+                "saigon": self.PAGESPEED_URL_SAIGON,
+                "1948":   self.PAGESPEED_URL_1948,
+                "taipei": self.PAGESPEED_URL_TAIPEI,
+                "osaka":  self.PAGESPEED_URL_OSAKA,
+                "oani":   self.PAGESPEED_URL_OANI,
             }.items()
             if str(value or "").strip()
         }

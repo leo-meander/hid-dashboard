@@ -2381,3 +2381,24 @@ def normalize_countries(
 
     background_tasks.add_task(_run)
     return _envelope({"status": "started", "message": "Country normalization running in background"})
+
+
+# ── PageSpeed Insights sync (Avg Website Load Speed KPI) ──────────────────────
+
+@router.post("/page-speed", dependencies=[Depends(verify_sync_token)])
+def trigger_page_speed_sync(
+    year: Optional[int] = Query(None),
+    month: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Run a PageSpeed Insights (mobile, Speed Index) test per branch and cache it.
+
+    Defaults to the current year/month. Called monthly by GitHub Actions —
+    same pattern as /api/sync/run-migrations. Pass year/month to backfill a
+    single past month (only meaningful for months on/after this KPI's
+    automation start — PSI has no history API, so it can't backfill months
+    before the sync existed)."""
+    from app.services.pagespeed_service import sync_page_speed
+
+    result = sync_page_speed(db, year=year, month=month)
+    return _envelope(result)

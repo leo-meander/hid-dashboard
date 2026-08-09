@@ -71,6 +71,13 @@ KPI_DEFS: dict[str, list[dict]] = {
          # branch → property mapping stays in config.
          "all_view_note": "Approximate. The group figure is total purchasing visitors ÷ total visitors across branches, not an average of the branch percentages — the branches differ several-fold in traffic, so an average would be nobody's real rate. Each branch has separate GA4 analytics, so someone who browses two branch sites is counted once per branch. Oani joins the group figure from Sep 2026, when its tag stopped also firing on the 1948 and Osaka sites.",
          },
+        # Google PageSpeed Insights, Speed Index, mobile — see pagespeed_service.
+        # Target is a fixed <3s goal rather than something planned per month, so
+        # it auto-fills to 2.99 unless a cell is manually overridden. Lower is
+        # better, so pct = actual/target×100 reads like budget_utilisation
+        # (>100% = slower than goal, not "ahead").
+        {"key": "page_load_speed", "label": "Avg Website Load Speed", "unit": "s", "org_wide": False,
+         "higher_is_better": False, "decimals": 1, "fixed_target": 2.99},
     ],
     "designer": [
         # Temporarily hidden (2026-08-06) — remove "hidden" to bring them back
@@ -1023,6 +1030,9 @@ def build_monthly_summary(
         sources = [get_paid_ads_actuals_yearly(db, year)]
         if any(d["key"] == "purchase_cvr" for d in defs):
             sources.append(get_purchase_cvr_actuals_yearly(year))
+        if any(d["key"] == "page_load_speed" for d in defs):
+            from app.services.pagespeed_service import get_page_speed_actuals_yearly
+            sources.append(get_page_speed_actuals_yearly(db, year))
         actuals_yearly = _combined_actuals(*sources)
     elif auto and role_key == "designer":
         # Each source is fetched only when a visible KPI still needs it.
@@ -1160,6 +1170,10 @@ def build_monthly_summary(
                 target = None  # future month or unknown computed type
             else:
                 target = targets_map.get((kpi_key, m))
+                if target is None and defn.get("fixed_target") is not None:
+                    # KPI's goal is constant (e.g. "<3s"), not planned per
+                    # month — auto-fill unless a cell was manually overridden.
+                    target = defn["fixed_target"]
                 # ROAS all-branches: weighted average = Σ(spend_bk × roas_target_bk) / Σ(spend_bk)
                 if all_branches_view and kpi_key == "roas" and role_key == "paid_ads" and not is_future:
                     per_branch_roas = per_branch_targets_map.get(("roas", m), {})
@@ -1208,6 +1222,15 @@ def build_monthly_summary(
                         # Org-wide ratio from upstream. Averaging the branch
                         # percentages would be wrong — different denominators.
                         raw = month_actuals.get("all", {}).get("ads_win_rate")
+                    elif kpi_key == "page_load_speed":
+                        # Average seconds across branches — summing them
+                        # would be meaningless (unlike revenue).
+                        vals = [
+                            month_actuals.get(bk, {}).get(kpi_key)
+                            for bk in _ALL_BRANCH_KEYS
+                        ]
+                        vals = [float(v) for v in vals if v is not None]
+                        raw = round(sum(vals) / len(vals), 2) if vals else None
                     else:
                         # is_pct KPIs (e.g. data_fill_rate): average across branches
                         # all other KPIs: sum across branches
