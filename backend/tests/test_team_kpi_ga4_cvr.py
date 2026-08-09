@@ -84,7 +84,8 @@ def _clear_cache():
 
 @pytest.fixture(autouse=True)
 def _only_saigon_is_mapped(monkeypatch):
-    """One clean property, plus Oani deliberately unmapped (its tag is polluted)."""
+    """One clean property; the rest unmapped so the fan-out stays small."""
+    monkeypatch.setattr(settings, "GA4_SERVICE_ACCOUNT_JSON", '{"client_email":"x","private_key":"y"}')
     monkeypatch.setattr(settings, "GA4_PROPERTY_ID_SAIGON", SAIGON_PROPERTY)
     monkeypatch.setattr(settings, "GA4_PROPERTY_ID_1948", "")
     monkeypatch.setattr(settings, "GA4_PROPERTY_ID_TAIPEI", "")
@@ -171,6 +172,14 @@ def test_an_unreachable_property_leaves_the_month_blank(ga4):
 def test_no_properties_configured_is_not_fatal(ga4, monkeypatch):
     monkeypatch.setattr(settings, "GA4_PROPERTY_ID_SAIGON", "")
     assert svc.get_purchase_cvr_actuals_yearly(YEAR) == {}
+
+
+def test_a_missing_service_account_key_costs_nothing(ga4, monkeypatch):
+    """Not yet deployed: the row is blank, and it does not fan out to find out."""
+    calls, _ = ga4
+    monkeypatch.setattr(settings, "GA4_SERVICE_ACCOUNT_JSON", "")
+    assert svc.get_purchase_cvr_actuals_yearly(YEAR) == {}
+    assert calls == []
 
 
 # ── Into the KPI grid ────────────────────────────────────────────────────────

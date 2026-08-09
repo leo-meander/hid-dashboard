@@ -76,6 +76,16 @@ class Ga4PurchaseReading:
 _token_cache: Optional[tuple[float, str]] = None  # (expires_at_epoch, token)
 
 
+def credentials_configured() -> bool:
+    """Whether a service-account key is present at all.
+
+    Callers fanning out over many (property × month) windows check this once
+    up front: without a key every one of those requests would fail identically,
+    and each would log its own line.
+    """
+    return bool((settings.GA4_SERVICE_ACCOUNT_JSON or "").strip())
+
+
 def _service_account_info() -> Optional[dict]:
     """Parse GA4_SERVICE_ACCOUNT_JSON. None (with a log line) when unusable."""
     raw = (settings.GA4_SERVICE_ACCOUNT_JSON or "").strip()

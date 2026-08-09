@@ -558,11 +558,16 @@ def get_purchase_cvr_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
 
     from concurrent.futures import ThreadPoolExecutor
 
-    from app.services.ga4_service import run_purchase_report
+    from app.services.ga4_service import credentials_configured, run_purchase_report
 
     property_map = settings.ga4_property_map
     if not property_map:
         log.warning("no GA4 properties configured; purchase_cvr blank")
+        return {}
+    if not credentials_configured():
+        # Checked once rather than per window: with no key every request below
+        # would fail the same way and log its own line.
+        log.warning("GA4 service account not configured; purchase_cvr blank")
         return {}
 
     today = date.today()
