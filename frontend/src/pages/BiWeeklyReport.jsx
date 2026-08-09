@@ -70,6 +70,10 @@ function parseBiweeklyHtml(htmlText) {
   const branches = Array.from(doc.querySelectorAll(".hid-bw-branch")).map(el => ({
     id: el.dataset.branchId,
     name: el.dataset.branchName || "Branch",
+    // The backend owns the brand palette, so the tab reads its colour off the
+    // markup instead of keeping a second copy of the hex codes here that
+    // could drift out of sync with the report itself.
+    color: el.dataset.branchColor || "#028782",
     html: el.innerHTML,
   }));
   return { headerHtml: headerEl ? headerEl.outerHTML : "", branches };
@@ -439,20 +443,27 @@ export default function BiWeeklyReport() {
       {branches.length > 0 && (
         <>
           <div className="flex gap-1.5 flex-wrap">
-            {branches.map(b => (
-              <button
-                key={b.id}
-                onClick={() => setSelectedBranch(b.id)}
-                className={
-                  "px-3.5 py-1.5 text-sm rounded-lg border transition " +
-                  (b.id === active?.id
-                    ? "bg-teal-700 text-white border-teal-700"
-                    : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50")
-                }
-              >
-                {b.name}
-              </button>
-            ))}
+            {branches.map(b => {
+              const on = b.id === active?.id;
+              return (
+                <button
+                  key={b.id}
+                  onClick={() => setSelectedBranch(b.id)}
+                  style={
+                    on
+                      ? { background: b.color, borderColor: b.color, color: "#fff" }
+                      : { borderColor: b.color, color: b.color }
+                  }
+                  className="px-3.5 py-1.5 text-sm rounded-lg border transition bg-white hover:opacity-80 flex items-center gap-2"
+                >
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ background: on ? "#fff" : b.color }}
+                  />
+                  {b.name}
+                </button>
+              );
+            })}
           </div>
 
           {reportQuery.data?.headerHtml && (

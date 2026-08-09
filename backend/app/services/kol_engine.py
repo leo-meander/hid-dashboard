@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.request
 from typing import Optional
 
@@ -96,10 +97,105 @@ def fetch_kol_data(base_url: str, org_id: str, api_key: str) -> list[dict]:
                 "deliverables":     collab.get("deliverables_agreed"),
                 "platforms":        kol.get("kol_platform_accounts") or [],
                 "posts":            collab.get("posts") or [],
+                # Post-performance rollup, used by the Bi-Weekly report. Kept
+                # optional: these are populated by the KOL Engine's own
+                # insights job, so an un-scored collaboration returns None
+                # rather than a misleading zero.
+                "published_at":     collab.get("published_at"),
+                "total_reach":      collab.get("total_reach"),
+                "total_engagements": collab.get("total_engagements"),
             })
 
     log.info("KOL Engine: %d collaboration records parsed", len(results))
     return results
+
+
+# ── Post-performance insights (reach / engagement) ──────────────────────────
+#
+# HiD's own `kol_records` table stores no reach or engagement columns — that
+# data only exists in the KOL Engine. The Engine has no public per-period
+# insights endpoint (only /api/public/kol-{targets,revenue,reservations}),
+# so this aggregates the sync payload client-side instead.
+#
+# One HTTP call serves all five branches of a report build, hence the TTL
+# cache — the same pattern `fetch_kol_targets` uses above.
+
+_KOL_INSIGHTS_TTL_SEC = 600
+_kol_insights_cache: dict[tuple, tuple[float, list]] = {}
+
+
+def _as_date(value) -> Optional[str]:
+    """Normalise an ISO timestamp or date to a plain YYYY-MM-DD string."""
+    if not value:
+        return None
+    return str(value)[:10]
+
+
+def fetch_kol_insights(
+    base_url: str,
+    org_id: str,
+    api_key: str,
+    branch_key: str,
+    date_from,
+    date_to,
+) -> dict:
+    """Reach / engagement totals for one branch over [date_from, date_to].
+
+    Returns `{"available": False, ...}` whenever the Engine cannot answer —
+    unreachable, unauthenticated, or simply carrying no scored posts in the
+    window. The caller renders that as "not tracked" rather than as zero,
+    because a zero here would read as "the KOLs got no views", which is a
+    very different claim from "we have no numbers".
+    """
+    empty = {
+        "available": False, "posts": 0, "reach": 0,
+        "engagements": 0, "engagement_rate_pct": None,
+    }
+    if not api_key:
+        return empty
+
+    key = (base_url, org_id)
+    now = time.time()
+    hit = _kol_insights_cache.get(key)
+    if hit and now - hit[0] < _KOL_INSIGHTS_TTL_SEC:
+        records = hit[1]
+    else:
+        try:
+            records = fetch_kol_data(base_url, org_id, api_key)
+        except Exception as e:
+            log.warning("KOL Engine insights unavailable: %s: %s", type(e).__name__, e)
+            return empty
+        _kol_insights_cache[key] = (now, records)
+
+    d_from, d_to = date_from.isoformat(), date_to.isoformat()
+    posts = reach = engagements = 0
+    scored = False
+    for r in records:
+        if r.get("branch_key") != branch_key:
+            continue
+        published = _as_date(r.get("published_at"))
+        if not published or not (d_from <= published <= d_to):
+            continue
+        posts += 1
+        if r.get("total_reach") is not None or r.get("total_engagements") is not None:
+            scored = True
+        reach += int(r.get("total_reach") or 0)
+        engagements += int(r.get("total_engagements") or 0)
+
+    if not scored:
+        # Collaborations published in the window exist, but none carry
+        # performance numbers yet — still "no data", not "zero views".
+        return {**empty, "posts": posts}
+
+    return {
+        "available": True,
+        "posts": posts,
+        "reach": reach,
+        "engagements": engagements,
+        "engagement_rate_pct": (
+            round(engagements / reach * 100, 2) if reach > 0 else None
+        ),
+    }
 
 
 # ── Public targets API ─────────────────────────────────────────────────────
@@ -109,8 +205,6 @@ def fetch_kol_data(base_url: str, org_id: str, api_key: str) -> list[dict]:
 #           {organization, period, totals, branches, monthly_targets}.
 # Targets and actuals come back per metric: invited_proactive,
 # collaborated, posted — each {actual, target, pct}.
-
-import time
 
 _KOL_TARGETS_TTL_SEC = 600  # 10 min — same response shared across the
                             # 5 branch passes inside one report build,
