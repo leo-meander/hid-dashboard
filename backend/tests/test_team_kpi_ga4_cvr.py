@@ -189,7 +189,7 @@ def test_branch_cell_shows_the_property_rate(ga4):
     out = svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, SAIGON_UUID)
     kpi = _kpi(out)
     assert kpi["monthly"][CUR_MONTH - 1]["actual"] == 1.63
-    assert kpi["unavailable_note"] is None
+    assert kpi["view_note"] is None   # a branch tab measures this directly
 
 
 def test_the_row_renders_as_two_decimals_with_a_percent_sign(ga4):
@@ -291,11 +291,67 @@ def test_branch_start_helper():
     assert svc.kpi_branch_start(bare, "saigon") == ("2026-02", None)
 
 
-def test_all_branches_has_no_group_wide_rate(ga4):
-    """Five properties are five user namespaces — an average would be invented."""
+# ── The All tab ──────────────────────────────────────────────────────────────
+
+def _sized(rate_pct, active_users):
+    """A reading whose purchasing-user count is exact."""
+    return _reading(rate_pct=rate_pct, rate_raw=rate_pct / 100,
+                    total_users=active_users * 1.02, active_users=active_users)
+
+
+@pytest.fixture
+def branches(ga4, monkeypatch):
+    """Four clean branches of very different sizes, plus Oani."""
+    for var, pid in [("GA4_PROPERTY_ID_1948", "b"), ("GA4_PROPERTY_ID_TAIPEI", "c"),
+                     ("GA4_PROPERTY_ID_OSAKA", "d"), ("GA4_PROPERTY_ID_OANI", "e")]:
+        monkeypatch.setattr(settings, var, pid)
+    sizes = {SAIGON_PROPERTY: (1.0, 1000.0), "b": (2.0, 9000.0),
+             "c": (1.0, 1000.0), "d": (1.0, 1000.0), "e": (10.0, 10000.0)}
+    _calls, install = ga4
+    install(lambda pid, start, end: _sized(*sizes[pid]))
+    return None
+
+
+def test_the_group_figure_is_weighted_by_users_not_a_mean_of_percentages(branches):
+    """10 + 180 + 10 + 10 purchasers over 12,000 users = 1.75%. A mean of the
+    four branch percentages (1, 2, 1, 1) would say 1.25% — the big branch
+    converts better and has to carry proportional weight."""
+    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, None))
+    assert kpi["monthly"][CUR_MONTH - 1]["actual"] == 1.75
+
+
+def test_oani_is_left_out_of_the_group_figure_while_its_history_is_polluted(branches):
+    """Its users are 1948's and Osaka's as well until Sep 2026 — adding them
+    would count those branches twice in the denominator."""
+    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", 2026, None))
+    for cell in kpi["monthly"][:8]:                    # Jan–Aug 2026
+        assert cell["actual"] == 1.75                  # Oani's 10% not dragged in
+
+
+def test_oani_joins_the_group_figure_once_its_tag_is_clean():
+    assert svc._counts_in_group_total("oani", 2026, 8) is False
+    assert svc._counts_in_group_total("oani", 2026, 9) is True
+    assert svc._counts_in_group_total("oani", 2027, 1) is True
+    assert svc._counts_in_group_total("saigon", 2026, 1) is True
+
+
+def test_the_group_ytd_is_rebuilt_the_same_way(branches):
+    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, None))
+    assert kpi["ytd_actual"] == 1.75
+
+
+def test_the_all_tab_says_the_group_figure_is_approximate(branches):
+    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, None))
+    assert kpi["view_note"]["label"] == "approximate"
+    assert "not an average of the branch percentages" in kpi["view_note"]["text"]
+
+
+def test_a_group_figure_needs_at_least_one_branch(ga4, monkeypatch):
+    _calls, install = ga4
+    install(lambda pid, start, end: None)
     kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, None))
     assert all(m["actual"] is None for m in kpi["monthly"])
-    assert "de-duplicated" in kpi["unavailable_note"]
+    assert kpi["ytd_actual"] is None
 
 
 @pytest.mark.parametrize("branch_id", [SAIGON_UUID, OANI_UUID, None])
@@ -308,12 +364,11 @@ def test_no_ga4_property_id_reaches_the_grid(ga4, branch_id):
         assert property_id not in rendered
 
 
-def test_blocking_the_view_does_not_touch_the_stored_target(ga4):
-    """The All tab is blank, but a target stored against it survives."""
+def test_a_group_target_is_read_back_unnormalised(ga4):
+    """1.8 on the All tab means 1.8%, same as on a branch tab."""
     rows = [_FakeRow("purchase_cvr", CUR_MONTH, 1.8, None)]
     kpi = _kpi(svc.build_monthly_summary(_FakeSession(rows), "paid_ads", YEAR, None))
     assert kpi["monthly"][CUR_MONTH - 1]["target"] == 1.8
-    assert kpi["monthly"][CUR_MONTH - 1]["actual"] is None
 
 
 def test_the_other_paid_ads_rows_are_unaffected(ga4):

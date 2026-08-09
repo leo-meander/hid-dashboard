@@ -325,10 +325,10 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                         ) : `from ${startLabel(kpi.starts)}`}
                       </span>
                     )}
-                    {kpi.unavailable_note && (
-                      <Tooltip text={kpi.unavailable_note}>
+                    {kpi.view_note && (
+                      <Tooltip text={kpi.view_note.text}>
                         <span className="text-[10px] text-amber-600 font-normal cursor-help">
-                          not measurable here ⓘ
+                          {kpi.view_note.label} ⓘ
                         </span>
                       </Tooltip>
                     )}
@@ -415,7 +415,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                       // Read-only actual from API
                       return (
                         <td key={m.month} title={
-                            kpi.unavailable_note ? kpi.unavailable_note
+                            kpi.view_note ? kpi.view_note.text
                             : !m.has_target && m.actual !== null ? "No target set — excluded from YTD & Avg%"
                             : undefined}
                           className={`px-1 py-1.5 text-center ${m.is_future ? "opacity-30" : ""} ${cls ? cls.bg : ""}`}>

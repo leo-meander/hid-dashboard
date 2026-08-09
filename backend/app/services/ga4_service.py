@@ -57,6 +57,17 @@ PURCHASE_METRICS = (
 )
 
 
+# Which user count GA4 divides userKeyEventRate:purchase by. Google does not
+# document it, so it was measured: on 2026-08-09, across all five properties for
+# August, rate × activeUsers landed on a whole number of people every time
+# (41.0, 94.0, 58.0, 61.0, 94.0) and rate × totalUsers on none of them
+# (41.2, 96.3, 58.3, 63.1, 97.5). Five for five is not coincidence.
+#
+# It matters wherever the rate is rebuilt from counts — the group figure on the
+# All tab weights by this, not by totalUsers.
+RATE_DENOMINATOR = "activeUsers"
+
+
 @dataclass
 class Ga4PurchaseReading:
     """One property × one date range.
@@ -77,6 +88,20 @@ class Ga4PurchaseReading:
     # user-scoped rate.
     purchase_events: float
     thresholded: bool
+
+    @property
+    def rate_denominator(self) -> float:
+        """The user count this rate was divided by — see RATE_DENOMINATOR."""
+        return self.active_users
+
+    @property
+    def purchasing_users(self) -> float:
+        """People who purchased, rebuilt from the rate.
+
+        GA4 exposes no metric for this directly (keyEvents:purchase counts
+        events), but rate × denominator is exact to within float noise.
+        """
+        return round((self.rate_raw or 0.0) * self.rate_denominator)
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
