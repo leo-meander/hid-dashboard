@@ -65,8 +65,17 @@ class TestFlag:
         assert _flag("PH") == "🇵🇭"
         assert _flag("tw") == "🇹🇼"
 
-    def test_unusable_codes_fall_back_to_a_globe(self):
-        for bad in [None, "", "?", "??", "VNM", "1A", "  "]:
+    def test_maps_country_names_because_that_is_what_the_column_holds(self):
+        """`guest_country_code` stores a canonical display name, not a code —
+        reading it as ISO rendered a globe on every row in production."""
+        assert _flag("Taiwan") == "🇹🇼"
+        assert _flag("United States") == "🇺🇸"
+        assert _flag("Hong Kong") == "🇭🇰"
+        assert _flag("Viet Nam") == "🇻🇳"      # alias
+        assert _flag("Philippines") == "🇵🇭"
+
+    def test_unusable_values_fall_back_to_a_globe(self):
+        for bad in [None, "", "?", "??", "1A", "  ", "Unknown", "Atlantis"]:
             assert _flag(bad) == "🌐"
 
 
@@ -123,9 +132,12 @@ def _payload(branch_name="MEANDER Saigon"):
         },
         "markets": {
             "rows": [
-                {"country": "Philippines", "country_code": "PH",
+                # Production shape: the "code" column carries a display name.
+                {"country": "Philippines", "country_code": "Philippines",
                  "revenue": 514_000_000, "bookings": 102, "vs_prior_pct": 219.0},
-                {"country": "Unknown", "country_code": None,
+                {"country": "Taiwan", "country_code": "Taiwan",
+                 "revenue": 164_000_000, "bookings": 40, "vs_prior_pct": 344.0},
+                {"country": "Atlantis", "country_code": None,
                  "revenue": 12_000_000, "bookings": 4, "vs_prior_pct": None},
             ],
             "total_revenue": 1_210_000_000,
@@ -183,7 +195,8 @@ class TestBuildHtml:
     def test_market_rows_carry_flags(self):
         html = self._render([_payload()])
         assert "🇵🇭 Philippines" in html
-        assert "🌐 Unknown" in html or "Unknown" not in html
+        assert "🇹🇼 Taiwan" in html
+        assert "🌐 Atlantis" in html   # unrecognised, but never a broken box
 
     def test_target_leads_with_the_month_and_marks_the_goal(self):
         html = self._render([_payload()])

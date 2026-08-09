@@ -407,8 +407,8 @@ def kol_reach_block(branch: Branch, p: Period) -> dict:
     hotel_id = resolve_hotel_id_from_branch_name(branch.name or "")
     branch_key = HOTEL_TO_BRANCH_KEY.get(hotel_id) if hotel_id else None
     if not branch_key:
-        return {"available": False, "posts": 0, "reach": 0,
-                "engagements": 0, "engagement_rate_pct": None}
+        return {"available": False, "posts": 0, "reach": 0, "engagements": 0,
+                "engagement_rate_pct": None, "reason": "branch_not_mapped"}
 
     return fetch_kol_insights(
         base_url=settings.KOL_ENGINE_URL,
