@@ -137,10 +137,15 @@ function AchievementRing({ pct, label, sub }) {
 function YtdBars({ kpis }) {
   const withPct = kpis
     .map(k => {
-      const actuals = k.monthly.filter(m => !m.is_future && m.actual !== null && m.has_target && m.target > 0);
+      const actuals = k.monthly.filter(m => !m.is_future && m.actual !== null && m.has_target && m.target > 0 && m.actual !== 0);
       if (!actuals.length) return null;
-      const avgPct = actuals.reduce((s, m) => s + (m.actual / m.target * 100), 0) / actuals.length;
-      return { label: k.label, pct: Math.round(avgPct * 10) / 10, higherIsBetter: k.higher_is_better };
+      // Higher = better in this bar regardless of the KPI's own direction —
+      // for a lower-is-better KPI (e.g. load speed) the ratio is inverted so
+      // "on target" still reads as 100%, not as whatever direction actual/target
+      // happens to point.
+      const ratio = m => k.higher_is_better ? (m.actual / m.target) : (m.target / m.actual);
+      const avgPct = actuals.reduce((s, m) => s + ratio(m) * 100, 0) / actuals.length;
+      return { label: k.label, pct: Math.round(avgPct * 10) / 10 };
     })
     .filter(Boolean);
 
@@ -148,8 +153,10 @@ function YtdBars({ kpis }) {
 
   return (
     <div className="space-y-3">
-      {withPct.map(({ label, pct, higherIsBetter }) => {
-        const color = pctColor(pct, higherIsBetter);
+      {withPct.map(({ label, pct }) => {
+        // pct is already direction-normalized (higher = better) above, so no
+        // higherIsBetter here — passing it again would invert a second time.
+        const color = pctColor(pct);
         const cls = color ? COLOR_CLASSES[color] : { bg: "bg-gray-100", text: "text-gray-500" };
         return (
           <div key={label}>

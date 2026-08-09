@@ -1270,9 +1270,21 @@ def build_monthly_summary(
             if target and target != 0 and actual is not None:
                 pct = round(actual / target * 100, 1)
                 if not is_future:
-                    all_pcts.append(pct)
-                    if m == cur_month:
-                        cur_pcts.append(pct)
+                    # The composite score (top ring, "avg achieved") must read
+                    # higher = better regardless of KPI direction. `pct` itself
+                    # stays the literal actual/target ratio for the cell badge
+                    # (e.g. "194%" on a lower-is-better KPI, still colour-coded
+                    # red by higher_is_better) — only the aggregate flips.
+                    if higher:
+                        score_pct = pct
+                    elif actual != 0:
+                        score_pct = round(target / actual * 100, 1)
+                    else:
+                        score_pct = None
+                    if score_pct is not None:
+                        all_pcts.append(score_pct)
+                        if m == cur_month:
+                            cur_pcts.append(score_pct)
 
             monthly.append({
                 "month": m,
