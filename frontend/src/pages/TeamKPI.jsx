@@ -17,12 +17,14 @@ const CURRENT_MONTH = new Date().getMonth() + 1; // 1-indexed
 
 // ── Color helpers ─────────────────────────────────────────────────────────────
 
-function pctColor(pct, higherIsBetter = true) {
+// Every `pct` reaching this function is already direction-normalized by the
+// backend (target/actual instead of actual/target for a lower-is-better
+// KPI), so higher always means better here — no direction flag needed.
+function pctColor(pct) {
   if (pct === null || pct === undefined) return null;
-  const v = higherIsBetter ? pct : (200 - pct);  // invert for lower-is-better (budget utilisation)
-  if (v >= 100) return "green";
-  if (v >= 80)  return "yellow";
-  if (v >= 60)  return "orange";
+  if (pct >= 100) return "green";
+  if (pct >= 80)  return "yellow";
+  if (pct >= 60)  return "orange";
   return "red";
 }
 
@@ -137,14 +139,10 @@ function AchievementRing({ pct, label, sub }) {
 function YtdBars({ kpis }) {
   const withPct = kpis
     .map(k => {
-      const actuals = k.monthly.filter(m => !m.is_future && m.actual !== null && m.has_target && m.target > 0 && m.actual !== 0);
+      // m.pct is already direction-normalized by the backend (higher = better).
+      const actuals = k.monthly.filter(m => !m.is_future && m.pct !== null);
       if (!actuals.length) return null;
-      // Higher = better in this bar regardless of the KPI's own direction —
-      // for a lower-is-better KPI (e.g. load speed) the ratio is inverted so
-      // "on target" still reads as 100%, not as whatever direction actual/target
-      // happens to point.
-      const ratio = m => k.higher_is_better ? (m.actual / m.target) : (m.target / m.actual);
-      const avgPct = actuals.reduce((s, m) => s + ratio(m) * 100, 0) / actuals.length;
+      const avgPct = actuals.reduce((s, m) => s + m.pct, 0) / actuals.length;
       return { label: k.label, pct: Math.round(avgPct * 10) / 10 };
     })
     .filter(Boolean);
@@ -296,13 +294,9 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
             const ytdIsQuery = kpi.ytd_mode === "query";
             const ytdSum = targetedMonths.filter(m => m.actual !== null).reduce((s, m) => s + m.actual, 0);
             const ytdActual = ytdIsQuery ? kpi.ytd_actual : (ytdSum > 0 ? ytdSum : null);
-            // Same direction-normalization as the composite ring/YtdBars: for a
-            // lower-is-better KPI, m.pct (the literal actual/target ratio shown
-            // on the cell badge) reads backwards for averaging, so this column
-            // uses target/actual instead — "on target" is still 100% either way.
-            const actPcts = targetedMonths
-              .filter(m => m.pct !== null && (kpi.higher_is_better || m.actual !== 0))
-              .map(m => kpi.higher_is_better ? m.pct : (m.target / m.actual) * 100);
+            // m.pct is already direction-normalized by the backend (higher =
+            // better for every KPI), so this is a plain average.
+            const actPcts = targetedMonths.filter(m => m.pct !== null).map(m => m.pct);
             const avgPct = actPcts.length ? Math.round(actPcts.reduce((a, b) => a + b, 0) / actPcts.length * 10) / 10 : null;
             const avgColor = pctColor(avgPct);
 
@@ -410,7 +404,9 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     }
                   </td>
                   {kpi.monthly.map(m => {
-                    const color = m.has_target && m.pct !== null ? pctColor(m.pct, kpi.higher_is_better) : null;
+                    // m.pct is already direction-normalized by the backend
+                    // (higher = better), so no higher_is_better here.
+                    const color = m.has_target && m.pct !== null ? pctColor(m.pct) : null;
                     const cls = color ? COLOR_CLASSES[color] : null;
                     const isSaving = saving === `${kpi.key}-${m.month}-actual`;
 

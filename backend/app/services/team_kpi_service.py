@@ -77,7 +77,7 @@ KPI_DEFS: dict[str, list[dict]] = {
         # better, so pct = actual/target×100 reads like budget_utilisation
         # (>100% = slower than goal, not "ahead").
         {"key": "page_load_speed", "label": "Avg Website Load Speed", "unit": "s", "org_wide": False,
-         "higher_is_better": False, "decimals": 1, "fixed_target": 2.99},
+         "higher_is_better": False, "decimals": 1, "fixed_target": 2.99, "fixed_target_from": "2026-07"},
     ],
     "designer": [
         # Temporarily hidden (2026-08-06) — remove "hidden" to bring them back
@@ -1173,7 +1173,14 @@ def build_monthly_summary(
                 if target is None and defn.get("fixed_target") is not None:
                     # KPI's goal is constant (e.g. "<3s"), not planned per
                     # month — auto-fill unless a cell was manually overridden.
-                    target = defn["fixed_target"]
+                    # fixed_target_from ("YYYY-MM") lets the target itself
+                    # start later than the KPI's own history — e.g. actuals
+                    # exist from March but the target only became official in
+                    # July. Same start-string semantics as kpi_start_month:
+                    # gates within the named year, always-on after it.
+                    ft_from = defn.get("fixed_target_from")
+                    if not ft_from or (year, m) >= (int(ft_from[:4]), int(ft_from[5:7])):
+                        target = defn["fixed_target"]
                 # ROAS all-branches: weighted average = Σ(spend_bk × roas_target_bk) / Σ(spend_bk)
                 if all_branches_view and kpi_key == "roas" and role_key == "paid_ads" and not is_future:
                     per_branch_roas = per_branch_targets_map.get(("roas", m), {})
@@ -1266,25 +1273,22 @@ def build_monthly_summary(
                 and actuals_yearly.get(m, {}).get(src_bucket, {}).get(f"{kpi_key}__provisional")
             )
 
+            # pct is "achievement %" and always reads higher = better,
+            # regardless of the KPI's own direction — for a lower-is-better
+            # KPI (e.g. load speed) that's target ÷ actual, not actual ÷
+            # target, so "on target" is 100% either way and every consumer
+            # (cell badge, row Avg %, composite ring) can just average/colour
+            # it without knowing which direction the KPI runs.
             pct = None
             if target and target != 0 and actual is not None:
-                pct = round(actual / target * 100, 1)
-                if not is_future:
-                    # The composite score (top ring, "avg achieved") must read
-                    # higher = better regardless of KPI direction. `pct` itself
-                    # stays the literal actual/target ratio for the cell badge
-                    # (e.g. "194%" on a lower-is-better KPI, still colour-coded
-                    # red by higher_is_better) — only the aggregate flips.
-                    if higher:
-                        score_pct = pct
-                    elif actual != 0:
-                        score_pct = round(target / actual * 100, 1)
-                    else:
-                        score_pct = None
-                    if score_pct is not None:
-                        all_pcts.append(score_pct)
-                        if m == cur_month:
-                            cur_pcts.append(score_pct)
+                if higher:
+                    pct = round(actual / target * 100, 1)
+                elif actual != 0:
+                    pct = round(target / actual * 100, 1)
+                if pct is not None and not is_future:
+                    all_pcts.append(pct)
+                    if m == cur_month:
+                        cur_pcts.append(pct)
 
             monthly.append({
                 "month": m,
