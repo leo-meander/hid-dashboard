@@ -86,32 +86,37 @@ def credentials_configured() -> bool:
     return bool((settings.GA4_SERVICE_ACCOUNT_JSON or "").strip())
 
 
-def _service_account_info() -> Optional[dict]:
-    """Parse GA4_SERVICE_ACCOUNT_JSON. None (with a log line) when unusable."""
+def _service_account_info() -> tuple[Optional[dict], Optional[str]]:
+    """Parse GA4_SERVICE_ACCOUNT_JSON into ``(info, why_not)``.
+
+    Failure reasons are returned rather than only logged: they are what a
+    blank KPI cell actually means, and reading them off a debug response beats
+    going to hunt for the log line.
+    """
     raw = (settings.GA4_SERVICE_ACCOUNT_JSON or "").strip()
     if not raw:
-        log.warning("GA4_SERVICE_ACCOUNT_JSON not configured; GA4 metrics blank")
-        return None
+        return None, "GA4_SERVICE_ACCOUNT_JSON is not set"
     try:
         info = json.loads(raw)
     except json.JSONDecodeError as exc:
-        log.error("GA4_SERVICE_ACCOUNT_JSON is not valid JSON: %s", exc)
-        return None
-    if not info.get("client_email") or not info.get("private_key"):
-        log.error("GA4_SERVICE_ACCOUNT_JSON is missing client_email/private_key")
-        return None
-    return info
+        return None, f"GA4_SERVICE_ACCOUNT_JSON is not valid JSON: {exc}"
+    if not isinstance(info, dict):
+        return None, "GA4_SERVICE_ACCOUNT_JSON is not a JSON object"
+    missing = [f for f in ("client_email", "private_key") if not info.get(f)]
+    if missing:
+        return None, f"GA4_SERVICE_ACCOUNT_JSON is missing {', '.join(missing)}"
+    return info, None
 
 
-def _access_token() -> Optional[str]:
-    """Signed-JWT → access token, cached until a minute before it expires."""
+def _access_token() -> tuple[Optional[str], Optional[str]]:
+    """Signed-JWT → access token as ``(token, why_not)``, cached to expiry."""
     global _token_cache
     if _token_cache and _token_cache[0] > time.time():
-        return _token_cache[1]
+        return _token_cache[1], None
 
-    info = _service_account_info()
+    info, why = _service_account_info()
     if not info:
-        return None
+        return None, why
 
     now = int(time.time())
     try:
@@ -128,30 +133,32 @@ def _access_token() -> Optional[str]:
             algorithm="RS256",
             headers=headers,
         )
+    except Exception as exc:
+        # A NotImplementedError about RS256 here means `cryptography` did not
+        # install — PyJWT alone cannot sign the assertion.
+        return None, f"could not sign the JWT assertion ({type(exc).__name__}: {exc})"
+
+    try:
         with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
             resp = client.post(
                 TOKEN_URL,
                 data={"grant_type": JWT_BEARER_GRANT, "assertion": assertion},
             )
     except Exception as exc:
-        log.error("GA4 token exchange error: %s", exc)
-        return None
+        return None, f"token endpoint unreachable ({exc})"
 
     if resp.status_code != 200:
-        # A 400 "invalid_grant" here almost always means the service account
-        # key was rotated or the clock is skewed, not a property permission
-        # problem — those surface as 403 on runReport instead.
-        log.error("GA4 token exchange failed status=%s: %s",
-                  resp.status_code, resp.text[:300])
-        return None
+        # "invalid_grant" here almost always means the key was rotated or the
+        # clock is skewed — a property permission problem surfaces as a 403 on
+        # runReport instead.
+        return None, f"token exchange HTTP {resp.status_code}: {resp.text[:300]}"
 
     body = resp.json()
     token = body.get("access_token")
     if not token:
-        log.error("GA4 token exchange returned no access_token")
-        return None
+        return None, "token exchange returned no access_token"
     _token_cache = (now + int(body.get("expires_in") or 3600) - 60, token)
-    return token
+    return token, None
 
 
 def reset_token_cache() -> None:
@@ -201,22 +208,23 @@ def _implied_denominator(reading: Ga4PurchaseReading) -> Optional[str]:
     return None
 
 
-def run_purchase_report(
+def _run_purchase_report(
     property_id: str,
     start_date: str,
     end_date: str,
-) -> Optional[Ga4PurchaseReading]:
-    """One ``runReport`` for one property over one date range.
+) -> tuple[Optional[Ga4PurchaseReading], Optional[str]]:
+    """One ``runReport``, returned as ``(reading, why_not)``.
 
-    Returns None on any failure or when the property reported no rows for the
-    window — the caller renders a blank cell rather than a wrong 0%.
+    Every path that yields a blank cell names itself, so a caller can tell
+    "no Viewer on this property" apart from "no key configured" and from "the
+    property genuinely had no traffic in this window".
 
     The request carries no ``dimensions`` (the KPI is a single property-level
     number) and no ``dimensionFilter`` (see the module docstring).
     """
-    token = _access_token()
+    token, why = _access_token()
     if not token:
-        return None
+        return None, why
 
     body = {
         "dateRanges": [{"startDate": start_date, "endDate": end_date}],
@@ -232,34 +240,27 @@ def run_purchase_report(
                          "Content-Type": "application/json"},
             )
     except Exception as exc:
-        log.warning("GA4 runReport %s %s→%s failed: %s",
-                    property_id, start_date, end_date, exc)
-        return None
+        return None, f"runReport unreachable ({exc})"
 
+    if resp.status_code == 403:
+        return None, (
+            f"HTTP 403 — the service account is probably not a Viewer on "
+            f"property {property_id}: {resp.text[:250]}"
+        )
     if resp.status_code != 200:
-        # 403 here = the service account is not a Viewer on this property.
-        log.warning("GA4 runReport %s %s→%s HTTP %s: %s",
-                    property_id, start_date, end_date, resp.status_code,
-                    resp.text[:300])
-        return None
+        return None, f"runReport HTTP {resp.status_code}: {resp.text[:250]}"
 
     payload = resp.json()
     rows = payload.get("rows") or []
     if not rows:
-        # No traffic in the window, or GA4 withheld everything. metadata
-        # .emptyReason names which when it is set.
+        # No traffic in the window, or GA4 withheld everything.
         empty = (payload.get("metadata") or {}).get("emptyReason")
-        log.info("GA4 %s %s→%s returned no rows%s",
-                 property_id, start_date, end_date,
-                 f" ({empty})" if empty else "")
-        return None
+        return None, f"no rows returned{f' ({empty})' if empty else ''}"
 
     values = [v.get("value") for v in (rows[0].get("metricValues") or [])]
     if len(values) < len(PURCHASE_METRICS):
-        log.warning("GA4 %s %s→%s returned %d metrics, expected %d",
-                    property_id, start_date, end_date,
-                    len(values), len(PURCHASE_METRICS))
-        return None
+        return None, (f"returned {len(values)} metrics, expected "
+                      f"{len(PURCHASE_METRICS)}")
 
     raw_rate = values[0]
     reading = Ga4PurchaseReading(
@@ -285,6 +286,22 @@ def run_purchase_report(
                  property_id, start_date, end_date, reading.rate_pct or 0.0,
                  denominator, reading.thresholded)
 
+    return reading, None
+
+
+def run_purchase_report(
+    property_id: str,
+    start_date: str,
+    end_date: str,
+) -> Optional[Ga4PurchaseReading]:
+    """The reading for one property over one window, or None on any failure.
+
+    The grid renders a blank cell rather than a wrong 0%; the reason goes to
+    the log, and to :func:`describe_purchase_report` for the debug endpoint.
+    """
+    reading, why = _run_purchase_report(property_id, start_date, end_date)
+    if why:
+        log.warning("GA4 %s %s→%s: %s", property_id, start_date, end_date, why)
     return reading
 
 
@@ -295,21 +312,25 @@ def describe_purchase_report(
 ) -> dict:
     """The same call, returned as a plain dict for the debug endpoint.
 
-    Exists so the totalUsers-vs-activeUsers question in the feature request can
-    be settled against the live property once, rather than guessed from docs.
+    Carries the failure reason so a blank cell can be diagnosed from the
+    response, and exists so the totalUsers-vs-activeUsers question in the
+    feature request can be settled against the live property once rather than
+    guessed from docs.
     """
-    reading = run_purchase_report(property_id, start_date, end_date)
+    reading, why = _run_purchase_report(property_id, start_date, end_date)
     if reading is None:
         return {
             "property_id": property_id,
             "start_date": start_date,
             "end_date": end_date,
             "reading": None,
+            "error": why,
         }
     return {
         "property_id": property_id,
         "start_date": start_date,
         "end_date": end_date,
+        "error": None,
         "reading": {
             "rate_pct": reading.rate_pct,
             "total_users": reading.total_users,

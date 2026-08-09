@@ -53,7 +53,7 @@ def _report(rate="0.0163", total="10000", active="9800", purchases="163",
 def call(monkeypatch):
     """Run runReport against a canned response; returns (sink, run)."""
     sink = []
-    monkeypatch.setattr(ga4_service, "_access_token", lambda: "fake-token")
+    monkeypatch.setattr(ga4_service, "_access_token", lambda: ("fake-token", None))
 
     def run(payload=None, status_code=200):
         response = _FakeResponse(status_code, payload if payload is not None else _report())
@@ -62,6 +62,22 @@ def call(monkeypatch):
         return ga4_service.run_purchase_report("284939713", "2026-08-01", "2026-08-31")
 
     return sink, run
+
+
+@pytest.fixture
+def why(monkeypatch):
+    """Same, but returns the failure reason the debug endpoint would show."""
+    sink = []
+    monkeypatch.setattr(ga4_service, "_access_token", lambda: ("fake-token", None))
+
+    def run(payload=None, status_code=200):
+        response = _FakeResponse(status_code, payload if payload is not None else _report())
+        monkeypatch.setattr(ga4_service.httpx, "Client",
+                            lambda *a, **kw: _FakeClient(sink, response))
+        return ga4_service.describe_purchase_report(
+            "284939713", "2026-08-01", "2026-08-31")["error"]
+
+    return run
 
 
 # ── Request shape ────────────────────────────────────────────────────────────
@@ -142,8 +158,57 @@ def test_a_truncated_metric_list_is_rejected(call):
 
 def test_no_credentials_means_no_call(monkeypatch):
     sink = []
-    monkeypatch.setattr(ga4_service, "_access_token", lambda: None)
+    monkeypatch.setattr(ga4_service, "_access_token", lambda: (None, "no key"))
     monkeypatch.setattr(ga4_service.httpx, "Client",
                         lambda *a, **kw: _FakeClient(sink, _FakeResponse()))
     assert ga4_service.run_purchase_report("284939713", "2026-08-01", "2026-08-31") is None
     assert sink == []
+
+
+# ── Why a cell is blank ──────────────────────────────────────────────────────
+#
+# A blank cell has several very different causes and they are not
+# distinguishable from the outside. Each one has to name itself.
+
+def test_a_403_names_the_missing_viewer_role(why):
+    reason = why({"error": {"code": 403, "message": "caller does not have permission"}},
+                 status_code=403)
+    assert "403" in reason and "Viewer" in reason and "284939713" in reason
+
+
+def test_an_empty_report_says_so_rather_than_looking_like_a_failure(why):
+    assert "no rows" in why({"rows": [], "metadata": {"emptyReason": "NO_DATA"}})
+    assert "NO_DATA" in why({"rows": [], "metadata": {"emptyReason": "NO_DATA"}})
+
+
+def test_other_http_errors_carry_their_status(why):
+    assert "429" in why({"error": {"code": 429}}, status_code=429)
+
+
+def test_a_successful_read_has_no_error(why):
+    assert why() is None
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("",                    "is not set"),
+    ("not json",            "not valid JSON"),
+    ('["a"]',               "not a JSON object"),
+    ('{"client_email":"x"}', "missing private_key"),
+    ('{"private_key":"y"}',  "missing client_email"),
+])
+def test_a_bad_service_account_key_says_what_is_wrong(monkeypatch, raw, expected):
+    from app.config import settings
+    monkeypatch.setattr(settings, "GA4_SERVICE_ACCOUNT_JSON", raw)
+    ga4_service.reset_token_cache()
+    _token, reason = ga4_service._access_token()
+    assert expected in reason
+
+
+def test_an_unsignable_key_points_at_the_signing_step(monkeypatch):
+    """A missing `cryptography` surfaces here, not as a mystery blank cell."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "GA4_SERVICE_ACCOUNT_JSON",
+                        '{"client_email":"x@y.iam.gserviceaccount.com","private_key":"not-a-key"}')
+    ga4_service.reset_token_cache()
+    _token, reason = ga4_service._access_token()
+    assert "sign the JWT assertion" in reason
