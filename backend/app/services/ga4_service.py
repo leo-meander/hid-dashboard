@@ -24,6 +24,7 @@ exchange in ``google_ads_service`` but with the ``jwt-bearer`` grant.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -93,13 +94,34 @@ def _service_account_info() -> tuple[Optional[dict], Optional[str]]:
     blank KPI cell actually means, and reading them off a debug response beats
     going to hunt for the log line.
     """
-    raw = (settings.GA4_SERVICE_ACCOUNT_JSON or "").strip()
+    raw = (settings.GA4_SERVICE_ACCOUNT_JSON or "").strip().lstrip("﻿").strip()
     if not raw:
         return None, "GA4_SERVICE_ACCOUNT_JSON is not set"
+
+    # Pasting a key file into a PaaS env var mangles it in a few predictable
+    # ways: a UTF-8 BOM survives .strip(), some dashboards store the value
+    # wrapped in quotes, and teams often base64 the file to dodge the newlines
+    # embedded in private_key. Accept all three rather than making whoever set
+    # it guess which one bit them.
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+        raw = raw[1:-1].strip()
+    if not raw.startswith("{"):
+        try:
+            raw = base64.b64decode(raw, validate=True).decode("utf-8").strip()
+        except Exception:
+            pass  # not base64 either; the JSON error below says what it is
+
     try:
         info = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return None, f"GA4_SERVICE_ACCOUNT_JSON is not valid JSON: {exc}"
+        # Deliberately describes the value without quoting it — this travels to
+        # an unauthenticated debug endpoint.
+        return None, (
+            f"GA4_SERVICE_ACCOUNT_JSON is not valid JSON ({exc}). The value is "
+            f"{len(raw)} characters and begins with {raw[:1]!r}; a key file "
+            "begins with '{'. Paste the whole contents of the downloaded .json "
+            "file, or base64-encode it if the env var mangles its newlines."
+        )
     if not isinstance(info, dict):
         return None, "GA4_SERVICE_ACCOUNT_JSON is not a JSON object"
     missing = [f for f in ("client_email", "private_key") if not info.get(f)]

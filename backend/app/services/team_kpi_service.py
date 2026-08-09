@@ -51,7 +51,7 @@ KPI_DEFS: dict[str, list[dict]] = {
         # GA4 userKeyEventRate:purchase, whole-property. See ga4_service for why
         # it can only be read at property scope and why every figure is its own
         # query. Manual target, auto actual — same shape as the ROAS row.
-        {"key": "purchase_cvr",    "label": "Purchase Conversion Rate","unit": "%",     "org_wide": False, "higher_is_better": True,  "decimals": 2, "is_pct": True,
+        {"key": "purchase_cvr",    "label": "Website Purchase Conversion Rate","unit": "%", "org_wide": False, "higher_is_better": True,  "decimals": 2, "is_pct": True,
          # Targets here are literal small percentages (1.8 means 1.8%), so they
          # must skip the ≤2.0 → ×100 fraction normalisation the other is_pct
          # KPIs rely on.
@@ -61,16 +61,11 @@ KPI_DEFS: dict[str, list[dict]] = {
          # Jan-1 → today GA4 query and is blank when that query has no answer.
          "ytd_mode": "query",
          "provisional_note": "GA4 withheld part of this window (Google Signals data thresholding), so the rate is approximate rather than a confident number.",
-         # Oani's tag was removed from the 1948 and Osaka sites on 2026-08-09
-         # (verified at the GTM container source, not just on the page). GA4
-         # never cleans history, so every month through August still measures
-         # three branches — September is the first month that is Oani alone.
-         "starts_by_branch": {
-             "oani": {
-                 "from": "2026-09",
-                 "why": "Oani's analytics tag was also live on the 1948 and Osaka websites until 9 Aug 2026, so earlier months measure three branches rather than Oani alone. GA4 cannot clean historical data, which makes September the first month this rate is really Oani's.",
-             },
-         },
+         # Every branch reports every month it has data for, Oani included.
+         # Oani's tag was also live on the 1948 and Osaka sites until
+         # 2026-08-09, so its months before September count three branches —
+         # shown as-is by decision, not gated. See docs/specs/integrations.md.
+         #
          # Reader-facing text: branch names only. A GA4 property ID must never
          # surface in the KPI grid — the grid speaks in branches, and the
          # branch → property mapping stays in config.

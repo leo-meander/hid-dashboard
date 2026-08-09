@@ -263,32 +263,18 @@ def test_roas_keeps_summing_its_ytd(ga4):
 
 # ── Views where the number cannot be measured ────────────────────────────────
 
-def test_oani_starts_at_the_first_month_its_tag_was_clean(ga4, monkeypatch):
-    """The tag came off the 1948 and Osaka sites on 2026-08-09. GA4 keeps the
-    polluted history, so Jan–Aug measure three branches and stay locked."""
+@pytest.mark.parametrize("branch_id", [SAIGON_UUID, OANI_UUID])
+def test_every_branch_reports_every_month_it_has_data_for(ga4, monkeypatch, branch_id):
+    """No start gate on this KPI — Oani's pre-September months count three
+    branches and are shown that way by decision."""
     monkeypatch.setattr(settings, "GA4_PROPERTY_ID_OANI", "514380737")
     svc._ga4_cvr_cache.clear()
-    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", 2026, OANI_UUID))
+    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, branch_id))
 
-    assert kpi["starts"] == "2026-09"
-    assert "1948 and Osaka" in kpi["starts_note"]
-    for cell in kpi["monthly"][:8]:                    # Jan–Aug
-        assert cell["not_started"] is True
-        assert cell["actual"] is None and cell["target"] is None
-    assert kpi["monthly"][8]["not_started"] is False   # September is live
-
-
-def test_the_clean_branches_keep_their_full_history(ga4):
-    """The Oani gate is per branch — Saigon was never polluted."""
-    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, SAIGON_UUID))
     assert kpi["starts"] is None
     assert kpi["starts_note"] is None
     assert all(m["not_started"] is False for m in kpi["monthly"])
-
-
-def test_a_branch_gate_does_not_leak_into_the_all_view(ga4):
-    kpi = _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, None))
-    assert kpi["starts"] is None
+    assert all(m["actual"] == 1.63 for m in kpi["monthly"][:CUR_MONTH])
 
 
 def test_branch_start_helper():

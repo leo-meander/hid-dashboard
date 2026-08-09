@@ -167,10 +167,11 @@ Osaka `482876806`, Oani `514380737`.
 Oani's tag was also deployed on the 1948 and Osaka websites, so its property measured
 three branches. Removed from GTM containers `GTM-54PM7ZX` (1948) and `GTM-NZ9Z7FWF`
 (Osaka) on **2026-08-09**, verified at the container source rather than on the page.
-GA4 does not clean historical data, so months through August 2026 are permanently
-polluted — `purchase_cvr` gates the Oani tab to `2026-09` via `starts_by_branch`, and
-the earlier months render locked with the reason on hover. The 1948 and Osaka
-properties themselves were never affected; the pollution was one-directional.
+GA4 does not clean historical data, so Oani's months through August 2026 count three
+branches, permanently. **Shown as-is by decision** (Mason, 2026-08-09): every branch
+reports every month it has data for, and no start gate is applied. Read Oani's
+pre-September figures as 1948 + Osaka + Oani combined. The 1948 and Osaka properties
+themselves were never affected; the pollution was one-directional.
 
 The ID is unavoidable — it is in the request path and the Data API has no
 lookup-by-name — but it is a **static config table**, not discovered at runtime. The
