@@ -120,7 +120,15 @@ Powers one KPI: **Purchase Conversion Rate** on the Team KPI page → `Mason · 
 Service: `services/ga4_service.py`. Yearly assembly: `team_kpi_service.get_purchase_cvr_actuals_yearly`.
 
 ### Authentication
-- Google service account, JSON key in `GA4_SERVICE_ACCOUNT_JSON` (one line).
+- Google service account. Set **`GA4_SERVICE_ACCOUNT_JSON_B64`** = `base64 -w 0
+  your-service-account.json`. The raw JSON's `private_key` contains literal
+  newlines that Zeabur's env-var box does not preserve, so pasting the file
+  directly fails to parse at character zero and the KPI renders blank with no
+  request ever reaching GA4. `GA4_SERVICE_ACCOUNT_JSON` (raw) remains a fallback
+  for a local `.env`; the B64 variant wins when both are set, and either accepts
+  either format so a mix-up degrades to working.
+- Only the backend needs it — the GA4 fetch runs inside the request path behind a
+  1-hour cache, driven by APScheduler in-process. There is no separate worker.
 - The service account email needs the **Viewer** role on each property; without it
   `runReport` returns 403 and the KPI renders blank. No end-user OAuth.
 - We sign a JWT with the key and exchange it at `oauth2.googleapis.com/token`

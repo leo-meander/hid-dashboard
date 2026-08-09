@@ -190,8 +190,16 @@ def test_a_successful_read_has_no_error(why):
     assert why() is None
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_key(monkeypatch):
+    """Neither variable is set unless a test says so."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "GA4_SERVICE_ACCOUNT_JSON_B64", "")
+    monkeypatch.setattr(settings, "GA4_SERVICE_ACCOUNT_JSON", "")
+
+
 @pytest.mark.parametrize("raw,expected", [
-    ("",                    "is not set"),
+    ("",                    "neither"),
     ("not json",            "not valid JSON"),
     ('["a"]',               "not a JSON object"),
     ('{"client_email":"x"}', "missing private_key"),
@@ -203,6 +211,16 @@ def test_a_bad_service_account_key_says_what_is_wrong(monkeypatch, raw, expected
     ga4_service.reset_token_cache()
     _token, reason = ga4_service._access_token()
     assert expected in reason
+
+
+def test_the_json_error_points_at_the_base64_variable(monkeypatch):
+    """The raw JSON's newlines are what break on Zeabur — say so."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "GA4_SERVICE_ACCOUNT_JSON", "mangled")
+    ga4_service.reset_token_cache()
+    _token, reason = ga4_service._access_token()
+    assert "GA4_SERVICE_ACCOUNT_JSON_B64" in reason
+    assert "base64 -w 0" in reason
 
 
 def test_the_json_error_describes_the_value_without_quoting_it(monkeypatch):
@@ -221,19 +239,44 @@ def test_the_json_error_describes_the_value_without_quoting_it(monkeypatch):
 KEY = '{"client_email": "x@y.iam.gserviceaccount.com", "private_key": "k"}'
 
 
+B64_KEY = base64.b64encode(KEY.encode()).decode()
+
+
+@pytest.mark.parametrize("var", ["GA4_SERVICE_ACCOUNT_JSON_B64",
+                                 "GA4_SERVICE_ACCOUNT_JSON"])
 @pytest.mark.parametrize("stored,label", [
-    (KEY,                                                    "plain"),
-    ("﻿" + KEY,                                         "utf-8 BOM"),
-    (f"'{KEY}'",                                             "single-quoted"),
-    (f'"{KEY}"',                                             "double-quoted"),
-    (base64.b64encode(KEY.encode()).decode(),                "base64"),
-    ("  " + base64.b64encode(KEY.encode()).decode() + "  ",  "padded base64"),
+    (KEY,                    "plain"),
+    ("﻿" + KEY,         "utf-8 BOM"),
+    (f"'{KEY}'",             "single-quoted"),
+    (f'"{KEY}"',             "double-quoted"),
+    (B64_KEY,                "base64"),
+    (f"  {B64_KEY}  ",       "padded base64"),
 ])
-def test_the_key_survives_common_env_var_mangling(monkeypatch, stored, label):
+def test_the_key_survives_common_env_var_mangling(monkeypatch, var, stored, label):
+    """Either variable accepts either format — setting the wrong one still works."""
     from app.config import settings
-    monkeypatch.setattr(settings, "GA4_SERVICE_ACCOUNT_JSON", stored)
+    monkeypatch.setattr(settings, var, stored)
     info, reason = ga4_service._service_account_info()
-    assert reason is None, f"{label} should parse: {reason}"
+    assert reason is None, f"{label} in {var} should parse: {reason}"
+    assert info["client_email"] == "x@y.iam.gserviceaccount.com"
+
+
+def test_the_base64_variable_wins_when_both_are_set(monkeypatch):
+    from app.config import settings
+    other = '{"client_email": "raw@y.iam.gserviceaccount.com", "private_key": "k"}'
+    monkeypatch.setattr(settings, "GA4_SERVICE_ACCOUNT_JSON_B64", B64_KEY)
+    monkeypatch.setattr(settings, "GA4_SERVICE_ACCOUNT_JSON", other)
+    info, reason = ga4_service._service_account_info()
+    assert reason is None
+    assert info["client_email"] == "x@y.iam.gserviceaccount.com"
+
+
+def test_the_raw_variable_is_used_when_the_base64_one_is_empty(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "GA4_SERVICE_ACCOUNT_JSON_B64", "   ")
+    monkeypatch.setattr(settings, "GA4_SERVICE_ACCOUNT_JSON", KEY)
+    info, reason = ga4_service._service_account_info()
+    assert reason is None
     assert info["client_email"] == "x@y.iam.gserviceaccount.com"
 
 

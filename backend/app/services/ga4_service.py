@@ -77,6 +77,20 @@ class Ga4PurchaseReading:
 _token_cache: Optional[tuple[float, str]] = None  # (expires_at_epoch, token)
 
 
+def _configured_key() -> tuple[str, str]:
+    """The service-account key as stored, plus the env var it came from.
+
+    ``GA4_SERVICE_ACCOUNT_JSON_B64`` is the one to set on Zeabur: the key
+    file's private_key carries literal newlines that the env-var text box does
+    not preserve, so the raw JSON arrives corrupted. The raw variant remains a
+    fallback for environments that handle newlines, such as a local .env.
+    """
+    b64 = (settings.GA4_SERVICE_ACCOUNT_JSON_B64 or "").strip()
+    if b64:
+        return b64, "GA4_SERVICE_ACCOUNT_JSON_B64"
+    return (settings.GA4_SERVICE_ACCOUNT_JSON or "").strip(), "GA4_SERVICE_ACCOUNT_JSON"
+
+
 def credentials_configured() -> bool:
     """Whether a service-account key is present at all.
 
@@ -84,7 +98,7 @@ def credentials_configured() -> bool:
     up front: without a key every one of those requests would fail identically,
     and each would log its own line.
     """
-    return bool((settings.GA4_SERVICE_ACCOUNT_JSON or "").strip())
+    return bool(_configured_key()[0])
 
 
 def _service_account_info() -> tuple[Optional[dict], Optional[str]]:
@@ -94,15 +108,16 @@ def _service_account_info() -> tuple[Optional[dict], Optional[str]]:
     blank KPI cell actually means, and reading them off a debug response beats
     going to hunt for the log line.
     """
-    raw = (settings.GA4_SERVICE_ACCOUNT_JSON or "").strip().lstrip("﻿").strip()
+    raw, var = _configured_key()
+    raw = raw.lstrip("﻿").strip()
     if not raw:
-        return None, "GA4_SERVICE_ACCOUNT_JSON is not set"
+        return None, ("neither GA4_SERVICE_ACCOUNT_JSON_B64 nor "
+                      "GA4_SERVICE_ACCOUNT_JSON is set")
 
-    # Pasting a key file into a PaaS env var mangles it in a few predictable
-    # ways: a UTF-8 BOM survives .strip(), some dashboards store the value
-    # wrapped in quotes, and teams often base64 the file to dodge the newlines
-    # embedded in private_key. Accept all three rather than making whoever set
-    # it guess which one bit them.
+    # Either variable accepts either format, so setting the wrong one degrades
+    # to working rather than to a blank grid. Two more manglings are absorbed
+    # here as well: a UTF-8 BOM survives .strip(), and some dashboards store
+    # the value wrapped in quotes.
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
         raw = raw[1:-1].strip()
     if not raw.startswith("{"):
@@ -117,16 +132,17 @@ def _service_account_info() -> tuple[Optional[dict], Optional[str]]:
         # Deliberately describes the value without quoting it — this travels to
         # an unauthenticated debug endpoint.
         return None, (
-            f"GA4_SERVICE_ACCOUNT_JSON is not valid JSON ({exc}). The value is "
-            f"{len(raw)} characters and begins with {raw[:1]!r}; a key file "
-            "begins with '{'. Paste the whole contents of the downloaded .json "
-            "file, or base64-encode it if the env var mangles its newlines."
+            f"{var} is not valid JSON ({exc}). The value is {len(raw)} "
+            f"characters and begins with {raw[:1]!r}; a key file begins with "
+            "'{'. Set GA4_SERVICE_ACCOUNT_JSON_B64 to the output of "
+            "`base64 -w 0 your-service-account.json` — the raw JSON's "
+            "private_key contains newlines the env-var box does not preserve."
         )
     if not isinstance(info, dict):
-        return None, "GA4_SERVICE_ACCOUNT_JSON is not a JSON object"
+        return None, f"{var} is not a JSON object"
     missing = [f for f in ("client_email", "private_key") if not info.get(f)]
     if missing:
-        return None, f"GA4_SERVICE_ACCOUNT_JSON is missing {', '.join(missing)}"
+        return None, f"{var} is missing {', '.join(missing)}"
     return info, None
 
 

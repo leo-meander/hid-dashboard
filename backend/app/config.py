@@ -102,6 +102,17 @@ class Settings(BaseSettings):
     # Service account JSON key, pasted whole. The service account email needs
     # the Viewer role on every property below; without it runReport 403s and
     # the KPI renders blank.
+    #
+    # Set GA4_SERVICE_ACCOUNT_JSON_B64, not the raw variant: the key file's
+    # private_key contains literal \n, and Zeabur's env-var text box does not
+    # preserve them — the value arrives corrupted and fails to parse at
+    # character zero. Produce it with:
+    #     base64 -w 0 your-service-account.json
+    # GA4_SERVICE_ACCOUNT_JSON (raw JSON) stays supported as a fallback for
+    # environments that handle newlines properly, e.g. a local .env file. The
+    # B64 variant wins when both are set; either one also accepts the other's
+    # format, so a mistake here degrades to working rather than to blank.
+    GA4_SERVICE_ACCOUNT_JSON_B64: str = ""
     GA4_SERVICE_ACCOUNT_JSON: str = ""
     # Property IDs are not secrets, so they ship as defaults and stay
     # overridable per environment. The query layer never sees them directly —
