@@ -1,12 +1,12 @@
 name: Cron — PageSpeed sync (Avg Website Load Speed KPI)
 
-# Runs on the 1st of each month, 20:00 UTC (03:00 ICT the 2nd). One reading
-# per branch per month — same cadence Mason was checking PageSpeed Insights
-# by hand before this was automated. sync_page_speed() defaults to the
-# current year/month, so this always writes the month it runs in.
+# Runs on the 25th of each month, 20:00 UTC (03:00 ICT the 26th). One
+# reading per branch per month — same cadence Mason was checking PageSpeed
+# Insights by hand before this was automated. sync_page_speed() defaults to
+# the current year/month, so this always writes the month it runs in.
 on:
   schedule:
-    - cron: "0 20 1 * *"
+    - cron: "0 20 25 * *"
   workflow_dispatch:
 
 jobs:
