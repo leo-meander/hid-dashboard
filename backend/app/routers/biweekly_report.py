@@ -890,7 +890,21 @@ def create_note(
     text = (body.body or "").strip()
     if not text:
         raise HTTPException(400, "body is required")
+    if len(text) > 5000:
+        raise HTTPException(400, "body too long (max 5000 chars)")
     p = _resolve_period(body.period)
+    if body.parent_comment_id is not None:
+        # Scope the parent lookup to this report type AND this period, so a
+        # reply can't be grafted onto a weekly comment or onto a thread from
+        # a different period — either would orphan it in the drawer.
+        parent = db.query(WeeklyReportComment).filter_by(
+            id=body.parent_comment_id,
+            report_type=REPORT_TYPE,
+            week_start=p.start,
+            is_deleted=False,
+        ).first()
+        if not parent:
+            raise HTTPException(404, "Parent note not found")
     c = WeeklyReportComment(
         report_type=REPORT_TYPE,
         week_start=p.start,
@@ -924,6 +938,8 @@ def update_note(
         text = body.body.strip()
         if not text:
             raise HTTPException(400, "body cannot be empty")
+        if len(text) > 5000:
+            raise HTTPException(400, "body too long (max 5000 chars)")
         c.body = text
     if body.is_action_item is not None:
         c.is_action_item = body.is_action_item
@@ -933,7 +949,10 @@ def update_note(
         c.resolved_at = datetime.now(timezone.utc) if body.is_resolved else None
     db.commit()
     db.refresh(c)
-    return envelope(_note_out(c, current))
+    # Re-read the author: an admin may be editing someone else's note, and
+    # echoing `current` back would relabel the note as theirs in the drawer.
+    author = db.query(User).filter_by(id=c.author_id).first() if c.author_id else None
+    return envelope(_note_out(c, author))
 
 
 @router.delete("/comments/{comment_id}")

@@ -157,6 +157,8 @@ export default function BiWeeklyReport() {
   const queryClient = useQueryClient();
   const [selectedPeriod, setSelectedPeriod] = useState("");
   const [selectedBranch, setSelectedBranch] = useState(null);
+  const [rebuilding, setRebuilding] = useState(false);
+  const [rebuildError, setRebuildError] = useState(null);
 
   const { data: periods = [], isPending: periodsLoading, error: periodsError } =
     useQuery({
@@ -186,6 +188,31 @@ export default function BiWeeklyReport() {
     if (!branches.length) return;
     if (!branches.some(b => b.id === selectedBranch)) setSelectedBranch(branches[0].id);
   }, [branches, selectedBranch]);
+
+  /**
+   * Rebuild the period server-side, don't just refetch it.
+   *
+   * A plain `invalidateQueries` re-requests /preview, which is served from
+   * `biweekly_report_cache` — so the page would redraw the exact same numbers
+   * and look like Refresh did nothing. `fresh=1` is what recomputes the
+   * snapshot, which is the whole point after upstream data is backfilled.
+   */
+  async function rebuild() {
+    if (!selectedPeriod) return;
+    setRebuilding(true);
+    setRebuildError(null);
+    try {
+      const html = await getPreviewHtml(selectedPeriod, { fresh: true });
+      queryClient.setQueryData(
+        ["biweekly-preview", selectedPeriod],
+        parseBiweeklyHtml(html)
+      );
+    } catch (e) {
+      setRebuildError(e?.message || "Could not rebuild this period");
+    } finally {
+      setRebuilding(false);
+    }
+  }
 
   const active = useMemo(
     () => branches.find(b => b.id === selectedBranch) || branches[0] || null,
@@ -236,15 +263,16 @@ export default function BiWeeklyReport() {
             Open raw preview ↗
           </a>
           <button
-            onClick={() =>
-              queryClient.invalidateQueries({
-                queryKey: ["biweekly-preview", selectedPeriod],
-              })
-            }
-            disabled={reportQuery.isFetching}
+            onClick={rebuild}
+            disabled={rebuilding || reportQuery.isFetching || !selectedPeriod}
+            title="Recompute this period from the latest data"
             className="px-3 py-1.5 bg-teal-700 text-white text-sm rounded-lg hover:bg-teal-800 disabled:opacity-50"
           >
-            {reportQuery.isFetching ? "Loading…" : "Refresh"}
+            {rebuilding
+              ? "Rebuilding…"
+              : reportQuery.isFetching
+                ? "Loading…"
+                : "Rebuild"}
           </button>
         </div>
       </div>
@@ -254,6 +282,14 @@ export default function BiWeeklyReport() {
           title="Could not load the period list"
           detail={periodsError.message}
           onRetry={() => queryClient.invalidateQueries({ queryKey: ["biweekly-periods"] })}
+        />
+      )}
+
+      {rebuildError && (
+        <ErrorBox
+          title="Could not rebuild this period"
+          detail={rebuildError}
+          onRetry={rebuild}
         />
       )}
 

@@ -2838,7 +2838,7 @@ def create_comment(
         raise HTTPException(400, "metric_key is required")
     if body.parent_comment_id is not None:
         parent = db.query(WeeklyReportComment).filter_by(
-            id=body.parent_comment_id, is_deleted=False,
+            id=body.parent_comment_id, report_type="weekly", is_deleted=False,
         ).first()
         if not parent:
             raise HTTPException(404, "Parent comment not found")
@@ -2868,7 +2868,9 @@ def update_comment(
     Resolving is open to any user (a thread reaching consensus is a team
     decision, not just the author's). Admins can edit anyone's body.
     """
-    c = db.query(WeeklyReportComment).filter_by(id=comment_id, is_deleted=False).first()
+    c = db.query(WeeklyReportComment).filter_by(
+        id=comment_id, report_type="weekly", is_deleted=False,
+    ).first()
     if not c:
         raise HTTPException(404, "Comment not found")
 
@@ -2910,7 +2912,9 @@ def delete_comment(
     """Soft-delete a comment. Author or admin only. Replies stay visible
     with a placeholder so the thread context isn't lost.
     """
-    c = db.query(WeeklyReportComment).filter_by(id=comment_id, is_deleted=False).first()
+    c = db.query(WeeklyReportComment).filter_by(
+        id=comment_id, report_type="weekly", is_deleted=False,
+    ).first()
     if not c:
         raise HTTPException(404, "Comment not found")
     if not (c.author_id == current.id or current.role == "admin"):
