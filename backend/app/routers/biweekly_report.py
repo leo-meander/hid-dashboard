@@ -67,7 +67,7 @@ _LIGHT = {"g": C["good"], "w": C["warn"], "b": C["bad"]}
 _LIGHT_BG = {"g": C["good_bg"], "w": C["warn_bg"], "b": C["bad_bg"]}
 
 _TH = (f"padding:10px 13px;text-align:left;background:#f4efe8;font-size:11px;"
-       f"text-transform:uppercase;letter-spacing:.05em;color:{C['muted']};font-weight:800;")
+       f"color:{C['muted']};font-weight:600;")
 _TD = (f"padding:10px 13px;color:{C['ink']};font-size:13px;"
        f"border-top:1px solid {C['line']};")
 
@@ -138,7 +138,7 @@ def _delta_chip(value, label: str, kind: str = "pct") -> str:
     color = C["good"] if up else C["bad"] if down else C["warn"]
     bg = C["good_bg"] if up else C["bad_bg"] if down else C["warn_bg"]
     return (
-        f"<span style='font-size:12px;font-weight:800;padding:3px 8px;border-radius:6px;"
+        f"<span style='font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;"
         f"color:{color};background:{bg};display:inline-block;margin:0 6px 4px 0;'>"
         f"{arrow} {text} <span style='font-weight:600;color:{C['muted']};font-size:10.5px;'>"
         f"{label}</span></span>"
@@ -152,12 +152,12 @@ def _kpi_card(branch_id, metric_key: str, label: str, value: str,
          border:1px solid {C['line']};border-left:5px solid {_LIGHT.get(light, C['warn'])};
          border-radius:11px;padding:15px 17px;">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
-        <span style="font-size:12.5px;color:{C['muted']};font-weight:700;
-              text-transform:uppercase;letter-spacing:.05em;">{label}</span>
+        <span style="font-size:12.5px;color:{C['muted']};font-weight:600;
+              ">{label}</span>
         <span style="width:12px;height:12px;border-radius:50%;flex:0 0 auto;margin-top:3px;
               background:{_LIGHT.get(light, C['warn'])};display:inline-block;"></span>
       </div>
-      <div style="font-size:28px;font-weight:900;color:{C['charcoal']};margin:5px 0 2px;">{value}</div>
+      <div style="font-size:28px;font-weight:700;color:{C['charcoal']};margin:5px 0 2px;">{value}</div>
       <div style="margin:7px 0 4px;">{chips}</div>
       <div style="font-size:12.8px;color:{C['ink']};margin-top:8px;padding-top:8px;
            border-top:1px dashed {C['line']};">{why}</div>
@@ -173,9 +173,9 @@ def _section(n, title: str, note: str, body: str) -> str:
     <div style="margin-top:30px;">
       <div style="display:flex;align-items:center;gap:11px;margin-bottom:14px;">
         <div style="flex:0 0 auto;width:27px;height:27px;border-radius:50%;
-             background:{C['primary']};color:#fff;font-weight:800;font-size:14px;
+             background:{C['primary']};color:#fff;font-weight:600;font-size:14px;
              display:flex;align-items:center;justify-content:center;">{n}</div>
-        <div style="font-weight:800;font-size:19px;color:{C['charcoal']};">{title}</div>
+        <div style="font-weight:600;font-size:19px;color:{C['charcoal']};">{title}</div>
       </div>
       {note_html}
       {body}
@@ -232,7 +232,7 @@ def _render_exec_summary(b: dict, p: Period) -> str:
         for c in (ads.get("by_channel") or []) if c.get("roas") is not None
     ]
     roas_chips = (
-        f"<span style='font-size:12px;font-weight:800;padding:3px 8px;border-radius:6px;"
+        f"<span style='font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;"
         f"color:{_LIGHT[roas_light]};background:{_LIGHT_BG[roas_light]};display:inline-block;'>"
         f"{' · '.join(parts)}</span>" if parts else
         f"<span style='font-size:12px;color:{C['muted']};'>no ad spend recorded</span>"
@@ -298,7 +298,7 @@ def _render_headline(b: dict, p: Period) -> str:
     return f"""
     <div style="background:{C['primary_pale']};border-radius:11px;padding:15px 18px;
          margin-bottom:16px;font-size:15px;">
-      <span style="font-weight:800;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+      <span style="font-weight:600;font-size:11px;
             color:{C['primary_deep']};display:block;margin-bottom:4px;">
         The story of these {p.days} days</span>
       {story}
@@ -324,7 +324,7 @@ def _render_target(b: dict) -> str:
     bar_pct = max(0, min(100, pct))
     diff = (actual or 0) - (goal or 0)
     pill_color = "g" if pct >= 100 else "w" if pct >= 80 else "b"
-    pill = (f"<span style='font-size:11px;font-weight:800;padding:2px 8px;border-radius:20px;"
+    pill = (f"<span style='font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;"
             f"color:{_LIGHT[pill_color]};background:{_LIGHT_BG[pill_color]};'>"
             f"{'✓ Beat target by' if diff >= 0 else '▼ Short of target by'} "
             f"{fmt(abs(diff), currency)}</span>")
@@ -343,7 +343,7 @@ def _render_target(b: dict) -> str:
          style="background:{C['card']};border:1px solid {C['line']};border-radius:11px;padding:18px;">
       <div style="display:flex;justify-content:space-between;align-items:baseline;
            margin-bottom:11px;flex-wrap:wrap;gap:6px;">
-        <div style="font-size:22px;font-weight:900;color:{C['charcoal']};">
+        <div style="font-size:22px;font-weight:700;color:{C['charcoal']};">
           Hit <span style="color:{_LIGHT[pill_color]};">{pct:.0f}%</span> of the period target</div>
         <div>{pill}</div>
       </div>
@@ -382,13 +382,13 @@ def _render_channel_mix(b: dict) -> str:
         share = s.get("nights_share_pct")
         is_direct = "direct" in name.lower() or "website" in name.lower()
         bar_color = C["primary_deep"] if is_direct else "#7fbfbb"
-        badge = ("<span style='font-size:9.5px;font-weight:800;color:#fff;"
+        badge = ("<span style='font-size:9.5px;font-weight:600;color:#fff;"
                  f"background:{C['primary']};border-radius:4px;padding:1px 5px;"
                  "margin-left:5px;'>GOOD</span>") if is_direct else ""
         rows.append(f"""
         <div{cell_attrs(bid, f"bw.channel.{name}", f"Channel — {name}")}
              style="display:flex;align-items:center;gap:12px;margin:9px 0;">
-          <div style="flex:0 0 128px;font-size:13.5px;font-weight:700;">{name}{badge}</div>
+          <div style="flex:0 0 128px;font-size:13.5px;font-weight:600;">{name}{badge}</div>
           <div style="flex:1;height:22px;background:#f1ece5;border-radius:6px;overflow:hidden;">
             <span style="display:block;height:100%;width:{nights / top * 100:.1f}%;
                   background:{bar_color};border-radius:6px;"></span>
@@ -430,7 +430,7 @@ def _render_markets(b: dict) -> str:
             pill = f"<span style='color:{C['muted']};font-size:11px;'>new</span>"
         else:
             up = d >= 0
-            pill = (f"<span style='font-size:11px;font-weight:800;padding:2px 8px;"
+            pill = (f"<span style='font-size:11px;font-weight:600;padding:2px 8px;"
                     f"border-radius:20px;color:{C['good'] if up else C['bad']};"
                     f"background:{C['good_bg'] if up else C['bad_bg']};'>"
                     f"{'▲' if up else '▼'} {signed_pct(d)}</span>")
@@ -438,7 +438,7 @@ def _render_markets(b: dict) -> str:
         attrs = cell_attrs(bid, "bw.market." + country, "Market — " + country)
         trs.append(
             f"<tr{attrs}>"
-            f"<td style='{_TD}font-weight:700;color:{C['charcoal']};'>{country}</td>"
+            f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{country}</td>"
             f"<td style='{_TD}text-align:right;'>{fmt(r['revenue'], currency)}</td>"
             f"<td style='{_TD}text-align:right;'>{num(r['bookings'])}</td>"
             f"<td style='{_TD}text-align:right;'>{pill}</td></tr>"
@@ -486,14 +486,14 @@ def _render_ads(b: dict) -> str:
             k = "g" if roas >= 4 else "b" if roas < 2 else "w"
             word = "Excellent" if roas >= 8 else "Good" if roas >= 4 else \
                    "Weak" if roas < 2 else "OK"
-            pill = (f"<span style='font-size:11px;font-weight:800;padding:2px 8px;"
+            pill = (f"<span style='font-size:11px;font-weight:600;padding:2px 8px;"
                     f"border-radius:20px;color:{_LIGHT[k]};background:{_LIGHT_BG[k]};'>"
                     f"{roas:.2f}× · {word}</span>")
         name = c["channel"]
         attrs = cell_attrs(bid, "bw.ads." + name, "Ads — " + name)
         trs.append(
             f"<tr{attrs}>"
-            f"<td style='{_TD}font-weight:700;color:{C['charcoal']};'>{name}</td>"
+            f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{name}</td>"
             f"<td style='{_TD}text-align:right;'>{fmt(c.get('cost'), currency)}</td>"
             f"<td style='{_TD}text-align:right;'>{fmt(c.get('revenue'), currency)}</td>"
             f"<td style='{_TD}text-align:right;'>{pill}</td>"
@@ -534,7 +534,7 @@ def _render_kol(b: dict) -> str:
     ]
     trs = "".join(
         f"<tr{cell_attrs(bid, f'bw.kol.{i}', label)}>"
-        f"<td style='{_TD}font-weight:700;color:{C['charcoal']};'>{label}</td>"
+        f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{label}</td>"
         f"<td style='{_TD}text-align:right;'>{value}</td>"
         f"<td style='{_TD}text-align:right;color:{C['muted']};font-size:11.5px;'>{extra}</td></tr>"
         for i, (label, value, extra) in enumerate(rows)
@@ -576,7 +576,7 @@ def _render_crm(b: dict) -> str:
     ]
     trs = "".join(
         f"<tr{cell_attrs(bid, f'bw.crm.{i}', label)}>"
-        f"<td style='{_TD}font-weight:700;color:{C['charcoal']};'>{label}</td>"
+        f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{label}</td>"
         f"<td style='{_TD}text-align:right;'>{value}</td>"
         f"<td style='{_TD}text-align:right;color:{C['muted']};font-size:11.5px;'>{extra}</td></tr>"
         for i, (label, value, extra) in enumerate(rows)
@@ -612,13 +612,13 @@ def _render_flags(b: dict) -> str:
         lis = "".join(
             f"<li style='font-size:13px;padding:6px 0 6px 20px;position:relative;"
             f"border-top:1px solid rgba(0,0,0,.05);list-style:none;'>"
-            f"<span style='position:absolute;left:0;font-weight:900;"
+            f"<span style='position:absolute;left:0;font-weight:700;"
             f"color:{C['good'] if is_good else C['warn']};'>{bullet}</span>{t}</li>"
             for t in items
         )
         return (f"<div style='border-radius:11px;padding:16px 18px;background:{bg};"
                 f"border:1px solid {border};'>"
-                f"<h4 style='font-size:14px;font-weight:800;margin:0 0 10px;color:{color};'>"
+                f"<h4 style='font-size:14px;font-weight:600;margin:0 0 10px;color:{color};'>"
                 f"{bullet} {title}</h4><ul style='margin:0;padding:0;'>{lis}</ul></div>")
 
     body = (f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:14px;'>"
@@ -633,10 +633,10 @@ def _render_actions(b: dict) -> str:
     items = "".join(
         f"""<div style="display:flex;gap:13px;padding:13px 16px;border-top:1px solid {C['line']};">
           <div style="flex:0 0 26px;height:26px;border-radius:7px;background:{C['primary_pale']};
-               color:{C['primary_deep']};font-weight:900;font-size:13px;display:flex;
+               color:{C['primary_deep']};font-weight:700;font-size:13px;display:flex;
                align-items:center;justify-content:center;">{i + 1}</div>
           <div style="font-size:13.5px;"><b style="color:{C['charcoal']};">{a['title']}</b>
-            <span style="font-size:11px;font-weight:800;color:{C['primary_deep']};
+            <span style="font-size:11px;font-weight:600;color:{C['primary_deep']};
                   background:{C['primary_pale']};padding:1px 7px;border-radius:5px;
                   margin-left:6px;white-space:nowrap;">{a['when']}</span>
             <div style="margin-top:3px;">{a['body']}</div></div>
@@ -659,12 +659,12 @@ def _render_notes(b: dict) -> str:
         f"<li style='font-size:12.5px;color:{C['ink']};padding:5px 0 5px 18px;"
         f"position:relative;list-style:none;'>"
         f"<span style='position:absolute;left:0;color:{color.get(n['level'], C['muted'])};"
-        f"font-weight:900;'>•</span>{n['text']}</li>"
+        f"font-weight:700;'>•</span>{n['text']}</li>"
         for n in notes
     )
     return (f"<div style='background:#f4efe8;border-radius:11px;padding:14px 18px;margin-top:18px;'>"
-            f"<div style='font-size:11px;font-weight:800;letter-spacing:.08em;"
-            f"text-transform:uppercase;color:{C['muted']};margin-bottom:6px;'>"
+            f"<div style='font-size:11px;font-weight:600;"
+            f"color:{C['muted']};margin-bottom:6px;'>"
             f"How to read these numbers</div><ul style='margin:0;padding:0;'>{items}</ul></div>")
 
 
@@ -681,7 +681,7 @@ _GLOSSARY = [
 
 def _render_glossary() -> str:
     dl = "".join(
-        f"<dt style='font-weight:800;color:{C['primary_deep']};'>{t}</dt>"
+        f"<dt style='font-weight:600;color:{C['primary_deep']};'>{t}</dt>"
         f"<dd style='color:{C['ink']};margin:0;'>{d}</dd>"
         for t, d in _GLOSSARY
     )
@@ -721,21 +721,21 @@ def _build_html(report: list, p: Period, computed_at: Optional[datetime]) -> str
         return (f"<div style='background:rgba(255,255,255,.15);"
                 f"border:1px solid rgba(255,255,255,.28);border-radius:8px;padding:7px 12px;"
                 f"font-size:12.5px;'><span style='display:block;font-size:10.5px;"
-                f"letter-spacing:.08em;text-transform:uppercase;opacity:.8;margin-bottom:1px;'>"
-                f"{label}</span><b style='font-weight:800;'>{value}</b></div>")
+                f"opacity:.8;margin-bottom:1px;'>"
+                f"{label}</span><b style='font-weight:600;'>{value}</b></div>")
 
     branches = "".join(_render_branch(b, p) for b in report)
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>Bi-Weekly Marketing Report — {p.label}</title></head>
-<body style="font-family:'Nunito Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
+<body style="font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
       color:{C['ink']};background:{C['cream']};margin:0;padding:0;line-height:1.5;">
   <div style="max-width:880px;margin:0 auto;background:{C['cream']};">
     <div id="bw-header" style="background:linear-gradient(135deg,{C['primary']} 0%,
          {C['primary_deep']} 100%);color:#fff;padding:30px 40px 26px;">
-      <div style="font-weight:800;letter-spacing:.14em;font-size:15px;opacity:.92;">MEANDER</div>
-      <h1 style="font-weight:800;font-size:29px;margin:8px 0 4px;">Bi-Weekly Marketing Report</h1>
+      <div style="font-weight:600;letter-spacing:.14em;font-size:15px;opacity:.92;">MEANDER</div>
+      <h1 style="font-weight:600;font-size:29px;margin:8px 0 4px;">Bi-Weekly Marketing Report</h1>
       <div style="opacity:.9;font-size:14.5px;">
         Business metrics &amp; campaign performance — for the Branch Manager &amp; Leadership</div>
       <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:18px;">
@@ -932,9 +932,14 @@ def update_note(
     ).first()
     if not c:
         raise HTTPException(404, "Note not found")
-    if c.author_id != current.id and (current.role or "") != "admin":
-        raise HTTPException(403, "You can only edit your own notes")
+    # Rewriting a note is the author's (or an admin's) call, but resolving one
+    # is not: the Support Needed board exists so Growth can ask the branch team
+    # for something, and it is the branch team — never the author — who marks
+    # it handled. Gating resolve on authorship would make that board unusable.
+    # Same split the weekly report uses.
     if body.body is not None:
+        if c.author_id != current.id and (current.role or "") != "admin":
+            raise HTTPException(403, "Only the author or an admin can edit the body")
         text = body.body.strip()
         if not text:
             raise HTTPException(400, "body cannot be empty")
