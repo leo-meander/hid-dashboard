@@ -24,13 +24,11 @@ from __future__ import annotations
 import logging
 from datetime import date, timedelta
 from typing import Optional
-from uuid import UUID
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.branch import Branch
-from app.models.daily_metrics import DailyMetrics
 from app.models.holiday_intel import HolidayCalendar
 from app.models.reservation import Reservation
 from app.models.reservation_daily import ReservationDaily
@@ -41,6 +39,7 @@ from app.services.biweekly_period import (
     window_days,
     yoy_window,
 )
+from app.services.kol_engine import HOTEL_TO_BRANCH_KEY
 from app.services.kpi_engine import (
     _EXCLUDED_STATUSES,
     compute_period_achievement,
@@ -318,6 +317,107 @@ def markets_block(db: Session, branch: Branch, p: Period, limit: int = 8) -> dic
         ),
         "market_count": len(known),
     }
+
+
+# ── 3b. Channel mix by booking count ─────────────────────────────────────────
+
+
+def channel_bookings_block(db: Session, branch: Branch, p: Period,
+                           limit: int = 7) -> dict:
+    """Bookings per source channel in the period.
+
+    Deliberately NOT a change to `weekly_report_builder.channel_mix`, which
+    counts room-nights and is shared with the weekly report — editing it
+    would silently move the weekly numbers too.
+
+    A booking is counted once per period if any of its nights fall inside it
+    (`COUNT(DISTINCT reservation_id)` over `reservation_daily`), the same
+    basis as revenue and the markets table. A check-in cohort would put a
+    stay that started the day before the period entirely outside it.
+    """
+    def _by_source(d_from: date, d_to: date) -> dict:
+        rows = (
+            db.query(
+                Reservation.source,
+                Reservation.source_category,
+                func.count(func.distinct(ReservationDaily.reservation_id)),
+            )
+            .join(Reservation, ReservationDaily.reservation_id == Reservation.id)
+            .filter(
+                ReservationDaily.branch_id == branch.id,
+                ReservationDaily.date >= d_from,
+                ReservationDaily.date <= d_to,
+                ~func.lower(func.coalesce(Reservation.status, "")).in_(
+                    list(_EXCLUDED_STATUSES)
+                ),
+            )
+            .group_by(Reservation.source, Reservation.source_category)
+            .all()
+        )
+        out = {}
+        for src, cat, n in rows:
+            name = (src or "Unknown").strip() or "Unknown"
+            entry = out.setdefault(
+                name, {"source": name, "category": cat or "", "bookings": 0}
+            )
+            entry["bookings"] += int(n or 0)
+        return out
+
+    prev = previous_window(p)
+    cur = _by_source(p.start, p.end)
+    prior = _by_source(prev[0], prev[1])
+
+    total = sum(v["bookings"] for v in cur.values())
+    rows = []
+    for name, v in cur.items():
+        prior_n = prior.get(name, {}).get("bookings", 0)
+        rows.append({
+            **v,
+            "share_pct": round(v["bookings"] / total * 100, 1) if total else None,
+            "prior_bookings": prior_n,
+            "vs_prior_pct": pct_change(v["bookings"], prior_n),
+            "is_direct": (v["category"] or "").strip().lower() == "direct",
+        })
+    rows.sort(key=lambda r: -r["bookings"])
+
+    direct_bookings = sum(r["bookings"] for r in rows if r["is_direct"])
+    return {
+        "rows": rows[:limit],
+        "total_bookings": total,
+        "direct_bookings": direct_bookings,
+        "direct_share_pct": (
+            round(direct_bookings / total * 100, 1) if total else None
+        ),
+    }
+
+
+# ── 3c. KOL reach / engagement (external) ────────────────────────────────────
+
+
+def kol_reach_block(branch: Branch, p: Period) -> dict:
+    """Reach + engagement for the period, from the KOL Engine.
+
+    HiD's `kol_records` has no reach/engagement columns, so this is the only
+    source. It degrades to `available: False` on any failure — see
+    `kol_engine.fetch_kol_insights` for why that is not reported as zero.
+    """
+    from app.config import settings
+    from app.services.kol_engine import fetch_kol_insights, resolve_hotel_id_from_branch_name
+
+    hotel_id = resolve_hotel_id_from_branch_name(branch.name or "")
+    branch_key = HOTEL_TO_BRANCH_KEY.get(hotel_id) if hotel_id else None
+    if not branch_key:
+        return {"available": False, "posts": 0, "reach": 0,
+                "engagements": 0, "engagement_rate_pct": None}
+
+    return fetch_kol_insights(
+        base_url=settings.KOL_ENGINE_URL,
+        org_id=settings.KOL_ENGINE_ORG_ID,
+        api_key=settings.KOL_SYNC_API_KEY,
+        branch_key=branch_key,
+        date_from=p.start,
+        date_to=p.end,
+    )
 
 
 # ── 4. Recommended actions ───────────────────────────────────────────────────
@@ -633,8 +733,15 @@ def build_branch_biweekly(db: Session, branch: Branch, p: Period) -> dict:
                            {"rows": [], "total_revenue": 0})
     ads = safe_section(db, f"bw.ads[{branch.name}]",
                        lambda: paid_ads_section(db, branch, anchor, window=window), {})
+    chan_bookings = safe_section(db, f"bw.channel_bookings[{branch.name}]",
+                                 lambda: channel_bookings_block(db, branch, p),
+                                 {"rows": [], "total_bookings": 0})
     kol = safe_section(db, f"bw.kol[{branch.name}]",
                        lambda: kol_section(db, branch.id, branch.name, anchor, window=window), {})
+    # Network call, so it gets the same failure isolation as a slow query.
+    kol_reach = safe_section(db, f"bw.kol_reach[{branch.name}]",
+                             lambda: kol_reach_block(branch, p),
+                             {"available": False})
     crm = safe_section(db, f"bw.crm[{branch.name}]",
                        lambda: crm_section(db, branch.id, branch.name, anchor, window=window), {})
 
@@ -654,9 +761,11 @@ def build_branch_biweekly(db: Session, branch: Branch, p: Period) -> dict:
         "kpi": kpi,
         "target": target,
         "channel_mix": channel,
+        "channel_bookings": chan_bookings,
         "markets": markets,
         "paid_ads": ads,
         "kol": kol,
+        "kol_reach": kol_reach,
         "crm": crm,
         "highlights": flags.get("highlights", []),
         "watchouts": flags.get("watchouts", []),
