@@ -296,9 +296,15 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
             const ytdIsQuery = kpi.ytd_mode === "query";
             const ytdSum = targetedMonths.filter(m => m.actual !== null).reduce((s, m) => s + m.actual, 0);
             const ytdActual = ytdIsQuery ? kpi.ytd_actual : (ytdSum > 0 ? ytdSum : null);
-            const actPcts = targetedMonths.filter(m => m.pct !== null).map(m => m.pct);
+            // Same direction-normalization as the composite ring/YtdBars: for a
+            // lower-is-better KPI, m.pct (the literal actual/target ratio shown
+            // on the cell badge) reads backwards for averaging, so this column
+            // uses target/actual instead — "on target" is still 100% either way.
+            const actPcts = targetedMonths
+              .filter(m => m.pct !== null && (kpi.higher_is_better || m.actual !== 0))
+              .map(m => kpi.higher_is_better ? m.pct : (m.target / m.actual) * 100);
             const avgPct = actPcts.length ? Math.round(actPcts.reduce((a, b) => a + b, 0) / actPcts.length * 10) / 10 : null;
-            const avgColor = pctColor(avgPct, kpi.higher_is_better);
+            const avgColor = pctColor(avgPct);
 
             const rowSpan = kpi.no_target ? 1 : 2;
             return (
