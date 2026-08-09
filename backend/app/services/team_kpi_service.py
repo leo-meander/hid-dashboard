@@ -46,7 +46,11 @@ KPI_DEFS: dict[str, list[dict]] = {
          "computed_note_pct": "= {pct}% of Posted target (KOL Engine)"},
     ],
     "paid_ads": [
-        {"key": "roas",            "label": "ROAS",                   "unit": "×",      "org_wide": False, "higher_is_better": True,  "decimals": 2},
+        # ROAS is a ratio, not an amount — its months can't be added together
+        # (that would sum ×2.17 + ×1.05 + … into a meaningless ×19). YTD is
+        # its own "ratio" mode: Σrevenue_vnd ÷ Σspend_vnd across the included
+        # months, computed below alongside the "query" KPIs.
+        {"key": "roas",            "label": "ROAS",                   "unit": "×",      "org_wide": False, "higher_is_better": True,  "decimals": 2, "ytd_mode": "ratio"},
         {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True, "computed_target": "spend_x_roas", "computed_note": "= spend × ROAS target"},
         # GA4 userKeyEventRate:purchase, whole-property. See ga4_service for why
         # it can only be read at property scope and why every figure is its own
@@ -1314,12 +1318,17 @@ def build_monthly_summary(
             )
             note = pct_tmpl.format(pct=shown)
 
-        # YTD: "sum" (the default — add up the monthly actuals) or "query",
-        # for metrics whose months cannot legitimately be added together. A
-        # "query" KPI carries its own year-to-date reading and shows nothing
-        # when that reading is missing, rather than falling back to a sum.
+        # YTD: "sum" (the default — add up the monthly actuals), "query",
+        # for metrics whose months cannot legitimately be added together, or
+        # "ratio" for a rate built from an underlying numerator/denominator
+        # (ROAS) — same "can't add ratios" problem as "query" but computed
+        # from data already in hand instead of a live upstream call. A
+        # "query"/"ratio" KPI carries its own year-to-date reading and shows
+        # nothing when that reading is missing, rather than falling back to
+        # a sum.
         ytd_mode = defn.get("ytd_mode", "sum")
         ytd_actual = None
+        ytd_target = None
         if ytd_mode == "query":
             ytd_bucket = actuals_yearly.get(GA4_YTD_MONTH, {})
             if all_branches_view and kpi_key == "purchase_cvr":
@@ -1333,6 +1342,32 @@ def build_monthly_summary(
                 )
             if raw_ytd is not None:
                 ytd_actual = round(float(raw_ytd), decimals)
+        elif ytd_mode == "ratio" and kpi_key == "roas" and role_key == "paid_ads":
+            # Σrevenue_vnd ÷ Σspend_vnd (and Σtarget_revenue_vnd ÷ Σspend_vnd
+            # for the target row) across the same months YTD/Avg% already use
+            # elsewhere in this grid — every branch's spend and revenue is
+            # VND at write-time, so this sum never mixes currencies even in
+            # the All view. Same "only months with a target" window the
+            # frontend applies for every other KPI's YTD.
+            tot_rev = tot_spend = tot_target_rev = 0.0
+            for cell in monthly:
+                if cell["is_future"] or not cell["has_target"]:
+                    continue
+                month_actuals = actuals_yearly.get(cell["month"], {})
+                if all_branches_view:
+                    spend = sum(float(month_actuals.get(bk, {}).get("ads_spend") or 0) for bk in _ALL_BRANCH_KEYS)
+                    rev   = sum(float(month_actuals.get(bk, {}).get("ads_revenue") or 0) for bk in _ALL_BRANCH_KEYS)
+                else:
+                    bucket = month_actuals.get(branch_key or "", {})
+                    spend = float(bucket.get("ads_spend") or 0)
+                    rev   = float(bucket.get("ads_revenue") or 0)
+                tot_rev += rev
+                tot_spend += spend
+                if cell["target"] is not None:
+                    tot_target_rev += spend * float(cell["target"])
+            if tot_spend > 0:
+                ytd_actual = round(tot_rev / tot_spend, decimals)
+                ytd_target = round(tot_target_rev / tot_spend, decimals)
 
         kpis_out.append({
             "key": kpi_key,
@@ -1352,6 +1387,7 @@ def build_monthly_summary(
             "starts_note": starts_note,
             "ytd_mode": ytd_mode,
             "ytd_actual": ytd_actual,
+            "ytd_target": ytd_target,
             # A caveat about this view specifically: either the number cannot
             # be measured here at all, or it can only be approximated.
             "view_note": (

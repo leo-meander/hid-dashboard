@@ -292,8 +292,12 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
             // year-to-date reading from the source; it stays blank when that
             // reading is missing rather than falling back to a meaningless sum.
             const ytdIsQuery = kpi.ytd_mode === "query";
+            // ROAS is a ratio too — summing ×2.17 + ×1.05 + … across months
+            // produces a meaningless number. Its YTD is server-computed as
+            // Σrevenue ÷ Σspend instead (see team_kpi_service.py).
+            const ytdIsRatio = kpi.ytd_mode === "ratio";
             const ytdSum = targetedMonths.filter(m => m.actual !== null).reduce((s, m) => s + m.actual, 0);
-            const ytdActual = ytdIsQuery ? kpi.ytd_actual : (ytdSum > 0 ? ytdSum : null);
+            const ytdActual = (ytdIsQuery || ytdIsRatio) ? kpi.ytd_actual : (ytdSum > 0 ? ytdSum : null);
             // m.pct is already direction-normalized by the backend (higher =
             // better for every KPI), so this is a plain average.
             const actPcts = targetedMonths.filter(m => m.pct !== null).map(m => m.pct);
@@ -371,10 +375,16 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                   ))}
                   <td className="px-2 py-1.5 text-center text-gray-400 font-medium">
                     {/* Same rule as the actual row: monthly targets for a rate
-                        are not addable, so that YTD cell stays empty. */}
-                    {!ytdIsQuery && kpi.monthly.filter(m => m.target).reduce((s, m) => s + (m.target || 0), 0) > 0
-                      ? kpi.monthly.filter(m => m.target).reduce((s, m) => s + (m.target || 0), 0).toLocaleString(undefined, { maximumFractionDigits: 1 })
-                      : "—"}
+                        are not addable. "ratio" KPIs (ROAS) get a real
+                        server-computed YTD target instead of a blank cell;
+                        "query" KPIs (GA4 rates) have none to show. */}
+                    {ytdIsRatio
+                      ? (kpi.ytd_target !== null && kpi.ytd_target !== undefined
+                          ? kpi.ytd_target.toLocaleString(undefined, { maximumFractionDigits: kpi.decimals ?? 1 })
+                          : "—")
+                      : !ytdIsQuery && kpi.monthly.filter(m => m.target).reduce((s, m) => s + (m.target || 0), 0) > 0
+                        ? kpi.monthly.filter(m => m.target).reduce((s, m) => s + (m.target || 0), 0).toLocaleString(undefined, { maximumFractionDigits: 1 })
+                        : "—"}
                   </td>
                   <td className="px-2 py-1.5 text-center text-gray-400">—</td>
                 </tr>
@@ -470,7 +480,11 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     );
                   })}
                   <td className="px-2 py-1.5 text-center"
-                      title={ytdIsQuery ? "Year-to-date is its own query over Jan 1 → today — these months cannot be added together" : undefined}>
+                      title={
+                        ytdIsQuery ? "Year-to-date is its own query over Jan 1 → today — these months cannot be added together"
+                        : ytdIsRatio ? "Year-to-date ROAS = total revenue ÷ total spend (VND) across the included months — not a sum of monthly ratios"
+                        : undefined
+                      }>
                     {ytdActual !== null && ytdActual !== undefined ? (
                       <span className="font-semibold text-gray-700">{fmtValue(kpi, ytdActual)}</span>
                     ) : "—"}

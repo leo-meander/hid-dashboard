@@ -257,9 +257,12 @@ def test_ytd_is_blank_when_the_year_query_has_no_answer(ga4):
     assert any(m["actual"] == 1.63 for m in kpi["monthly"])
 
 
-def test_roas_keeps_summing_its_ytd(ga4):
+def test_roas_ytd_is_a_ratio_not_a_sum(ga4):
+    """ROAS is a ratio like the GA4 rates above — summing ×2.17 + ×1.05 + …
+    across months would produce a meaningless number, so it gets the same
+    non-additive treatment ("ratio" mode) rather than "sum"."""
     assert _kpi(svc.build_monthly_summary(_FakeSession(), "paid_ads", YEAR, SAIGON_UUID),
-                "roas")["ytd_mode"] == "sum"
+                "roas")["ytd_mode"] == "ratio"
 
 
 # ── Views where the number cannot be measured ────────────────────────────────
