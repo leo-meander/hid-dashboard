@@ -48,6 +48,36 @@ KPI_DEFS: dict[str, list[dict]] = {
     "paid_ads": [
         {"key": "roas",            "label": "ROAS",                   "unit": "×",      "org_wide": False, "higher_is_better": True,  "decimals": 2},
         {"key": "ads_revenue",     "label": "Revenue via Paid Ads",   "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True, "computed_target": "spend_x_roas", "computed_note": "= spend × ROAS target"},
+        # GA4 userKeyEventRate:purchase, whole-property. See ga4_service for why
+        # it can only be read at property scope and why every figure is its own
+        # query. Manual target, auto actual — same shape as the ROAS row.
+        {"key": "purchase_cvr",    "label": "Website Purchase Conversion Rate","unit": "%", "org_wide": False, "higher_is_better": True,  "decimals": 2, "is_pct": True,
+         # Targets here are literal small percentages (1.8 means 1.8%), so they
+         # must skip the ≤2.0 → ×100 fraction normalisation the other is_pct
+         # KPIs rely on.
+         "normalize_fraction_targets": False,
+         "fixed_decimals": True, "value_suffix": "%",
+         # A user-scoped rate cannot be summed across months, so YTD is its own
+         # Jan-1 → today GA4 query and is blank when that query has no answer.
+         "ytd_mode": "query",
+         "provisional_note": "GA4 withheld part of this window (Google Signals data thresholding), so the rate is approximate rather than a confident number.",
+         # Every branch reports every month it has data for, Oani included.
+         # Oani's tag was also live on the 1948 and Osaka sites until
+         # 2026-08-09, so its months before September count three branches —
+         # shown as-is by decision, not gated. See docs/specs/integrations.md.
+         #
+         # Reader-facing text: branch names only. A GA4 property ID must never
+         # surface in the KPI grid — the grid speaks in branches, and the
+         # branch → property mapping stays in config.
+         "all_view_note": "Approximate. The group figure is total purchasing visitors ÷ total visitors across branches, not an average of the branch percentages — the branches differ several-fold in traffic, so an average would be nobody's real rate. Each branch has separate GA4 analytics, so someone who browses two branch sites is counted once per branch. Oani joins the group figure from Sep 2026, when its tag stopped also firing on the 1948 and Osaka sites.",
+         },
+        # Google PageSpeed Insights, Speed Index, mobile — see pagespeed_service.
+        # Target is a fixed <3s goal rather than something planned per month, so
+        # it auto-fills to 2.99 unless a cell is manually overridden. Lower is
+        # better, so pct = actual/target×100 reads like budget_utilisation
+        # (>100% = slower than goal, not "ahead").
+        {"key": "page_load_speed", "label": "Avg Website Load Speed", "unit": "s", "org_wide": False,
+         "higher_is_better": False, "decimals": 1, "fixed_target": 2.99},
     ],
     "designer": [
         # Temporarily hidden (2026-08-06) — remove "hidden" to bring them back
@@ -82,14 +112,32 @@ def visible_kpi_defs(role_key: str) -> list[dict]:
     return [d for d in KPI_DEFS.get(role_key, []) if not d.get("hidden")]
 
 
-def kpi_start_month(defn: dict, year: int) -> Optional[int]:
-    """First month of `year` this KPI is live, from its "starts": "YYYY-MM".
+def kpi_branch_start(defn: dict, branch_key: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+    """The ("YYYY-MM", why) in force for one branch view.
+
+    A single branch can start later than the KPI itself — a branch whose
+    measurement was only corrected part-way through the year has no honest
+    history before the fix, even though its siblings do. `starts_by_branch`
+    carries that per branch, either as a bare month or as
+    ``{"from": ..., "why": ...}`` so the grid can say why the earlier months
+    are empty. Falls back to the KPI-wide "starts".
+    """
+    entry = (defn.get("starts_by_branch") or {}).get(branch_key or "")
+    if isinstance(entry, dict):
+        return entry.get("from"), entry.get("why")
+    if entry:
+        return str(entry), None
+    return defn.get("starts"), None
+
+
+def kpi_start_month(defn: dict, year: int, branch_key: Optional[str] = None) -> Optional[int]:
+    """First month of `year` this KPI is live for this branch view.
 
     None when the KPI has always been live (or the year is past its start);
     13 when the whole year predates it. Months before the returned value are
     rendered blank and locked instead of showing a misleading 0.
     """
-    starts = defn.get("starts")
+    starts, _why = kpi_branch_start(defn, branch_key)
     if not starts:
         return None
     s_year, _, s_month = str(starts).partition("-")
@@ -476,6 +524,170 @@ def get_ads_win_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
     return out
 
 
+# ── Purchase Conversion Rate actuals (Paid Ads, GA4) ─────────────────────────
+
+_ga4_cvr_cache: dict[tuple, tuple[float, dict]] = {}
+# GA4 is 24–48h from final on the current day and only moves as it processes,
+# so an hour on the read path is plenty. Closed months get re-queried rather
+# than frozen: runReport is cheap and a re-query can never go stale.
+_GA4_CVR_TTL = 3600
+
+# Synthetic bucket for the year-to-date reading. build_monthly_summary iterates
+# months 1–12, so month 0 can never leak into a monthly cell — it exists purely
+# so the Jan-1 → today query travels in the same cached payload as the months.
+GA4_YTD_MONTH = 0
+
+
+def get_purchase_cvr_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
+    """Return ``{month: {branch_key: {purchase_cvr, purchase_cvr__provisional}}}``
+    plus a ``GA4_YTD_MONTH`` bucket holding the year-to-date reading.
+
+    One GA4 request per (branch × month), each with that month's own date range.
+    That is not an optimisation choice — ``userKeyEventRate:purchase`` counts
+    unique users, which de-duplicate across time, so a month assembled from
+    daily rows double-counts anyone who visited twice and the error grows with
+    the window. For the same reason the YTD figure is its own Jan-1 → today
+    request rather than anything derived from the monthly values.
+
+    Branches with no property configured (Oani) are simply absent. A failed or
+    empty response leaves that month blank rather than recording a 0%.
+    """
+    cache_key = ("ga4_cvr", year)
+    cached = _ga4_cvr_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _GA4_CVR_TTL:
+        return cached[1]
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.services.ga4_service import credentials_configured, run_purchase_report
+
+    property_map = settings.ga4_property_map
+    if not property_map:
+        log.warning("no GA4 properties configured; purchase_cvr blank")
+        return {}
+    if not credentials_configured():
+        # Checked once rather than per window: with no key every request below
+        # would fail the same way and log its own line.
+        log.warning("GA4 service account not configured; purchase_cvr blank")
+        return {}
+
+    today = date.today()
+    if today.year > year:
+        cur_month, ytd_end = 12, f"{year}-12-31"
+    elif today.year < year:
+        return {}
+    else:
+        cur_month, ytd_end = today.month, today.isoformat()
+
+    jobs: list[tuple[int, str, str, str, str]] = []
+    for branch_key, property_id in property_map.items():
+        for m in range(1, cur_month + 1):
+            last_day = calendar.monthrange(year, m)[1]
+            jobs.append((m, branch_key, property_id,
+                         f"{year}-{m:02d}-01", f"{year}-{m:02d}-{last_day:02d}"))
+        jobs.append((GA4_YTD_MONTH, branch_key, property_id,
+                     f"{year}-01-01", ytd_end))
+
+    out: dict[int, dict[str, dict]] = {}
+    try:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            readings = list(pool.map(
+                lambda job: run_purchase_report(job[2], job[3], job[4]), jobs
+            ))
+    except Exception as exc:
+        log.warning("GA4 purchase-rate actuals unavailable: %s", exc)
+        return {}
+
+    for (month, branch_key, _pid, _start, _end), reading in zip(jobs, readings):
+        if reading is None or reading.rate_pct is None:
+            continue
+        out.setdefault(month, {})[branch_key] = {
+            "purchase_cvr": reading.rate_pct,
+            "purchase_cvr__provisional": reading.thresholded,
+            # Counts behind the rate, kept so the All tab can rebuild a group
+            # figure from them. A group rate has to come from the underlying
+            # counts — see _group_purchase_cvr.
+            "purchase_cvr__users": reading.rate_denominator,
+            "purchase_cvr__purchasers": reading.purchasing_users,
+        }
+
+    _ga4_cvr_cache[cache_key] = (time.time(), out)
+    return out
+
+
+# Oani's property counted 1948 and Osaka users too until its tag came off both
+# sites on 2026-08-09, and GA4 keeps that history. Adding it to a group sum
+# before then counts those two branches twice in the denominator, so it joins
+# the group figure from September. Its own tab still shows every month.
+OANI_JOINS_GROUP_FROM = (2026, 9)
+
+
+def _counts_in_group_total(branch_key: str, year: int, month: int) -> bool:
+    if branch_key != "oani":
+        return True
+    return (year, month) >= OANI_JOINS_GROUP_FROM
+
+
+def _group_purchase_cvr(
+    month_actuals: dict[str, dict], year: int, month: int
+) -> Optional[float]:
+    """Σ purchasing users ÷ Σ users across branches, as a percentage.
+
+    Deliberately not the mean of the branch percentages. The branches differ
+    several-fold in traffic — 2.9k users at Osaka against 7.7k at 1948 in
+    August — so a mean would give the smallest branch the same say as the
+    largest and produce a number that is nobody's conversion rate.
+
+    Approximate even done this way, and labelled as such in the grid: each
+    property is its own user namespace, so someone who browses two branch sites
+    is counted once per branch and cannot be de-duplicated.
+    """
+    users = purchasers = 0.0
+    for branch_key in BRANCH_KEYS:
+        if not _counts_in_group_total(branch_key, year, month):
+            continue
+        cell = month_actuals.get(branch_key, {})
+        branch_users = cell.get("purchase_cvr__users")
+        branch_purchasers = cell.get("purchase_cvr__purchasers")
+        if branch_users and branch_purchasers is not None:
+            users += float(branch_users)
+            purchasers += float(branch_purchasers)
+    return round(purchasers / users * 100, 2) if users > 0 else None
+
+
+def _group_purchase_cvr_target(
+    per_branch_targets: dict[str, float],
+    actuals_yearly: dict[int, dict[str, dict]],
+    year: int,
+    month: int,
+) -> Optional[float]:
+    """Blend per-branch targets by traffic, matching how the actual is blended.
+
+    The generic is_pct path takes whichever branch row the database returned
+    first, which for targets of 1.5 / 2.5 / 3.0 makes the group achievement
+    percentage meaningless. A group target has to be weighted the same way the
+    group actual is, exactly as the ROAS row weights its branch targets by
+    spend.
+
+    Future months have no traffic yet, so they borrow the year-to-date mix —
+    a target that renders blank for the rest of the year would be worse than
+    one weighted on last-known proportions.
+    """
+    weights = actuals_yearly.get(month, {})
+    if not any(weights.get(bk, {}).get("purchase_cvr__users") for bk in per_branch_targets):
+        weights = actuals_yearly.get(GA4_YTD_MONTH, {})
+
+    weighted = total = 0.0
+    for branch_key, branch_target in per_branch_targets.items():
+        if not _counts_in_group_total(branch_key, year, month):
+            continue
+        users = weights.get(branch_key, {}).get("purchase_cvr__users")
+        if users:
+            weighted += float(users) * float(branch_target)
+            total += float(users)
+    return round(weighted / total, 2) if total > 0 else None
+
+
 def _parse_ym(value, year: int) -> Optional[int]:
     """"2026-08" → 8, but only for the year asked for; None otherwise."""
     y, _, m = str(value or "").partition("-")
@@ -685,11 +897,20 @@ def get_pm_actuals_yearly(db: Session, year: int) -> dict[int, dict[str, dict]]:
 
 # ── Core summary builder ──────────────────────────────────────────────────────
 
-def _merge_actuals(base: dict[int, dict[str, dict]], extra: dict[int, dict[str, dict]]) -> None:
-    """Fold one actuals source into another, in place, per month × bucket."""
-    for month, buckets in extra.items():
-        for bucket, values in buckets.items():
-            base.setdefault(month, {}).setdefault(bucket, {}).update(values)
+def _combined_actuals(*sources: dict[int, dict[str, dict]]) -> dict[int, dict[str, dict]]:
+    """Fold several actuals sources into one FRESH dict, per month × bucket.
+
+    Every fetcher hands back the object it holds in its own TTL cache. Merging
+    into one of them in place would write the other sources' values into that
+    cache — where they would then outlive their own TTL and be served as
+    current long after they went stale.
+    """
+    out: dict[int, dict[str, dict]] = {}
+    for source in sources:
+        for month, buckets in source.items():
+            for bucket, values in buckets.items():
+                out.setdefault(month, {}).setdefault(bucket, {}).update(values)
+    return out
 
 def build_monthly_summary(
     db: Session,
@@ -731,8 +952,16 @@ def build_monthly_summary(
         )
     # All view: load every branch + org-wide so we can sum per-branch targets
 
-    # For is_pct KPIs, targets may have been entered as fractions (e.g. 0.9 = 90%). Normalize on load.
+    # is_pct KPIs are never summed across branches for the All view — the
+    # denominators differ, so a sum of percentages means nothing.
     _pct_keys = {d["key"] for d in defs if d.get("is_pct")}
+    # Most is_pct targets may have been entered as fractions (e.g. 0.9 = 90%);
+    # normalize those on load. KPIs whose real targets are small percentages
+    # opt out via normalize_fraction_targets — for them 1.8 means 1.8%.
+    _fraction_pct_keys = {
+        d["key"] for d in defs
+        if d.get("is_pct") and d.get("normalize_fraction_targets", True)
+    }
     # CRM revenue targets entered in bil VND (e.g. 0.056) instead of mil VND (56). Normalize on load.
     _bil_vnd_keys = {"crm_revenue"} if role_key == "crm" else set()
     # Revenue KPI keys — targets stored in native currency units, need FX conversion for All view
@@ -753,7 +982,7 @@ def build_monthly_summary(
             key = (row.kpi_key, row.month)
             raw_val = float(row.target_value)
             # Normalize PM is_pct targets entered as fractions (≤ 2.0 → × 100)
-            if row.kpi_key in _pct_keys and raw_val <= 2.0:
+            if row.kpi_key in _fraction_pct_keys and raw_val <= 2.0:
                 raw_val = round(raw_val * 100, 1)
             # Normalize CRM revenue targets entered in bil VND (< 1) → mil VND (× 1000)
             if row.kpi_key in _bil_vnd_keys and raw_val < 1.0:
@@ -798,20 +1027,28 @@ def build_monthly_summary(
     if auto and role_key == "kol":
         actuals_yearly = get_kol_actuals_yearly_db(db, year)
     elif auto and role_key == "paid_ads":
-        actuals_yearly = get_paid_ads_actuals_yearly(db, year)
+        sources = [get_paid_ads_actuals_yearly(db, year)]
+        if any(d["key"] == "purchase_cvr" for d in defs):
+            sources.append(get_purchase_cvr_actuals_yearly(year))
+        if any(d["key"] == "page_load_speed" for d in defs):
+            from app.services.pagespeed_service import get_page_speed_actuals_yearly
+            sources.append(get_page_speed_actuals_yearly(db, year))
+        actuals_yearly = _combined_actuals(*sources)
     elif auto and role_key == "designer":
         # Each source is fetched only when a visible KPI still needs it.
+        sources = []
         if any(d["key"] in ("design_assets", "videos_delivered") for d in defs):
             from app.services.lark_service import get_designer_actuals_yearly
-            actuals_yearly = get_designer_actuals_yearly(year)
+            sources.append(get_designer_actuals_yearly(year))
         if any(d["key"] == "ads_win_rate" for d in defs):
-            _merge_actuals(actuals_yearly, get_ads_win_actuals_yearly(year))
+            sources.append(get_ads_win_actuals_yearly(year))
         if any(d["key"] == "delivery_rate" for d in defs):
             try:
                 from app.services.lark_service import get_delivery_rate_yearly
-                _merge_actuals(actuals_yearly, get_delivery_rate_yearly(year))
+                sources.append(get_delivery_rate_yearly(year))
             except Exception as exc:
                 log.warning("designer delivery_rate from Lark unavailable: %s", exc)
+        actuals_yearly = _combined_actuals(*sources)
     elif auto and role_key == "crm":
         actuals_yearly = get_crm_actuals_yearly(db, year)
     elif auto and role_key == "pm":
@@ -857,7 +1094,11 @@ def build_monthly_summary(
         kpi_auto          = auto and defn.get("auto", True)   # per-KPI override via auto: False
         no_target         = defn.get("no_target", False)       # display-only: suppress target editing
         computed_target_t = defn.get("computed_target")        # computed target type (e.g. "spend_x_roas")
-        start_month       = kpi_start_month(defn, year)        # months before this are blank + locked
+        # Months before this are blank + locked. Resolved per branch: one
+        # branch can have no honest history where its siblings do.
+        starts_view       = None if all_branches_view else branch_key
+        start_month       = kpi_start_month(defn, year, starts_view)
+        starts_str, starts_note = kpi_branch_start(defn, starts_view)
 
         # Percentage rules behind an upstream-owned target, collected while
         # resolving the months so the target row can be labelled with the
@@ -929,6 +1170,10 @@ def build_monthly_summary(
                 target = None  # future month or unknown computed type
             else:
                 target = targets_map.get((kpi_key, m))
+                if target is None and defn.get("fixed_target") is not None:
+                    # KPI's goal is constant (e.g. "<3s"), not planned per
+                    # month — auto-fill unless a cell was manually overridden.
+                    target = defn["fixed_target"]
                 # ROAS all-branches: weighted average = Σ(spend_bk × roas_target_bk) / Σ(spend_bk)
                 if all_branches_view and kpi_key == "roas" and role_key == "paid_ads" and not is_future:
                     per_branch_roas = per_branch_targets_map.get(("roas", m), {})
@@ -941,6 +1186,15 @@ def build_monthly_summary(
                             tot_weighted += spend * float(roas_tgt)
                             tot_spend += spend
                     target = round(tot_weighted / tot_spend, 2) if tot_spend > 0 else None
+                elif all_branches_view and kpi_key == "purchase_cvr":
+                    # Only when branch targets exist to blend; an org-wide row
+                    # entered against the All tab itself still wins otherwise.
+                    blended = _group_purchase_cvr_target(
+                        per_branch_targets_map.get((kpi_key, m), {}),
+                        actuals_yearly, year, m,
+                    )
+                    if blended is not None:
+                        target = blended
                 elif all_branches_view and kpi_key == "roas":
                     target = None
 
@@ -960,10 +1214,23 @@ def build_monthly_summary(
                     # that are missed when summing per-branch values from branches[]).
                     if kpi_key == "kol_revenue" and role_key == "kol":
                         raw = month_actuals.get("all", {}).get("kol_revenue") or None
+                    elif kpi_key == "purchase_cvr":
+                        # Rebuilt from the branch counts, never averaged from
+                        # the branch percentages.
+                        raw = _group_purchase_cvr(month_actuals, year, m)
                     elif kpi_key == "ads_win_rate":
                         # Org-wide ratio from upstream. Averaging the branch
                         # percentages would be wrong — different denominators.
                         raw = month_actuals.get("all", {}).get("ads_win_rate")
+                    elif kpi_key == "page_load_speed":
+                        # Average seconds across branches — summing them
+                        # would be meaningless (unlike revenue).
+                        vals = [
+                            month_actuals.get(bk, {}).get(kpi_key)
+                            for bk in _ALL_BRANCH_KEYS
+                        ]
+                        vals = [float(v) for v in vals if v is not None]
+                        raw = round(sum(vals) / len(vals), 2) if vals else None
                     else:
                         # is_pct KPIs (e.g. data_fill_rate): average across branches
                         # all other KPIs: sum across branches
@@ -1003,9 +1270,21 @@ def build_monthly_summary(
             if target and target != 0 and actual is not None:
                 pct = round(actual / target * 100, 1)
                 if not is_future:
-                    all_pcts.append(pct)
-                    if m == cur_month:
-                        cur_pcts.append(pct)
+                    # The composite score (top ring, "avg achieved") must read
+                    # higher = better regardless of KPI direction. `pct` itself
+                    # stays the literal actual/target ratio for the cell badge
+                    # (e.g. "194%" on a lower-is-better KPI, still colour-coded
+                    # red by higher_is_better) — only the aggregate flips.
+                    if higher:
+                        score_pct = pct
+                    elif actual != 0:
+                        score_pct = round(target / actual * 100, 1)
+                    else:
+                        score_pct = None
+                    if score_pct is not None:
+                        all_pcts.append(score_pct)
+                        if m == cur_month:
+                            cur_pcts.append(score_pct)
 
             monthly.append({
                 "month": m,
@@ -1031,19 +1310,51 @@ def build_monthly_summary(
             )
             note = pct_tmpl.format(pct=shown)
 
+        # YTD: "sum" (the default — add up the monthly actuals) or "query",
+        # for metrics whose months cannot legitimately be added together. A
+        # "query" KPI carries its own year-to-date reading and shows nothing
+        # when that reading is missing, rather than falling back to a sum.
+        ytd_mode = defn.get("ytd_mode", "sum")
+        ytd_actual = None
+        if ytd_mode == "query":
+            ytd_bucket = actuals_yearly.get(GA4_YTD_MONTH, {})
+            if all_branches_view and kpi_key == "purchase_cvr":
+                # Same rebuild as a monthly cell, over the Jan-1 → today window.
+                raw_ytd = _group_purchase_cvr(ytd_bucket, year, GA4_YTD_MONTH)
+            else:
+                raw_ytd = (
+                    ytd_bucket
+                    .get("all" if org_wide else (branch_key or ""), {})
+                    .get(kpi_key)
+                )
+            if raw_ytd is not None:
+                ytd_actual = round(float(raw_ytd), decimals)
+
         kpis_out.append({
             "key": kpi_key,
             "label": defn["label"],
             "unit": kpi_unit,
             "is_pct": is_pct,
             "decimals": decimals,
+            "fixed_decimals": defn.get("fixed_decimals", False),
+            "value_suffix": defn.get("value_suffix"),
             "higher_is_better": higher,
             "org_wide": org_wide,
             "auto_actuals": kpi_auto,
             "no_target": no_target,
             "computed_target": computed_target_t is not None,
             "computed_target_note": note,
-            "starts": defn.get("starts"),
+            "starts": starts_str,
+            "starts_note": starts_note,
+            "ytd_mode": ytd_mode,
+            "ytd_actual": ytd_actual,
+            # A caveat about this view specifically: either the number cannot
+            # be measured here at all, or it can only be approximated.
+            "view_note": (
+                {"label": "approximate", "text": defn["all_view_note"]}
+                if all_branches_view and defn.get("all_view_note") else None
+            ),
+            "provisional_note": defn.get("provisional_note"),
             "monthly": monthly,
         })
 

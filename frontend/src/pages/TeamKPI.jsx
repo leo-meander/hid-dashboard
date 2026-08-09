@@ -44,6 +44,7 @@ const KPI_TOOLTIPS = {
   crm_revenue:          "Revenue attributed to CRM campaigns in that month. Enter targets in mil VND (e.g. enter 56 for 56 million VND).",
   kol_posted:           "KOLs who published a post that month. Target is owned by KOL Engine → Set Targets → Posted: round(prev-month collaborated × Posted %). It moves as collaborations land, so it is read-only here.",
   kol_ads_collab:       "KOLs with ads permission who published that month (KOL Engine 'Ads-Allowed'). Target is owned by KOL Engine → Set Targets → Ads-Allowed: round(Posted target × Ads-Allowed %). Read-only here.",
+  purchase_cvr:         "Website Purchase Conversion Rate — GA4's own 'User key event rate (purchase)' for the whole property, the number under Reports → Acquisition → User acquisition. Counts every purchase the property sees, not paid traffic only. Each month is its own GA4 query over that month's dates: unique users de-duplicate over time, so a month can never be built from daily data and YTD is a separate Jan-1 query, not a sum of the months. Purchases fire on the Cloudbeds booking-engine domain, so the rate can only be read property-wide.",
   ads_win_rate:         "% Ads Win — an ad wins a month when its ROAS that month beats the branch's blended CRTV ROAS for the same month, with enough data behind it (over 4,500 clicks or 5+ bookings; below that it stays TEST and counts on neither side). Each ad is judged once, ever. Formula: wins ÷ (wins + losses) among the ads decided that month. Meta only, and only ads named with CRTV. Source: Ads Platform.",
 };
 
@@ -54,8 +55,27 @@ function startLabel(starts) {
   return m >= 1 && m <= 12 ? `${MONTHS[m - 1]} ${y}` : starts;
 }
 
+// Hover text for a month that predates the KPI on this tab. When the start
+// date is branch-specific there is a reason behind it worth carrying.
+function startsTitle(kpi) {
+  const base = `Tracked from ${startLabel(kpi.starts)}`;
+  return kpi.starts_note ? `${base} — ${kpi.starts_note}` : base;
+}
+
 const PROVISIONAL_TITLE =
   "Provisional — the month is still syncing upstream. Losing verdicts only freeze once a month closes, so this rate is usually inflated.";
+
+// Value as the KPI wants it read: a rate that means 1.63% shows both decimals
+// and its own sign, while a count keeps the existing thousands formatting.
+function fmtValue(kpi, value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number") return String(value);
+  const decimals = kpi.decimals ?? 0;
+  const text = kpi.fixed_decimals
+    ? value.toFixed(decimals)
+    : value.toLocaleString(undefined, { maximumFractionDigits: decimals });
+  return kpi.value_suffix ? `${text}${kpi.value_suffix}` : text;
+}
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
 
@@ -117,10 +137,15 @@ function AchievementRing({ pct, label, sub }) {
 function YtdBars({ kpis }) {
   const withPct = kpis
     .map(k => {
-      const actuals = k.monthly.filter(m => !m.is_future && m.actual !== null && m.has_target && m.target > 0);
+      const actuals = k.monthly.filter(m => !m.is_future && m.actual !== null && m.has_target && m.target > 0 && m.actual !== 0);
       if (!actuals.length) return null;
-      const avgPct = actuals.reduce((s, m) => s + (m.actual / m.target * 100), 0) / actuals.length;
-      return { label: k.label, pct: Math.round(avgPct * 10) / 10, higherIsBetter: k.higher_is_better };
+      // Higher = better in this bar regardless of the KPI's own direction —
+      // for a lower-is-better KPI (e.g. load speed) the ratio is inverted so
+      // "on target" still reads as 100%, not as whatever direction actual/target
+      // happens to point.
+      const ratio = m => k.higher_is_better ? (m.actual / m.target) : (m.target / m.actual);
+      const avgPct = actuals.reduce((s, m) => s + ratio(m) * 100, 0) / actuals.length;
+      return { label: k.label, pct: Math.round(avgPct * 10) / 10 };
     })
     .filter(Boolean);
 
@@ -128,8 +153,10 @@ function YtdBars({ kpis }) {
 
   return (
     <div className="space-y-3">
-      {withPct.map(({ label, pct, higherIsBetter }) => {
-        const color = pctColor(pct, higherIsBetter);
+      {withPct.map(({ label, pct }) => {
+        // pct is already direction-normalized (higher = better) above, so no
+        // higherIsBetter here — passing it again would invert a second time.
+        const color = pctColor(pct);
         const cls = color ? COLOR_CLASSES[color] : { bg: "bg-gray-100", text: "text-gray-500" };
         return (
           <div key={label}>
@@ -263,10 +290,21 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
           {kpis.map((kpi, ki) => {
             // YTD and Avg% only count months that have a target set
             const targetedMonths = kpi.monthly.filter(m => !m.is_future && m.has_target);
-            const ytdActual = targetedMonths.filter(m => m.actual !== null).reduce((s, m) => s + m.actual, 0);
-            const actPcts = targetedMonths.filter(m => m.pct !== null).map(m => m.pct);
+            // A rate whose months cannot be added together carries its own
+            // year-to-date reading from the source; it stays blank when that
+            // reading is missing rather than falling back to a meaningless sum.
+            const ytdIsQuery = kpi.ytd_mode === "query";
+            const ytdSum = targetedMonths.filter(m => m.actual !== null).reduce((s, m) => s + m.actual, 0);
+            const ytdActual = ytdIsQuery ? kpi.ytd_actual : (ytdSum > 0 ? ytdSum : null);
+            // Same direction-normalization as the composite ring/YtdBars: for a
+            // lower-is-better KPI, m.pct (the literal actual/target ratio shown
+            // on the cell badge) reads backwards for averaging, so this column
+            // uses target/actual instead — "on target" is still 100% either way.
+            const actPcts = targetedMonths
+              .filter(m => m.pct !== null && (kpi.higher_is_better || m.actual !== 0))
+              .map(m => kpi.higher_is_better ? m.pct : (m.target / m.actual) * 100);
             const avgPct = actPcts.length ? Math.round(actPcts.reduce((a, b) => a + b, 0) / actPcts.length * 10) / 10 : null;
-            const avgColor = pctColor(avgPct, kpi.higher_is_better);
+            const avgColor = pctColor(avgPct);
 
             const rowSpan = kpi.no_target ? 1 : 2;
             return (
@@ -293,8 +331,19 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     )}
                     {kpi.starts && (
                       <span className="block text-[10px] text-gray-400 font-normal">
-                        from {startLabel(kpi.starts)}
+                        {kpi.starts_note ? (
+                          <Tooltip text={kpi.starts_note}>
+                            <span className="cursor-help">from {startLabel(kpi.starts)} ⓘ</span>
+                          </Tooltip>
+                        ) : `from ${startLabel(kpi.starts)}`}
                       </span>
+                    )}
+                    {kpi.view_note && (
+                      <Tooltip text={kpi.view_note.text}>
+                        <span className="text-[10px] text-amber-600 font-normal cursor-help">
+                          {kpi.view_note.label} ⓘ
+                        </span>
+                      </Tooltip>
                     )}
                   </td>
                   <td className="px-2 py-1.5 text-center text-gray-400" rowSpan={2}>{kpi.unit}</td>
@@ -309,7 +358,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                   {kpi.monthly.map(m => (
                     <td key={m.month} className="px-1 py-1.5 bg-yellow-50">
                       {m.not_started ? (
-                        <div className="text-center text-gray-300" title={`Tracked from ${startLabel(kpi.starts)}`}>·</div>
+                        <div className="text-center text-gray-300" title={startsTitle(kpi)}>·</div>
                       ) : kpi.computed_target ? (
                         <div className="text-center text-gray-600 font-medium text-xs">
                           {m.target !== null && m.target !== undefined
@@ -327,7 +376,9 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     </td>
                   ))}
                   <td className="px-2 py-1.5 text-center text-gray-400 font-medium">
-                    {kpi.monthly.filter(m => m.target).reduce((s, m) => s + (m.target || 0), 0) > 0
+                    {/* Same rule as the actual row: monthly targets for a rate
+                        are not addable, so that YTD cell stays empty. */}
+                    {!ytdIsQuery && kpi.monthly.filter(m => m.target).reduce((s, m) => s + (m.target || 0), 0) > 0
                       ? kpi.monthly.filter(m => m.target).reduce((s, m) => s + (m.target || 0), 0).toLocaleString(undefined, { maximumFractionDigits: 1 })
                       : "—"}
                   </td>
@@ -367,7 +418,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     if (m.not_started) {
                       return (
                         <td key={m.month} className="px-1 py-1.5 text-center bg-gray-50"
-                            title={`Tracked from ${startLabel(kpi.starts)}`}>
+                            title={startsTitle(kpi)}>
                           <span className="text-gray-300">·</span>
                         </td>
                       );
@@ -376,16 +427,18 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     if ((autoActuals || kpi.auto_actuals) && kpi.auto_actuals !== false) {
                       // Read-only actual from API
                       return (
-                        <td key={m.month} title={!m.has_target && m.actual !== null ? "No target set — excluded from YTD & Avg%" : undefined}
+                        <td key={m.month} title={
+                            kpi.view_note ? kpi.view_note.text
+                            : !m.has_target && m.actual !== null ? "No target set — excluded from YTD & Avg%"
+                            : undefined}
                           className={`px-1 py-1.5 text-center ${m.is_future ? "opacity-30" : ""} ${cls ? cls.bg : ""}`}>
                           {m.actual !== null ? (
                             <div className="flex flex-col items-center gap-0.5">
                               <span className={`font-semibold ${cls ? cls.text : "text-gray-400"}`}>
-                                {typeof m.actual === "number"
-                                  ? m.actual.toLocaleString(undefined, { maximumFractionDigits: kpi.decimals ?? 0 })
-                                  : m.actual}
+                                {fmtValue(kpi, m.actual)}
                                 {m.provisional && (
-                                  <span className="text-gray-400 font-normal cursor-help" title={PROVISIONAL_TITLE}>*</span>
+                                  <span className="text-gray-400 font-normal cursor-help"
+                                        title={kpi.provisional_note || PROVISIONAL_TITLE}>*</span>
                                 )}
                               </span>
                               {m.pct !== null && m.has_target && kpi.unit !== "%" && (
@@ -420,11 +473,10 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                       </td>
                     );
                   })}
-                  <td className="px-2 py-1.5 text-center">
-                    {ytdActual > 0 ? (
-                      <span className="font-semibold text-gray-700">
-                        {ytdActual.toLocaleString(undefined, { maximumFractionDigits: kpi.decimals ?? 0 })}
-                      </span>
+                  <td className="px-2 py-1.5 text-center"
+                      title={ytdIsQuery ? "Year-to-date is its own query over Jan 1 → today — these months cannot be added together" : undefined}>
+                    {ytdActual !== null && ytdActual !== undefined ? (
+                      <span className="font-semibold text-gray-700">{fmtValue(kpi, ytdActual)}</span>
                     ) : "—"}
                   </td>
                   <td className={`px-2 py-1.5 text-center font-semibold ${avgColor ? COLOR_CLASSES[avgColor].text : "text-gray-400"}`}>

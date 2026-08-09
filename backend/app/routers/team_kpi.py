@@ -31,6 +31,101 @@ router = APIRouter()
 VALID_ROLES = set(ROLE_META.keys())
 
 
+# ── GA4 debug ─────────────────────────────────────────────────────────────────
+
+@router.get("/debug/ga4-purchase-rate")
+def debug_ga4_purchase_rate(
+    year: int = Query(2026),
+    month: Optional[int] = Query(None, ge=1, le=12, description="omit for Jan-1 → today"),
+    branch: Optional[str] = Query(None, description="branch key; omit for all mapped branches"),
+):
+    """Raw GA4 purchase-rate reading per branch, with both candidate denominators.
+
+    Two things this answers that the grid cannot:
+      * whether ``userKeyEventRate:purchase`` divides by ``totalUsers`` or
+        ``activeUsers`` — the numerator is a whole number of people, so
+        whichever ``implied_purchasing_users_from_*`` lands on an integer is
+        the real denominator;
+      * why a cell is blank (no property mapped, 403, thresholded, no traffic).
+
+    Note ``purchase_events`` counts events, not people: a guest booking twice
+    is two events and one purchasing user, so it is never the rate's numerator.
+    """
+    import calendar
+    from datetime import date
+
+    from app.config import settings
+    from app.services.ga4_service import describe_purchase_report
+
+    property_map = settings.ga4_property_map
+    if branch:
+        key = branch.strip().lower()
+        property_map = {k: v for k, v in property_map.items() if k == key}
+
+    if month:
+        start = f"{year}-{month:02d}-01"
+        end = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
+    else:
+        today = date.today()
+        start = f"{year}-01-01"
+        end = today.isoformat() if today.year == year else f"{year}-12-31"
+
+    return {
+        "success": True,
+        "data": {
+            "window": {"start_date": start, "end_date": end},
+            "mapped_branches": sorted(settings.ga4_property_map),
+            "results": {
+                bk: describe_purchase_report(pid, start, end)
+                for bk, pid in property_map.items()
+            },
+        },
+        "error": None,
+    }
+
+
+@router.get("/debug/ga4-breakdown")
+def debug_ga4_breakdown(
+    branch: str = Query(..., description="branch key"),
+    dimension: str = Query("hostName", description="GA4 dimension to split by"),
+    year: int = Query(2026),
+    month: Optional[int] = Query(None, ge=1, le=12, description="omit for Jan-1 → today"),
+    limit: int = Query(25, ge=1, le=100),
+):
+    """Audit what a property actually contains, split by one dimension.
+
+    ``hostName`` answers "is a tag deployed on a site that is not this branch"
+    — the question that found Oani's contamination. ``country``,
+    ``firstUserPrimaryChannelGroup`` and ``deviceCategory`` answer "which slice
+    of traffic is dragging the rate down".
+
+    Rows do not sum to the property total; GA4 computes that independently.
+    """
+    import calendar
+    from datetime import date
+
+    from app.config import settings
+    from app.services.ga4_service import describe_breakdown
+
+    property_id = settings.ga4_property_map.get(branch.strip().lower())
+    if not property_id:
+        raise HTTPException(404, f"no GA4 property mapped for branch {branch!r}")
+
+    if month:
+        start = f"{year}-{month:02d}-01"
+        end = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
+    else:
+        today = date.today()
+        start = f"{year}-01-01"
+        end = today.isoformat() if today.year == year else f"{year}-12-31"
+
+    return {
+        "success": True,
+        "data": describe_breakdown(property_id, start, end, dimension, limit),
+        "error": None,
+    }
+
+
 # ── Lark debug ────────────────────────────────────────────────────────────────
 
 @router.get("/debug/ads-tasks-jul")

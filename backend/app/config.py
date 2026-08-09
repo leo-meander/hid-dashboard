@@ -98,6 +98,51 @@ class Settings(BaseSettings):
     GOOGLE_ADS_CONVERSION_SINGLE_OSAKA: str = ""
     GOOGLE_ADS_CONVERSION_BOTH_OSAKA: str = ""
 
+    # GA4 Data API v1beta — Purchase Conversion Rate KPI (Paid Ads).
+    # Service account JSON key, pasted whole. The service account email needs
+    # the Viewer role on every property below; without it runReport 403s and
+    # the KPI renders blank.
+    #
+    # Set GA4_SERVICE_ACCOUNT_JSON_B64, not the raw variant: the key file's
+    # private_key contains literal \n, and Zeabur's env-var text box does not
+    # preserve them — the value arrives corrupted and fails to parse at
+    # character zero. Produce it with:
+    #     base64 -w 0 your-service-account.json
+    # GA4_SERVICE_ACCOUNT_JSON (raw JSON) stays supported as a fallback for
+    # environments that handle newlines properly, e.g. a local .env file. The
+    # B64 variant wins when both are set; either one also accepts the other's
+    # format, so a mistake here degrades to working rather than to blank.
+    GA4_SERVICE_ACCOUNT_JSON_B64: str = ""
+    GA4_SERVICE_ACCOUNT_JSON: str = ""
+    # Property IDs are not secrets, so they ship as defaults and stay
+    # overridable per environment. The query layer never sees them directly —
+    # it reads ga4_property_map.
+    GA4_PROPERTY_ID_SAIGON: str = "284939713"
+    GA4_PROPERTY_ID_1948: str = "285135676"
+    GA4_PROPERTY_ID_TAIPEI: str = "295612616"
+    GA4_PROPERTY_ID_OSAKA: str = "482876806"
+    # Oani's tag used to fire on the 1948 and Osaka websites too, so this
+    # property measured three branches. Removed from both GTM containers on
+    # 2026-08-09 and verified at the container source. GA4 does not clean
+    # history, so months up to and including August 2026 are still three
+    # branches — purchase_cvr gates Oani to 2026-09 via starts_by_branch.
+    GA4_PROPERTY_ID_OANI: str = "514380737"
+
+    # PageSpeed Insights API — Avg Website Load Speed KPI (Paid Ads).
+    # Free without a key at low volume (5 branches/month is well under the
+    # keyless rate limit), but an API key lifts the quota if that ever
+    # changes. Get one at https://developers.google.com/speed/docs/insights/v5/get-started
+    PAGESPEED_API_KEY: str = ""
+    # Branch URLs are not secrets, so they ship as defaults and stay
+    # overridable per environment. The query layer never sees them directly —
+    # it reads pagespeed_url_map. Source: docs/specs/integrations.md branch
+    # site map (staymeander.com/<branch>/en).
+    PAGESPEED_URL_SAIGON: str = "https://staymeander.com/meandersaigon/en"
+    PAGESPEED_URL_1948: str = "https://staymeander.com/meander1948/en"
+    PAGESPEED_URL_TAIPEI: str = "https://staymeander.com/meandertaipei/en"
+    PAGESPEED_URL_OSAKA: str = "https://staymeander.com/meanderosaka/en"
+    PAGESPEED_URL_OANI: str = "https://staymeander.com/oani/en"
+
     # TikTok Events API — Saigon only
     TIKTOK_ACCESS_TOKEN_SAIGON: str = ""
     TIKTOK_EVENT_SOURCE_ID_SAIGON: str = ""
@@ -280,6 +325,40 @@ class Settings(BaseSettings):
         return self.property_api_key_map.get(str(property_id)) or (
             self.CLOUDBEDS_API_KEY if self.CLOUDBEDS_API_KEY != "placeholder_key" else None
         )
+
+    @property
+    def ga4_property_map(self) -> Dict[str, str]:
+        """branch_key → GA4 property ID, for branches that have a usable one.
+
+        A branch with no ID configured is simply absent — that is how Oani stays
+        blank while its tagging is being fixed.
+        """
+        return {
+            key: value
+            for key, value in {
+                "saigon": self.GA4_PROPERTY_ID_SAIGON,
+                "1948":   self.GA4_PROPERTY_ID_1948,
+                "taipei": self.GA4_PROPERTY_ID_TAIPEI,
+                "osaka":  self.GA4_PROPERTY_ID_OSAKA,
+                "oani":   self.GA4_PROPERTY_ID_OANI,
+            }.items()
+            if str(value or "").strip()
+        }
+
+    @property
+    def pagespeed_url_map(self) -> Dict[str, str]:
+        """branch_key → website URL to test, for branches that have one configured."""
+        return {
+            key: value
+            for key, value in {
+                "saigon": self.PAGESPEED_URL_SAIGON,
+                "1948":   self.PAGESPEED_URL_1948,
+                "taipei": self.PAGESPEED_URL_TAIPEI,
+                "osaka":  self.PAGESPEED_URL_OSAKA,
+                "oani":   self.PAGESPEED_URL_OANI,
+            }.items()
+            if str(value or "").strip()
+        }
 
     @property
     def datamanager_client_id(self) -> str:

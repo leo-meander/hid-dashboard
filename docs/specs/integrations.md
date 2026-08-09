@@ -114,7 +114,110 @@ Sections: KPI snapshot, Hot countries top 3, Winning ad angles, KOL opportunitie
 
 ---
 
-## 4. Future Integrations (Phase 7+)
+## 4. Google Analytics 4 Data API
+
+Powers one KPI: **Purchase Conversion Rate** on the Team KPI page → `Mason · Paid Ads`.
+Service: `services/ga4_service.py`. Yearly assembly: `team_kpi_service.get_purchase_cvr_actuals_yearly`.
+
+### Authentication
+- Google service account. Set **`GA4_SERVICE_ACCOUNT_JSON_B64`** = `base64 -w 0
+  your-service-account.json`. The raw JSON's `private_key` contains literal
+  newlines that Zeabur's env-var box does not preserve, so pasting the file
+  directly fails to parse at character zero and the KPI renders blank with no
+  request ever reaching GA4. `GA4_SERVICE_ACCOUNT_JSON` (raw) remains a fallback
+  for a local `.env`; the B64 variant wins when both are set, and either accepts
+  either format so a mix-up degrades to working.
+- Only the backend needs it — the GA4 fetch runs inside the request path behind a
+  1-hour cache, driven by APScheduler in-process. There is no separate worker.
+- The service account email needs the **Viewer** role on each property; without it
+  `runReport` returns 403 and the KPI renders blank. No end-user OAuth.
+- We sign a JWT with the key and exchange it at `oauth2.googleapis.com/token`
+  (`jwt-bearer` grant, scope `analytics.readonly`), cached until a minute before expiry.
+
+### Request
+`POST https://analyticsdata.googleapis.com/v1beta/properties/{id}:runReport`
+
+```json
+{
+  "dateRanges": [{ "startDate": "2026-08-01", "endDate": "2026-08-31" }],
+  "metrics": [
+    { "name": "userKeyEventRate:purchase" },
+    { "name": "totalUsers" },
+    { "name": "activeUsers" },
+    { "name": "keyEvents:purchase" }
+  ]
+}
+```
+
+Only the first metric is displayed (`"0.0163"` → `1.63%`). The other three exist to
+self-verify and to debug a suspicious number without re-querying.
+
+Which denominator GA4 divides by — `totalUsers` or `activeUsers` — is not documented,
+and the two sit within a percent of each other. It is settled by integrality: the
+numerator is a whole number of people, so `rate × real_denominator` lands on an integer
+while the wrong one generally does not.
+
+**`keyEvents:purchase` counts events, not people.** A guest booking twice is two events
+and one purchasing user, so it is never the rate's numerator — measured on Saigon for
+Aug 2026, 0.90% of 4,564 users is 41 purchasers against 61 purchase events. An earlier
+version of the check compared the two and reported every healthy reading as
+unverifiable.
+
+### Rules this integration cannot break
+- **No `dimensions`.** The KPI is one property-level number. GA4 computes its own
+  Total independently of the rows — on Oani the ten visible channel rows summed to
+  10,152 users against a Total of 10,133.
+- **No `dimensionFilter`, and never on `hostName`.** Purchases fire on
+  `hotels.cloudbeds.com`, not the branch's own site; `hostName` is event-scoped, so
+  filtering on it excludes the purchase events and drives the rate to zero. The
+  metric is only readable at whole-property scope.
+- **One request per month, over that month's own dates.** The metric counts unique
+  users, which de-duplicate across time — a month assembled from daily rows
+  double-counts returning visitors, and the error grows with the window.
+- **Year-to-date is its own Jan-1 → today request**, never a sum of the monthly cells.
+- `metadata.subjectToThresholding` is read per response and surfaces as a `*` marker;
+  a thresholded month is not a confident number.
+
+### Property mapping
+`settings.ga4_property_map` — Saigon `284939713`, 1948 `285135676`, Taipei `295612616`,
+Osaka `482876806`, Oani `514380737`.
+
+Oani's tag was also deployed on the 1948 and Osaka websites, so its property measured
+three branches. Removed from GTM containers `GTM-54PM7ZX` (1948) and `GTM-NZ9Z7FWF`
+(Osaka) on **2026-08-09**, verified at the container source rather than on the page.
+GA4 does not clean historical data, so Oani's months through August 2026 count three
+branches, permanently. **Shown as-is by decision** (Mason, 2026-08-09): every branch
+reports every month it has data for, and no start gate is applied. Read Oani's
+pre-September figures as 1948 + Osaka + Oani combined. The 1948 and Osaka properties
+themselves were never affected; the pollution was one-directional.
+
+The ID is unavoidable — it is in the request path and the Data API has no
+lookup-by-name — but it is a **static config table**, not discovered at runtime. The
+alternative, `analyticsadmin.googleapis.com/v1beta/accountSummaries` matched by display
+name, would add a second API dependency and a name-matching failure mode to resolve
+five values that change approximately never. Reconsider if branches start being added
+often.
+
+**A property ID must never surface in the KPI grid.** The grid speaks in branches;
+reader-facing strings (including the Oani and All-tab explanations) name branches only.
+Pinned by `test_no_ga4_property_id_reaches_the_grid`. The debug endpoint below is
+exempt — it exists for support, not for the reader.
+
+The **All** tab shows `—` too: five properties are five user namespaces, and a user
+cannot be de-duplicated across them, so no correct group-wide rate exists.
+
+### Caching
+Read-through, 1 hour (`_GA4_CVR_TTL`). GA4 is 24–48h from final on the current day,
+so closed months are simply re-queried rather than frozen — `runReport` is cheap and
+a re-query cannot go stale.
+
+### Debugging
+`GET /api/team-kpi/debug/ga4-purchase-rate?year=&month=&branch=` returns the raw
+reading per branch plus both candidate denominators.
+
+---
+
+## 5. Future Integrations (Phase 7+)
 
 ### Meta Ads API 🔮
 - Graph API v19+
@@ -122,10 +225,15 @@ Sections: KPI snapshot, Hot countries top 3, Winning ad angles, KOL opportunitie
 - Fields: campaign_name, adset_name, ad_name, spend, impressions, clicks, actions
 - Auth: User Access Token (long-lived)
 
-### Google Analytics 4 API 🔮
-- Google Analytics Data API
-- Dimensions: date, sessionSource
-- Metrics: sessions, conversions, totalRevenue
+### Google Analytics 4 — channel breakdown 🔮
+- Add `"dimensions": [{ "name": "firstUserPrimaryChannelGroup" }]` to the §4 request.
+  That is the first-user / acquisition-scoped dimension the User acquisition report
+  uses — **not** `sessionDefaultChannelGroup`, which is session-scoped last-click and
+  returns materially different numbers.
+- A total still needs its own dimensionless request; GA4's Total is not the sum of rows.
+- Channel-level attribution here is directional only: `hotels.cloudbeds.com` leaks
+  through the referral exclusion list, so a booking hop can start a fresh Referral
+  session. Settlement-grade paid attribution stays with the ads platform.
 
 ### TikTok Ads API 🔮
 - TikTok Marketing API
