@@ -109,7 +109,7 @@ def _payload(branch_name="MEANDER Saigon"):
                 "label": "July 2026",
                 "achievement": {"actual_revenue": 2_317_000_000,
                                 "target_revenue": 2_190_000_000},
-                "pct": 106.0, "closed": True, "through": "2026-07-31",
+                "pct": 106.0, "closed": True, "is_override": False,
             }],
             # Legacy top-level mirror — kept so a payload built before the
             # multi-month change still has the fields the old renderer read.
@@ -234,8 +234,9 @@ class TestBuildHtml:
     def test_period_spanning_two_months_shows_both_targets(self):
         """A bi-weekly period like Jul 25 – Aug 2 touches two calendar
         months. Each gets its own full-month achievement — July already
-        closed at 107%, August only 2 days in at 67% — rather than folding
-        both into whichever one the period happens to end in."""
+        closed at 107%, August already 67% of its FULL month's target (not
+        prorated) — rather than folding both into whichever one the period
+        happens to end in."""
         p = _payload()
         p["target"] = {
             "period": {"actual_revenue": 32_000_000, "target_revenue": 15_500_000},
@@ -243,10 +244,10 @@ class TestBuildHtml:
             "months": [
                 {"label": "July 2026",
                  "achievement": {"actual_revenue": 30_000_000, "target_revenue": 28_000_000},
-                 "pct": 107.1, "closed": True, "through": "2026-07-31"},
+                 "pct": 107.1, "closed": True, "is_override": False},
                 {"label": "August 2026",
                  "achievement": {"actual_revenue": 2_000_000, "target_revenue": 3_000_000},
-                 "pct": 66.7, "closed": False, "through": "2026-08-02"},
+                 "pct": 66.7, "closed": False, "is_override": False},
             ],
         }
         html = self._render([p])
@@ -255,13 +256,24 @@ class TestBuildHtml:
         assert "This period spans two calendar months" in html
         assert "July 2026: 107%" in plain
         assert "August 2026: 67%" in plain
-        assert "fully closed" in html          # July's state
-        assert "through 2026-08-02" in html    # August's state
+        assert "fully closed" in html                          # July's state
+        assert "month in progress" in html                     # August's state
+        assert "through 2026" not in html   # no false date cutoff on either
         assert html.count("bw.target.") == 2
         assert "grid-template-columns:1fr 1fr" in html
         # The period-on-its-own line still appears underneath both gauges.
         assert "This period on its own" in html
         assert "206%" in html
+
+    def test_manual_override_is_labelled_not_dated(self):
+        """A manually-entered month's Actual carries no elapsed-day cutoff
+        at all — the state line must say so, not claim a date it never
+        respected."""
+        p = _payload()
+        p["target"]["months"][0]["is_override"] = True
+        html = self._render([p])
+        assert "manually entered" in html
+        assert "fully closed" not in html
 
     def test_kol_reach_is_shown_when_available(self):
         html = self._render([_payload()])
