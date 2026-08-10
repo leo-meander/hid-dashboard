@@ -226,25 +226,35 @@ def register_tools(mcp: FastMCP) -> None:
     def get_country_profile(
         branch_id: Optional[str] = None,
         country: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
         days: int = 90,
         limit: int = 10,
     ) -> dict:
         """Detailed booking profile for one or many source countries: lead time
-        (avg + 0-7 / 8-30 / 31-60 / 60+ buckets), length of stay, pax distribution
-        (solo=1 adult, couple=2, friends=3-4, family=5+), room type split
-        (Dorm vs Room), revenue, gender split (male/female %), and age distribution
-        (18-24 / 25-34 / 35-44 / 45-54 / 55+ buckets, avg age, data coverage %).
+        (avg + 0-7 / 8-30 / 31-60 / 60+ buckets), length of stay — both blended
+        (los_avg_nights) and split by room type (los_avg_nights_room = Private
+        Room only, los_avg_nights_dorm = Dorm only) — pax distribution (solo=1
+        adult, couple=2, friends=3-4, family=5+), room type split (Dorm vs Room),
+        revenue, gender split (male/female %), and age distribution (18-24 /
+        25-34 / 35-44 / 45-54 / 55+ buckets, avg age, data coverage %).
 
         Use when the user asks about lead time, pax/segment composition, room
         type by country, 'who books from X', 'what target should we run for X',
-        guest persona, age group, gender breakdown, or any booking-behavior
-        question. Pass `country` to drill into one country (also returns its
-        top 5 room_type names); omit to get top N countries. Excludes
-        cancellations and non-paying sources (KOL, Blogger, House Use, Special
-        Case, Work Exchange, Maintenance) so figures reflect real paying guests.
-        Age/gender data is only available for reservations since 2025-01-01."""
+        guest persona, age group, gender breakdown, Private-Room-only or
+        Dorm-only LOS, or any booking-behavior question. Pass `country` to
+        drill into one country (also returns its top 5 room_type names); omit
+        to get top N countries. Pass `date_from`/`date_to` (YYYY-MM-DD) for an
+        explicit historical window — e.g. a past quarter like Q4 last year —
+        which overrides `days`; omit both to use a rolling `days`-day window
+        ending today. Excludes cancellations and non-paying sources (KOL,
+        Blogger, House Use, Special Case, Work Exchange, Maintenance) so
+        figures reflect real paying guests. Age/gender data is only available
+        for reservations since 2025-01-01."""
         return _run("get_country_profile", {
-            "branch_id": branch_id, "country": country, "days": days, "limit": limit,
+            "branch_id": branch_id, "country": country,
+            "date_from": date_from, "date_to": date_to,
+            "days": days, "limit": limit,
         })
 
     @mcp.tool()

@@ -211,22 +211,29 @@ TOOL_DEFS: list[dict] = [
         "name": "get_country_profile",
         "description": (
             "Detailed booking profile for one or many source countries: lead time "
-            "(avg + 0-7/8-30/31-60/60+ buckets), length of stay, pax distribution "
+            "(avg + 0-7/8-30/31-60/60+ buckets), length of stay — both blended "
+            "(los_avg_nights) and split by room type (los_avg_nights_room = "
+            "Private Room only, los_avg_nights_dorm = Dorm only) — pax distribution "
             "(solo=1 adult, couple=2, friends=3-4, family=5+), room type split "
             "(Dorm vs Room), and revenue. Use when the user asks about lead time, "
             "pax/segment composition, room type by country, 'who books from X', "
-            "'what target should we run for X', or any booking-behavior question. "
-            "Pass `country` to drill into one country (also returns its top 5 "
-            "room_type names); omit to get top N countries. Excludes cancellations "
-            "and non-paying sources (KOL, Blogger, House Use, Special Case, Work "
-            "Exchange, Maintenance) so figures reflect real paying guests."
+            "'what target should we run for X', Private-Room-only or Dorm-only LOS, "
+            "or any booking-behavior question. Pass `country` to drill into one "
+            "country (also returns its top 5 room_type names); omit to get top N "
+            "countries. Pass `date_from`/`date_to` (YYYY-MM-DD) for a specific "
+            "historical window (e.g. a past quarter); omit both to use a rolling "
+            "`days`-day window ending today. Excludes cancellations and non-paying "
+            "sources (KOL, Blogger, House Use, Special Case, Work Exchange, "
+            "Maintenance) so figures reflect real paying guests."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "branch_id": {"type": "string"},
                 "country": {"type": "string", "description": "Country name e.g. 'Canada' (case-insensitive). Omit to get top N."},
-                "days": {"type": "integer", "description": "Window size in days, default 90"},
+                "date_from": {"type": "string", "description": "YYYY-MM-DD. With date_to, defines an explicit historical window (e.g. a past quarter). Overrides `days`."},
+                "date_to": {"type": "string", "description": "YYYY-MM-DD. Defaults to today when only date_from is given."},
+                "days": {"type": "integer", "description": "Rolling window size in days ending today, default 90. Ignored when date_from/date_to are given."},
                 "limit": {"type": "integer", "description": "Top N countries when no country filter, default 10"},
             },
         },
@@ -331,6 +338,24 @@ def _b_filter_clause(branch_id: Optional[str], col_alias: str = "r") -> tuple[st
     if branch_id:
         return f"AND {col_alias}.branch_id = :bid", {"bid": branch_id}
     return "", {}
+
+
+def _resolve_window(inp: dict, today: date, default_days: int = 90) -> tuple[date, date]:
+    """Resolve a single [d_from, d_to] window (inclusive) from tool input.
+
+    If date_from/date_to are given they define an explicit historical window
+    (e.g. a past quarter) — this takes precedence over `days`. Otherwise the
+    window is the last `days` ending today. Returns (d_from, d_to)."""
+    if inp.get("date_from") or inp.get("date_to"):
+        d_to = _parse_date(inp.get("date_to"), today)
+        d_from = _parse_date(inp.get("date_from"), d_to - timedelta(days=default_days - 1))
+    else:
+        days = max(int(inp.get("days") or default_days), 1)
+        d_to = today
+        d_from = today - timedelta(days=days - 1)
+    if d_from > d_to:
+        d_from, d_to = d_to, d_from
+    return d_from, d_to
 
 
 def _resolve_compare_windows(
@@ -943,8 +968,10 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
     limit = int(inp.get("limit") or 10)
     country_name = inp.get("country") or None
 
+    d_from, d_to = _resolve_window(inp, date.today(), default_days=days)
+
     bf, params = _b_filter_clause(branch_id, "r")
-    params.update({"d": days, "limit": limit})
+    params.update({"d_from": d_from, "d_to": d_to, "limit": limit})
 
     country_clause = ""
     if country_name:
@@ -967,7 +994,7 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
               AND length(r.guest_country) > 1
               AND r.status NOT IN ('canceled','cancelled','no_show','no-show','cancelled_by_guest')
               AND lower(COALESCE(r.source, '')) NOT IN {excluded_sources}
-              AND r.check_in_date >= CURRENT_DATE - (:d || ' days')::interval
+              AND r.check_in_date >= :d_from AND r.check_in_date <= :d_to
               {bf}
               {country_clause}
         )
@@ -976,6 +1003,8 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
                COALESCE(SUM(grand_total_vnd), 0) AS revenue_vnd,
                AVG(lead_days) FILTER (WHERE lead_days IS NOT NULL AND lead_days >= 0) AS lead_avg,
                AVG(nights) AS los_avg,
+               AVG(nights) FILTER (WHERE room_type_category = 'Room') AS los_avg_room,
+               AVG(nights) FILTER (WHERE room_type_category = 'Dorm') AS los_avg_dorm,
                COUNT(*) FILTER (WHERE adults = 1) AS p_solo,
                COUNT(*) FILTER (WHERE adults = 2) AS p_couple,
                COUNT(*) FILTER (WHERE adults BETWEEN 3 AND 4) AS p_group,
@@ -1009,50 +1038,51 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
         return round(num / den * 100, 2) if den else 0.0
 
     out: list[dict] = []
-    for r in rows:
-        total = int(r[2]) or 1
-        # r[19]=g_male r[20]=g_female r[21]=g_unknown
-        # r[22]=age_avg r[23]=a_18_24 r[24]=a_25_34 r[25]=a_35_44 r[26]=a_45_54 r[27]=a_55_plus r[28]=a_unknown
-        age_unknown = int(r[28] or 0)
+    for row in rows:
+        r = row._mapping
+        total = int(r["bookings"]) or 1
+        age_unknown = int(r["a_unknown"] or 0)
         age_with_data = total - age_unknown
         out.append({
-            "country": r[0],
-            "country_code": r[1],
-            "bookings": int(r[2]),
-            "revenue_vnd": float(r[3] or 0),
-            "lead_time_avg_days": round(float(r[4]), 1) if r[4] is not None else None,
-            "los_avg_nights": round(float(r[5]), 2) if r[5] is not None else None,
+            "country": r["guest_country"],
+            "country_code": r["guest_country_code"],
+            "bookings": int(r["bookings"]),
+            "revenue_vnd": float(r["revenue_vnd"] or 0),
+            "lead_time_avg_days": round(float(r["lead_avg"]), 1) if r["lead_avg"] is not None else None,
+            "los_avg_nights": round(float(r["los_avg"]), 2) if r["los_avg"] is not None else None,
+            "los_avg_nights_room": round(float(r["los_avg_room"]), 2) if r["los_avg_room"] is not None else None,
+            "los_avg_nights_dorm": round(float(r["los_avg_dorm"]), 2) if r["los_avg_dorm"] is not None else None,
             "pax_distribution_pct": {
-                "solo_1": pct(int(r[6]), total),
-                "couple_2": pct(int(r[7]), total),
-                "friends_3_4": pct(int(r[8]), total),
-                "family_5_plus": pct(int(r[9]), total),
-                "unknown": pct(int(r[10]), total),
+                "solo_1": pct(int(r["p_solo"]), total),
+                "couple_2": pct(int(r["p_couple"]), total),
+                "friends_3_4": pct(int(r["p_group"]), total),
+                "family_5_plus": pct(int(r["p_family"]), total),
+                "unknown": pct(int(r["p_unknown"]), total),
             },
             "room_type_split_pct": {
-                "Dorm": pct(int(r[11]), total),
-                "Room": pct(int(r[12]), total),
-                "unknown": pct(int(r[13]), total),
+                "Dorm": pct(int(r["rt_dorm"]), total),
+                "Room": pct(int(r["rt_room"]), total),
+                "unknown": pct(int(r["rt_unknown"]), total),
             },
             "lead_time_distribution_pct": {
-                "0_7_days": pct(int(r[14]), total),
-                "8_30_days": pct(int(r[15]), total),
-                "31_60_days": pct(int(r[16]), total),
-                "60_plus_days": pct(int(r[17]), total),
-                "unknown": pct(int(r[18]), total),
+                "0_7_days": pct(int(r["lt_0_7"]), total),
+                "8_30_days": pct(int(r["lt_8_30"]), total),
+                "31_60_days": pct(int(r["lt_31_60"]), total),
+                "60_plus_days": pct(int(r["lt_60_plus"]), total),
+                "unknown": pct(int(r["lt_unknown"]), total),
             },
             "gender_split_pct": {
-                "male": pct(int(r[19] or 0), total),
-                "female": pct(int(r[20] or 0), total),
-                "unknown": pct(int(r[21] or 0), total),
+                "male": pct(int(r["g_male"] or 0), total),
+                "female": pct(int(r["g_female"] or 0), total),
+                "unknown": pct(int(r["g_unknown"] or 0), total),
             },
-            "age_avg": round(float(r[22]), 1) if r[22] is not None else None,
+            "age_avg": round(float(r["age_avg"]), 1) if r["age_avg"] is not None else None,
             "age_distribution_pct": {
-                "18_24": pct(int(r[23] or 0), age_with_data) if age_with_data else 0.0,
-                "25_34": pct(int(r[24] or 0), age_with_data) if age_with_data else 0.0,
-                "35_44": pct(int(r[25] or 0), age_with_data) if age_with_data else 0.0,
-                "45_54": pct(int(r[26] or 0), age_with_data) if age_with_data else 0.0,
-                "55_plus": pct(int(r[27] or 0), age_with_data) if age_with_data else 0.0,
+                "18_24": pct(int(r["a_18_24"] or 0), age_with_data) if age_with_data else 0.0,
+                "25_34": pct(int(r["a_25_34"] or 0), age_with_data) if age_with_data else 0.0,
+                "35_44": pct(int(r["a_35_44"] or 0), age_with_data) if age_with_data else 0.0,
+                "45_54": pct(int(r["a_45_54"] or 0), age_with_data) if age_with_data else 0.0,
+                "55_plus": pct(int(r["a_55_plus"] or 0), age_with_data) if age_with_data else 0.0,
                 "data_coverage_pct": pct(age_with_data, total),
             },
         })
@@ -1066,7 +1096,7 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
               AND r.room_type IS NOT NULL AND r.room_type != ''
               AND r.status NOT IN ('canceled','cancelled','no_show','no-show','cancelled_by_guest')
               AND lower(COALESCE(r.source, '')) NOT IN {excluded_sources}
-              AND r.check_in_date >= CURRENT_DATE - (:d || ' days')::interval
+              AND r.check_in_date >= :d_from AND r.check_in_date <= :d_to
               {bf}
             GROUP BY r.room_type
             ORDER BY cnt DESC
@@ -1077,7 +1107,9 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
         ]
 
     return {
-        "window_days": days,
+        "date_from": d_from.isoformat(),
+        "date_to": d_to.isoformat(),
+        "window_days": (d_to - d_from).days + 1,
         "country_filter": country_name,
         "exclusions": "cancelled/no-show + KOL/Blogger/House Use/Special Case/Work Exchange/Maintenance",
         "countries": out,
