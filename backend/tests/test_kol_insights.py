@@ -127,6 +127,49 @@ class TestAggregation:
         assert out["posts"] == 2
 
 
+class TestEngagementComponents:
+    """The Engine stores engagement in parts — its platform accounts carry
+    total_likes / total_comments / total_saves separately. Summing likes
+    alone under-reported every branch: Saigon read 906 against 1,348."""
+
+    def test_sums_likes_comments_and_saves(self):
+        out = _run([_collab(posts=[{
+            "posted_at": "2026-07-18", "views": 1000,
+            "likes": 300, "comments": 42, "saves": 100,
+        }])])
+        assert out["engagements"] == 442
+
+    def test_saves_dominate_on_xiaohongshu(self):
+        """XHS engagement is mostly saves; counting likes alone loses most
+        of it, and XHS reports no view count to notice the gap against."""
+        out = _run([_collab(posts=[{
+            "posted_at": "2026-07-18", "views": 0,
+            "likes": 76, "comments": 12, "saves": 619,
+        }])])
+        assert out["engagements"] == 707
+        assert out["engagement_rate_pct"] is None   # no reach to divide by
+
+    def test_an_explicit_total_wins_over_the_components(self):
+        """Preferring the total avoids double counting if the Engine ever
+        starts sending both."""
+        out = _run([_collab(posts=[{
+            "posted_at": "2026-07-18", "views": 100,
+            "engagements": 500, "likes": 300, "comments": 42, "saves": 100,
+        }])])
+        assert out["engagements"] == 500
+
+    def test_missing_components_are_not_an_error(self):
+        out = _run([_collab(posts=[{"posted_at": "2026-07-18", "views": 100}])])
+        assert out["engagements"] == 0
+
+    def test_reach_accepts_any_of_the_names_the_engine_uses(self):
+        for field in ("reach", "views", "impressions"):
+            out = _run([_collab(posts=[
+                {"posted_at": "2026-07-18", field: 250, "likes": 5},
+            ])])
+            assert out["reach"] == 250, field
+
+
 class TestEngagementRate:
     def test_zero_view_platforms_do_not_inflate_the_rate(self):
         """Xiaohongshu returns engagements with views=0. Charging those

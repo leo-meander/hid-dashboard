@@ -203,8 +203,8 @@ def fetch_kol_insights(
                 continue
             dated += 1
             for pr in matched:
-                pr_reach = int(pr.get("reach") or pr.get("views") or 0)
-                pr_eng = int(pr.get("engagements") or pr.get("likes") or 0)
+                pr_reach = _post_reach(pr)
+                pr_eng = _post_engagements(pr)
                 posts += 1
                 reach += pr_reach
                 engagements += pr_eng
@@ -264,6 +264,28 @@ def _post_date(post: dict):
         if post.get(k):
             return post[k]
     return None
+
+
+# The Engine stores engagement in components, not as a total — its platform
+# accounts carry total_likes / total_comments / total_saves separately, and
+# posts follow the same shape. Counting likes alone under-reports every
+# branch (Saigon read 906 against the Engine's 1,348), and it under-reports
+# Xiaohongshu worst, where saves are the dominant interaction.
+_ENGAGEMENT_PARTS = ("likes", "comments", "saves", "shares", "collects", "reposts")
+
+
+def _post_engagements(post: dict) -> int:
+    """Total interactions on a post, summing components when needed."""
+    if post.get("engagements") is not None:
+        return int(post["engagements"] or 0)
+    return sum(int(post.get(k) or 0) for k in _ENGAGEMENT_PARTS)
+
+
+def _post_reach(post: dict) -> int:
+    for k in ("reach", "views", "impressions"):
+        if post.get(k) is not None:
+            return int(post[k] or 0)
+    return 0
 
 
 # ── Public targets API ─────────────────────────────────────────────────────
