@@ -144,11 +144,16 @@ def test_a_month_upstream_never_reported_stays_blank(upstream):
 
 
 # ── The 2026-08 start gate ───────────────────────────────────────────────────
+#
+# design_ideas is a brand-new metric with no honest history before Aug 2026
+# (migration 056 even clears its stale pre-August rows), so it keeps a
+# "starts" gate. ads_win_rate is a ratio computable for any month the Ads
+# Platform has performance data for — it carries no gate, so earlier months
+# just render whatever upstream reports (blank if upstream has nothing).
 
-@pytest.mark.parametrize("key", ["design_ideas", "ads_win_rate"])
-def test_months_before_the_start_are_locked_blank(upstream, key):
+def test_months_before_the_start_are_locked_blank(upstream):
     out = svc.build_monthly_summary(_FakeSession(), "designer", YEAR, SAIGON_UUID)
-    months = _kpi(out, key)["monthly"]
+    months = _kpi(out, "design_ideas")["monthly"]
     for m in months[:7]:  # Jan–Jul
         assert m["not_started"] is True
         assert m["target"] is None and m["actual"] is None and m["pct"] is None
@@ -156,9 +161,31 @@ def test_months_before_the_start_are_locked_blank(upstream, key):
     assert months[7]["not_started"] is False  # August is live
 
 
-def test_whole_year_is_locked_before_the_start_year(upstream):
+def test_ads_win_rate_has_no_start_gate(upstream):
+    """Jan–Jul aren't locked — they're just blank until upstream reports them."""
+    out = svc.build_monthly_summary(_FakeSession(), "designer", YEAR, SAIGON_UUID)
+    months = _kpi(out, "ads_win_rate")["monthly"]
+    for m in months[:7]:  # Jan–Jul: upstream fixture only has August
+        assert m["not_started"] is False
+        assert m["actual"] is None
+    assert months[7]["actual"] == 33.33  # August: upstream has real data
+
+
+def test_ads_win_rate_shows_a_real_month_before_august(upstream):
+    """If upstream ever reports an earlier month, it renders — no gate blocks it."""
+    upstream(_payload(
+        month="2026-03",
+        by_branch=[{"branch": "Saigon", "wins": 2, "losses": 1, "tested": 3, "win_rate": 0.6667}],
+    ))
+    out = svc.build_monthly_summary(_FakeSession(), "designer", YEAR, SAIGON_UUID)
+    mar = _kpi(out, "ads_win_rate")["monthly"][2]
+    assert mar["not_started"] is False
+    assert mar["actual"] == 66.67
+
+
+def test_design_ideas_whole_year_is_locked_before_the_start_year(upstream):
     out = svc.build_monthly_summary(_FakeSession(), "designer", 2025, SAIGON_UUID)
-    assert all(m["not_started"] for m in _kpi(out, "ads_win_rate")["monthly"])
+    assert all(m["not_started"] for m in _kpi(out, "design_ideas")["monthly"])
 
 
 def test_start_month_helper():

@@ -89,7 +89,13 @@ KPI_DEFS: dict[str, list[dict]] = {
         {"key": "design_assets",   "label": "Design Assets Completed","unit": "designs","org_wide": False, "higher_is_better": True, "hidden": True},
         {"key": "videos_delivered","label": "Videos Delivered",       "unit": "videos", "org_wide": False, "higher_is_better": True, "hidden": True},
         {"key": "design_ideas",    "label": "Design Ideas",           "unit": "ideas",  "org_wide": False, "higher_is_better": True,  "auto": False, "starts": "2026-08"},
-        {"key": "ads_win_rate",    "label": "% Ads Win",              "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True, "starts": "2026-08"},
+        # Unlike design_ideas, this isn't a brand-new metric with no honest
+        # history — it's wins ÷ (wins + losses) among ads *decided* that
+        # month, computable for any month the Ads Platform has performance
+        # data for. No "starts" gate: earlier months just render blank (—)
+        # until/unless upstream has verdicts for them, same as any other
+        # month upstream hasn't reported.
+        {"key": "ads_win_rate",    "label": "% Ads Win",              "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True, "ytd_mode": "ratio"},
         # Same number as Nora's Task Overview scorecard. Org-wide: Lark tasks
         # carry no branch split. Starts with the Lark data (_LARK_START_MONTH).
         {"key": "delivery_rate",   "label": "On-Time Delivery Rate",  "unit": "%",      "org_wide": True,  "higher_is_better": True,  "decimals": 1, "is_pct": True, "starts": "2026-07"},
@@ -505,10 +511,18 @@ def get_ads_win_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
                 wr = src.get("win_rate")
                 if wr is None:
                     return None
-                return {
+                cell = {
                     "ads_win_rate": round(float(wr) * 100, 2),
                     "ads_win_rate__provisional": provisional,
                 }
+                # Carried through (not just the rate) so YTD can be a real
+                # Σwins ÷ Σtested across months instead of summing rates —
+                # same "can't add ratios" problem ROAS had.
+                wins, tested = src.get("wins"), src.get("tested")
+                if wins is not None and tested is not None:
+                    cell["ads_win_rate__wins"] = float(wins)
+                    cell["ads_win_rate__tested"] = float(tested)
+                return cell
 
             org = _cell(entry)
             if org is not None:
@@ -1368,6 +1382,28 @@ def build_monthly_summary(
             if tot_spend > 0:
                 ytd_actual = round(tot_rev / tot_spend, decimals)
                 ytd_target = round(tot_target_rev / tot_spend, decimals)
+        elif ytd_mode == "ratio" and kpi_key == "ads_win_rate":
+            # Σwins ÷ Σtested (weighting the target row by the same tested
+            # counts) — averaging monthly win-rate percentages would let a
+            # slow 2-ad month and a busy 40-ad month count equally, and
+            # summing them (the "sum" default) produces >100% once more
+            # than one month has data.
+            tot_wins = tot_tested = tot_target_tested = 0.0
+            src_bucket = "all" if (org_wide or all_branches_view) else (branch_key or "")
+            for cell in monthly:
+                if cell["is_future"] or not cell["has_target"]:
+                    continue
+                bucket = actuals_yearly.get(cell["month"], {}).get(src_bucket, {})
+                wins, tested = bucket.get("ads_win_rate__wins"), bucket.get("ads_win_rate__tested")
+                if wins is None or tested is None:
+                    continue
+                tot_wins += wins
+                tot_tested += tested
+                if cell["target"] is not None:
+                    tot_target_tested += tested * float(cell["target"])
+            if tot_tested > 0:
+                ytd_actual = round(tot_wins / tot_tested * 100, decimals)
+                ytd_target = round(tot_target_tested / tot_tested, decimals)
 
         kpis_out.append({
             "key": kpi_key,

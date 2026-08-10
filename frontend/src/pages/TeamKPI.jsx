@@ -76,7 +76,10 @@ function fmtValue(kpi, value) {
   const text = kpi.fixed_decimals
     ? value.toFixed(decimals)
     : value.toLocaleString(undefined, { maximumFractionDigits: decimals });
-  return kpi.value_suffix ? `${text}${kpi.value_suffix}` : text;
+  // Any %-unit KPI gets its sign here even without an explicit value_suffix —
+  // "100" next to a win-rate row reads as a count, not a rate.
+  const suffix = kpi.value_suffix ?? (kpi.unit === "%" ? "%" : "");
+  return suffix ? `${text}${suffix}` : text;
 }
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
@@ -142,8 +145,19 @@ function YtdBars({ kpis }) {
       // m.pct is already direction-normalized by the backend (higher = better).
       const actuals = k.monthly.filter(m => !m.is_future && m.pct !== null);
       if (!actuals.length) return null;
-      const avgPct = actuals.reduce((s, m) => s + m.pct, 0) / actuals.length;
-      return { label: k.label, pct: Math.round(avgPct * 10) / 10 };
+      const avgAchievement = actuals.reduce((s, m) => s + m.pct, 0) / actuals.length;
+      // For a KPI whose own unit is already "%" (e.g. a win rate), showing
+      // "achievement % of a % target" compounds two percentages into a
+      // number that no longer reads as either one (a 20% target hit at
+      // 100% actual becomes "500%"). Show the metric's own average value
+      // instead — same number the Actual cells above it already display —
+      // but keep coloring it by achievement so it still signals over/under.
+      const isPctUnit = k.unit === "%";
+      const withActual = isPctUnit ? k.monthly.filter(m => !m.is_future && m.pct !== null && m.actual !== null) : actuals;
+      const displayAvg = isPctUnit
+        ? withActual.reduce((s, m) => s + m.actual, 0) / withActual.length
+        : avgAchievement;
+      return { label: k.label, pct: Math.round(displayAvg * 10) / 10, color: pctColor(avgAchievement) };
     })
     .filter(Boolean);
 
@@ -151,10 +165,7 @@ function YtdBars({ kpis }) {
 
   return (
     <div className="space-y-3">
-      {withPct.map(({ label, pct }) => {
-        // pct is already direction-normalized (higher = better) above, so no
-        // higherIsBetter here — passing it again would invert a second time.
-        const color = pctColor(pct);
+      {withPct.map(({ label, pct, color }) => {
         const cls = color ? COLOR_CLASSES[color] : { bg: "bg-gray-100", text: "text-gray-500" };
         return (
           <div key={label}>
@@ -281,7 +292,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
               <th key={m} className="px-1 py-2.5 font-semibold text-gray-600 text-center min-w-[52px]">{m}</th>
             ))}
             <th className="px-2 py-2.5 font-semibold text-gray-700 text-center w-16" title="Year-to-date actual — only months with a target set are included">YTD ⓘ</th>
-            <th className="px-2 py-2.5 font-semibold text-gray-700 text-center w-16" title="Average achievement % — only months with a target set are counted">Avg % ⓘ</th>
+            <th className="px-2 py-2.5 font-semibold text-gray-700 text-center w-16" title="Average achievement % — only months with a target set are counted. For %-unit KPIs this shows the average actual value instead (achievement % of a % target reads as a meaningless number), colored by achievement.">Avg % ⓘ</th>
           </tr>
         </thead>
         <tbody>
@@ -301,8 +312,17 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
             // m.pct is already direction-normalized by the backend (higher =
             // better for every KPI), so this is a plain average.
             const actPcts = targetedMonths.filter(m => m.pct !== null).map(m => m.pct);
-            const avgPct = actPcts.length ? Math.round(actPcts.reduce((a, b) => a + b, 0) / actPcts.length * 10) / 10 : null;
-            const avgColor = pctColor(avgPct);
+            const avgAchievement = actPcts.length ? Math.round(actPcts.reduce((a, b) => a + b, 0) / actPcts.length * 10) / 10 : null;
+            // For a %-unit KPI, "achievement % of a % target" compounds two
+            // percentages (a 20% target hit at 100% actual reads as "500%").
+            // Show the average of the actual values instead — same number
+            // the monthly cells above already display — but keep the color
+            // tied to achievement so it still signals over/under target.
+            const isPctUnit = kpi.unit === "%";
+            const avgActuals = targetedMonths.filter(m => m.actual !== null).map(m => m.actual);
+            const avgActualPct = avgActuals.length ? Math.round(avgActuals.reduce((a, b) => a + b, 0) / avgActuals.length * 10) / 10 : null;
+            const avgPct = isPctUnit ? avgActualPct : avgAchievement;
+            const avgColor = pctColor(avgAchievement);
 
             const rowSpan = kpi.no_target ? 1 : 2;
             return (
