@@ -6,6 +6,7 @@ payload does not carry would only fail in production, on a page that takes a
 full report build to reach. These tests render a synthetic payload end to end
 so that class of mistake surfaces here instead.
 """
+import re
 from datetime import datetime, timezone
 
 from app.services.biweekly_render import (
@@ -104,6 +105,14 @@ def _payload(branch_name="MEANDER Saigon"):
             "period": {"actual_revenue": 1_210_000_000,
                        "target_revenue": 1_100_000_000},
             "period_pct": 110.0,
+            "months": [{
+                "label": "July 2026",
+                "achievement": {"actual_revenue": 2_317_000_000,
+                                "target_revenue": 2_190_000_000},
+                "pct": 106.0, "closed": True, "through": "2026-07-31",
+            }],
+            # Legacy top-level mirror — kept so a payload built before the
+            # multi-month change still has the fields the old renderer read.
             "month": {"actual_revenue": 2_317_000_000,
                       "target_revenue": 2_190_000_000},
             "month_pct": 106.0,
@@ -201,10 +210,58 @@ class TestBuildHtml:
 
     def test_target_leads_with_the_month_and_marks_the_goal(self):
         html = self._render([_payload()])
-        assert "106% of the July 2026 target" in html.replace("</span>", "").replace(
-            '<span style="color:#0f9d58;">', "")
+        plain = re.sub(r"</?span[^>]*>", "", html)
+        assert "106% of the July 2026 target" in plain
         # Beating target scales the gauge, so the goal marker moves inward.
         assert "left:94.3%" in html
+
+    def test_single_month_period_shows_one_gauge_not_two(self):
+        html = self._render([_payload()])
+        assert html.count("bw.target.") == 1
+        assert "This period spans two calendar months" not in html
+
+    def test_target_falls_back_to_legacy_fields_when_months_is_missing(self):
+        """A period cached before the multi-month payload shipped carries the
+        old single-month fields but no `months` key. It must still render
+        instead of showing the 'no target set' empty state."""
+        p = _payload()
+        del p["target"]["months"]
+        html = self._render([p])
+        plain = re.sub(r"</?span[^>]*>", "", html)
+        assert "106% of the July 2026 target" in plain
+        assert "No revenue target set" not in html
+
+    def test_period_spanning_two_months_shows_both_targets(self):
+        """A bi-weekly period like Jul 25 – Aug 2 touches two calendar
+        months. Each gets its own full-month achievement — July already
+        closed at 107%, August only 2 days in at 67% — rather than folding
+        both into whichever one the period happens to end in."""
+        p = _payload()
+        p["target"] = {
+            "period": {"actual_revenue": 32_000_000, "target_revenue": 15_500_000},
+            "period_pct": 206.5,
+            "months": [
+                {"label": "July 2026",
+                 "achievement": {"actual_revenue": 30_000_000, "target_revenue": 28_000_000},
+                 "pct": 107.1, "closed": True, "through": "2026-07-31"},
+                {"label": "August 2026",
+                 "achievement": {"actual_revenue": 2_000_000, "target_revenue": 3_000_000},
+                 "pct": 66.7, "closed": False, "through": "2026-08-02"},
+            ],
+        }
+        html = self._render([p])
+        plain = re.sub(r"</?span[^>]*>", "", html)
+
+        assert "This period spans two calendar months" in html
+        assert "July 2026: 107%" in plain
+        assert "August 2026: 67%" in plain
+        assert "fully closed" in html          # July's state
+        assert "through 2026-08-02" in html    # August's state
+        assert html.count("bw.target.") == 2
+        assert "grid-template-columns:1fr 1fr" in html
+        # The period-on-its-own line still appears underneath both gauges.
+        assert "This period on its own" in html
+        assert "206%" in html
 
     def test_kol_reach_is_shown_when_available(self):
         html = self._render([_payload()])
