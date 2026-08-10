@@ -21,6 +21,7 @@ See `biweekly_period.py` for how a period is defined.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 from datetime import date, timedelta
 from typing import Optional
@@ -185,40 +186,68 @@ def kpi_block(db: Session, branch: Branch, p: Period) -> dict:
 # ── 2. Target achievement ────────────────────────────────────────────────────
 
 
+def _month_achievement(db: Session, branch: Branch, year: int, month: int,
+                       as_of: date) -> dict:
+    """Standalone achievement for one calendar month.
+
+    Always the month's OWN full run of days — never just the handful a
+    bi-weekly period happens to overlap with it — prorated through whichever
+    comes first: the month's last day, or `as_of`. Only counting elapsed days
+    is what stops a full month's target from reading as a miss on day one.
+    """
+    month_start = date(year, month, 1)
+    days_in_month = calendar.monthrange(year, month)[1]
+    month_end = date(year, month, days_in_month)
+    through = min(month_end, as_of)
+    ach = compute_period_achievement(db, branch, month_start, through)
+    pct = ach.get("achievement_pct")
+    return {
+        "year": year, "month": month,
+        "label": month_start.strftime("%B %Y"),
+        "achievement": ach,
+        "pct": round(pct * 100, 1) if pct is not None else None,
+        "closed": as_of >= month_end,
+        "through": through.isoformat(),
+    }
+
+
 def target_block(db: Session, branch: Branch, p: Period) -> dict:
-    """Prorated target for the period, plus the containing month's progress.
+    """Prorated target for the period, plus every calendar month it touches.
 
     Managers are held to a monthly number, so the period figure alone is not
-    enough — the month view answers "are we still on track". The month is the
-    one containing the period END; a period straddling a boundary reports
-    against the month it finished in.
+    enough. A bi-weekly period can straddle a month boundary — e.g. Jul 25 –
+    Aug 2 — and when it does, BOTH months get their own achievement, each
+    computed from its own complete run of days rather than folded into
+    whichever month the period happened to end in. A manager reading a report
+    that closes on Aug 2 still sees how July actually finished, not just the
+    two days of it the period overlapped.
     """
     period_ach = compute_period_achievement(db, branch, p.start, p.end)
-
-    month_start = p.end.replace(day=1)
-    if month_start.month == 12:
-        next_month_start = date(month_start.year + 1, 1, 1)
-    else:
-        next_month_start = date(month_start.year, month_start.month + 1, 1)
-    month_end = next_month_start - timedelta(days=1)
-
-    # Only count days that have actually happened — measuring a full month's
-    # target against a part-month of revenue would read as a miss every time.
-    month_through = min(month_end, p.end)
-    month_ach = compute_period_achievement(db, branch, month_start, month_through)
-    month_closed = p.end >= month_end
-
     period_pct = period_ach.get("achievement_pct")
-    month_pct = month_ach.get("achievement_pct")
+
+    months = []
+    seen = set()
+    for d in (p.start, p.end):
+        key = (d.year, d.month)
+        if key in seen:
+            continue
+        seen.add(key)
+        months.append(_month_achievement(db, branch, d.year, d.month, as_of=p.end))
+
+    # Mirror the LATEST month (the one the period ends in) at the top level
+    # too, so anything reading this payload from before `months` existed —
+    # including an already-cached period — keeps working unchanged.
+    latest = months[-1]
 
     return {
         "period": period_ach,
         "period_pct": round(period_pct * 100, 1) if period_pct is not None else None,
-        "month": month_ach,
-        "month_pct": round(month_pct * 100, 1) if month_pct is not None else None,
-        "month_label": month_start.strftime("%B %Y"),
-        "month_closed": month_closed,
-        "month_through": month_through.isoformat(),
+        "months": months,
+        "month": latest["achievement"],
+        "month_pct": latest["pct"],
+        "month_label": latest["label"],
+        "month_closed": latest["closed"],
+        "month_through": latest["through"],
         "light": verdict(
             round(period_pct * 100, 1) if period_pct is not None else None,
             TARGET_GOOD_PCT, TARGET_BAD_PCT,

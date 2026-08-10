@@ -302,6 +302,72 @@ def _render_headline(b: dict, p: Period) -> str:
     </div>"""
 
 
+def _target_gauge(bid, m: dict, currency: str, br: dict, idx: int, size: str) -> str:
+    """One gauge card for a single calendar month's achievement.
+
+    `size` is "lg" for the common single-month case (this is what shipped
+    before periods could show two months, unchanged) or "sm" for a compact
+    card used when two sit side by side.
+    """
+    m_pct = m.get("pct")
+    ach = m.get("achievement") or {}
+    m_actual, m_goal = ach.get("actual_revenue"), ach.get("target_revenue")
+    label = m.get("label") or "this month"
+
+    if m_pct is None:
+        return (f"<div style='background:{C['card']};border:1px solid {C['line']};"
+                f"border-radius:11px;padding:16px 17px;font-size:12.5px;color:{C['muted']};'>"
+                f"No target set for {label} — add one on the KPI Targets page.</div>")
+
+    # Scales to whichever is larger, achievement or 100%, so beating target
+    # fills the bar and pushes the goal marker inward instead of clipping the
+    # overshoot invisibly at the right edge.
+    scale = max(100.0, m_pct)
+    fill_pct = max(0.0, min(100.0, m_pct / scale * 100))
+    goal_left = 100.0 / scale * 100
+
+    diff = (m_actual or 0) - (m_goal or 0)
+    pill_color = "g" if m_pct >= 100 else "w" if m_pct >= 80 else "b"
+    pill = (f"<span style='font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;"
+            f"color:{_LIGHT[pill_color]};background:{_LIGHT_BG[pill_color]};'>"
+            f"{'✓ Beat by' if diff >= 0 else '▼ Short by'} {fmt(abs(diff), currency)}</span>")
+    state = " — fully closed" if m.get("closed") else f" — through {m.get('through')}"
+
+    heading = (
+        f"Hit <span style='color:{_LIGHT[pill_color]};'>{m_pct:.0f}%</span> "
+        f"of the {label} target"
+        if size == "lg" else
+        f"{label}: <span style='color:{_LIGHT[pill_color]};'>{m_pct:.0f}%</span>"
+    )
+    head_size = "22px" if size == "lg" else "15.5px"
+    bar_h = "16px" if size == "lg" else "13px"
+    pad = "18px" if size == "lg" else "14px 15px"
+
+    return f"""
+    <div{cell_attrs(bid, f"bw.target.{idx}", label)}
+         style="background:{C['card']};border:1px solid {C['line']};border-radius:11px;
+         padding:{pad};">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;
+           margin-bottom:11px;flex-wrap:wrap;gap:6px;">
+        <div style="font-size:{head_size};font-weight:700;color:{C['charcoal']};">
+          {heading}</div>
+        <div>{pill}</div>
+      </div>
+      <div style="height:{bar_h};background:#eee7df;border-radius:9px;position:relative;">
+        <span style="position:absolute;left:0;top:0;bottom:0;width:{fill_pct:.1f}%;
+              background:linear-gradient(90deg,{br['primary']},{br['deep']});
+              border-radius:9px;display:block;"></span>
+        <span style="position:absolute;top:-4px;bottom:-4px;left:{goal_left:.1f}%;
+              width:2px;background:{C['charcoal']};display:block;" title="Target"></span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;
+           color:{C['muted']};margin-top:8px;">
+        <span>Actual: <b style="color:{C['ink']}">{fmt(m_actual, currency)}</b>{state}</span>
+        <span>Target: <b style="color:{C['ink']}">{fmt(m_goal, currency)}</b> ▎</span>
+      </div>
+    </div>"""
+
+
 def _render_target(b: dict) -> str:
     br = _brand(b)
     t = b.get("target") or {}
@@ -313,77 +379,62 @@ def _render_target(b: dict) -> str:
     actual = (t.get("period") or {}).get("actual_revenue")
     goal = (t.get("period") or {}).get("target_revenue")
 
-    month = t.get("month") or {}
-    month_pct = t.get("month_pct")
+    months = t.get("months")
+    if not months:
+        # A period cached before this shipped carries the old single-month
+        # fields but no `months` list. Synthesise one entry from them rather
+        # than going blank — the cache is never rebuilt on its own, so an
+        # already-computed period would otherwise stay broken until someone
+        # happens to hit Rebuild.
+        if t.get("month_pct") is not None or t.get("month"):
+            months = [{
+                "label": t.get("month_label") or "this month",
+                "achievement": t.get("month") or {},
+                "pct": t.get("month_pct"),
+                "closed": t.get("month_closed"),
+                "through": t.get("month_through"),
+            }]
+        else:
+            months = []
 
-    if pct is None and month_pct is None:
+    if pct is None and not any(m.get("pct") is not None for m in months):
         body = (f"<div style='background:{C['card']};border:1px solid {C['line']};"
                 f"border-radius:11px;padding:18px;font-size:13px;color:{C['muted']};'>"
                 f"No revenue target set for this period — add one on the KPI Targets page.</div>")
         return _section(2, "Target Achievement", "", body, br["primary"])
 
-    # The month is what a manager is actually held to, so it carries the
-    # headline and the gauge; the period sits underneath as the detail. The
-    # gauge scales to whichever is larger, achievement or 100%, so beating
-    # target fills the bar and pushes the goal marker inward rather than
-    # clipping the overshoot invisibly at the right edge.
-    head_pct = month_pct if month_pct is not None else pct
-    head_actual = month.get("actual_revenue") if month_pct is not None else actual
-    head_goal = month.get("target_revenue") if month_pct is not None else goal
-    head_label = (
-        f"the {t['month_label']} target" if month_pct is not None else "the period target"
-    )
-
-    scale = max(100.0, head_pct)
-    fill_pct = max(0.0, min(100.0, head_pct / scale * 100))
-    goal_left = 100.0 / scale * 100
-
-    diff = (head_actual or 0) - (head_goal or 0)
-    pill_color = "g" if head_pct >= 100 else "w" if head_pct >= 80 else "b"
-    pill = (f"<span style='font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;"
-            f"color:{_LIGHT[pill_color]};background:{_LIGHT_BG[pill_color]};'>"
-            f"{'✓ Beat target by' if diff >= 0 else '▼ Short of target by'} "
-            f"{fmt(abs(diff), currency)}</span>")
-
-    state = ""
-    if month_pct is not None:
-        state = (" — fully closed" if t.get("month_closed")
-                 else f" — through {t.get('month_through')}")
+    if len(months) >= 2:
+        # The period crosses a month boundary — show each month's own
+        # progress rather than folding both into whichever one it ends in.
+        gauges = "".join(
+            _target_gauge(bid, m, currency, br, i, size="sm")
+            for i, m in enumerate(months)
+        )
+        gauges_html = (
+            f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:12px;'>{gauges}</div>"
+        )
+        note = ("This period spans two calendar months, so each gets its own target — "
+                "prorated to a daily goal and measured against however much of that "
+                "month has actually elapsed. The vertical mark is the target.")
+    elif months:
+        gauges_html = _target_gauge(bid, months[0], currency, br, 0, size="lg")
+        note = ("Monthly target prorated to a daily goal, then measured against however "
+                "much of the month has actually elapsed. The vertical mark is the target.")
+    else:
+        gauges_html = ""
+        note = ""
 
     period_line = ""
     if pct is not None:
         period_line = (
-            f"<div style='font-size:13px;color:{C['muted']};margin-top:10px;"
-            f"padding-top:10px;border-top:1px dashed {C['line']};'>"
+            f"<div style='background:{C['card']};border:1px solid {C['line']};"
+            f"border-radius:11px;padding:12px 16px;margin-top:{'12px' if gauges_html else '0'};"
+            f"font-size:13px;color:{C['muted']};'>"
             f"This period on its own — <b style='color:{C['ink']}'>{pct:.0f}%</b> "
             f"of its prorated target ({fmt(actual, currency)} of {fmt(goal, currency)}).</div>"
         )
 
-    body = f"""
-    <div{cell_attrs(bid, "bw.target", "Target Achievement")}
-         style="background:{C['card']};border:1px solid {C['line']};border-radius:11px;padding:18px;">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;
-           margin-bottom:11px;flex-wrap:wrap;gap:6px;">
-        <div style="font-size:22px;font-weight:700;color:{C['charcoal']};">
-          Hit <span style="color:{_LIGHT[pill_color]};">{head_pct:.0f}%</span> of {head_label}</div>
-        <div>{pill}</div>
-      </div>
-      <div style="height:16px;background:#eee7df;border-radius:9px;position:relative;">
-        <span style="position:absolute;left:0;top:0;bottom:0;width:{fill_pct:.1f}%;
-              background:linear-gradient(90deg,{br['primary']},{br['deep']});
-              border-radius:9px;display:block;"></span>
-        <span style="position:absolute;top:-4px;bottom:-4px;left:{goal_left:.1f}%;
-              width:2px;background:{C['charcoal']};display:block;" title="Target"></span>
-      </div>
-      <div style="display:flex;justify-content:space-between;font-size:12px;
-           color:{C['muted']};margin-top:8px;">
-        <span>Actual: <b style="color:{C['ink']}">{fmt(head_actual, currency)}</b>{state}</span>
-        <span>Target: <b style="color:{C['ink']}">{fmt(head_goal, currency)}</b> ▎</span>
-      </div>
-      {period_line}
-    </div>"""
-    note = ("Monthly targets prorated to a daily goal, then summed — so a period "
-            "spanning two months is measured against both. The vertical mark is the target.")
+    body = gauges_html + period_line
     return _section(2, "Target Achievement", note, body, br["primary"])
 
 
