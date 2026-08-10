@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import { getTeamKpiSummary, upsertTarget, upsertActual, getTaskOverview, getTaskDetail } from "../api/teamKpi";
@@ -84,16 +85,41 @@ function fmtValue(kpi, value) {
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
 
+const TOOLTIP_WIDTH = 224; // px, matches w-56
+
+// Rendered into a portal at a fixed screen position rather than absolutely
+// inside its trigger — the grid it usually sits in scrolls horizontally
+// (overflow-x-auto), which clips an absolutely-positioned tooltip at the
+// grid's edge no matter how high its z-index is.
 function Tooltip({ text, children }) {
-  const [show, setShow] = useState(false);
+  const [pos, setPos] = useState(null); // null = hidden
+  const anchorRef = useRef(null);
+
+  const show = () => {
+    const rect = anchorRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const left = Math.min(
+      Math.max(rect.left + rect.width / 2, TOOLTIP_WIDTH / 2 + 8),
+      window.innerWidth - TOOLTIP_WIDTH / 2 - 8
+    );
+    setPos({ top: rect.top, left, arrowLeft: rect.left + rect.width / 2 - left });
+  };
+
   return (
-    <span className="relative inline-flex items-center" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+    <span ref={anchorRef} className="relative inline-flex items-center" onMouseEnter={show} onMouseLeave={() => setPos(null)}>
       {children}
-      {show && (
-        <span className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 text-[11px] leading-relaxed bg-gray-900 text-white rounded-lg px-2.5 py-2 shadow-lg pointer-events-none whitespace-normal text-center">
+      {pos && createPortal(
+        <span
+          className="fixed z-50 text-[11px] leading-relaxed bg-gray-900 text-white rounded-lg px-2.5 py-2 shadow-lg pointer-events-none whitespace-normal text-center"
+          style={{ top: pos.top, left: pos.left, width: TOOLTIP_WIDTH, transform: "translate(-50%, calc(-100% - 6px))" }}
+        >
           {text}
-          <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900" />
-        </span>
+          <span
+            className="absolute top-full border-4 border-transparent border-t-gray-900"
+            style={{ left: `calc(50% + ${pos.arrowLeft}px)`, transform: "translateX(-50%)" }}
+          />
+        </span>,
+        document.body
       )}
     </span>
   );
