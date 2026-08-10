@@ -331,7 +331,14 @@ def _target_gauge(bid, m: dict, currency: str, br: dict, idx: int, size: str) ->
     pill = (f"<span style='font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;"
             f"color:{_LIGHT[pill_color]};background:{_LIGHT_BG[pill_color]};'>"
             f"{'✓ Beat by' if diff >= 0 else '▼ Short by'} {fmt(abs(diff), currency)}</span>")
-    state = " — fully closed" if m.get("closed") else f" — through {m.get('through')}"
+    # Not "through {date}" — actual is the whole month's on-the-books revenue,
+    # not capped at today, so a date here would imply a cutoff that isn't real.
+    if m.get("is_override"):
+        state = " — manually entered"
+    elif m.get("closed"):
+        state = " — fully closed"
+    else:
+        state = " — month in progress, incl. nights already on the books"
 
     heading = (
         f"Hit <span style='color:{_LIGHT[pill_color]};'>{m_pct:.0f}%</span> "
@@ -413,13 +420,14 @@ def _render_target(b: dict) -> str:
         gauges_html = (
             f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:12px;'>{gauges}</div>"
         )
-        note = ("This period spans two calendar months, so each gets its own target — "
-                "prorated to a daily goal and measured against however much of that "
-                "month has actually elapsed. The vertical mark is the target.")
+        note = ("This period spans two calendar months, so each gets its own gauge — "
+                "same Target and Actual as the KPI Targets page. The vertical mark "
+                "is the target.")
     elif months:
         gauges_html = _target_gauge(bid, months[0], currency, br, 0, size="lg")
-        note = ("Monthly target prorated to a daily goal, then measured against however "
-                "much of the month has actually elapsed. The vertical mark is the target.")
+        note = ("Same Target and Actual as the KPI Targets page for this month — "
+                "Actual includes nights already on the books, not just ones that "
+                "have happened. The vertical mark is the target.")
     else:
         gauges_html = ""
         note = ""

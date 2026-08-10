@@ -26,11 +26,13 @@ import logging
 from datetime import date, timedelta
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import extract, func
 from sqlalchemy.orm import Session
 
 from app.models.branch import Branch
+from app.models.daily_metrics import DailyMetrics
 from app.models.holiday_intel import HolidayCalendar
+from app.models.kpi import KPITarget
 from app.models.reservation import Reservation
 from app.models.reservation_daily import ReservationDaily
 from app.services.biweekly_period import (
@@ -44,6 +46,7 @@ from app.services.kol_engine import HOTEL_TO_BRANCH_KEY
 from app.services.kpi_engine import (
     _EXCLUDED_STATUSES,
     compute_period_achievement,
+    month_actual_and_target,
 )
 from app.services.report_common import safe_section
 from app.services.weekly_report_builder import (
@@ -190,24 +193,51 @@ def _month_achievement(db: Session, branch: Branch, year: int, month: int,
                        as_of: date) -> dict:
     """Standalone achievement for one calendar month.
 
-    Always the month's OWN full run of days — never just the handful a
-    bi-weekly period happens to overlap with it — prorated through whichever
-    comes first: the month's last day, or `as_of`. Only counting elapsed days
-    is what stops a full month's target from reading as a miss on day one.
+    Uses `kpi_engine.month_actual_and_target` — the exact math the KPI
+    Targets grid shows — rather than the period-window proration this module
+    uses elsewhere. That proration caps the actual-revenue sum at "today",
+    which discards `daily_metrics` rows for nights later in the month that
+    are already on the books (Cloudbeds reports revenue as reservations are
+    confirmed, not backfilled day by day). Capping it there made this report
+    show a fraction of what the KPI grid showed for the exact same month —
+    e.g. Taipei August read 85% here against 70% on the grid, for numbers
+    that should have been identical. This also picks up a manual accounting
+    override when one is set, which the old proration never read at all.
     """
-    month_start = date(year, month, 1)
-    days_in_month = calendar.monthrange(year, month)[1]
-    month_end = date(year, month, days_in_month)
-    through = min(month_end, as_of)
-    ach = compute_period_achievement(db, branch, month_start, through)
-    pct = ach.get("achievement_pct")
+    month_end = date(year, month, calendar.monthrange(year, month)[1])
+
+    target_row = (
+        db.query(KPITarget)
+        .filter_by(branch_id=branch.id, year=year, month=month)
+        .first()
+    )
+    target_native = float(target_row.target_revenue_native or 0) if target_row else 0.0
+    override_native = (
+        float(target_row.actual_revenue_override)
+        if target_row and target_row.actual_revenue_override is not None
+        else None
+    )
+    cloudbeds_actual = db.query(
+        func.coalesce(func.sum(DailyMetrics.revenue_native), 0)
+    ).filter(
+        DailyMetrics.branch_id == branch.id,
+        extract("year", DailyMetrics.date) == year,
+        extract("month", DailyMetrics.date) == month,
+    ).scalar() or 0
+
+    result = month_actual_and_target(branch, target_native, override_native,
+                                     float(cloudbeds_actual))
+
     return {
         "year": year, "month": month,
-        "label": month_start.strftime("%B %Y"),
-        "achievement": ach,
-        "pct": round(pct * 100, 1) if pct is not None else None,
+        "label": date(year, month, 1).strftime("%B %Y"),
+        "achievement": {
+            "actual_revenue": result["actual_revenue"],
+            "target_revenue": result["target_revenue"],
+        },
+        "pct": result["achievement_pct"],
         "closed": as_of >= month_end,
-        "through": through.isoformat(),
+        "is_override": result["is_override"],
     }
 
 

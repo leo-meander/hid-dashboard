@@ -765,3 +765,50 @@ def compute_period_achievement(db: Session, branch, date_from: date, date_to: da
         actual_revenue_vnd=float(row[1] or 0),
         fx=fx,
     )
+
+
+# ── Single calendar month (whole-month, un-prorated) ─────────────────────────
+#
+# `period_achievement_row` above prorates both target and actual to whatever
+# slice of days a caller asks for — the right answer for "how did this
+# 14-day window do". The KPI Targets grid asks a different question: "how is
+# THIS MONTH doing", and answers it the simple way — the full month's
+# configured target against however much revenue `daily_metrics` currently
+# carries for that month, with no day-elapsed cutoff at all. That matters
+# because `daily_metrics` is populated from confirmed reservations as they're
+# booked, not backfilled day by day, so a month three days old already
+# carries revenue for nights deep into the month that are already on the
+# books. Capping the sum at "today" — which an elapsed-day proration does —
+# throws that pipeline revenue away and understates a month that is
+# genuinely on pace.
+#
+# Kept as one function so the KPI grid (routers/kpi.py) and the Bi-Weekly
+# Branch Manager report (biweekly_report_builder.py) can never quietly drift
+# apart on what "this month's Actual" means.
+
+
+def month_actual_and_target(
+    branch,
+    target_native: float,
+    override_native: Optional[float],
+    cloudbeds_actual_native: float,
+) -> dict:
+    """Target / Actual / Hit% for one calendar month, one branch.
+
+    A manual override IS the final number — accounting has already netted
+    whatever adjustment it represents — so it is used exactly as entered,
+    with no deduct%/other-revenue applied on top. Only the raw Cloudbeds sum
+    gets that adjustment: actual × (1 − deduct%) + other_revenue.
+    """
+    mult = 1 - float(branch.deduction_pct or 0) / 100
+    other_rev = float(branch.other_revenue_native or 0)
+    is_override = override_native is not None
+    actual = override_native if is_override else (cloudbeds_actual_native * mult + other_rev)
+    pct = round(actual / target_native * 100, 1) if target_native > 0 else None
+    return {
+        "target_revenue": target_native,
+        "actual_revenue": actual,
+        "cloudbeds_actual_revenue": cloudbeds_actual_native,
+        "is_override": is_override,
+        "achievement_pct": pct,
+    }

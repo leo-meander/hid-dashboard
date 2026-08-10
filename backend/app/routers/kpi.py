@@ -15,6 +15,7 @@ from app.models.daily_metrics import DailyMetrics
 from app.services.kpi_engine import (
     compute_kpi_summary,
     compute_next_month_forecast,
+    month_actual_and_target,
     period_achievement_row,
 )
 from app.services.currency import get_cached_rate
@@ -351,14 +352,6 @@ def kpi_yearly_grid(
         for b in branches
     ]
     branch_ids = [b.id for b in branches]
-    # Per-branch adjustments (same formula as home page forecast)
-    branch_adj = {
-        str(b.id): {
-            "deduct_mult": 1 - float(b.deduction_pct or 0) / 100,
-            "other_rev": float(b.other_revenue_native or 0),
-        }
-        for b in branches
-    }
 
     # 1. Query all KPI targets for the year
     targets = db.query(KPITarget).filter(
@@ -395,6 +388,8 @@ def kpi_yearly_grid(
     months = []
     totals = defaultdict(lambda: {"target": 0, "actual": 0})
 
+    branch_by_id = {str(b.id): b for b in branches}
+
     for mo in range(1, 13):
         row = {"month": mo}
         branch_data = []
@@ -404,25 +399,20 @@ def kpi_yearly_grid(
             target = kpi.get("target", 0)
             override = kpi.get("override")
             cloudbeds_actual = actual_map.get((bid, mo), 0)
-            raw_actual = override if override is not None else cloudbeds_actual
-            adj = branch_adj.get(bid, {"deduct_mult": 1.0, "other_rev": 0.0})
-            # A manual override IS the final number — accounting already netted it.
-            # Never re-apply deduct%/other_rev on top of it. Only the Cloudbeds
-            # actual gets the adjustment: actual × (1 − deduct%) + other_revenue.
-            if override is not None:
-                actual = raw_actual
-            else:
-                actual = raw_actual * adj["deduct_mult"] + adj["other_rev"]
-            hit_pct = round(actual / target * 100, 1) if target > 0 else None
+            # Shared with the Bi-Weekly Branch Manager report's month gauges —
+            # see kpi_engine.month_actual_and_target for why this is a whole-
+            # month, un-prorated sum rather than capped at "today".
+            result = month_actual_and_target(branch_by_id[bid], target, override, cloudbeds_actual)
+            actual = result["actual_revenue"]
 
             branch_data.append({
                 "branch_id": bid,
                 "target": target,
                 "actual": actual,
-                "raw_actual": raw_actual,
+                "raw_actual": override if override is not None else cloudbeds_actual,
                 "cloudbeds_actual": cloudbeds_actual,
-                "is_override": override is not None,
-                "hit_pct": hit_pct,
+                "is_override": result["is_override"],
+                "hit_pct": result["achievement_pct"],
             })
 
             totals[bid]["target"] += target
