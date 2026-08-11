@@ -799,21 +799,19 @@ def _render_crm(b: dict) -> str:
     # tell a different story for the same window. No Channel/Spend/Efficiency
     # row anymore — CRM cost isn't tracked per campaign, only as one
     # branch-wide monthly figure, so a single "Spend" number next to a
-    # per-campaign table implied a precision that didn't exist.
+    # per-campaign table implied a precision that didn't exist. Nights/ADR
+    # dropped too, per team feedback (2026-08-11) — Bookings and Revenue are
+    # what this section is actually for.
     plan_rows = "".join(
         f"<tr{cell_attrs(bid, 'bw.crm.plan.' + (r.get('rate_plan_name') or r['label']), 'CRM — ' + r['label'])}>"
         f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{r['label']}</td>"
         f"<td style='{_TD}text-align:right;'>{num(r.get('bookings'))}{_inline_arrow(r.get('bookings_vs_prior_pct'))}</td>"
-        f"<td style='{_TD}text-align:right;'>{num(r.get('nights'))}</td>"
-        f"<td style='{_TD}text-align:right;'>{fmt(r.get('revenue'), currency)}{_inline_arrow(r.get('revenue_vs_prior_pct'))}</td>"
-        f"<td style='{_TD}text-align:right;'>{fmt(r.get('adr'), currency)}</td></tr>"
+        f"<td style='{_TD}text-align:right;'>{fmt(r.get('revenue'), currency)}{_inline_arrow(r.get('revenue_vs_prior_pct'))}</td></tr>"
         for r in by_plan
     )
 
     total_bookings = sum(r.get("bookings") or 0 for r in by_plan)
-    total_nights = sum(r.get("nights") or 0 for r in by_plan)
     total_revenue = sum(r.get("revenue") or 0 for r in by_plan)
-    total_adr = round(total_revenue / total_nights, 2) if total_nights else None
     # A campaign with no prior-period row contributes 0 to the prior total —
     # it's genuinely new, so its whole revenue is real growth, not a gap in
     # the data the way a missing per-row prior would be.
@@ -824,10 +822,8 @@ def _render_crm(b: dict) -> str:
         f"<td style='{_TD}font-weight:700;color:{C['charcoal']};border-top:2px solid {C['line']};'>Total</td>"
         f"<td style='{_TD}text-align:right;font-weight:700;border-top:2px solid {C['line']};'>"
         f"{num(total_bookings)}{_inline_arrow(pct_change(total_bookings, total_prior_bookings))}</td>"
-        f"<td style='{_TD}text-align:right;font-weight:700;border-top:2px solid {C['line']};'>{num(total_nights)}</td>"
         f"<td style='{_TD}text-align:right;font-weight:700;border-top:2px solid {C['line']};'>"
-        f"{fmt(total_revenue, currency)}{_inline_arrow(pct_change(total_revenue, total_prior_revenue))}</td>"
-        f"<td style='{_TD}text-align:right;font-weight:700;border-top:2px solid {C['line']};'>{fmt(total_adr, currency)}</td></tr>"
+        f"{fmt(total_revenue, currency)}{_inline_arrow(pct_change(total_revenue, total_prior_revenue))}</td></tr>"
     )
 
     body = f"""
@@ -835,9 +831,7 @@ def _render_crm(b: dict) -> str:
            border:1px solid {C['line']};border-radius:11px;overflow:hidden;font-size:13px;">
       <thead><tr><th style="{_TH}">Rate plan / campaign</th>
       <th style="{_TH}text-align:right;">Bookings</th>
-      <th style="{_TH}text-align:right;">Nights</th>
-      <th style="{_TH}text-align:right;">Revenue</th>
-      <th style="{_TH}text-align:right;">ADR</th></tr></thead>
+      <th style="{_TH}text-align:right;">Revenue</th></tr></thead>
       <tbody>{plan_rows}{total_row}</tbody>
     </table>
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
