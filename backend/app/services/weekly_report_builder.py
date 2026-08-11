@@ -1245,6 +1245,7 @@ def paid_ads_section(db: Session, branch: Branch, today: date,
             "cvr_pct": cvr,
             "roas": roas,
             "wow_cost_pct": _pct_change(t["cost"], p["cost"]),
+            "wow_revenue_pct": _pct_change(t["revenue"], p["revenue"]),
             "wow_impressions_pct": _pct_change(t["impressions"], p["impressions"]),
             # CTR / CVR are rates — pp deltas read more naturally than %
             "ctr_pp_delta": (round(ctr - prev_ctr, 2)

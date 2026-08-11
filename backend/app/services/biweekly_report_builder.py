@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from app.models.branch import Branch
 from app.models.daily_metrics import DailyMetrics
 from app.models.holiday_intel import HolidayCalendar
+from app.models.kol import KOLRecord
 from app.models.kpi import KPITarget
 from app.models.reservation import Reservation
 from app.models.reservation_daily import ReservationDaily
@@ -182,6 +183,7 @@ def kpi_block(db: Session, branch: Branch, p: Period) -> dict:
             "revenue": verdict(d_yoy["revenue_pct"], REVENUE_GOOD_PCT, REVENUE_BAD_PCT),
             "adr": verdict(d_yoy["adr_pct"], REVENUE_GOOD_PCT, REVENUE_BAD_PCT),
             "occ": verdict(d_yoy["occ_pts"], OCC_GOOD_PTS, OCC_BAD_PTS),
+            "revpar": verdict(d_yoy["revpar_pct"], REVENUE_GOOD_PCT, REVENUE_BAD_PCT),
         },
     }
 
@@ -476,6 +478,141 @@ def kol_reach_block(branch: Branch, p: Period) -> dict:
         date_from=p.start,
         date_to=p.end,
     )
+
+
+# ── 3d. Cost / ROAS for the CRM and KOL channels ─────────────────────────────
+#
+# `paid_ads_section` already carries cost + ROAS per channel from daily-grain
+# `ads_performance` rows. CRM and KOL have no equivalent daily spend feed, so
+# each gets its own exact-dated-where-possible cost query rather than reusing
+# a shared helper — see the docstrings below for what each one actually reads.
+
+
+def _kol_period_cost_roas(db: Session, branch: Branch, p: Period, kol: dict) -> dict:
+    """Cost + ROAS for the KOL channel, dated to the exact period window.
+
+    `weekly_report_builder.kol_section`'s `cost_mtd_native` is calendar
+    month-to-date — right for a Monday digest, wrong for an arbitrary
+    bi-weekly window that can start mid-month. This sums `kol_records.cost_native`
+    for KOLs invited inside `[p.start, p.end]` instead, the exact-dated
+    counterpart already used for organic bookings/revenue.
+
+    Also computes the prior period's cost/bookings/revenue so the renderer
+    can show a vs-prior arrow next to Cost, Revenue and ROAS, the same as
+    every other channel in this report.
+    """
+    prev_start, prev_end = previous_window(p)
+
+    def _cost(d_from: date, d_to: date) -> float:
+        total = db.query(func.coalesce(func.sum(KOLRecord.cost_native), 0)).filter(
+            KOLRecord.branch_id == branch.id,
+            KOLRecord.invitation_date >= d_from,
+            KOLRecord.invitation_date <= d_to,
+        ).scalar()
+        return float(total or 0)
+
+    def _organic(d_from: date, d_to: date) -> tuple[int, float]:
+        row = db.query(
+            func.count(Reservation.id),
+            func.coalesce(func.sum(Reservation.grand_total_native), 0),
+        ).filter(
+            Reservation.branch_id == branch.id,
+            Reservation.room_type.ilike("%KOL_%"),
+            Reservation.check_in_date >= d_from,
+            Reservation.check_in_date <= d_to,
+            ~func.lower(func.coalesce(Reservation.status, "")).in_(list(_EXCLUDED_STATUSES)),
+        ).one()
+        return int(row[0] or 0), float(row[1] or 0)
+
+    def _posts(d_from: date, d_to: date) -> int:
+        return db.query(func.count(KOLRecord.id)).filter(
+            KOLRecord.branch_id == branch.id,
+            KOLRecord.published_date >= d_from,
+            KOLRecord.published_date <= d_to,
+        ).scalar() or 0
+
+    cost = _cost(p.start, p.end)
+    prior_cost = _cost(prev_start, prev_end)
+    prior_bookings, prior_revenue = _organic(prev_start, prev_end)
+    prior_posts = _posts(prev_start, prev_end)
+
+    revenue = float(kol.get("organic_revenue_native") or 0)
+    bookings = kol.get("organic_bookings")
+    roas = round(revenue / cost, 2) if cost > 0 else None
+    prior_roas = round(prior_revenue / prior_cost, 2) if prior_cost > 0 else None
+
+    return {
+        "period_cost_native": round(cost, 2),
+        "period_roas": roas,
+        "prior_cost_native": round(prior_cost, 2),
+        "prior_bookings": prior_bookings,
+        "prior_revenue_native": round(prior_revenue, 2),
+        "prior_roas": prior_roas,
+        "prior_posts": prior_posts,
+        "cost_vs_prior_pct": pct_change(cost, prior_cost),
+        "revenue_vs_prior_pct": pct_change(revenue, prior_revenue),
+        "roas_vs_prior_pct": pct_change(roas, prior_roas),
+        "bookings_vs_prior_pct": pct_change(bookings, prior_bookings),
+        "posts_vs_prior_pct": pct_change(kol.get("posts_this_week"), prior_posts),
+    }
+
+
+def _crm_period_cost_roas(db: Session, branch: Branch, p: Period, crm: dict) -> dict:
+    """Cost + ROAS for the CRM channel, prorated from Budget Planner's
+    monthly manual-actual figure.
+
+    CRM has no upstream spend feed at all (see `marketing_budget.ActualsCache`
+    — CRM cost is a number an operator types into Budget Planner once a
+    month), so a bi-weekly window that crosses a month boundary gets each
+    month's figure weighted by the days of that month the window actually
+    covers — the same trade-off `target_block` already makes for revenue
+    targets that straddle a month.
+    """
+    from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
+
+    prev_start, prev_end = previous_window(p)
+    currency = branch.currency or "VND"
+    rate = _get_rate_to_vnd(currency)
+    cache = ActualsCache(db)
+
+    def _cost(d_from: date, d_to: date) -> float:
+        total = 0.0
+        cur = d_from
+        while cur <= d_to:
+            month_end = date(cur.year, cur.month, calendar.monthrange(cur.year, cur.month)[1])
+            span_end = min(d_to, month_end)
+            days_in_window = (span_end - cur).days + 1
+            days_in_month = month_end.day
+            monthly_native = _vnd_to_native(
+                cache.get(branch, cur.year, cur.month, "crm"), currency, rate,
+            )
+            total += monthly_native * (days_in_window / days_in_month)
+            cur = month_end + timedelta(days=1)
+        return round(total, 2)
+
+    cost = _cost(p.start, p.end)
+    prior_cost = _cost(prev_start, prev_end)
+
+    this_rev = (crm.get("crm_revenue_this") or {})
+    prev_rev = (crm.get("crm_revenue_prev") or {})
+    revenue = float(this_rev.get("revenue") or 0)
+    prior_revenue = float(prev_rev.get("revenue") or 0)
+    bookings = this_rev.get("bookings")
+    prior_bookings = prev_rev.get("bookings")
+
+    roas = round(revenue / cost, 2) if cost > 0 else None
+    prior_roas = round(prior_revenue / prior_cost, 2) if prior_cost > 0 else None
+
+    return {
+        "period_cost_native": cost,
+        "period_roas": roas,
+        "prior_cost_native": prior_cost,
+        "prior_roas": prior_roas,
+        "cost_vs_prior_pct": pct_change(cost, prior_cost),
+        "revenue_vs_prior_pct": pct_change(revenue, prior_revenue),
+        "roas_vs_prior_pct": pct_change(roas, prior_roas),
+        "bookings_vs_prior_pct": pct_change(bookings, prior_bookings),
+    }
 
 
 # ── 4. Recommended actions ───────────────────────────────────────────────────
@@ -802,6 +939,18 @@ def build_branch_biweekly(db: Session, branch: Branch, p: Period) -> dict:
                              {"available": False})
     crm = safe_section(db, f"bw.crm[{branch.name}]",
                        lambda: crm_section(db, branch.id, branch.name, anchor, window=window), {})
+
+    # Cost + ROAS, dated to this exact window — merged onto the section dicts
+    # above rather than returned separately, so the renderer reads `kol` /
+    # `crm` as one payload the same way it already reads `paid_ads`.
+    if kol:
+        kol_cost = safe_section(db, f"bw.kol_cost[{branch.name}]",
+                                lambda: _kol_period_cost_roas(db, branch, p, kol), {})
+        kol = {**kol, **kol_cost}
+    if crm:
+        crm_cost = safe_section(db, f"bw.crm_cost[{branch.name}]",
+                                lambda: _crm_period_cost_roas(db, branch, p, crm), {})
+        crm = {**crm, **crm_cost}
 
     flags = safe_section(db, f"bw.highlights[{branch.name}]",
                          lambda: highlights_block(kpi, target, markets, ads, channel),

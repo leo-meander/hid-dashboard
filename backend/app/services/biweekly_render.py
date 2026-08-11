@@ -139,6 +139,64 @@ def _delta_chip(value, label: str, kind: str = "pct") -> str:
     )
 
 
+def _inline_arrow(pct_value, good: float = 5.0, bad: float = -5.0) -> str:
+    """Small ▲/▼/≈ shown next to a number in a table cell, vs the prior
+    period. `_delta_chip` is the pill version used on KPI cards; this is the
+    compact version that fits inside a table row.
+    """
+    if pct_value is None:
+        return ""
+    up, down = pct_value >= good, pct_value < bad
+    arrow = "▲" if up else "▼" if down else "≈"
+    color = C["good"] if up else C["bad"] if down else C["warn"]
+    return (f" <span style='color:{color};font-weight:700;font-size:10.5px;"
+            f"white-space:nowrap;'>{arrow} {signed_pct(pct_value)}</span>")
+
+
+def _efficiency_pill(roas: Optional[float]) -> str:
+    """The ROAS badge — factored out so Ads, KOL and CRM render the exact
+    same pill for the exact same number, instead of three near-identical
+    copies drifting apart.
+    """
+    if roas is None:
+        return f"<span style='color:{C['muted']};font-size:11px;'>no spend</span>"
+    k = "g" if roas >= 4 else "b" if roas < 2 else "w"
+    word = "Excellent" if roas >= 8 else "Good" if roas >= 4 else \
+           "Weak" if roas < 2 else "OK"
+    return (f"<span style='font-size:11px;font-weight:600;padding:2px 8px;"
+            f"border-radius:20px;color:{_LIGHT[k]};background:{_LIGHT_BG[k]};'>"
+            f"{roas:.2f}× · {word}</span>")
+
+
+def _channel_row(bid, metric_key: str, name: str, cost, revenue, roas, bookings,
+                 currency: str, cost_pct=None, revenue_pct=None, bookings_pct=None) -> str:
+    """One row of the Channel | Spend | Revenue | Efficiency | Bookings table
+    shared by Ads, KOL and CRM, so cost and ROAS read identically wherever a
+    manager finds them in this report.
+    """
+    attrs = cell_attrs(bid, metric_key, f"{name} — cost & ROAS")
+    return (
+        f"<tr{attrs}>"
+        f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{name}</td>"
+        f"<td style='{_TD}text-align:right;'>{fmt(cost, currency)}{_inline_arrow(cost_pct)}</td>"
+        f"<td style='{_TD}text-align:right;'>{fmt(revenue, currency)}{_inline_arrow(revenue_pct)}</td>"
+        f"<td style='{_TD}text-align:right;'>{_efficiency_pill(roas)}</td>"
+        f"<td style='{_TD}text-align:right;'>{num(bookings)}{_inline_arrow(bookings_pct)}</td></tr>"
+    )
+
+
+def _channel_table(rows_html: str) -> str:
+    return f"""
+    <table style="width:100%;border-collapse:collapse;background:{C['card']};
+           border:1px solid {C['line']};border-radius:11px;overflow:hidden;font-size:13px;">
+      <thead><tr><th style="{_TH}">Channel</th><th style="{_TH}text-align:right;">Spend</th>
+      <th style="{_TH}text-align:right;">Revenue</th>
+      <th style="{_TH}text-align:right;">Efficiency</th>
+      <th style="{_TH}text-align:right;">Bookings</th></tr></thead>
+      <tbody>{rows_html}</tbody>
+    </table>"""
+
+
 def _kpi_card(branch_id, metric_key: str, label: str, value: str,
               light: str, chips: str, why: str) -> str:
     return f"""
@@ -302,6 +360,48 @@ def _render_headline(b: dict, p: Period) -> str:
     </div>"""
 
 
+def _render_revpar(b: dict, p: Period) -> str:
+    """RevPAR gets its own section rather than living only inside the
+    Executive Summary cards — it is the one number that catches ADR and OCC
+    moving in opposite directions (a rate hike that quietly costs occupancy,
+    or vice versa), which is easy to miss when reading those two cards
+    separately.
+    """
+    br = _brand(b)
+    kpi = b.get("kpi") or {}
+    cur = kpi.get("this") or {}
+    vy, vp = kpi.get("vs_yoy") or {}, kpi.get("vs_prior") or {}
+    lights = kpi.get("lights") or {}
+    currency = b.get("currency") or ""
+    bid = b["branch_id"]
+    has_yoy = kpi.get("yoy_has_data")
+    prior_lbl = "vs prior /day" if vp.get("per_day") else "vs prior"
+
+    chips = ""
+    if has_yoy:
+        chips += _delta_chip(vy.get("revpar_pct"), "vs last year")
+    chips += _delta_chip(vp.get("revpar_pct"), prior_lbl)
+    if not chips:
+        chips = f"<span style='font-size:12px;color:{C['muted']};'>no comparison data</span>"
+
+    adr, occ = cur.get("adr"), cur.get("occ_pct")
+    why = (
+        f"<b style='color:{br['deep']}'>RevPAR = ADR × Occupancy</b> — "
+        f"{fmt(adr, currency)} average rate × {occ * 100:.1f}% occupancy."
+        if (adr is not None and occ is not None) else
+        "Revenue earned per available room — blends rate and occupancy into "
+        "one number."
+    )
+
+    card = _kpi_card(bid, "bw.revpar", "RevPAR", fmt(cur.get("revpar"), currency),
+                     lights.get("revpar", "w"), chips, why)
+    body = f"<div style='max-width:420px;'>{card}</div>"
+    return _section(2, "RevPAR (Revenue per Available Room)",
+                    "The single number that blends rate and occupancy — a rate hike that "
+                    "costs occupancy (or vice versa) can look fine on the cards above but "
+                    "shows up here.", body, br["primary"])
+
+
 def _target_gauge(bid, m: dict, currency: str, br: dict, idx: int, size: str) -> str:
     """One gauge card for a single calendar month's achievement.
 
@@ -408,7 +508,7 @@ def _render_target(b: dict) -> str:
         body = (f"<div style='background:{C['card']};border:1px solid {C['line']};"
                 f"border-radius:11px;padding:18px;font-size:13px;color:{C['muted']};'>"
                 f"No revenue target set for this period — add one on the KPI Targets page.</div>")
-        return _section(2, "Target Achievement", "", body, br["primary"])
+        return _section(3, "Target Achievement", "", body, br["primary"])
 
     if len(months) >= 2:
         # The period crosses a month boundary — show each month's own
@@ -443,7 +543,7 @@ def _render_target(b: dict) -> str:
         )
 
     body = gauges_html + period_line
-    return _section(2, "Target Achievement", note, body, br["primary"])
+    return _section(3, "Target Achievement", note, body, br["primary"])
 
 
 def _render_channel_mix(b: dict) -> str:
@@ -451,7 +551,7 @@ def _render_channel_mix(b: dict) -> str:
     cb = b.get("channel_bookings") or {}
     rows_in = cb.get("rows") or []
     if not rows_in:
-        return _section(3, "Which channels do guests book through?", "",
+        return _section(4, "Which channels do guests book through?", "",
                         f"<div style='color:{C['muted']};font-size:13px;'>No booking data "
                         f"for this period.</div>", br["primary"])
     bid = b["branch_id"]
@@ -475,9 +575,9 @@ def _render_channel_mix(b: dict) -> str:
             <span style="display:block;height:100%;width:{n / top * 100:.1f}%;
                   background:{bar_color};border-radius:6px;"></span>
           </div>
-          <div style="flex:0 0 128px;text-align:right;font-size:12.5px;color:{C['muted']};">
+          <div style="flex:0 0 148px;text-align:right;font-size:12.5px;color:{C['muted']};">
             <b style="color:{C['charcoal']};font-size:13.5px;">
-            {share:.1f}%</b> · {num(n)}</div>
+            {share:.1f}%</b> · {num(n)}{_inline_arrow(s.get("vs_prior_pct"))}</div>
         </div>""" if share is not None else "")
 
     # Revenue share still comes from the occupancy-based channel_mix — the two
@@ -498,8 +598,8 @@ def _render_channel_mix(b: dict) -> str:
     body = (f"<div style='background:{C['card']};border:1px solid {C['line']};"
             f"border-radius:11px;padding:16px 18px;'>{''.join(rows)}</div>{tnote}")
     note = (f"{num(total)} bookings this period — counted once each if any night "
-            "fell inside it. More <b>direct</b> is better.")
-    return _section(3, "Which channels do guests book through?", note, body, br["primary"])
+            "fell inside it, ▲/▼ vs the prior period. More <b>direct</b> is better.")
+    return _section(4, "Which channels do guests book through?", note, body, br["primary"])
 
 
 def _render_markets(b: dict) -> str:
@@ -509,7 +609,7 @@ def _render_markets(b: dict) -> str:
     bid = b["branch_id"]
     currency = b.get("currency") or ""
     if not rows:
-        return _section(4, "Which markets do guests come from?", "",
+        return _section(5, "Which markets do guests come from?", "",
                         f"<div style='color:{C['muted']};font-size:13px;'>No market data "
                         f"for this period.</div>", br["primary"])
 
@@ -553,7 +653,7 @@ def _render_markets(b: dict) -> str:
     </table>
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
       Ranked by revenue in the period, with growth against the prior period.{unknown_note}</div>"""
-    return _section(4, "Which markets do guests come from?",
+    return _section(5, "Which markets do guests come from?",
                     "Revenue counted per night stayed, so long stays land in the period "
                     "they were actually used.", body, br["primary"])
 
@@ -565,32 +665,17 @@ def _render_ads(b: dict) -> str:
     bid = b["branch_id"]
     currency = b.get("currency") or ""
     if not channels:
-        return _section(5, "Ad campaigns that ran", "",
+        return _section(6, "Ad campaigns that ran", "",
                         f"<div style='color:{C['muted']};font-size:13px;'>No ad spend "
                         f"recorded for this branch in the period.</div>", br["primary"])
 
-    trs = []
-    for c in channels:
-        roas = c.get("roas")
-        if roas is None:
-            pill = f"<span style='color:{C['muted']};font-size:11px;'>no spend</span>"
-        else:
-            k = "g" if roas >= 4 else "b" if roas < 2 else "w"
-            word = "Excellent" if roas >= 8 else "Good" if roas >= 4 else \
-                   "Weak" if roas < 2 else "OK"
-            pill = (f"<span style='font-size:11px;font-weight:600;padding:2px 8px;"
-                    f"border-radius:20px;color:{_LIGHT[k]};background:{_LIGHT_BG[k]};'>"
-                    f"{roas:.2f}× · {word}</span>")
-        name = c["channel"]
-        attrs = cell_attrs(bid, "bw.ads." + name, "Ads — " + name)
-        trs.append(
-            f"<tr{attrs}>"
-            f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{name}</td>"
-            f"<td style='{_TD}text-align:right;'>{fmt(c.get('cost'), currency)}</td>"
-            f"<td style='{_TD}text-align:right;'>{fmt(c.get('revenue'), currency)}</td>"
-            f"<td style='{_TD}text-align:right;'>{pill}</td>"
-            f"<td style='{_TD}text-align:right;'>{num(c.get('bookings'))}</td></tr>"
-        )
+    trs = [
+        _channel_row(bid, "bw.ads." + c["channel"], c["channel"],
+                    c.get("cost"), c.get("revenue"), c.get("roas"), c.get("bookings"),
+                    currency, cost_pct=c.get("wow_cost_pct"), revenue_pct=c.get("wow_revenue_pct"),
+                    bookings_pct=c.get("wow_bookings_pct"))
+        for c in channels
+    ]
 
     tot = ads.get("last_week") or {}
     footer = ""
@@ -599,18 +684,11 @@ def _render_ads(b: dict) -> str:
     footer += ("Google spend reaches HiD only via the Ads Platform aggregator — a missing "
                "Google row means it is not connected for this branch, not that spend was zero.")
 
-    body = f"""
-    <table style="width:100%;border-collapse:collapse;background:{C['card']};
-           border:1px solid {C['line']};border-radius:11px;overflow:hidden;font-size:13px;">
-      <thead><tr><th style="{_TH}">Channel</th><th style="{_TH}text-align:right;">Spend</th>
-      <th style="{_TH}text-align:right;">Revenue</th>
-      <th style="{_TH}text-align:right;">Efficiency</th>
-      <th style="{_TH}text-align:right;">Bookings</th></tr></thead>
-      <tbody>{''.join(trs)}</tbody>
-    </table>
+    body = f"""{_channel_table(''.join(trs))}
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">{footer}</div>"""
-    return _section(5, "Ad campaigns that ran",
-                    "ROAS = revenue returned per 1 unit of ad spend. Higher is more profitable.",
+    return _section(6, "Ad campaigns that ran",
+                    "ROAS = revenue returned per 1 unit of ad spend, ▲/▼ vs the prior period. "
+                    "Higher is more profitable.",
                     body, br["primary"])
 
 
@@ -620,8 +698,22 @@ def _render_kol(b: dict) -> str:
     bid = b["branch_id"]
     currency = b.get("currency") or ""
     reach = b.get("kol_reach") or {}
+
+    # Same Channel | Spend | Revenue | Efficiency | Bookings shape as Ads —
+    # cost is `kol_records.cost_native` dated to this exact window, the
+    # exact-dated counterpart to Ads' daily-grain spend rows.
+    channel_row = _channel_row(
+        bid, "bw.kol.channel", "KOL / Influencer",
+        k.get("period_cost_native"), k.get("organic_revenue_native"),
+        k.get("period_roas"), k.get("organic_bookings"), currency,
+        cost_pct=k.get("cost_vs_prior_pct"), revenue_pct=k.get("revenue_vs_prior_pct"),
+        bookings_pct=k.get("bookings_vs_prior_pct"),
+    )
+
     rows = [
-        ("Posts published this period", num(k.get("posts_this_week")), "TikTok / IG / XHS"),
+        ("Posts published this period",
+         num(k.get("posts_this_week")) + _inline_arrow(k.get("posts_vs_prior_pct")),
+         "TikTok / IG / XHS"),
     ]
     if reach.get("available"):
         er = reach.get("engagement_rate_pct")
@@ -643,8 +735,11 @@ def _render_kol(b: dict) -> str:
             ("Engagements", num(reach.get("engagements")), er_note),
         ]
     rows += [
-        ("KOL-driven bookings", num(k.get("organic_bookings")), f"{num(k.get('organic_nights'))} nights"),
-        ("KOL-driven revenue", fmt(k.get("organic_revenue_native"), currency),
+        ("KOL-driven bookings",
+         num(k.get("organic_bookings")) + _inline_arrow(k.get("bookings_vs_prior_pct")),
+         f"{num(k.get('organic_nights'))} nights"),
+        ("KOL-driven revenue",
+         fmt(k.get("organic_revenue_native"), currency) + _inline_arrow(k.get("revenue_vs_prior_pct")),
          f"ROI {k['roi']:.2f}×" if k.get("roi") else "—"),
     ]
     # Distinguish "the Engine had nothing to give us" from "the posts got no
@@ -664,7 +759,8 @@ def _render_kol(b: dict) -> str:
         f"<td style='{_TD}text-align:right;color:{C['muted']};font-size:11.5px;'>{extra}</td></tr>"
         for i, (label, value, extra) in enumerate(rows)
     )
-    body = f"""
+    body = f"""{_channel_table(channel_row)}
+    <div style="height:14px;"></div>
     <table style="width:100%;border-collapse:collapse;background:{C['card']};
            border:1px solid {C['line']};border-radius:11px;overflow:hidden;font-size:13px;">
       <thead><tr><th style="{_TH}">KOL metric</th>
@@ -674,9 +770,11 @@ def _render_kol(b: dict) -> str:
     </table>
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
       {reach_note} Affiliate commission is not recorded in HiD.</div>"""
-    return _section(6, "KOL / Influencer Performance",
-                    "Sources: KOL records in HiD, reach from the KOL Engine, and "
-                    "bookings tagged to a KOL room type.", body, br["primary"])
+    return _section(7, "KOL / Influencer Performance",
+                    "Cost is KOL spend dated to this exact period, not calendar "
+                    "month-to-date, ▲/▼ vs the prior period. Sources: KOL records in "
+                    "HiD, reach from the KOL Engine, and bookings tagged to a KOL room type.",
+                    body, br["primary"])
 
 
 def _render_crm(b: dict) -> str:
@@ -687,17 +785,32 @@ def _render_crm(b: dict) -> str:
     currency = b.get("currency") or ""
     direct = next((c for c in ch.get("categories") or []
                    if (c.get("source_category") or "").lower() == "direct"), {})
+    crm_this = crm.get("crm_revenue_this") or {}
+
+    # Same Channel | Spend | Revenue | Efficiency | Bookings shape as Ads and
+    # KOL — cost is Budget Planner's monthly CRM actual, prorated to this
+    # exact window (CRM has no daily-granularity spend feed to sum instead).
+    channel_row = _channel_row(
+        bid, "bw.crm.channel", "CRM / Email",
+        crm.get("period_cost_native"), crm_this.get("revenue"),
+        crm.get("period_roas"), crm_this.get("bookings"), currency,
+        cost_pct=crm.get("cost_vs_prior_pct"), revenue_pct=crm.get("revenue_vs_prior_pct"),
+        bookings_pct=crm.get("bookings_vs_prior_pct"),
+    )
 
     rows = [
-        ("Direct room-nights", num(direct.get("room_nights")),
-         signed_pct(direct.get("wow_nights_pct")) if direct.get("wow_nights_pct") is not None else "—"),
-        ("Direct revenue", fmt(direct.get("revenue_native"), currency),
-         signed_pct(direct.get("wow_revenue_pct")) if direct.get("wow_revenue_pct") is not None else "—"),
+        ("Direct room-nights",
+         num(direct.get("room_nights")) + _inline_arrow(direct.get("wow_nights_pct")),
+         "share of all room-nights, no OTA commission"),
+        ("Direct revenue",
+         fmt(direct.get("revenue_native"), currency) + _inline_arrow(direct.get("wow_revenue_pct")),
+         "no OTA commission"),
         ("Direct share of revenue",
          f"{direct['revenue_share_pct']:.1f}%" if direct.get("revenue_share_pct") is not None else "—",
          "no OTA commission"),
-        ("CRM-tagged revenue", fmt(crm.get("revenue_native"), currency),
-         signed_pct(crm.get("wow_revenue_pct")) if crm.get("wow_revenue_pct") is not None else "—"),
+        ("CRM-tagged revenue",
+         fmt(crm_this.get("revenue"), currency) + _inline_arrow(crm.get("wow_revenue_pct")),
+         f"{num(crm_this.get('bookings'))} booking(s)"),
     ]
     trs = "".join(
         f"<tr{cell_attrs(bid, f'bw.crm.{i}', label)}>"
@@ -706,19 +819,22 @@ def _render_crm(b: dict) -> str:
         f"<td style='{_TD}text-align:right;color:{C['muted']};font-size:11.5px;'>{extra}</td></tr>"
         for i, (label, value, extra) in enumerate(rows)
     )
-    body = f"""
+    body = f"""{_channel_table(channel_row)}
+    <div style="height:14px;"></div>
     <table style="width:100%;border-collapse:collapse;background:{C['card']};
            border:1px solid {C['line']};border-radius:11px;overflow:hidden;font-size:13px;">
       <thead><tr><th style="{_TH}">Metric</th>
       <th style="{_TH}text-align:right;">This period</th>
-      <th style="{_TH}text-align:right;">vs prior</th></tr></thead>
+      <th style="{_TH}text-align:right;"></th></tr></thead>
       <tbody>{trs}</tbody>
     </table>
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
       "Direct" = booked through owned channels, no OTA commission. CRM figures come from
-      CRM-tagged rate plans in Cloudbeds and the GoHighLevel integration.</div>"""
-    return _section(7, "CRM / Direct Booking Performance",
-                    "Sources: HiD Direct channel + CRM-tagged rate plans.", body, br["primary"])
+      CRM-tagged rate plans in Cloudbeds and the GoHighLevel integration. Cost is Budget
+      Planner's monthly CRM actual, prorated to this window.</div>"""
+    return _section(8, "CRM / Direct Booking Performance",
+                    "Sources: HiD Direct channel + CRM-tagged rate plans, ▲/▼ vs the prior period.",
+                    body, br["primary"])
 
 
 def _render_flags(b: dict) -> str:
@@ -748,7 +864,7 @@ def _render_flags(b: dict) -> str:
 
     body = (f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:14px;'>"
             f"{panel('Highlights', good, True)}{panel('Watch-outs', watch, False)}</div>")
-    return _section(8, "Highlights &amp; Watch-outs", "", body, _brand(b)["primary"])
+    return _section(9, "Highlights &amp; Watch-outs", "", body, _brand(b)["primary"])
 
 
 def _render_actions(b: dict) -> str:
@@ -771,7 +887,7 @@ def _render_actions(b: dict) -> str:
     )
     body = (f"<div style='background:{C['card']};border:1px solid {C['line']};"
             f"border-radius:11px;overflow:hidden;'>{items}</div>")
-    return _section(9, "Recommended Actions (next period)",
+    return _section(10, "Recommended Actions (next period)",
                     "Growing markets matched against upcoming holidays in those markets.",
                     body, br["primary"])
 
@@ -836,6 +952,7 @@ def _render_branch(b: dict, p: Period) -> str:
          data-branch-name="{b['branch_name']}" data-branch-color="{br['primary']}">
       {banner}
       {_render_exec_summary(b, p)}
+      {_render_revpar(b, p)}
       {_render_target(b)}
       {_render_channel_mix(b)}
       {_render_markets(b)}

@@ -165,11 +165,17 @@ def _payload(branch_name="MEANDER Saigon"):
         },
         "kol": {"posts_this_week": 9, "organic_bookings": 30,
                 "organic_nights": 61, "organic_revenue_native": 102_500_000,
-                "roi": 8.4},
+                "roi": 8.4, "period_cost_native": 12_200_000, "period_roas": 8.4,
+                "cost_vs_prior_pct": 5.0, "revenue_vs_prior_pct": 12.0,
+                "bookings_vs_prior_pct": 8.0, "posts_vs_prior_pct": -10.0},
         "kol_reach": {"available": True, "posts": 11, "reach": 4916,
                       "engagements": 1348, "engagement_rate_pct": 3.43,
                       "engagement_rate_posts": 3, "reason": "ok"},
-        "crm": {"revenue_native": 306_000_000, "wow_revenue_pct": 22.0},
+        "crm": {"crm_revenue_this": {"bookings": 40, "nights": 88, "revenue": 306_000_000},
+                "crm_revenue_prev": {"bookings": 33, "nights": 70, "revenue": 250_800_000},
+                "wow_revenue_pct": 22.0, "period_cost_native": 5_000_000,
+                "period_roas": 61.2, "cost_vs_prior_pct": 0.0,
+                "revenue_vs_prior_pct": 22.0, "bookings_vs_prior_pct": 21.2},
         "highlights": ["Room rate +30% vs same period."],
         "watchouts": ["Occupancy down 5.7 pts."],
         "actions": [{"title": "Push Malaysia", "when": "Aug 17–25",
@@ -186,13 +192,28 @@ class TestBuildHtml:
     def test_renders_every_section(self):
         html = self._render([_payload()])
         for heading in [
-            "Executive Summary", "Target Achievement",
+            "Executive Summary", "RevPAR (Revenue per Available Room)",
+            "Target Achievement",
             "Which channels do guests book through?",
             "Which markets do guests come from?", "Ad campaigns that ran",
             "KOL / Influencer Performance", "CRM / Direct Booking Performance",
             "Highlights", "Watch-outs", "Recommended Actions", "Quick Glossary",
         ]:
             assert heading in html, f"missing section: {heading}"
+
+    def test_kol_and_crm_show_cost_and_roas_like_ads(self):
+        """Cost + ROAS for KOL and CRM render as a Channel | Spend | Revenue |
+        Efficiency | Bookings row, the same shape the Ads table already uses."""
+        html = self._render([_payload()])
+        assert "KOL / Influencer</td>" in html
+        assert "CRM / Email</td>" in html
+        assert "8.40× · Excellent" in html   # KOL period_roas
+        assert "61.20× · Excellent" in html  # CRM period_roas
+
+    def test_vs_prior_arrows_appear_on_channel_rows(self):
+        html = self._render([_payload()])
+        assert "▲ +12.00%" in html   # KOL revenue_vs_prior_pct
+        assert "▼ -10.00%" in html   # KOL posts_vs_prior_pct
 
     def test_each_branch_block_carries_its_own_colour(self):
         html = self._render([_payload("MEANDER Saigon"),
