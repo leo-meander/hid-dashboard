@@ -277,7 +277,6 @@ def target_block(db: Session, branch: Branch, p: Period) -> dict:
         "month_pct": latest["pct"],
         "month_label": latest["label"],
         "month_closed": latest["closed"],
-        "month_through": latest["through"],
         "light": verdict(
             round(period_pct * 100, 1) if period_pct is not None else None,
             TARGET_GOOD_PCT, TARGET_BAD_PCT,
