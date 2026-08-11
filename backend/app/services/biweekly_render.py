@@ -837,71 +837,62 @@ def _render_crm(b: dict) -> str:
                     body, br["primary"])
 
 
-def _actions_html(b: dict, br: dict) -> str:
-    """Recommended-actions cards, nested inside Highlights & Watch-outs rather
-    than a numbered section of their own — an action IS a watch-out (or a
-    highlight to build on), so splitting them across two sections just made a
-    manager scroll twice to get the full picture for one branch.
+def _flag_panel(title: str, items: list, bullet: str, color: str, bg: str, border: str) -> str:
+    """One coloured bullet-list card — Highlights, Watch-outs and Recommended
+    Actions all render through this one function now, so "make Actions look
+    like the other two" can never drift out of sync again.
     """
-    actions = b.get("actions") or []
-    if not actions:
-        return ""
-    items = "".join(
-        f"""<div style="display:flex;gap:13px;padding:13px 16px;border-top:1px solid {C['line']};">
-          <div style="flex:0 0 26px;height:26px;border-radius:7px;background:{br['pale']};
-               color:{br['deep']};font-weight:700;font-size:13px;display:flex;
-               align-items:center;justify-content:center;">{i + 1}</div>
-          <div style="font-size:13.5px;"><b style="color:{C['charcoal']};">{a['title']}</b>
-            <span style="font-size:11px;font-weight:600;color:{br['deep']};
-                  background:{br['pale']};padding:1px 7px;border-radius:5px;
-                  margin-left:6px;white-space:nowrap;">{a['when']}</span>
-            <div style="margin-top:3px;">{a['body']}</div></div>
-        </div>"""
-        for i, a in enumerate(actions)
+    if not items:
+        items = ["Nothing notable this period."]
+    lis = "".join(
+        f"<li style='font-size:13px;padding:6px 0 6px 20px;position:relative;"
+        f"border-top:1px solid rgba(0,0,0,.05);list-style:none;'>"
+        f"<span style='position:absolute;left:0;font-weight:700;"
+        f"color:{color};'>{bullet}</span>{t}</li>"
+        for t in items
     )
-    return f"""
-    <div style="margin-top:16px;">
-      <div style="font-size:13px;font-weight:600;color:{C['muted']};margin-bottom:8px;">
-        Recommended Actions (next period)</div>
-      <div style="background:{C['card']};border:1px solid {C['line']};
-           border-radius:11px;overflow:hidden;">{items}</div>
-    </div>"""
+    return (f"<div style='border-radius:11px;padding:16px 18px;background:{bg};"
+            f"border:1px solid {border};'>"
+            f"<h4 style='font-size:14px;font-weight:600;margin:0 0 10px;color:{color};'>"
+            f"{bullet} {title}</h4><ul style='margin:0;padding:0;'>{lis}</ul></div>")
 
 
 def _render_flags(b: dict) -> str:
-    """Highlights & Watch-outs, plus Recommended Actions nested underneath,
-    plus an anchor div the frontend portals a "add your own" editor into —
-    the rule-driven list only ever says what the numbers already say, and
-    the branch/growth team asked to be able to add what the numbers can't.
+    """Highlights, Watch-outs and Recommended Actions as three matching
+    bullet-list cards in one section, plus an anchor div the frontend
+    portals a "add your own" editor into. Actions used to be a separate
+    numbered-card section that looked nothing like the other two — same
+    data, different skin — which is exactly the kind of drift `_flag_panel`
+    now rules out.
     """
     br = _brand(b)
     good = b.get("highlights") or []
     watch = b.get("watchouts") or []
+    actions = b.get("actions") or []
     bid = b.get("branch_id")
 
-    def panel(title, items, is_good):
-        if not items:
-            items = ["Nothing notable this period."]
-        bullet = "▲" if is_good else "!"
-        color = "#0c7a44" if is_good else "#9a6a00"
-        bg = C["good_bg"] if is_good else C["warn_bg"]
-        border = "#bfe3cc" if is_good else "#ecd9a8"
-        lis = "".join(
-            f"<li style='font-size:13px;padding:6px 0 6px 20px;position:relative;"
-            f"border-top:1px solid rgba(0,0,0,.05);list-style:none;'>"
-            f"<span style='position:absolute;left:0;font-weight:700;"
-            f"color:{C['good'] if is_good else C['warn']};'>{bullet}</span>{t}</li>"
-            for t in items
-        )
-        return (f"<div style='border-radius:11px;padding:16px 18px;background:{bg};"
-                f"border:1px solid {border};'>"
-                f"<h4 style='font-size:14px;font-weight:600;margin:0 0 10px;color:{color};'>"
-                f"{bullet} {title}</h4><ul style='margin:0;padding:0;'>{lis}</ul></div>")
+    action_items = [
+        f"<b>{a['title']}</b> "
+        f"<span style='font-size:10.5px;font-weight:600;color:{br['deep']};"
+        f"background:#fff;padding:1px 6px;border-radius:5px;white-space:nowrap;'>"
+        f"{a['when']}</span> — {a['body']}"
+        for a in actions
+    ]
 
-    body = (f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:14px;'>"
-            f"{panel('Highlights', good, True)}{panel('Watch-outs', watch, False)}</div>"
-            f"{_actions_html(b, br)}"
-            f'<div id="bw-flags-anchor-{bid}"></div>')
+    body = (
+        f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:14px;'>"
+        f"{_flag_panel('Highlights', good, '▲', '#0c7a44', C['good_bg'], '#bfe3cc')}"
+        f"{_flag_panel('Watch-outs', watch, '!', '#9a6a00', C['warn_bg'], '#ecd9a8')}"
+        f"</div>"
+        + (
+            f"<div style='margin-top:14px;'>"
+            f"{_flag_panel('Recommended Actions (next period)', action_items, '→',
+                          br['deep'], br['pale'], br['primary'])}"
+            f"</div>"
+            if action_items else ""
+        )
+        + f'<div id="bw-flags-anchor-{bid}"></div>'
+    )
     return _section(9, "Highlights &amp; Watch-outs",
                     "Automatic, from the numbers above — add your own below.",
                     body, br["primary"])

@@ -128,12 +128,16 @@ def signed_pct(val):
 
 
 def signed_pts(val):
-    """Signed percentage-POINT delta, 1 decimal (e.g. +2.4 pts / −5.7 pts).
+    """Signed OCC delta, 1 decimal, shown with a '%' suffix like every other
+    delta in the report (e.g. +2.4% / −5.7%).
 
-    OCC moves are quoted in points, not percent-of-percent — a jump from
-    80% to 84% is "+4 pts", never "+5%". Bi-weekly report only.
+    The number itself is still a percentage-POINT move (occupancy 80% to 84%
+    is +4, not the +5% a relative change would read as) — only the label
+    changed, per team feedback (2026-08-11): a mix of "%" and "pts" across
+    the report read as inconsistent, and "%" is how the team already talks
+    about occupancy moves informally. Bi-weekly report only.
     """
     if val is None:
         return "—"
     sign = "+" if val >= 0 else "−"
-    return f"{sign}{abs(val):.1f} pts"
+    return f"{sign}{abs(val):.1f}%"

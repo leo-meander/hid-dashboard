@@ -777,7 +777,9 @@ def highlights_block(kpi: dict, target: dict, markets: dict, ads: dict,
         if delta is None:
             return
         if unit == "pts":
-            text = f"<b>{label} {delta:+.1f} pts</b>{suffix}."
+            # Still a percentage-POINT move under the hood — only the label
+            # reads "%" now, matching every other delta in the report.
+            text = f"<b>{label} {delta:+.1f}%</b>{suffix}."
             if delta >= OCC_GOOD_PTS:
                 good.append(text)
             elif delta < OCC_BAD_PTS:

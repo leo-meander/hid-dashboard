@@ -177,7 +177,7 @@ def _payload(branch_name="MEANDER Saigon"):
                 "period_roas": 61.2, "cost_vs_prior_pct": 0.0,
                 "revenue_vs_prior_pct": 22.0, "bookings_vs_prior_pct": 21.2},
         "highlights": ["Room rate +30% vs same period."],
-        "watchouts": ["Occupancy down 5.7 pts."],
+        "watchouts": ["Occupancy down 5.7%."],
         "actions": [{"title": "Push Malaysia", "when": "Aug 17–25",
                      "body": "Malaysia school holidays."}],
         "data_notes": [{"level": "warn", "text": "121 bookings lack a source market."}],
@@ -188,6 +188,16 @@ class TestBuildHtml:
     def _render(self, payloads):
         return _build_html(payloads, period_for(2026, 29),
                            datetime(2026, 8, 3, tzinfo=timezone.utc))
+
+    def test_occupancy_delta_reads_percent_not_points(self):
+        """OCC moves are still computed as percentage points internally, but
+        every delta in the report — including OCC's — reads with a '%'
+        suffix now. "pts" must never reach the rendered HTML (2026-08-11
+        feedback: mixing "%" and "pts" across the report read as broken)."""
+        html = self._render([_payload()])
+        assert "pts" not in html
+        assert "−5.7%" in html   # vs_yoy occ_pts = -5.7
+        assert "−1.0%" in html   # vs_prior occ_pts = -1.0
 
     def test_renders_every_section(self):
         html = self._render([_payload()])
