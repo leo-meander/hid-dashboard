@@ -143,11 +143,14 @@ def _payload(branch_name="MEANDER Saigon"):
             "rows": [
                 # Production shape: the "code" column carries a display name.
                 {"country": "Philippines", "country_code": "Philippines",
-                 "revenue": 514_000_000, "bookings": 102, "vs_prior_pct": 219.0},
+                 "revenue": 514_000_000, "bookings": 102, "vs_prior_pct": 219.0,
+                 "bookings_vs_prior_pct": 18.0},
                 {"country": "Taiwan", "country_code": "Taiwan",
-                 "revenue": 164_000_000, "bookings": 40, "vs_prior_pct": 344.0},
+                 "revenue": 164_000_000, "bookings": 40, "vs_prior_pct": 344.0,
+                 "bookings_vs_prior_pct": -6.0},
                 {"country": "Atlantis", "country_code": None,
-                 "revenue": 12_000_000, "bookings": 4, "vs_prior_pct": None},
+                 "revenue": 12_000_000, "bookings": 4, "vs_prior_pct": None,
+                 "bookings_vs_prior_pct": None},
             ],
             "total_revenue": 1_210_000_000,
             "unknown_revenue": 342_000_000,
@@ -326,6 +329,15 @@ class TestBuildHtml:
         assert "🇵🇭 Philippines" in html
         assert "🇹🇼 Taiwan" in html
         assert "🌐 Atlantis" in html   # unrecognised, but never a broken box
+
+    def test_markets_table_matches_the_other_tables_inline_arrow_style(self):
+        """Revenue and Bookings each carry their own inline vs-prior arrow,
+        same as Ads/KOL/CRM — no separate trailing "vs prior" column."""
+        html = self._render([_payload()])
+        assert "vs prior</th>" not in html
+        assert "▲ +219.00%" in html   # Philippines revenue
+        assert "▲ +18.00%" in html    # Philippines bookings
+        assert "▼ -6.00%" in html     # Taiwan bookings
 
     def test_target_leads_with_the_month_and_marks_the_goal(self):
         html = self._render([_payload()])

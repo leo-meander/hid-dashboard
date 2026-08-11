@@ -354,6 +354,7 @@ def markets_block(db: Session, branch: Branch, p: Period, limit: int = 8) -> dic
     for code, v in cur.items():
         is_unknown = code == "??" or "unknown" in (v["country"] or "").lower()
         prior_rev = prior.get(code, {}).get("revenue", 0.0)
+        prior_bookings = prior.get(code, {}).get("bookings", 0)
         yoy_rev = last_year.get(code, {}).get("revenue", 0.0)
         rows.append({
             **v,
@@ -361,6 +362,8 @@ def markets_block(db: Session, branch: Branch, p: Period, limit: int = 8) -> dic
             "share_pct": round(v["revenue"] / total_rev * 100, 1) if total_rev else None,
             "prior_revenue": prior_rev,
             "vs_prior_pct": pct_change(v["revenue"], prior_rev),
+            "prior_bookings": prior_bookings,
+            "bookings_vs_prior_pct": pct_change(v["bookings"], prior_bookings),
             "yoy_revenue": yoy_rev,
             "vs_yoy_pct": pct_change(v["revenue"], yoy_rev),
         })

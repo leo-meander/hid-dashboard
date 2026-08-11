@@ -621,26 +621,21 @@ def _render_markets(b: dict) -> str:
                         f"<div style='color:{C['muted']};font-size:13px;'>No market data "
                         f"for this period.</div>", br["primary"])
 
+    # Arrows sit next to Revenue and Bookings themselves now, same as every
+    # other table in this report (Ads/KOL/CRM) — a separate trailing "vs
+    # prior" column was the one place in the report that broke that pattern.
     trs = []
     for r in rows:
-        d = r.get("vs_prior_pct")
-        if d is None:
-            pill = f"<span style='color:{C['muted']};font-size:11px;'>new</span>"
-        else:
-            up = d >= 0
-            pill = (f"<span style='font-size:11px;font-weight:600;padding:2px 8px;"
-                    f"border-radius:20px;color:{C['good'] if up else C['bad']};"
-                    f"background:{C['good_bg'] if up else C['bad_bg']};'>"
-                    f"{'▲' if up else '▼'} {signed_pct(d)}</span>")
         country = r["country"]
         attrs = cell_attrs(bid, "bw.market." + country, "Market — " + country)
         trs.append(
             f"<tr{attrs}>"
             f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>"
             f"{_flag(r.get('country_code') or country)} {country}</td>"
-            f"<td style='{_TD}text-align:right;'>{fmt(r['revenue'], currency)}</td>"
-            f"<td style='{_TD}text-align:right;'>{num(r['bookings'])}</td>"
-            f"<td style='{_TD}text-align:right;'>{pill}</td></tr>"
+            f"<td style='{_TD}text-align:right;'>{fmt(r['revenue'], currency)}"
+            f"{_inline_arrow(r.get('vs_prior_pct'))}</td>"
+            f"<td style='{_TD}text-align:right;'>{num(r['bookings'])}"
+            f"{_inline_arrow(r.get('bookings_vs_prior_pct'))}</td></tr>"
         )
 
     unknown_note = ""
@@ -655,12 +650,11 @@ def _render_markets(b: dict) -> str:
     <table style="width:100%;border-collapse:collapse;background:{C['card']};
            border:1px solid {C['line']};border-radius:11px;overflow:hidden;font-size:13px;">
       <thead><tr><th style="{_TH}">Market</th><th style="{_TH}text-align:right;">Revenue</th>
-      <th style="{_TH}text-align:right;">Bookings</th>
-      <th style="{_TH}text-align:right;">vs prior</th></tr></thead>
+      <th style="{_TH}text-align:right;">Bookings</th></tr></thead>
       <tbody>{''.join(trs)}</tbody>
     </table>
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
-      Ranked by revenue in the period, with growth against the prior period.{unknown_note}</div>"""
+      Ranked by revenue in the period, ▲/▼ vs the prior period.{unknown_note}</div>"""
     return _section(5, "Which markets do guests come from?",
                     "Revenue counted per night stayed, so long stays land in the period "
                     "they were actually used.", body, br["primary"])
