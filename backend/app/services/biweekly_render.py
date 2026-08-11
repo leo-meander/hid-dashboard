@@ -862,18 +862,19 @@ def _render_flags(b: dict) -> str:
         for a in actions
     ]
 
+    actions_panel = ""
+    if action_items:
+        actions_panel = _flag_panel(
+            "Recommended Actions (next period)", action_items, "→",
+            br["deep"], br["pale"], br["primary"],
+        )
+
     body = (
         f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:14px;'>"
         f"{_flag_panel('Highlights', good, '▲', '#0c7a44', C['good_bg'], '#bfe3cc')}"
         f"{_flag_panel('Watch-outs', watch, '!', '#9a6a00', C['warn_bg'], '#ecd9a8')}"
         f"</div>"
-        + (
-            f"<div style='margin-top:14px;'>"
-            f"{_flag_panel('Recommended Actions (next period)', action_items, '→',
-                          br['deep'], br['pale'], br['primary'])}"
-            f"</div>"
-            if action_items else ""
-        )
+        + (f"<div style='margin-top:14px;'>{actions_panel}</div>" if actions_panel else "")
         + f'<div id="bw-flags-anchor-{bid}"></div>'
     )
     return _section(9, "Highlights &amp; Watch-outs",
