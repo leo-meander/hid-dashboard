@@ -25,11 +25,14 @@ export const getPreviewHtml = async (period, { fresh = false } = {}) => {
 };
 
 /**
- * Notes for one (period, branch, kind).
+ * Notes/comments for a (period, branch), optionally narrowed to one metric.
  *
- * `metricKey` is what separates the three note boards from each other — the
- * backend stores them all as biweekly comments and filters on it, so a board
- * is just a metric key with a heading. See NOTE_BOARDS in BiWeeklyReport.jsx.
+ * Two callers, same endpoint: `metricKey` set is a single thread — one of
+ * the three note boards, or a discussion opened by clicking a report cell
+ * (see NOTE_BOARDS / MetricCommentDrawer in BiWeeklyReport.jsx). `metricKey`
+ * omitted returns every comment for the branch+period at once, which is how
+ * the page computes per-cell "has discussion" badge counts in one request
+ * instead of one per metric.
  */
 export const getNotes = (period, branchId, metricKey) =>
   axios
