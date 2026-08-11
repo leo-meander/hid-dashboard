@@ -169,10 +169,12 @@ def _efficiency_pill(roas: Optional[float]) -> str:
 
 
 def _channel_row(bid, metric_key: str, name: str, cost, revenue, roas, bookings,
-                 currency: str, cost_pct=None, revenue_pct=None, bookings_pct=None) -> str:
+                 currency: str, cost_pct=None, revenue_pct=None, bookings_pct=None,
+                 roas_pct=None) -> str:
     """One row of the Channel | Spend | Revenue | Efficiency | Bookings table
     shared by Ads, KOL and CRM, so cost and ROAS read identically wherever a
-    manager finds them in this report.
+    manager finds them in this report. Every column carries a vs-prior-period
+    arrow when the data for it exists — Efficiency included, via `roas_pct`.
     """
     attrs = cell_attrs(bid, metric_key, f"{name} — cost & ROAS")
     return (
@@ -180,7 +182,7 @@ def _channel_row(bid, metric_key: str, name: str, cost, revenue, roas, bookings,
         f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{name}</td>"
         f"<td style='{_TD}text-align:right;'>{fmt(cost, currency)}{_inline_arrow(cost_pct)}</td>"
         f"<td style='{_TD}text-align:right;'>{fmt(revenue, currency)}{_inline_arrow(revenue_pct)}</td>"
-        f"<td style='{_TD}text-align:right;'>{_efficiency_pill(roas)}</td>"
+        f"<td style='{_TD}text-align:right;'>{_efficiency_pill(roas)}{_inline_arrow(roas_pct)}</td>"
         f"<td style='{_TD}text-align:right;'>{num(bookings)}{_inline_arrow(bookings_pct)}</td></tr>"
     )
 
@@ -284,7 +286,12 @@ def _render_exec_summary(b: dict, p: Period) -> str:
         f"{c['channel']} {c['roas']:.1f}×"
         for c in (ads.get("by_channel") or []) if c.get("roas") is not None
     ]
-    roas_chips = (
+    # `wow_roas_pct` is misleadingly named (weekly-report leftover) but is
+    # already the aggregate ROAS vs THIS report's prior period — every other
+    # KPI card on this row carries a vs-prior chip, and ROAS was the one
+    # silently missing it.
+    roas_chips = _delta_chip(ads.get("wow_roas_pct"), "vs prior")
+    roas_chips += (
         f"<span style='font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;"
         f"color:{_LIGHT[roas_light]};background:{_LIGHT_BG[roas_light]};display:inline-block;'>"
         f"{' · '.join(parts)}</span>" if parts else
@@ -673,7 +680,7 @@ def _render_ads(b: dict) -> str:
         _channel_row(bid, "bw.ads." + c["channel"], c["channel"],
                     c.get("cost"), c.get("revenue"), c.get("roas"), c.get("bookings"),
                     currency, cost_pct=c.get("wow_cost_pct"), revenue_pct=c.get("wow_revenue_pct"),
-                    bookings_pct=c.get("wow_bookings_pct"))
+                    bookings_pct=c.get("wow_bookings_pct"), roas_pct=c.get("wow_roas_pct"))
         for c in channels
     ]
 
@@ -707,7 +714,7 @@ def _render_kol(b: dict) -> str:
         k.get("period_cost_native"), k.get("organic_revenue_native"),
         k.get("period_roas"), k.get("organic_bookings"), currency,
         cost_pct=k.get("cost_vs_prior_pct"), revenue_pct=k.get("revenue_vs_prior_pct"),
-        bookings_pct=k.get("bookings_vs_prior_pct"),
+        bookings_pct=k.get("bookings_vs_prior_pct"), roas_pct=k.get("roas_vs_prior_pct"),
     )
 
     rows = [
@@ -730,9 +737,12 @@ def _render_kol(b: dict) -> str:
         else:
             er_note = f"ER {er:.2f}%"
         rows += [
-            ("Views / reach", num(reach.get("reach")),
+            ("Views / reach",
+             num(reach.get("reach")) + _inline_arrow(reach.get("reach_vs_prior_pct")),
              f"{num(total_posts)} post(s) in period"),
-            ("Engagements", num(reach.get("engagements")), er_note),
+            ("Engagements",
+             num(reach.get("engagements")) + _inline_arrow(reach.get("engagements_vs_prior_pct")),
+             er_note),
         ]
     rows += [
         ("KOL-driven bookings",
@@ -780,60 +790,33 @@ def _render_kol(b: dict) -> str:
 def _render_crm(b: dict) -> str:
     br = _brand(b)
     crm = b.get("crm") or {}
-    ch = b.get("channel_mix") or {}
     bid = b["branch_id"]
     currency = b.get("currency") or ""
-    direct = next((c for c in ch.get("categories") or []
-                   if (c.get("source_category") or "").lower() == "direct"), {})
     crm_this = crm.get("crm_revenue_this") or {}
 
     # Same Channel | Spend | Revenue | Efficiency | Bookings shape as Ads and
     # KOL — cost is Budget Planner's monthly CRM actual, prorated to this
     # exact window (CRM has no daily-granularity spend feed to sum instead).
+    # Direct-channel figures (room-nights, revenue share) used to be
+    # duplicated here too — they already have their own row in "Which
+    # channels do guests book through?" above, so this section is CRM
+    # revenue only now, per team feedback (2026-08-11).
     channel_row = _channel_row(
         bid, "bw.crm.channel", "CRM / Email",
         crm.get("period_cost_native"), crm_this.get("revenue"),
         crm.get("period_roas"), crm_this.get("bookings"), currency,
         cost_pct=crm.get("cost_vs_prior_pct"), revenue_pct=crm.get("revenue_vs_prior_pct"),
-        bookings_pct=crm.get("bookings_vs_prior_pct"),
+        bookings_pct=crm.get("bookings_vs_prior_pct"), roas_pct=crm.get("roas_vs_prior_pct"),
     )
 
-    rows = [
-        ("Direct room-nights",
-         num(direct.get("room_nights")) + _inline_arrow(direct.get("wow_nights_pct")),
-         "share of all room-nights, no OTA commission"),
-        ("Direct revenue",
-         fmt(direct.get("revenue_native"), currency) + _inline_arrow(direct.get("wow_revenue_pct")),
-         "no OTA commission"),
-        ("Direct share of revenue",
-         f"{direct['revenue_share_pct']:.1f}%" if direct.get("revenue_share_pct") is not None else "—",
-         "no OTA commission"),
-        ("CRM-tagged revenue",
-         fmt(crm_this.get("revenue"), currency) + _inline_arrow(crm.get("wow_revenue_pct")),
-         f"{num(crm_this.get('bookings'))} booking(s)"),
-    ]
-    trs = "".join(
-        f"<tr{cell_attrs(bid, f'bw.crm.{i}', label)}>"
-        f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{label}</td>"
-        f"<td style='{_TD}text-align:right;'>{value}</td>"
-        f"<td style='{_TD}text-align:right;color:{C['muted']};font-size:11.5px;'>{extra}</td></tr>"
-        for i, (label, value, extra) in enumerate(rows)
-    )
     body = f"""{_channel_table(channel_row)}
-    <div style="height:14px;"></div>
-    <table style="width:100%;border-collapse:collapse;background:{C['card']};
-           border:1px solid {C['line']};border-radius:11px;overflow:hidden;font-size:13px;">
-      <thead><tr><th style="{_TH}">Metric</th>
-      <th style="{_TH}text-align:right;">This period</th>
-      <th style="{_TH}text-align:right;"></th></tr></thead>
-      <tbody>{trs}</tbody>
-    </table>
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
-      "Direct" = booked through owned channels, no OTA commission. CRM figures come from
-      CRM-tagged rate plans in Cloudbeds and the GoHighLevel integration. Cost is Budget
-      Planner's monthly CRM actual, prorated to this window.</div>"""
-    return _section(8, "CRM / Direct Booking Performance",
-                    "Sources: HiD Direct channel + CRM-tagged rate plans, ▲/▼ vs the prior period.",
+      Revenue from CRM-tagged reservations (Cloudbeds rate plans + the GoHighLevel
+      integration) — see "Which channels do guests book through?" above for the
+      Direct-channel breakdown. Cost is Budget Planner's monthly CRM actual,
+      prorated to this window.</div>"""
+    return _section(8, "CRM Performance",
+                    "Revenue from CRM Reservations, ▲/▼ vs the prior period.",
                     body, br["primary"])
 
 

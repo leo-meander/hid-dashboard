@@ -157,24 +157,32 @@ def _payload(branch_name="MEANDER Saigon"):
         "paid_ads": {
             "by_channel": [
                 {"channel": "Google Ads", "cost": 10_600_000,
-                 "revenue": 220_800_000, "roas": 20.8, "bookings": 43},
+                 "revenue": 220_800_000, "roas": 20.8, "bookings": 43,
+                 "wow_cost_pct": 8.0, "wow_revenue_pct": 15.0,
+                 "wow_bookings_pct": 6.0, "wow_roas_pct": 6.5},
                 {"channel": "Meta Ads", "cost": 7_800_000,
-                 "revenue": 11_600_000, "roas": 1.48, "bookings": 5},
+                 "revenue": 11_600_000, "roas": 1.48, "bookings": 5,
+                 "wow_cost_pct": -3.0, "wow_revenue_pct": -20.0,
+                 "wow_bookings_pct": -10.0, "wow_roas_pct": -18.0},
             ],
             "last_week": {"cost": 18_400_000, "revenue": 232_400_000},
+            "wow_roas_pct": 9.4,
         },
         "kol": {"posts_this_week": 9, "organic_bookings": 30,
                 "organic_nights": 61, "organic_revenue_native": 102_500_000,
                 "roi": 8.4, "period_cost_native": 12_200_000, "period_roas": 8.4,
                 "cost_vs_prior_pct": 5.0, "revenue_vs_prior_pct": 12.0,
-                "bookings_vs_prior_pct": 8.0, "posts_vs_prior_pct": -10.0},
+                "bookings_vs_prior_pct": 8.0, "posts_vs_prior_pct": -10.0,
+                "roas_vs_prior_pct": 7.0},
         "kol_reach": {"available": True, "posts": 11, "reach": 4916,
                       "engagements": 1348, "engagement_rate_pct": 3.43,
-                      "engagement_rate_posts": 3, "reason": "ok"},
+                      "engagement_rate_posts": 3, "reason": "ok",
+                      "reach_vs_prior_pct": 25.0, "engagements_vs_prior_pct": -8.0},
         "crm": {"crm_revenue_this": {"bookings": 40, "nights": 88, "revenue": 306_000_000},
                 "crm_revenue_prev": {"bookings": 33, "nights": 70, "revenue": 250_800_000},
                 "wow_revenue_pct": 22.0, "period_cost_native": 5_000_000,
                 "period_roas": 61.2, "cost_vs_prior_pct": 0.0,
+                "roas_vs_prior_pct": 0.0,
                 "revenue_vs_prior_pct": 22.0, "bookings_vs_prior_pct": 21.2},
         "highlights": ["Room rate +30% vs same period."],
         "watchouts": ["Occupancy down 5.7%."],
@@ -206,7 +214,7 @@ class TestBuildHtml:
             "Target Achievement",
             "Which channels do guests book through?",
             "Which markets do guests come from?", "Ad campaigns that ran",
-            "KOL / Influencer Performance", "CRM / Direct Booking Performance",
+            "KOL / Influencer Performance", "CRM Performance",
             "Highlights", "Watch-outs", "Recommended Actions", "Quick Glossary",
         ]:
             assert heading in html, f"missing section: {heading}"
@@ -224,6 +232,36 @@ class TestBuildHtml:
         html = self._render([_payload()])
         assert "▲ +12.00%" in html   # KOL revenue_vs_prior_pct
         assert "▼ -10.00%" in html   # KOL posts_vs_prior_pct
+
+    def test_efficiency_column_carries_a_vs_prior_arrow_too(self):
+        """Every other column in the Channel|Spend|Revenue|Efficiency|Bookings
+        table had a vs-prior arrow — Efficiency (ROAS) was the one silently
+        missing it, on Ads, KOL and CRM rows alike."""
+        html = self._render([_payload()])
+        assert "▲ +6.50%" in html    # Ads Google Ads wow_roas_pct
+        assert "▼ -18.00%" in html   # Ads Meta Ads wow_roas_pct
+        assert "≈ +0.00%" in html    # CRM cost_vs_prior_pct (unchanged)
+
+    def test_exec_summary_roas_card_has_a_vs_prior_chip(self):
+        """The Executive Summary ROAS card showed a per-channel breakdown but
+        no vs-prior delta, unlike Revenue/ADR/OCC beside it."""
+        html = self._render([_payload()])
+        assert "▲ +9.40%" in html
+        assert "vs prior</span></span>" in html
+
+    def test_kol_reach_and_engagements_show_vs_prior_arrows(self):
+        html = self._render([_payload()])
+        assert "▲ +25.00%" in html   # reach_vs_prior_pct
+        assert "▼ -8.00%" in html    # engagements_vs_prior_pct
+
+    def test_crm_section_no_longer_duplicates_direct_channel_metrics(self):
+        """Direct room-nights / revenue / share used to be repeated here —
+        they already have a row in "Which channels do guests book through?".
+        This section is CRM revenue only now."""
+        html = self._render([_payload()])
+        assert "CRM Performance" in html
+        assert "Direct room-nights" not in html
+        assert "Direct share of revenue" not in html
 
     def test_each_branch_block_carries_its_own_colour(self):
         html = self._render([_payload("MEANDER Saigon"),

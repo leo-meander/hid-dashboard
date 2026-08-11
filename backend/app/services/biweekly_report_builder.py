@@ -455,11 +455,18 @@ def channel_bookings_block(db: Session, branch: Branch, p: Period,
 
 
 def kol_reach_block(branch: Branch, p: Period) -> dict:
-    """Reach + engagement for the period, from the KOL Engine.
+    """Reach + engagement for the period, from the KOL Engine, plus the
+    vs-prior-period deltas every other metric in this report carries.
 
     HiD's `kol_records` has no reach/engagement columns, so this is the only
     source. It degrades to `available: False` on any failure — see
     `kol_engine.fetch_kol_insights` for why that is not reported as zero.
+
+    The prior-period call looks like a second network round trip but isn't:
+    `fetch_kol_insights` caches the org's full record set for
+    `_KOL_INSIGHTS_TTL_SEC` and filters in memory, so this reuses whatever
+    the first call (this period, or another branch in the same report run)
+    already fetched.
     """
     from app.config import settings
     from app.services.kol_engine import fetch_kol_insights, resolve_hotel_id_from_branch_name
@@ -470,14 +477,26 @@ def kol_reach_block(branch: Branch, p: Period) -> dict:
         return {"available": False, "posts": 0, "reach": 0, "engagements": 0,
                 "engagement_rate_pct": None, "reason": "branch_not_mapped"}
 
-    return fetch_kol_insights(
+    kwargs = dict(
         base_url=settings.KOL_ENGINE_URL,
         org_id=settings.KOL_ENGINE_ORG_ID,
         api_key=settings.KOL_SYNC_API_KEY,
         branch_key=branch_key,
-        date_from=p.start,
-        date_to=p.end,
     )
+    this = fetch_kol_insights(**kwargs, date_from=p.start, date_to=p.end)
+    if not this.get("available"):
+        return this
+
+    prev_start, prev_end = previous_window(p)
+    prior = fetch_kol_insights(**kwargs, date_from=prev_start, date_to=prev_end)
+    prior_reach = prior.get("reach") if prior.get("available") else None
+    prior_engagements = prior.get("engagements") if prior.get("available") else None
+
+    return {
+        **this,
+        "reach_vs_prior_pct": pct_change(this.get("reach"), prior_reach),
+        "engagements_vs_prior_pct": pct_change(this.get("engagements"), prior_engagements),
+    }
 
 
 # ── 3d. Cost / ROAS for the CRM and KOL channels ─────────────────────────────
