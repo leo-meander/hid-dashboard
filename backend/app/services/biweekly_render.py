@@ -23,6 +23,7 @@ from app.services.report_common import (
     signed_pct,
     signed_pts,
 )
+from app.services.weekly_report_builder import pct_change
 
 
 # Brand palette from the report design — teal on cream, traffic lights.
@@ -792,27 +793,19 @@ def _render_crm(b: dict) -> str:
     crm = b.get("crm") or {}
     bid = b["branch_id"]
     currency = b.get("currency") or ""
-    crm_this = crm.get("crm_revenue_this") or {}
     by_plan = crm.get("by_rate_plan") or []
 
-    # Same Channel | Spend | Revenue | Efficiency | Bookings shape as Ads and
-    # KOL — cost is Budget Planner's monthly CRM actual, prorated to this
-    # exact window (CRM has no daily-granularity spend feed to sum instead).
-    # Direct-channel figures (room-nights, revenue share) used to be
-    # duplicated here too — they already have their own row in "Which
-    # channels do guests book through?" above, so this section is CRM
-    # revenue only now, per team feedback (2026-08-11).
-    channel_row = _channel_row(
-        bid, "bw.crm.channel", "CRM / Email",
-        crm.get("period_cost_native"), crm_this.get("revenue"),
-        crm.get("period_roas"), crm_this.get("bookings"), currency,
-        cost_pct=crm.get("cost_vs_prior_pct"), revenue_pct=crm.get("revenue_vs_prior_pct"),
-        bookings_pct=crm.get("bookings_vs_prior_pct"), roas_pct=crm.get("roas_vs_prior_pct"),
-    )
+    if not by_plan:
+        return _section(8, "CRM Performance", "",
+                        f"<div style='color:{C['muted']};font-size:13px;'>No CRM "
+                        f"reservations for this branch in the period.</div>", br["primary"])
 
     # Per-campaign breakdown — same "By Rate Plan" grouping the Marketing
     # Activity → CRM Reservations tab uses, so this table and that one never
-    # tell a different story for the same window.
+    # tell a different story for the same window. No Channel/Spend/Efficiency
+    # row anymore — CRM cost isn't tracked per campaign, only as one
+    # branch-wide monthly figure, so a single "Spend" number next to a
+    # per-campaign table implied a precision that didn't exist.
     plan_rows = "".join(
         f"<tr{cell_attrs(bid, 'bw.crm.plan.' + (r.get('rate_plan_name') or r['label']), 'CRM — ' + r['label'])}>"
         f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{r['label']}</td>"
@@ -822,26 +815,41 @@ def _render_crm(b: dict) -> str:
         f"<td style='{_TD}text-align:right;'>{fmt(r.get('adr'), currency)}</td></tr>"
         for r in by_plan
     )
-    plan_table = ""
-    if plan_rows:
-        plan_table = f"""
-        <div style="height:14px;"></div>
-        <table style="width:100%;border-collapse:collapse;background:{C['card']};
-               border:1px solid {C['line']};border-radius:11px;overflow:hidden;font-size:13px;">
-          <thead><tr><th style="{_TH}">Rate plan / campaign</th>
-          <th style="{_TH}text-align:right;">Bookings</th>
-          <th style="{_TH}text-align:right;">Nights</th>
-          <th style="{_TH}text-align:right;">Revenue</th>
-          <th style="{_TH}text-align:right;">ADR</th></tr></thead>
-          <tbody>{plan_rows}</tbody>
-        </table>"""
 
-    body = f"""{_channel_table(channel_row)}{plan_table}
+    total_bookings = sum(r.get("bookings") or 0 for r in by_plan)
+    total_nights = sum(r.get("nights") or 0 for r in by_plan)
+    total_revenue = sum(r.get("revenue") or 0 for r in by_plan)
+    total_adr = round(total_revenue / total_nights, 2) if total_nights else None
+    # A campaign with no prior-period row contributes 0 to the prior total —
+    # it's genuinely new, so its whole revenue is real growth, not a gap in
+    # the data the way a missing per-row prior would be.
+    total_prior_bookings = sum(r.get("prior_bookings") or 0 for r in by_plan)
+    total_prior_revenue = sum(r.get("prior_revenue") or 0 for r in by_plan)
+    total_row = (
+        f"<tr{cell_attrs(bid, 'bw.crm.total', 'CRM — Total')}>"
+        f"<td style='{_TD}font-weight:700;color:{C['charcoal']};border-top:2px solid {C['line']};'>Total</td>"
+        f"<td style='{_TD}text-align:right;font-weight:700;border-top:2px solid {C['line']};'>"
+        f"{num(total_bookings)}{_inline_arrow(pct_change(total_bookings, total_prior_bookings))}</td>"
+        f"<td style='{_TD}text-align:right;font-weight:700;border-top:2px solid {C['line']};'>{num(total_nights)}</td>"
+        f"<td style='{_TD}text-align:right;font-weight:700;border-top:2px solid {C['line']};'>"
+        f"{fmt(total_revenue, currency)}{_inline_arrow(pct_change(total_revenue, total_prior_revenue))}</td>"
+        f"<td style='{_TD}text-align:right;font-weight:700;border-top:2px solid {C['line']};'>{fmt(total_adr, currency)}</td></tr>"
+    )
+
+    body = f"""
+    <table style="width:100%;border-collapse:collapse;background:{C['card']};
+           border:1px solid {C['line']};border-radius:11px;overflow:hidden;font-size:13px;">
+      <thead><tr><th style="{_TH}">Rate plan / campaign</th>
+      <th style="{_TH}text-align:right;">Bookings</th>
+      <th style="{_TH}text-align:right;">Nights</th>
+      <th style="{_TH}text-align:right;">Revenue</th>
+      <th style="{_TH}text-align:right;">ADR</th></tr></thead>
+      <tbody>{plan_rows}{total_row}</tbody>
+    </table>
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
       Revenue from CRM-tagged reservations (Cloudbeds rate plans + the GoHighLevel
       integration), broken down by rate plan / campaign — see "Which channels do
-      guests book through?" above for the Direct-channel breakdown. Cost is Budget
-      Planner's monthly CRM actual, prorated to this window.</div>"""
+      guests book through?" above for the Direct-channel breakdown.</div>"""
     return _section(8, "CRM Performance",
                     "Revenue from CRM Reservations, ▲/▼ vs the prior period.",
                     body, br["primary"])

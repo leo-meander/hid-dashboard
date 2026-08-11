@@ -229,14 +229,15 @@ class TestBuildHtml:
         ]:
             assert heading in html, f"missing section: {heading}"
 
-    def test_kol_and_crm_show_cost_and_roas_like_ads(self):
-        """Cost + ROAS for KOL and CRM render as a Channel | Spend | Revenue |
-        Efficiency | Bookings row, the same shape the Ads table already uses."""
+    def test_kol_shows_cost_and_roas_like_ads(self):
+        """Cost + ROAS for KOL render as a Channel | Spend | Revenue |
+        Efficiency | Bookings row, the same shape the Ads table already uses.
+        CRM has no such row (see test_crm_has_no_channel_summary_row) — CRM
+        cost isn't tracked per campaign, only as one branch-wide monthly
+        figure."""
         html = self._render([_payload()])
         assert "KOL / Influencer</td>" in html
-        assert "CRM / Email</td>" in html
         assert "8.40× · Excellent" in html   # KOL period_roas
-        assert "61.20× · Excellent" in html  # CRM period_roas
 
     def test_vs_prior_arrows_appear_on_channel_rows(self):
         html = self._render([_payload()])
@@ -244,13 +245,21 @@ class TestBuildHtml:
         assert "▼ -10.00%" in html   # KOL posts_vs_prior_pct
 
     def test_efficiency_column_carries_a_vs_prior_arrow_too(self):
-        """Every other column in the Channel|Spend|Revenue|Efficiency|Bookings
-        table had a vs-prior arrow — Efficiency (ROAS) was the one silently
-        missing it, on Ads, KOL and CRM rows alike."""
+        """Every other column in the Ads Channel|Spend|Revenue|Efficiency|
+        Bookings table had a vs-prior arrow — Efficiency (ROAS) was the one
+        silently missing it."""
         html = self._render([_payload()])
         assert "▲ +6.50%" in html    # Ads Google Ads wow_roas_pct
         assert "▼ -18.00%" in html   # Ads Meta Ads wow_roas_pct
-        assert "≈ +0.00%" in html    # CRM cost_vs_prior_pct (unchanged)
+
+    def test_crm_has_no_channel_summary_row(self):
+        """CRM Performance dropped the Channel|Spend|Revenue|Efficiency|
+        Bookings row entirely — CRM cost is one branch-wide monthly figure,
+        not trackable per campaign, so showing it next to a per-campaign
+        table implied a precision that didn't exist."""
+        html = self._render([_payload()])
+        assert "CRM / Email</td>" not in html
+        assert "61.20× · Excellent" not in html
 
     def test_exec_summary_roas_card_has_a_vs_prior_chip(self):
         """The Executive Summary ROAS card showed a per-channel breakdown but
@@ -284,6 +293,15 @@ class TestBuildHtml:
         assert "▲ +36.35%" in html   # first rate plan's revenue delta
         # the second rate plan has no prior data — no arrow, not a fake one
         assert "32,895" in html
+
+    def test_crm_rate_plan_table_has_a_total_row(self):
+        """Sums Bookings/Nights/Revenue across every rate plan, with its own
+        vs-prior arrow — a campaign missing a prior row (new this period)
+        contributes 0 to the prior total, not a hole in the sum."""
+        html = self._render([_payload()])
+        assert ">Total</td>" in html
+        assert "73,800" in html     # 40,905 + 32,895
+        assert "▲ +146.00%" in html  # (73800-30000)/30000
 
     def test_watchouts_and_actions_share_one_card(self):
         """Recommended Actions no longer gets its own card — it's merged
