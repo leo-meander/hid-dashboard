@@ -7,10 +7,16 @@
  * per-branch blocks out of it on the `.hid-bw-branch` anchor so switching
  * branches costs nothing.
  *
- * Manager's Notes reuse the Weekly Report's comment table, tagged
- * report_type='biweekly' and scoped to (period, branch).
+ * Two ways to leave a comment, both on the Weekly Report's comment table
+ * (tagged report_type='biweekly'):
+ *   - Click any card/row in the rendered report — MetricCommentDrawer opens
+ *     a thread scoped to that exact (period, branch, metric_key), same UX
+ *     the Weekly Report already has.
+ *   - The three note boards below the report are threads NOT tied to one
+ *     metric (bw._general / bw._growth / bw._support) — running logs rather
+ *     than a discussion under one number.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import {
   getPeriods,
@@ -257,6 +263,247 @@ function NoteBoard({ board, period, branchId }) {
   );
 }
 
+/**
+ * Discussion thread for one clicked metric cell — opens when a manager
+ * clicks any [data-metric-key] card/row in the rendered report body.
+ *
+ * Mirrors the Weekly Report's CommentDrawer (same table, same report_type
+ * discriminator, same is_action_item/is_resolved columns) but doesn't need
+ * a static metric_key → label map the way that one does: every card the
+ * bi-weekly renderer emits already carries data-metric-label (see
+ * `report_common.cell_attrs`), so the label travels with the click.
+ */
+function MetricCommentDrawer({ context, currentUser, onClose, onChanged }) {
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [markAction, setMarkAction] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editingText, setEditingText] = useState("");
+
+  const key = ["biweekly-notes", context.period, context.branchId, context.metricKey];
+  const { data: comments = [], isPending } = useQuery({
+    queryKey: key,
+    queryFn: () => getNotes(context.period, context.branchId, context.metricKey),
+    placeholderData: keepPreviousData,
+  });
+
+  function fail(e, fallback) {
+    setError(e?.response?.data?.detail || e?.message || fallback);
+  }
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: key });
+    onChanged?.();
+  };
+
+  async function submit() {
+    const body = draft.trim();
+    if (!body) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const posted = await createNote({
+        period: context.period,
+        branch_id: context.branchId,
+        body,
+        metric_key: context.metricKey,
+      });
+      if (markAction) await updateNote(posted.id, { is_action_item: true });
+      setDraft("");
+      setMarkAction(false);
+      refresh();
+    } catch (e) {
+      fail(e, "Could not post the comment");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleAction(c) {
+    setError(null);
+    try {
+      await updateNote(c.id, { is_action_item: !c.is_action_item });
+      refresh();
+    } catch (e) {
+      fail(e, "Could not update the comment");
+    }
+  }
+
+  async function toggleResolved(c) {
+    setError(null);
+    try {
+      await updateNote(c.id, { is_resolved: !c.is_resolved });
+      refresh();
+    } catch (e) {
+      fail(e, "Could not update the comment");
+    }
+  }
+
+  async function saveEdit(c) {
+    const text = editingText.trim();
+    if (!text) return;
+    setError(null);
+    try {
+      await updateNote(c.id, { body: text });
+      setEditingId(null);
+      setEditingText("");
+      refresh();
+    } catch (e) {
+      fail(e, "Could not save the edit");
+    }
+  }
+
+  async function remove(c) {
+    if (!confirm("Delete this comment? This cannot be undone.")) return;
+    setError(null);
+    try {
+      await deleteNote(c.id);
+      refresh();
+    } catch (e) {
+      fail(e, "Could not delete the comment");
+    }
+  }
+
+  const canEdit = (c) => currentUser && (c.author_id === currentUser.id || currentUser.role === "admin");
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} />
+      <div className="fixed top-0 right-0 bottom-0 w-full sm:w-[440px] bg-white shadow-2xl z-50 flex flex-col">
+        <div className="px-5 py-4 border-b border-gray-200 flex items-start justify-between">
+          <div className="min-w-0">
+            <p className="text-[11px] text-gray-500 uppercase tracking-wide">Discussion</p>
+            <h3 className="text-base font-semibold text-gray-900 truncate">{context.metricLabel}</h3>
+            <p className="text-xs text-gray-500 mt-0.5 truncate">
+              {context.branchName ? `${context.branchName} · ` : ""}{context.periodLabel}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="ml-3 text-gray-400 hover:text-gray-700 text-2xl leading-none"
+            aria-label="Close"
+          >
+            &times;
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+          {isPending ? (
+            <p className="text-sm text-gray-400">Loading…</p>
+          ) : comments.length === 0 ? (
+            <p className="text-sm text-gray-400">No discussion yet. Start the thread below.</p>
+          ) : (
+            comments.map(c => (
+              <div
+                key={c.id}
+                className={`rounded-lg border p-3 ${
+                  c.is_resolved
+                    ? "bg-gray-50 border-gray-200 opacity-70"
+                    : c.is_action_item
+                    ? "bg-amber-50 border-amber-200"
+                    : "bg-white border-gray-200"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-gray-800 truncate">
+                      {c.author_name || "Unknown"}
+                    </p>
+                    <p className="text-[10px] text-gray-400">
+                      {c.created_at ? new Date(c.created_at).toLocaleString() : ""}
+                      {c.updated_at && c.updated_at !== c.created_at && " · edited"}
+                    </p>
+                  </div>
+                  <div className="flex gap-1 text-[10px]">
+                    {c.is_action_item && (
+                      <span className="bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-semibold">ACTION</span>
+                    )}
+                    {c.is_resolved && (
+                      <span className="bg-green-200 text-green-900 px-1.5 py-0.5 rounded font-semibold">RESOLVED</span>
+                    )}
+                  </div>
+                </div>
+                {editingId === c.id ? (
+                  <div>
+                    <textarea
+                      value={editingText}
+                      onChange={e => setEditingText(e.target.value)}
+                      rows={3}
+                      className="w-full text-sm px-2 py-1.5 border border-gray-200 rounded focus:outline-none focus:ring-2 focus:ring-teal-500"
+                    />
+                    <div className="flex gap-2 mt-2 text-xs">
+                      <button onClick={() => saveEdit(c)} className="px-2 py-1 bg-teal-700 text-white rounded hover:bg-teal-800">Save</button>
+                      <button onClick={() => { setEditingId(null); setEditingText(""); }} className="px-2 py-1 bg-gray-100 text-gray-600 rounded hover:bg-gray-200">Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap break-words">{c.body}</p>
+                )}
+                <div className="flex flex-wrap gap-2 mt-2 text-[11px]">
+                  <button
+                    onClick={() => toggleAction(c)}
+                    className="text-gray-500 hover:text-amber-700"
+                    title={c.is_action_item ? "Unmark action item" : "Mark as action item"}
+                  >
+                    {c.is_action_item ? "✓ Action item" : "Mark action"}
+                  </button>
+                  <span className="text-gray-300">·</span>
+                  <button onClick={() => toggleResolved(c)} className="text-gray-500 hover:text-green-700">
+                    {c.is_resolved ? "Reopen" : "Resolve"}
+                  </button>
+                  {canEdit(c) && editingId !== c.id && (
+                    <>
+                      <span className="text-gray-300">·</span>
+                      <button
+                        onClick={() => { setEditingId(c.id); setEditingText(c.body); }}
+                        className="text-gray-500 hover:text-teal-700"
+                      >
+                        Edit
+                      </button>
+                      <span className="text-gray-300">·</span>
+                      <button onClick={() => remove(c)} className="text-gray-500 hover:text-red-600">Delete</button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="border-t border-gray-200 px-5 py-3 bg-gray-50">
+          <textarea
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            placeholder="Add a comment or question…"
+            rows={3}
+            className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white"
+          />
+          {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
+          <div className="flex items-center justify-between mt-2">
+            <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={markAction}
+                onChange={e => setMarkAction(e.target.checked)}
+                className="h-3.5 w-3.5 text-teal-600 rounded"
+              />
+              Mark as action item
+            </label>
+            <button
+              onClick={submit}
+              disabled={busy || !draft.trim()}
+              className="px-3 py-1.5 bg-teal-700 text-white text-sm rounded-lg hover:bg-teal-800 disabled:opacity-50"
+            >
+              {busy ? "Posting…" : "Post"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 /** All three note boards for one (period, branch). */
 function BranchNotes({ period, branchId, branchName }) {
   return (
@@ -279,10 +526,13 @@ function BranchNotes({ period, branchId, branchName }) {
 
 export default function BiWeeklyReport() {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const [selectedPeriod, setSelectedPeriod] = useState("");
   const [selectedBranch, setSelectedBranch] = useState(null);
   const [rebuilding, setRebuilding] = useState(false);
   const [rebuildError, setRebuildError] = useState(null);
+  const [drawer, setDrawer] = useState(null);
+  const reportBodyRef = useRef(null);
 
   const { data: periods = [], isPending: periodsLoading, error: periodsError } =
     useQuery({
@@ -344,11 +594,91 @@ export default function BiWeeklyReport() {
   );
   const period = periods.find(p => p.key === selectedPeriod);
 
+  // Every comment for the active (period, branch) — one request covers both
+  // the three note boards' history AND the per-metric badge counts below,
+  // since branch is already fixed to one tab at a time on this page.
+  const allCommentsKey = ["biweekly-all-comments", selectedPeriod, active?.id];
+  const { data: allComments = [] } = useQuery({
+    queryKey: allCommentsKey,
+    queryFn: () => getNotes(selectedPeriod, active.id),
+    enabled: Boolean(selectedPeriod && active?.id),
+    placeholderData: keepPreviousData,
+  });
+
+  const commentCounts = useMemo(() => {
+    const map = {};
+    allComments.forEach(c => {
+      if (c.is_resolved) return;
+      if (!map[c.metric_key]) map[c.metric_key] = { count: 0, actionItems: 0 };
+      map[c.metric_key].count += 1;
+      if (c.is_action_item) map[c.metric_key].actionItems += 1;
+    });
+    return map;
+  }, [allComments]);
+
+  // Click delegation: resolve any click inside the rendered report body to
+  // the closest [data-metric-key] card/row and open its discussion thread.
+  function onReportClick(e) {
+    const cell = e.target.closest("[data-metric-key]");
+    if (!cell || !reportBodyRef.current?.contains(cell)) return;
+    setDrawer({
+      period: selectedPeriod,
+      periodLabel: period ? `${period.label} · ${period.date_label}` : selectedPeriod,
+      branchId: cell.dataset.branchId || active?.id || null,
+      branchName: active?.name || null,
+      metricKey: cell.dataset.metricKey,
+      metricLabel: cell.dataset.metricLabel || cell.dataset.metricKey,
+    });
+  }
+
+  // Badge every [data-metric-key] cell that has open discussion, so a
+  // manager scanning the report can see at a glance where the conversation
+  // already is without opening each drawer.
+  useEffect(() => {
+    const root = reportBodyRef.current;
+    if (!root) return;
+    root.querySelectorAll(".hid-bw-comment-badge").forEach(el => el.remove());
+    root.querySelectorAll("[data-metric-key]").forEach(cell => {
+      const info = commentCounts[cell.dataset.metricKey];
+      if (!info || !info.count) return;
+      const badge = document.createElement("span");
+      badge.className = "hid-bw-comment-badge";
+      badge.textContent = info.actionItems > 0 ? `⚡${info.count}` : `💬${info.count}`;
+      badge.title = info.actionItems > 0
+        ? `${info.count} open comment(s), ${info.actionItems} action item(s)`
+        : `${info.count} open comment(s)`;
+      cell.appendChild(badge);
+    });
+  }, [active?.html, commentCounts]);
+
   return (
     <div className="space-y-4">
       <style>{`
         .hid-bw-body { background: transparent; }
         .hid-bw-body a { color: #016b67; }
+        .hid-bw-body .hid-metric-cell {
+          cursor: pointer;
+          position: relative;
+          transition: background-color 0.15s ease;
+        }
+        .hid-bw-body .hid-metric-cell:hover {
+          background-color: rgba(2, 135, 130, 0.08) !important;
+          outline: 1px dashed rgba(2, 135, 130, 0.5);
+          outline-offset: -2px;
+        }
+        .hid-bw-comment-badge {
+          display: inline-block;
+          margin-left: 6px;
+          padding: 1px 6px;
+          font-size: 10px;
+          font-weight: 600;
+          color: #016b67;
+          background: #e6f2f1;
+          border: 1px solid #b8dad7;
+          border-radius: 999px;
+          vertical-align: middle;
+          line-height: 1.3;
+        }
       `}</style>
 
       <div className="bg-white rounded-xl border border-gray-200 p-4 flex items-center justify-between flex-wrap gap-3">
@@ -476,9 +806,14 @@ export default function BiWeeklyReport() {
           {active && (
             <>
               <div
+                ref={reportBodyRef}
+                onClick={onReportClick}
                 className="hid-bw-body bg-[#FBF7F4] rounded-xl border border-gray-200 px-6 py-4"
                 dangerouslySetInnerHTML={{ __html: active.html }}
               />
+              <p className="text-[11px] text-gray-400 -mt-2 px-1">
+                Click any card or row above to discuss that number.
+              </p>
               <BranchNotes
                 period={selectedPeriod}
                 branchId={active.id}
@@ -487,6 +822,15 @@ export default function BiWeeklyReport() {
             </>
           )}
         </>
+      )}
+
+      {drawer && (
+        <MetricCommentDrawer
+          context={drawer}
+          currentUser={user}
+          onClose={() => setDrawer(null)}
+          onChanged={() => queryClient.invalidateQueries({ queryKey: allCommentsKey })}
+        />
       )}
 
       {!reportQuery.isPending && !reportQuery.isError && branches.length === 0 && (
