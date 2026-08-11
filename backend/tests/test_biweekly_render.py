@@ -183,7 +183,17 @@ def _payload(branch_name="MEANDER Saigon"):
                 "wow_revenue_pct": 22.0, "period_cost_native": 5_000_000,
                 "period_roas": 61.2, "cost_vs_prior_pct": 0.0,
                 "roas_vs_prior_pct": 0.0,
-                "revenue_vs_prior_pct": 22.0, "bookings_vs_prior_pct": 21.2},
+                "revenue_vs_prior_pct": 22.0, "bookings_vs_prior_pct": 21.2,
+                "by_rate_plan": [
+                    {"rate_plan_name": "Extension Promotion (>2 night", "label": "Extension Promotion (>2 night",
+                     "bookings": 17, "nights": 41, "revenue": 40_905, "adr": 998,
+                     "prior_revenue": 30_000, "prior_bookings": 12,
+                     "revenue_vs_prior_pct": 36.35, "bookings_vs_prior_pct": 41.67},
+                    {"rate_plan_name": "Extension Promotion (1 night", "label": "Extension Promotion (1 night",
+                     "bookings": 37, "nights": 39, "revenue": 32_895, "adr": 843,
+                     "prior_revenue": None, "prior_bookings": None,
+                     "revenue_vs_prior_pct": None, "bookings_vs_prior_pct": None},
+                ]},
         "highlights": ["Room rate +30% vs same period."],
         "watchouts": ["Occupancy down 5.7%."],
         "actions": [{"title": "Push Malaysia", "when": "Aug 17–25",
@@ -262,6 +272,18 @@ class TestBuildHtml:
         assert "CRM Performance" in html
         assert "Direct room-nights" not in html
         assert "Direct share of revenue" not in html
+
+    def test_crm_shows_a_by_rate_plan_breakdown(self):
+        """CRM Performance breaks revenue down by rate plan/campaign — same
+        grouping as Marketing Activity → CRM Reservations "By Rate Plan" —
+        with a vs-prior arrow per row, and no arrow for a campaign that
+        didn't run last period."""
+        html = self._render([_payload()])
+        assert "Rate plan / campaign" in html
+        assert "Extension Promotion (&gt;2 night" in html or "Extension Promotion (>2 night" in html
+        assert "▲ +36.35%" in html   # first rate plan's revenue delta
+        # the second rate plan has no prior data — no arrow, not a fake one
+        assert "32,895" in html
 
     def test_watchouts_and_actions_share_one_card(self):
         """Recommended Actions no longer gets its own card — it's merged

@@ -793,6 +793,7 @@ def _render_crm(b: dict) -> str:
     bid = b["branch_id"]
     currency = b.get("currency") or ""
     crm_this = crm.get("crm_revenue_this") or {}
+    by_plan = crm.get("by_rate_plan") or []
 
     # Same Channel | Spend | Revenue | Efficiency | Bookings shape as Ads and
     # KOL — cost is Budget Planner's monthly CRM actual, prorated to this
@@ -809,12 +810,38 @@ def _render_crm(b: dict) -> str:
         bookings_pct=crm.get("bookings_vs_prior_pct"), roas_pct=crm.get("roas_vs_prior_pct"),
     )
 
-    body = f"""{_channel_table(channel_row)}
+    # Per-campaign breakdown — same "By Rate Plan" grouping the Marketing
+    # Activity → CRM Reservations tab uses, so this table and that one never
+    # tell a different story for the same window.
+    plan_rows = "".join(
+        f"<tr{cell_attrs(bid, 'bw.crm.plan.' + (r.get('rate_plan_name') or r['label']), 'CRM — ' + r['label'])}>"
+        f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{r['label']}</td>"
+        f"<td style='{_TD}text-align:right;'>{num(r.get('bookings'))}{_inline_arrow(r.get('bookings_vs_prior_pct'))}</td>"
+        f"<td style='{_TD}text-align:right;'>{num(r.get('nights'))}</td>"
+        f"<td style='{_TD}text-align:right;'>{fmt(r.get('revenue'), currency)}{_inline_arrow(r.get('revenue_vs_prior_pct'))}</td>"
+        f"<td style='{_TD}text-align:right;'>{fmt(r.get('adr'), currency)}</td></tr>"
+        for r in by_plan
+    )
+    plan_table = ""
+    if plan_rows:
+        plan_table = f"""
+        <div style="height:14px;"></div>
+        <table style="width:100%;border-collapse:collapse;background:{C['card']};
+               border:1px solid {C['line']};border-radius:11px;overflow:hidden;font-size:13px;">
+          <thead><tr><th style="{_TH}">Rate plan / campaign</th>
+          <th style="{_TH}text-align:right;">Bookings</th>
+          <th style="{_TH}text-align:right;">Nights</th>
+          <th style="{_TH}text-align:right;">Revenue</th>
+          <th style="{_TH}text-align:right;">ADR</th></tr></thead>
+          <tbody>{plan_rows}</tbody>
+        </table>"""
+
+    body = f"""{_channel_table(channel_row)}{plan_table}
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
       Revenue from CRM-tagged reservations (Cloudbeds rate plans + the GoHighLevel
-      integration) — see "Which channels do guests book through?" above for the
-      Direct-channel breakdown. Cost is Budget Planner's monthly CRM actual,
-      prorated to this window.</div>"""
+      integration), broken down by rate plan / campaign — see "Which channels do
+      guests book through?" above for the Direct-channel breakdown. Cost is Budget
+      Planner's monthly CRM actual, prorated to this window.</div>"""
     return _section(8, "CRM Performance",
                     "Revenue from CRM Reservations, ▲/▼ vs the prior period.",
                     body, br["primary"])

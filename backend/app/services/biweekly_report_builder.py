@@ -51,6 +51,7 @@ from app.services.kpi_engine import (
 )
 from app.services.report_common import safe_section
 from app.services.weekly_report_builder import (
+    _crm_revenue_by_rate_plan,
     channel_mix,
     crm_section,
     kol_section,
@@ -634,6 +635,37 @@ def _crm_period_cost_roas(db: Session, branch: Branch, p: Period, crm: dict) -> 
     }
 
 
+def _crm_rate_plan_deltas(db: Session, branch: Branch, p: Period, crm: dict) -> list[dict]:
+    """CRM revenue by rate plan/campaign, the same grouping the Marketing
+    Activity → CRM Reservations "By Rate Plan" tab uses, with a vs-prior
+    delta per row.
+
+    `crm_section` already computes `by_rate_plan` for the current window —
+    this only adds the prior window's numbers, matched by rate plan name.
+    A campaign that didn't run last period (or is new this period) gets no
+    prior row, so its delta is None rather than a false "+100%".
+    """
+    this_rows = crm.get("by_rate_plan") or []
+    if not this_rows:
+        return []
+    prev_start, prev_end = previous_window(p)
+    prior_by_name = {
+        r["rate_plan_name"]: r
+        for r in _crm_revenue_by_rate_plan(db, branch.id, prev_start, prev_end)
+    }
+    out = []
+    for r in this_rows:
+        prior = prior_by_name.get(r["rate_plan_name"]) or {}
+        out.append({
+            **r,
+            "prior_revenue": prior.get("revenue"),
+            "prior_bookings": prior.get("bookings"),
+            "revenue_vs_prior_pct": pct_change(r.get("revenue"), prior.get("revenue")),
+            "bookings_vs_prior_pct": pct_change(r.get("bookings"), prior.get("bookings")),
+        })
+    return out
+
+
 # ── 4. Recommended actions ───────────────────────────────────────────────────
 
 
@@ -972,6 +1004,11 @@ def build_branch_biweekly(db: Session, branch: Branch, p: Period) -> dict:
         crm_cost = safe_section(db, f"bw.crm_cost[{branch.name}]",
                                 lambda: _crm_period_cost_roas(db, branch, p, crm), {})
         crm = {**crm, **crm_cost}
+        crm["by_rate_plan"] = safe_section(
+            db, f"bw.crm_rate_plan[{branch.name}]",
+            lambda: _crm_rate_plan_deltas(db, branch, p, crm),
+            crm.get("by_rate_plan") or [],
+        )
 
     flags = safe_section(db, f"bw.highlights[{branch.name}]",
                          lambda: highlights_block(kpi, target, markets, ads, channel),

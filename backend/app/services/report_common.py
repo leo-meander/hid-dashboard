@@ -64,10 +64,16 @@ def cell_attrs(branch_id, metric_key: str, label: Optional[str] = None) -> str:
     `label`, when provided, is read by the frontend as a human-readable
     drawer title — useful for dynamic keys (per-country, per-source rows)
     where the static frontend label map can't enumerate every variation.
+
+    `metric_key` is escaped too, not just `label` — most callers build it
+    from a static string, but dynamic ones (per-country, per-rate-plan) can
+    carry `"`, `<`, `>` or `&` straight out of the data. The browser
+    HTML-decodes `data-*` attributes back to their original text when JS
+    reads `element.dataset`, so escaping here is invisible to the frontend.
     """
     bid = f' data-branch-id="{branch_id}"' if branch_id else ''
     lbl = f' data-metric-label="{attr_escape(label)}"' if label else ''
-    return f' class="hid-metric-cell" data-metric-key="{metric_key}"{bid}{lbl}'
+    return f' class="hid-metric-cell" data-metric-key="{attr_escape(metric_key)}"{bid}{lbl}'
 
 
 def safe_section(db: Session, label: str, fn, default):
