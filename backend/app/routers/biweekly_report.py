@@ -13,8 +13,9 @@ today, but the same string has to survive an email client when the delivery
 step lands — email clients drop <style> blocks, so every rule is on the
 element. That constraint is why this reads more verbosely than page CSS.
 """
+import calendar
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -69,21 +70,52 @@ def _save_cached(db: Session, p: Period, payload: list, source: str = "manual"):
     return now
 
 
+def _payload_has_open_month(payload: list) -> bool:
+    """True if any branch's month-achievement covers a calendar month that
+    hasn't ended yet (as of the real today, not the period's end date).
+
+    The bi-weekly *period* (14/21 days) is always fully in the past by the
+    time it's reportable — see `current_period()` — so its own numbers are
+    final and safe to cache forever. But `target_block()` also attaches a
+    same-Target-and-Actual-as-the-KPI-Targets-page snapshot for every
+    calendar month the period touches, and that snapshot keeps moving for as
+    long as the month is still open: more nights land on the books, and a
+    target can be entered on the KPI Targets page after the period already
+    closed. Caching those forever froze them at whatever the DB held on the
+    first read, drifting out of sync with the KPI Targets grid the note
+    claims to match.
+    """
+    today = ict_today()
+    for branch in payload:
+        for m in ((branch.get("target") or {}).get("months") or []):
+            year, month = m.get("year"), m.get("month")
+            if year is None or month is None:
+                continue
+            month_end = date(year, month, calendar.monthrange(year, month)[1])
+            if month_end >= today:
+                return True
+    return False
+
+
 def _get_report(db: Session, p: Period, force_fresh: bool = False):
     """Cached payload for a period, building it if absent.
 
-    A completed period's numbers do not change, so unlike the weekly
-    report's singleton cache this never needs a scheduled refresh — the
-    first read of a new period computes it, every later read is free.
-    `?fresh=1` exists for the case where upstream data was backfilled after
-    the fact.
+    A completed period's day-by-day numbers do not change, so unlike the
+    weekly report's singleton cache this never needs a scheduled refresh —
+    the first read of a new period computes it, every later read is free.
+    The exception is the monthly Target Achievement gauges: while any month
+    the period touches is still open, those are recomputed on every read
+    (see `_payload_has_open_month`) so they stay live against the KPI
+    Targets page instead of freezing at whatever was true on first read.
+    `?fresh=1` still exists for the case where other upstream data was
+    backfilled after the fact.
     """
     if not force_fresh:
         cached = _load_cached(db, p.key)
-        if cached is not None:
-            return cached
+        if cached is not None and not _payload_has_open_month(cached[0]):
+            return (*cached, True)
     payload = build_biweekly_report(db, p)
-    return payload, _save_cached(db, p, payload)
+    return payload, _save_cached(db, p, payload), False
 
 
 def _resolve_period(period: Optional[str]) -> Period:
@@ -122,11 +154,11 @@ def biweekly_report(
 ):
     """Bi-weekly report payload for a period (defaults to the latest completed)."""
     p = _resolve_period(period)
-    payload, computed_at = _get_report(db, p, force_fresh=bool(fresh))
+    payload, computed_at, from_cache = _get_report(db, p, force_fresh=bool(fresh))
     return envelope({
         "period": p.to_dict(),
         "computed_at": computed_at.isoformat() if computed_at else None,
-        "from_cache": not bool(fresh),
+        "from_cache": from_cache,
         "branches": payload,
     })
 
@@ -139,7 +171,7 @@ def biweekly_preview(
 ):
     """Rendered HTML for a period — what the dashboard page displays."""
     p = _resolve_period(period)
-    payload, computed_at = _get_report(db, p, force_fresh=bool(fresh))
+    payload, computed_at, _from_cache = _get_report(db, p, force_fresh=bool(fresh))
     return HTMLResponse(_build_html(payload, p, computed_at))
 
 
