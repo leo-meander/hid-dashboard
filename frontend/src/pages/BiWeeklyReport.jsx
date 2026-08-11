@@ -17,6 +17,7 @@
  *     than a discussion under one number.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import {
   getPeriods,
@@ -66,6 +67,32 @@ const NOTE_BOARDS = [
     placeholder:
       "e.g. Need 6 fresh photos of the renovated dorm by Aug 20 for the new ad set.",
     resolvable: true,
+  },
+];
+
+/**
+ * The two "add your own" boards portalled into the Highlights & Watch-outs
+ * section (see FlagsEditor below) — separate from NOTE_BOARDS because these
+ * render inside the report body itself, not in the running-log list under it.
+ */
+const FLAG_BOARDS = [
+  {
+    key: "bw._highlight",
+    icon: "▲",
+    title: "Add a highlight",
+    hint: "The list above is rule-driven from the numbers — add what it can't see.",
+    placeholder: "e.g. Signed a new corporate rate deal with ABC Corp.",
+    resolvable: false,
+    accent: "good",
+  },
+  {
+    key: "bw._watchout",
+    icon: "!",
+    title: "Add a watch-out",
+    hint: "The list above is rule-driven from the numbers — add what it can't see.",
+    placeholder: "e.g. Front desk short-staffed through August.",
+    resolvable: false,
+    accent: "warn",
   },
 ];
 
@@ -166,8 +193,15 @@ function NoteBoard({ board, period, branchId }) {
     ? notes.filter(n => !n.is_resolved).length
     : 0;
 
+  // `accent` visually ties this board to the auto-generated panel it
+  // extends (green = Highlights, amber = Watch-outs) — the three original
+  // boards pass none and stay neutral gray.
+  const accentBorder = board.accent === "good" ? "border-l-4 border-l-green-400"
+    : board.accent === "warn" ? "border-l-4 border-l-amber-400"
+    : "";
+
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
+    <div className={`bg-white rounded-xl border border-gray-200 p-5 ${accentBorder}`}>
       <div className="flex items-start justify-between gap-3">
         <h3 className="font-semibold text-gray-800 text-sm">
           {board.icon} {board.title}
@@ -259,6 +293,22 @@ function NoteBoard({ board, period, branchId }) {
           {busy ? "Saving…" : "Save"}
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Portalled into `#bw-flags-anchor-{branchId}`, a marker div the backend
+ * renders right inside the Highlights & Watch-outs section (see
+ * `_render_flags` in biweekly_render.py) — so "add your own" reads as part
+ * of that section instead of a generic board further down the page.
+ */
+function FlagsEditor({ period, branchId }) {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 mt-3.5">
+      {FLAG_BOARDS.map(board => (
+        <NoteBoard key={board.key} board={board} period={period} branchId={branchId} />
+      ))}
     </div>
   );
 }
@@ -532,6 +582,7 @@ export default function BiWeeklyReport() {
   const [rebuilding, setRebuilding] = useState(false);
   const [rebuildError, setRebuildError] = useState(null);
   const [drawer, setDrawer] = useState(null);
+  const [flagsAnchor, setFlagsAnchor] = useState(null);
   const reportBodyRef = useRef(null);
 
   const { data: periods = [], isPending: periodsLoading, error: periodsError } =
@@ -650,6 +701,19 @@ export default function BiWeeklyReport() {
       cell.appendChild(badge);
     });
   }, [active?.html, commentCounts]);
+
+  // Re-locate the "add a highlight/watch-out" marker div every time the
+  // report body's innerHTML is replaced (branch switch, rebuild) — the old
+  // anchor node is gone the moment `dangerouslySetInnerHTML` re-renders, so
+  // the portal target has to be re-found, not just remembered.
+  useEffect(() => {
+    const root = reportBodyRef.current;
+    if (!root || !active?.id) {
+      setFlagsAnchor(null);
+      return;
+    }
+    setFlagsAnchor(root.querySelector(`#bw-flags-anchor-${active.id}`) || null);
+  }, [active?.html, active?.id]);
 
   return (
     <div className="space-y-4">
@@ -811,6 +875,10 @@ export default function BiWeeklyReport() {
                 className="hid-bw-body bg-[#FBF7F4] rounded-xl border border-gray-200 px-6 py-4"
                 dangerouslySetInnerHTML={{ __html: active.html }}
               />
+              {flagsAnchor && createPortal(
+                <FlagsEditor period={selectedPeriod} branchId={active.id} />,
+                flagsAnchor
+              )}
               <p className="text-[11px] text-gray-400 -mt-2 px-1">
                 Click any card or row above to discuss that number.
               </p>

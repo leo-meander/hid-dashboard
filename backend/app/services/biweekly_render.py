@@ -837,11 +837,47 @@ def _render_crm(b: dict) -> str:
                     body, br["primary"])
 
 
+def _actions_html(b: dict, br: dict) -> str:
+    """Recommended-actions cards, nested inside Highlights & Watch-outs rather
+    than a numbered section of their own — an action IS a watch-out (or a
+    highlight to build on), so splitting them across two sections just made a
+    manager scroll twice to get the full picture for one branch.
+    """
+    actions = b.get("actions") or []
+    if not actions:
+        return ""
+    items = "".join(
+        f"""<div style="display:flex;gap:13px;padding:13px 16px;border-top:1px solid {C['line']};">
+          <div style="flex:0 0 26px;height:26px;border-radius:7px;background:{br['pale']};
+               color:{br['deep']};font-weight:700;font-size:13px;display:flex;
+               align-items:center;justify-content:center;">{i + 1}</div>
+          <div style="font-size:13.5px;"><b style="color:{C['charcoal']};">{a['title']}</b>
+            <span style="font-size:11px;font-weight:600;color:{br['deep']};
+                  background:{br['pale']};padding:1px 7px;border-radius:5px;
+                  margin-left:6px;white-space:nowrap;">{a['when']}</span>
+            <div style="margin-top:3px;">{a['body']}</div></div>
+        </div>"""
+        for i, a in enumerate(actions)
+    )
+    return f"""
+    <div style="margin-top:16px;">
+      <div style="font-size:13px;font-weight:600;color:{C['muted']};margin-bottom:8px;">
+        Recommended Actions (next period)</div>
+      <div style="background:{C['card']};border:1px solid {C['line']};
+           border-radius:11px;overflow:hidden;">{items}</div>
+    </div>"""
+
+
 def _render_flags(b: dict) -> str:
+    """Highlights & Watch-outs, plus Recommended Actions nested underneath,
+    plus an anchor div the frontend portals a "add your own" editor into —
+    the rule-driven list only ever says what the numbers already say, and
+    the branch/growth team asked to be able to add what the numbers can't.
+    """
+    br = _brand(b)
     good = b.get("highlights") or []
     watch = b.get("watchouts") or []
-    if not good and not watch:
-        return ""
+    bid = b.get("branch_id")
 
     def panel(title, items, is_good):
         if not items:
@@ -863,32 +899,11 @@ def _render_flags(b: dict) -> str:
                 f"{bullet} {title}</h4><ul style='margin:0;padding:0;'>{lis}</ul></div>")
 
     body = (f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:14px;'>"
-            f"{panel('Highlights', good, True)}{panel('Watch-outs', watch, False)}</div>")
-    return _section(9, "Highlights &amp; Watch-outs", "", body, _brand(b)["primary"])
-
-
-def _render_actions(b: dict) -> str:
-    br = _brand(b)
-    actions = b.get("actions") or []
-    if not actions:
-        return ""
-    items = "".join(
-        f"""<div style="display:flex;gap:13px;padding:13px 16px;border-top:1px solid {C['line']};">
-          <div style="flex:0 0 26px;height:26px;border-radius:7px;background:{br['pale']};
-               color:{br['deep']};font-weight:700;font-size:13px;display:flex;
-               align-items:center;justify-content:center;">{i + 1}</div>
-          <div style="font-size:13.5px;"><b style="color:{C['charcoal']};">{a['title']}</b>
-            <span style="font-size:11px;font-weight:600;color:{br['deep']};
-                  background:{br['pale']};padding:1px 7px;border-radius:5px;
-                  margin-left:6px;white-space:nowrap;">{a['when']}</span>
-            <div style="margin-top:3px;">{a['body']}</div></div>
-        </div>"""
-        for i, a in enumerate(actions)
-    )
-    body = (f"<div style='background:{C['card']};border:1px solid {C['line']};"
-            f"border-radius:11px;overflow:hidden;'>{items}</div>")
-    return _section(10, "Recommended Actions (next period)",
-                    "Growing markets matched against upcoming holidays in those markets.",
+            f"{panel('Highlights', good, True)}{panel('Watch-outs', watch, False)}</div>"
+            f"{_actions_html(b, br)}"
+            f'<div id="bw-flags-anchor-{bid}"></div>')
+    return _section(9, "Highlights &amp; Watch-outs",
+                    "Automatic, from the numbers above — add your own below.",
                     body, br["primary"])
 
 
@@ -960,7 +975,6 @@ def _render_branch(b: dict, p: Period) -> str:
       {_render_kol(b)}
       {_render_crm(b)}
       {_render_flags(b)}
-      {_render_actions(b)}
       {_render_notes(b)}
       {_render_glossary(br)}
     </div>"""
