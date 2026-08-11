@@ -263,6 +263,16 @@ class TestBuildHtml:
         assert "Direct room-nights" not in html
         assert "Direct share of revenue" not in html
 
+    def test_watchouts_and_actions_share_one_card(self):
+        """Recommended Actions no longer gets its own card — it's merged
+        into Watch-outs under one combined title, since an action IS a
+        watch-out with a "do this about it" attached."""
+        html = self._render([_payload()])
+        assert "Watch-outs / Recommended Actions" in html
+        assert "Recommended Actions (next period)" not in html
+        # Only 2 grid cards now (Highlights + the merged one), not 3.
+        assert html.count("border-radius:11px;padding:16px 18px;background:") == 2
+
     def test_each_branch_block_carries_its_own_colour(self):
         html = self._render([_payload("MEANDER Saigon"),
                              _payload("MEANDER Taipei")])

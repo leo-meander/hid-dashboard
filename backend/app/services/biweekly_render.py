@@ -841,12 +841,11 @@ def _flag_panel(title: str, items: list, bullet: str, color: str, bg: str, borde
 
 
 def _render_flags(b: dict) -> str:
-    """Highlights, Watch-outs and Recommended Actions as three matching
-    bullet-list cards in one section, plus an anchor div the frontend
-    portals a "add your own" editor into. Actions used to be a separate
-    numbered-card section that looked nothing like the other two — same
-    data, different skin — which is exactly the kind of drift `_flag_panel`
-    now rules out.
+    """Highlights, and Watch-outs merged with Recommended Actions, as two
+    matching bullet-list cards in one section, plus an anchor div the
+    frontend portals a "add your own" editor into. An action IS a watch-out
+    with a "do this about it" attached, so they share one card instead of
+    sending a manager to a second box for what to do about the first.
     """
     br = _brand(b)
     good = b.get("highlights") or []
@@ -856,25 +855,21 @@ def _render_flags(b: dict) -> str:
 
     action_items = [
         f"<b>{a['title']}</b> "
-        f"<span style='font-size:10.5px;font-weight:600;color:{br['deep']};"
+        f"<span style='font-size:10.5px;font-weight:600;color:#9a6a00;"
         f"background:#fff;padding:1px 6px;border-radius:5px;white-space:nowrap;'>"
         f"{a['when']}</span> — {a['body']}"
         for a in actions
     ]
-
-    actions_panel = ""
-    if action_items:
-        actions_panel = _flag_panel(
-            "Recommended Actions (next period)", action_items, "→",
-            br["deep"], br["pale"], br["primary"],
-        )
+    watch_panel = _flag_panel(
+        "Watch-outs / Recommended Actions", watch + action_items, "!",
+        "#9a6a00", C["warn_bg"], "#ecd9a8",
+    )
 
     body = (
         f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:14px;'>"
         f"{_flag_panel('Highlights', good, '▲', '#0c7a44', C['good_bg'], '#bfe3cc')}"
-        f"{_flag_panel('Watch-outs', watch, '!', '#9a6a00', C['warn_bg'], '#ecd9a8')}"
+        f"{watch_panel}"
         f"</div>"
-        + (f"<div style='margin-top:14px;'>{actions_panel}</div>" if actions_panel else "")
         + f'<div id="bw-flags-anchor-{bid}"></div>'
     )
     return _section(9, "Highlights &amp; Watch-outs",
