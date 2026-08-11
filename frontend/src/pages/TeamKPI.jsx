@@ -172,18 +172,7 @@ function YtdBars({ kpis }) {
       const actuals = k.monthly.filter(m => !m.is_future && m.pct !== null);
       if (!actuals.length) return null;
       const avgAchievement = actuals.reduce((s, m) => s + m.pct, 0) / actuals.length;
-      // For a KPI whose own unit is already "%" (e.g. a win rate), showing
-      // "achievement % of a % target" compounds two percentages into a
-      // number that no longer reads as either one (a 20% target hit at
-      // 100% actual becomes "500%"). Show the metric's own average value
-      // instead — same number the Actual cells above it already display —
-      // but keep coloring it by achievement so it still signals over/under.
-      const isPctUnit = k.unit === "%";
-      const withActual = isPctUnit ? k.monthly.filter(m => !m.is_future && m.pct !== null && m.actual !== null) : actuals;
-      const displayAvg = isPctUnit
-        ? withActual.reduce((s, m) => s + m.actual, 0) / withActual.length
-        : avgAchievement;
-      return { label: k.label, pct: Math.round(displayAvg * 10) / 10, color: pctColor(avgAchievement) };
+      return { label: k.label, pct: Math.round(avgAchievement * 10) / 10, color: pctColor(avgAchievement) };
     })
     .filter(Boolean);
 
@@ -318,7 +307,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
               <th key={m} className="px-1 py-2.5 font-semibold text-gray-600 text-center min-w-[52px]">{m}</th>
             ))}
             <th className="px-2 py-2.5 font-semibold text-gray-700 text-center w-16" title="Year-to-date actual — only months with a target set are included">YTD ⓘ</th>
-            <th className="px-2 py-2.5 font-semibold text-gray-700 text-center w-16" title="Average achievement % — only months with a target set are counted. For %-unit KPIs this shows the average actual value instead (achievement % of a % target reads as a meaningless number), colored by achievement.">Avg % ⓘ</th>
+            <th className="px-2 py-2.5 font-semibold text-gray-700 text-center w-16" title="Average achievement % — only months with a target set are counted">Avg % ⓘ</th>
           </tr>
         </thead>
         <tbody>
@@ -339,15 +328,6 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
             // better for every KPI), so this is a plain average.
             const actPcts = targetedMonths.filter(m => m.pct !== null).map(m => m.pct);
             const avgAchievement = actPcts.length ? Math.round(actPcts.reduce((a, b) => a + b, 0) / actPcts.length * 10) / 10 : null;
-            // For a %-unit KPI, "achievement % of a % target" compounds two
-            // percentages (a 20% target hit at 100% actual reads as "500%").
-            // Show the average of the actual values instead — same number
-            // the monthly cells above already display — but keep the color
-            // tied to achievement so it still signals over/under target.
-            const isPctUnit = kpi.unit === "%";
-            const avgActuals = targetedMonths.filter(m => m.actual !== null).map(m => m.actual);
-            const avgActualPct = avgActuals.length ? Math.round(avgActuals.reduce((a, b) => a + b, 0) / avgActuals.length * 10) / 10 : null;
-            const avgPct = isPctUnit ? avgActualPct : avgAchievement;
             const avgColor = pctColor(avgAchievement);
 
             const rowSpan = kpi.no_target ? 1 : 2;
@@ -536,7 +516,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     ) : "—"}
                   </td>
                   <td className={`px-2 py-1.5 text-center font-semibold ${avgColor ? COLOR_CLASSES[avgColor].text : "text-gray-400"}`}>
-                    {avgPct !== null ? `${avgPct}%` : "—"}
+                    {avgAchievement !== null ? `${avgAchievement}%` : "—"}
                   </td>
                 </tr>
               </>
