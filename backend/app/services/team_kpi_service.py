@@ -35,15 +35,21 @@ log = logging.getLogger(__name__)
 
 KPI_DEFS: dict[str, list[dict]] = {
     "kol": [
-        {"key": "kol_invited",     "label": "KOLs Invited",          "unit": "KOLs",   "org_wide": True,  "higher_is_better": True},
-        {"key": "kol_revenue",     "label": "Revenue via KOL",        "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True},
-        {"key": "kol_collaborated","label": "KOLs Collaborated",      "unit": "KOLs",   "org_wide": False, "higher_is_better": True},
+        # target_starts: the KOL team only began setting goals part-way through
+        # 2026 — Invited/Collaborated/Posted from May, Revenue/Ads Collab from
+        # June. Earlier months keep their real actuals and show no target,
+        # instead of being scored against a goal nobody had set. Posted and Ads
+        # Collab need this most: the KOL Engine derives them from a single
+        # year-wide percentage, so it back-computes a number for every month.
+        {"key": "kol_invited",     "label": "KOLs Invited",          "unit": "KOLs",   "org_wide": True,  "higher_is_better": True, "target_starts": "2026-05"},
+        {"key": "kol_revenue",     "label": "Revenue via KOL",        "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True, "target_starts": "2026-06"},
+        {"key": "kol_collaborated","label": "KOLs Collaborated",      "unit": "KOLs",   "org_wide": False, "higher_is_better": True, "target_starts": "2026-05"},
         {"key": "kol_posted",      "label": "KOLs Posted",            "unit": "posts",  "org_wide": False, "higher_is_better": True,
          "computed_target": "kol_upstream", "computed_note": "= % of prev-month collab (KOL Engine)",
-         "computed_note_pct": "= {pct}% of prev-month collab (KOL Engine)"},
+         "computed_note_pct": "= {pct}% of prev-month collab (KOL Engine)", "target_starts": "2026-05"},
         {"key": "kol_ads_collab",  "label": "KOL Ads Collab",         "unit": "KOLs",   "org_wide": False, "higher_is_better": True,
          "computed_target": "kol_upstream", "computed_note": "= % of Posted target (KOL Engine)",
-         "computed_note_pct": "= {pct}% of Posted target (KOL Engine)"},
+         "computed_note_pct": "= {pct}% of Posted target (KOL Engine)", "target_starts": "2026-06"},
     ],
     "paid_ads": [
         # ROAS is a ratio, not an amount — its months can't be added together
@@ -155,6 +161,30 @@ def kpi_start_month(defn: dict, year: int, branch_key: Optional[str] = None) -> 
         s_year, s_month = int(s_year), int(s_month)
     except ValueError:
         log.warning("bad 'starts' on KPI %s: %r", defn.get("key"), starts)
+        return None
+    if year < s_year:
+        return 13
+    return s_month if year == s_year else None
+
+
+def kpi_target_start_month(defn: dict, year: int) -> Optional[int]:
+    """First month of `year` this KPI has a goal for.
+
+    Unlike "starts", which says the KPI itself had no honest history yet and
+    blanks the whole row, "target_starts" only says nobody had set a goal yet
+    — the actuals before it are real and stay on screen, the target cell just
+    goes empty (and drops out of Avg % / YTD, which only count months with a
+    target). Same "YYYY-MM" semantics as kpi_start_month: 13 when the whole
+    year predates it, None when it has always had one.
+    """
+    starts = defn.get("target_starts")
+    if not starts:
+        return None
+    s_year, _, s_month = str(starts).partition("-")
+    try:
+        s_year, s_month = int(s_year), int(s_month)
+    except ValueError:
+        log.warning("bad 'target_starts' on KPI %s: %r", defn.get("key"), starts)
         return None
     if year < s_year:
         return 13
@@ -1117,6 +1147,9 @@ def build_monthly_summary(
         starts_view       = None if all_branches_view else branch_key
         start_month       = kpi_start_month(defn, year, starts_view)
         starts_str, starts_note = kpi_branch_start(defn, starts_view)
+        # Months before this had no goal set — actual still shows, target is
+        # blank. Applies to every branch alike, unlike `starts`.
+        target_start_month = kpi_target_start_month(defn, year)
 
         # Percentage rules behind an upstream-owned target, collected while
         # resolving the months so the target row can be labelled with the
@@ -1141,7 +1174,13 @@ def build_monthly_summary(
                 })
                 continue
 
-            if no_target:
+            if target_start_month is not None and m < target_start_month:
+                # No goal was set this early in the year. Falls through the
+                # whole target chain below — including the computed ones,
+                # which would otherwise back-fill a number from a percentage
+                # rule that didn't exist yet.
+                target = None
+            elif no_target:
                 target = None
             elif computed_target_t == "spend_x_roas" and not is_future:
                 # Revenue target = actual ads spend × ROAS target for that month
