@@ -29,6 +29,7 @@ from typing import Optional
 from sqlalchemy import extract, func
 from sqlalchemy.orm import Session
 
+from app.models.ads import AdsPerformance
 from app.models.branch import Branch
 from app.models.daily_metrics import DailyMetrics
 from app.models.holiday_intel import HolidayCalendar
@@ -104,6 +105,37 @@ def verdict(delta: Optional[float], good: float, bad: float) -> str:
     if delta < bad:
         return "b"
     return "w"
+
+
+# ── Comparison helpers ───────────────────────────────────────────────────────
+#
+# Every section in this report carries two comparisons: the prior period (the
+# 14 days immediately before) and the same ISO weeks last year. The prior
+# window is always the same length as the reporting period, so its totals
+# compare directly. The year-ago window is NOT always the same length — a
+# 21-day W51–W53 period meets a 14-day window in a 52-week prior year — so
+# every year-over-year comparison of a TOTAL goes through `_pct_norm`, which
+# falls back to per-day averages rather than inventing a ~33% decline.
+# Rate metrics (ADR, ROAS, engagement rate) are already normalised and are
+# compared directly either way.
+
+
+def _pct_norm(cur, cmp_, cur_days: int, cmp_days: int) -> Optional[float]:
+    """Percent change between two totals, per-day when the windows differ."""
+    if cur is None or cmp_ is None:
+        return None
+    if cur_days != cmp_days:
+        if cur_days <= 0 or cmp_days <= 0:
+            return None
+        return pct_change(cur / cur_days, cmp_ / cmp_days)
+    return pct_change(cur, cmp_)
+
+
+def _yoy_days(p: Period) -> tuple[tuple[date, date], int, bool]:
+    """The year-ago window, its length, and whether it needs per-day framing."""
+    yoy = yoy_window(p)
+    days = window_days(yoy)
+    return yoy, days, days != p.days
 
 
 # ── 1. KPI block ─────────────────────────────────────────────────────────────
@@ -335,7 +367,7 @@ def markets_block(db: Session, branch: Branch, p: Period, limit: int = 8) -> dic
         }
 
     prev = previous_window(p)
-    yoy = yoy_window(p)
+    yoy, yoy_days, yoy_per_day = _yoy_days(p)
     cur = _by_country(p.start, p.end)
     prior = _by_country(prev[0], prev[1])
     last_year = _by_country(yoy[0], yoy[1])
@@ -356,6 +388,7 @@ def markets_block(db: Session, branch: Branch, p: Period, limit: int = 8) -> dic
         prior_rev = prior.get(code, {}).get("revenue", 0.0)
         prior_bookings = prior.get(code, {}).get("bookings", 0)
         yoy_rev = last_year.get(code, {}).get("revenue", 0.0)
+        yoy_bookings = last_year.get(code, {}).get("bookings", 0)
         rows.append({
             **v,
             "is_unknown": is_unknown,
@@ -365,7 +398,10 @@ def markets_block(db: Session, branch: Branch, p: Period, limit: int = 8) -> dic
             "prior_bookings": prior_bookings,
             "bookings_vs_prior_pct": pct_change(v["bookings"], prior_bookings),
             "yoy_revenue": yoy_rev,
-            "vs_yoy_pct": pct_change(v["revenue"], yoy_rev),
+            "vs_yoy_pct": _pct_norm(v["revenue"], yoy_rev, p.days, yoy_days),
+            "yoy_bookings": yoy_bookings,
+            "bookings_vs_yoy_pct": _pct_norm(v["bookings"], yoy_bookings,
+                                             p.days, yoy_days),
         })
 
     rows.sort(key=lambda r: -r["revenue"])
@@ -374,6 +410,8 @@ def markets_block(db: Session, branch: Branch, p: Period, limit: int = 8) -> dic
     return {
         "rows": known[:limit],
         "total_revenue": round(total_rev, 2),
+        "yoy_total_revenue": round(sum(v["revenue"] for v in last_year.values()), 2),
+        "yoy_per_day": yoy_per_day,
         "unknown_revenue": round(unknown_rev, 2),
         "unknown_bookings": unknown_bookings,
         "unknown_share_pct": (
@@ -428,26 +466,35 @@ def channel_bookings_block(db: Session, branch: Branch, p: Period,
         return out
 
     prev = previous_window(p)
+    yoy, yoy_days, yoy_per_day = _yoy_days(p)
     cur = _by_source(p.start, p.end)
     prior = _by_source(prev[0], prev[1])
+    last_year = _by_source(yoy[0], yoy[1])
 
     total = sum(v["bookings"] for v in cur.values())
     rows = []
     for name, v in cur.items():
         prior_n = prior.get(name, {}).get("bookings", 0)
+        yoy_n = last_year.get(name, {}).get("bookings", 0)
         rows.append({
             **v,
             "share_pct": round(v["bookings"] / total * 100, 1) if total else None,
             "prior_bookings": prior_n,
             "vs_prior_pct": pct_change(v["bookings"], prior_n),
+            "yoy_bookings": yoy_n,
+            "vs_yoy_pct": _pct_norm(v["bookings"], yoy_n, p.days, yoy_days),
             "is_direct": (v["category"] or "").strip().lower() == "direct",
         })
     rows.sort(key=lambda r: -r["bookings"])
 
     direct_bookings = sum(r["bookings"] for r in rows if r["is_direct"])
+    yoy_total = sum(v["bookings"] for v in last_year.values())
     return {
         "rows": rows[:limit],
         "total_bookings": total,
+        "yoy_total_bookings": yoy_total,
+        "total_vs_yoy_pct": _pct_norm(total, yoy_total, p.days, yoy_days),
+        "yoy_per_day": yoy_per_day,
         "direct_bookings": direct_bookings,
         "direct_share_pct": (
             round(direct_bookings / total * 100, 1) if total else None
@@ -496,10 +543,22 @@ def kol_reach_block(branch: Branch, p: Period) -> dict:
     prior_reach = prior.get("reach") if prior.get("available") else None
     prior_engagements = prior.get("engagements") if prior.get("available") else None
 
+    # Same-period-last-year, from the same in-memory cache as the two calls
+    # above — a branch that was not posting a year ago simply reports 0, and
+    # `_pct_norm` returns None off a zero base rather than a fake +100%.
+    yoy, yoy_days, yoy_per_day = _yoy_days(p)
+    last_year = fetch_kol_insights(**kwargs, date_from=yoy[0], date_to=yoy[1])
+    yoy_reach = last_year.get("reach") if last_year.get("available") else None
+    yoy_engagements = last_year.get("engagements") if last_year.get("available") else None
+
     return {
         **this,
         "reach_vs_prior_pct": pct_change(this.get("reach"), prior_reach),
         "engagements_vs_prior_pct": pct_change(this.get("engagements"), prior_engagements),
+        "reach_vs_yoy_pct": _pct_norm(this.get("reach"), yoy_reach, p.days, yoy_days),
+        "engagements_vs_yoy_pct": _pct_norm(this.get("engagements"), yoy_engagements,
+                                            p.days, yoy_days),
+        "yoy_per_day": yoy_per_day,
     }
 
 
@@ -554,15 +613,21 @@ def _kol_period_cost_roas(db: Session, branch: Branch, p: Period, kol: dict) -> 
             KOLRecord.published_date <= d_to,
         ).scalar() or 0
 
+    yoy, yoy_days, yoy_per_day = _yoy_days(p)
+
     cost = _cost(p.start, p.end)
     prior_cost = _cost(prev_start, prev_end)
     prior_bookings, prior_revenue = _organic(prev_start, prev_end)
     prior_posts = _posts(prev_start, prev_end)
+    yoy_cost = _cost(yoy[0], yoy[1])
+    yoy_bookings, yoy_revenue = _organic(yoy[0], yoy[1])
+    yoy_posts = _posts(yoy[0], yoy[1])
 
     revenue = float(kol.get("organic_revenue_native") or 0)
     bookings = kol.get("organic_bookings")
     roas = round(revenue / cost, 2) if cost > 0 else None
     prior_roas = round(prior_revenue / prior_cost, 2) if prior_cost > 0 else None
+    yoy_roas = round(yoy_revenue / yoy_cost, 2) if yoy_cost > 0 else None
 
     return {
         "period_cost_native": round(cost, 2),
@@ -577,6 +642,21 @@ def _kol_period_cost_roas(db: Session, branch: Branch, p: Period, kol: dict) -> 
         "roas_vs_prior_pct": pct_change(roas, prior_roas),
         "bookings_vs_prior_pct": pct_change(bookings, prior_bookings),
         "posts_vs_prior_pct": pct_change(kol.get("posts_this_week"), prior_posts),
+        # Same period last year. ROAS is a ratio, so it compares directly;
+        # cost, revenue, bookings and posts are totals and go through
+        # `_pct_norm` for the 21-vs-14-day case.
+        "yoy_cost_native": round(yoy_cost, 2),
+        "yoy_revenue_native": round(yoy_revenue, 2),
+        "yoy_bookings": yoy_bookings,
+        "yoy_posts": yoy_posts,
+        "yoy_roas": yoy_roas,
+        "cost_vs_yoy_pct": _pct_norm(cost, yoy_cost, p.days, yoy_days),
+        "revenue_vs_yoy_pct": _pct_norm(revenue, yoy_revenue, p.days, yoy_days),
+        "roas_vs_yoy_pct": pct_change(roas, yoy_roas),
+        "bookings_vs_yoy_pct": _pct_norm(bookings, yoy_bookings, p.days, yoy_days),
+        "posts_vs_yoy_pct": _pct_norm(kol.get("posts_this_week"), yoy_posts,
+                                      p.days, yoy_days),
+        "yoy_per_day": yoy_per_day,
     }
 
 
@@ -644,29 +724,153 @@ def _crm_rate_plan_deltas(db: Session, branch: Branch, p: Period, crm: dict) -> 
     delta per row.
 
     `crm_section` already computes `by_rate_plan` for the current window —
-    this only adds the prior window's numbers, matched by rate plan name.
-    A campaign that didn't run last period (or is new this period) gets no
-    prior row, so its delta is None rather than a false "+100%".
+    this only adds the prior window's and the year-ago window's numbers,
+    matched by rate plan name. A campaign that didn't run in a comparison
+    window gets no row there, so its delta is None rather than a false
+    "+100%" — which matters more for the year-ago match than the prior one,
+    since campaign names churn far more over twelve months than over two
+    weeks.
     """
     this_rows = crm.get("by_rate_plan") or []
     if not this_rows:
         return []
     prev_start, prev_end = previous_window(p)
+    yoy, yoy_days, yoy_per_day = _yoy_days(p)
     prior_by_name = {
         r["rate_plan_name"]: r
         for r in _crm_revenue_by_rate_plan(db, branch.id, prev_start, prev_end)
     }
+    yoy_by_name = {
+        r["rate_plan_name"]: r
+        for r in _crm_revenue_by_rate_plan(db, branch.id, yoy[0], yoy[1])
+    }
     out = []
     for r in this_rows:
         prior = prior_by_name.get(r["rate_plan_name"]) or {}
+        last_year = yoy_by_name.get(r["rate_plan_name"]) or {}
         out.append({
             **r,
             "prior_revenue": prior.get("revenue"),
             "prior_bookings": prior.get("bookings"),
             "revenue_vs_prior_pct": pct_change(r.get("revenue"), prior.get("revenue")),
             "bookings_vs_prior_pct": pct_change(r.get("bookings"), prior.get("bookings")),
+            "yoy_revenue": last_year.get("revenue"),
+            "yoy_bookings": last_year.get("bookings"),
+            "revenue_vs_yoy_pct": _pct_norm(r.get("revenue"), last_year.get("revenue"),
+                                            p.days, yoy_days),
+            "bookings_vs_yoy_pct": _pct_norm(r.get("bookings"), last_year.get("bookings"),
+                                             p.days, yoy_days),
+            "yoy_per_day": yoy_per_day,
         })
     return out
+
+
+def _crm_rate_plan_totals(p: Period, rows: list[dict]) -> dict:
+    """Totals for the CRM rate-plan table, with both comparisons.
+
+    Computed here rather than summed in the renderer because the year-ago
+    percentage needs the two window lengths to normalise correctly, and the
+    renderer has no business knowing about 53-week ISO years.
+
+    A campaign missing from a comparison window contributes 0 to that total:
+    it is genuinely new, so its whole revenue is real growth, unlike a missing
+    per-row comparison which is an absence of data.
+    """
+    _, yoy_days, yoy_per_day = _yoy_days(p)
+
+    def s(key):
+        return sum(r.get(key) or 0 for r in rows)
+
+    bookings, revenue = s("bookings"), s("revenue")
+    return {
+        "bookings": bookings,
+        "revenue": round(revenue, 2),
+        "bookings_vs_prior_pct": pct_change(bookings, s("prior_bookings")),
+        "revenue_vs_prior_pct": pct_change(revenue, s("prior_revenue")),
+        "bookings_vs_yoy_pct": _pct_norm(bookings, s("yoy_bookings"), p.days, yoy_days),
+        "revenue_vs_yoy_pct": _pct_norm(revenue, s("yoy_revenue"), p.days, yoy_days),
+        "yoy_per_day": yoy_per_day,
+    }
+
+
+def _ads_yoy(db: Session, branch: Branch, p: Period, ads: dict) -> dict:
+    """Year-over-year cost / revenue / bookings / ROAS per ad channel, merged
+    onto the `paid_ads` payload alongside the `wow_*` prior-period deltas it
+    already carries.
+
+    Queries `ads_performance` directly rather than re-running
+    `paid_ads_section` over the year-ago window: that function also calls the
+    Ads Platform aggregator for its By-Country table, and this report never
+    shows last year's country split — one extra network round trip per branch
+    for numbers nothing renders.
+
+    A channel that ran no ads a year ago (or did not exist yet) has a zero
+    base, so `_pct_norm` returns None and the renderer draws no year-ago arrow
+    at all. That is the honest answer: "new channel", not "+100%".
+    """
+    channels = ads.get("by_channel") or []
+    if not channels:
+        return ads
+
+    yoy, yoy_days, yoy_per_day = _yoy_days(p)
+    rows = db.query(
+        AdsPerformance.channel,
+        func.coalesce(func.sum(AdsPerformance.cost_native), 0),
+        func.coalesce(func.sum(AdsPerformance.bookings), 0),
+        func.coalesce(func.sum(AdsPerformance.revenue_native), 0),
+    ).filter(
+        AdsPerformance.branch_id == branch.id,
+        AdsPerformance.grain == "daily",
+        AdsPerformance.date_from >= yoy[0],
+        AdsPerformance.date_from <= yoy[1],
+    ).group_by(AdsPerformance.channel).all()
+
+    last_year = {
+        (r[0] or "Unknown"): {
+            "cost": float(r[1] or 0),
+            "bookings": int(r[2] or 0),
+            "revenue": float(r[3] or 0),
+        }
+        for r in rows
+    }
+    blank = {"cost": 0.0, "bookings": 0, "revenue": 0.0}
+
+    out_channels = []
+    for c in channels:
+        ly = last_year.get(c.get("channel"), blank)
+        ly_roas = round(ly["revenue"] / ly["cost"], 2) if ly["cost"] > 0 else None
+        out_channels.append({
+            **c,
+            "yoy_cost": round(ly["cost"], 2),
+            "yoy_revenue": round(ly["revenue"], 2),
+            "yoy_bookings": ly["bookings"],
+            "yoy_roas": ly_roas,
+            "yoy_cost_pct": _pct_norm(c.get("cost"), ly["cost"], p.days, yoy_days),
+            "yoy_revenue_pct": _pct_norm(c.get("revenue"), ly["revenue"], p.days, yoy_days),
+            "yoy_bookings_pct": _pct_norm(c.get("bookings"), ly["bookings"],
+                                          p.days, yoy_days),
+            "yoy_roas_pct": pct_change(c.get("roas"), ly_roas),
+        })
+
+    tot_cost = sum(v["cost"] for v in last_year.values())
+    tot_rev = sum(v["revenue"] for v in last_year.values())
+    tot_roas = round(tot_rev / tot_cost, 2) if tot_cost > 0 else None
+    this_tot = ads.get("last_week") or {}
+    this_roas = (
+        round((this_tot.get("revenue") or 0) / this_tot["cost"], 2)
+        if this_tot.get("cost") else None
+    )
+
+    return {
+        **ads,
+        "by_channel": out_channels,
+        "yoy_total": {"cost": round(tot_cost, 2), "revenue": round(tot_rev, 2),
+                      "roas": tot_roas},
+        "yoy_cost_pct": _pct_norm(this_tot.get("cost"), tot_cost, p.days, yoy_days),
+        "yoy_revenue_pct": _pct_norm(this_tot.get("revenue"), tot_rev, p.days, yoy_days),
+        "yoy_roas_pct": pct_change(this_roas, tot_roas),
+        "yoy_per_day": yoy_per_day,
+    }
 
 
 # ── 4. Recommended actions ───────────────────────────────────────────────────
@@ -984,6 +1188,9 @@ def build_branch_biweekly(db: Session, branch: Branch, p: Period) -> dict:
                            {"rows": [], "total_revenue": 0})
     ads = safe_section(db, f"bw.ads[{branch.name}]",
                        lambda: paid_ads_section(db, branch, anchor, window=window), {})
+    if ads:
+        ads = safe_section(db, f"bw.ads_yoy[{branch.name}]",
+                           lambda: _ads_yoy(db, branch, p, ads), ads)
     chan_bookings = safe_section(db, f"bw.channel_bookings[{branch.name}]",
                                  lambda: channel_bookings_block(db, branch, p),
                                  {"rows": [], "total_bookings": 0})
@@ -1012,6 +1219,7 @@ def build_branch_biweekly(db: Session, branch: Branch, p: Period) -> dict:
             lambda: _crm_rate_plan_deltas(db, branch, p, crm),
             crm.get("by_rate_plan") or [],
         )
+        crm["rate_plan_totals"] = _crm_rate_plan_totals(p, crm["by_rate_plan"])
 
     flags = safe_section(db, f"bw.highlights[{branch.name}]",
                          lambda: highlights_block(kpi, target, markets, ads, channel),

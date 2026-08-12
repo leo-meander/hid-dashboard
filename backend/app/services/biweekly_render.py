@@ -116,6 +116,18 @@ _TH = (f"padding:10px 13px;text-align:left;background:#f4efe8;font-size:11px;"
 _TD = (f"padding:10px 13px;color:{C['ink']};font-size:13px;"
        f"border-top:1px solid {C['line']};")
 
+# The label the year-ago arrow wears in tables. Section footers explain it by
+# name, so it lives here rather than being spelled out at each call site —
+# renaming it in one place renames it in the legend too.
+_YOY_TAG = "vs LY"
+# Every table footer says the same thing about the two arrows. Repeating the
+# sentence verbatim in six places is how the six drift apart.
+_ARROW_LEGEND = (
+    f"Top ▲/▼ is vs the prior period, the line below ({_YOY_TAG}) is vs the "
+    "same period last year; no second line means there was nothing in that "
+    "row a year ago to compare against."
+)
+
 
 # ── Renderers ────────────────────────────────────────────────────────────────
 
@@ -140,18 +152,51 @@ def _delta_chip(value, label: str, kind: str = "pct") -> str:
     )
 
 
-def _inline_arrow(pct_value, good: float = 5.0, bad: float = -5.0) -> str:
-    """Small ▲/▼/≈ shown next to a number in a table cell, vs the prior
-    period. `_delta_chip` is the pill version used on KPI cards; this is the
-    compact version that fits inside a table row.
+def _inline_arrow(pct_value, good: float = 5.0, bad: float = -5.0,
+                  label: str = "") -> str:
+    """Small ▲/▼/≈ shown next to a number in a table cell. `_delta_chip` is
+    the pill version used on KPI cards; this is the compact version that fits
+    inside a table row. `label` names the comparison when the cell carries
+    more than one.
     """
     if pct_value is None:
         return ""
     up, down = pct_value >= good, pct_value < bad
     arrow = "▲" if up else "▼" if down else "≈"
     color = C["good"] if up else C["bad"] if down else C["warn"]
+    tag = (f"<span style='color:{C['muted']};font-weight:600;font-size:9.5px;'>"
+           f" {label}</span>") if label else ""
     return (f" <span style='color:{color};font-weight:700;font-size:10.5px;"
-            f"white-space:nowrap;'>{arrow} {signed_pct(pct_value)}</span>")
+            f"white-space:nowrap;'>{arrow} {signed_pct(pct_value)}{tag}</span>")
+
+
+def _delta_pair(prior_pct, yoy_pct, per_day: bool = False,
+                good: float = 5.0, bad: float = -5.0) -> str:
+    """Both of the report's comparisons for one table cell.
+
+    The prior period sits inline with the number, unlabelled — that is the
+    arrow that was already there and the one operators read first. The
+    year-ago comparison goes on a second line, labelled, because an unlabelled
+    second arrow beside the first is indistinguishable from it.
+
+    A year-ago delta of None draws nothing: the year-ago window has a zero
+    base (a channel, market or campaign that did not exist twelve months ago),
+    and an arrow off a zero base would read as performance rather than as
+    "nothing to compare against". The section footers say so in words.
+
+    `per_day` labels the year-ago arrow as a per-day comparison, which is what
+    the builder falls back to when the year-ago window is a different length —
+    the 21-day W51–W53 period against a 14-day week pair in a 52-week year.
+    """
+    out = _inline_arrow(prior_pct, good, bad)
+    if yoy_pct is not None:
+        out += (
+            "<div style='margin-top:1px;'>"
+            + _inline_arrow(yoy_pct, good, bad,
+                            label=f"{_YOY_TAG}/day" if per_day else _YOY_TAG)
+            + "</div>"
+        )
+    return out
 
 
 def _efficiency_pill(roas: Optional[float]) -> str:
@@ -171,20 +216,31 @@ def _efficiency_pill(roas: Optional[float]) -> str:
 
 def _channel_row(bid, metric_key: str, name: str, cost, revenue, roas, bookings,
                  currency: str, cost_pct=None, revenue_pct=None, bookings_pct=None,
-                 roas_pct=None) -> str:
+                 roas_pct=None, cost_yoy_pct=None, revenue_yoy_pct=None,
+                 bookings_yoy_pct=None, roas_yoy_pct=None,
+                 yoy_per_day: bool = False) -> str:
     """One row of the Channel | Spend | Revenue | Efficiency | Bookings table
-    shared by Ads, KOL and CRM, so cost and ROAS read identically wherever a
-    manager finds them in this report. Every column carries a vs-prior-period
-    arrow when the data for it exists — Efficiency included, via `roas_pct`.
+    shared by Ads and KOL, so cost and ROAS read identically wherever a
+    manager finds them in this report. Every column carries both of the
+    report's comparisons when the data for it exists — the prior period
+    inline, the same period last year underneath.
     """
     attrs = cell_attrs(bid, metric_key, f"{name} — cost & ROAS")
+
+    def pair(prior, yoy):
+        return _delta_pair(prior, yoy, yoy_per_day)
+
     return (
         f"<tr{attrs}>"
         f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{name}</td>"
-        f"<td style='{_TD}text-align:right;'>{fmt(cost, currency)}{_inline_arrow(cost_pct)}</td>"
-        f"<td style='{_TD}text-align:right;'>{fmt(revenue, currency)}{_inline_arrow(revenue_pct)}</td>"
-        f"<td style='{_TD}text-align:right;'>{_efficiency_pill(roas)}{_inline_arrow(roas_pct)}</td>"
-        f"<td style='{_TD}text-align:right;'>{num(bookings)}{_inline_arrow(bookings_pct)}</td></tr>"
+        f"<td style='{_TD}text-align:right;'>{fmt(cost, currency)}"
+        f"{pair(cost_pct, cost_yoy_pct)}</td>"
+        f"<td style='{_TD}text-align:right;'>{fmt(revenue, currency)}"
+        f"{pair(revenue_pct, revenue_yoy_pct)}</td>"
+        f"<td style='{_TD}text-align:right;'>{_efficiency_pill(roas)}"
+        f"{pair(roas_pct, roas_yoy_pct)}</td>"
+        f"<td style='{_TD}text-align:right;'>{num(bookings)}"
+        f"{pair(bookings_pct, bookings_yoy_pct)}</td></tr>"
     )
 
 
@@ -201,9 +257,14 @@ def _channel_table(rows_html: str) -> str:
 
 
 def _kpi_card(branch_id, metric_key: str, label: str, value: str,
-              light: str, chips: str, why: str) -> str:
+              light: str, chips: str, why: str, span2: bool = False) -> str:
+    """`span2` makes the card fill both columns of the Executive Summary grid —
+    used by RevPAR, which reads as the summary of the four cards above it
+    rather than a fifth peer, and would otherwise leave a hole in the grid.
+    """
+    span = "grid-column:1/-1;" if span2 else ""
     return f"""
-    <div{cell_attrs(branch_id, metric_key, label)} style="background:{C['card']};
+    <div{cell_attrs(branch_id, metric_key, label)} style="{span}background:{C['card']};
          border:1px solid {C['line']};border-left:5px solid {_LIGHT.get(light, C['warn'])};
          border-radius:11px;padding:15px 17px;">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
@@ -291,7 +352,10 @@ def _render_exec_summary(b: dict, p: Period) -> str:
     # already the aggregate ROAS vs THIS report's prior period — every other
     # KPI card on this row carries a vs-prior chip, and ROAS was the one
     # silently missing it.
-    roas_chips = _delta_chip(ads.get("wow_roas_pct"), "vs prior")
+    roas_chips = ""
+    if ads.get("yoy_roas_pct") is not None:
+        roas_chips += _delta_chip(ads["yoy_roas_pct"], yoy_lbl)
+    roas_chips += _delta_chip(ads.get("wow_roas_pct"), "vs prior")
     roas_chips += (
         f"<span style='font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;"
         f"color:{_LIGHT[roas_light]};background:{_LIGHT_BG[roas_light]};display:inline-block;'>"
@@ -302,6 +366,23 @@ def _render_exec_summary(b: dict, p: Period) -> str:
         f"<b style='color:{br['deep']}'>Every 1 of ad spend returns {roas:.2f}</b> "
         "in attributed revenue." if roas is not None else
         "No ad spend recorded for this branch in the period."
+    )
+
+    # RevPAR used to be a section of its own, immediately below this one.
+    # Folded in here per team feedback (2026-08-12): it is a headline metric,
+    # and a manager comparing it against the ADR and OCC cards it is derived
+    # from had to hold two of them in their head while scrolling to the third.
+    # Full-width under the four, since it summarises them rather than ranking
+    # alongside them.
+    adr_v, occ_v = cur.get("adr"), cur.get("occ_pct")
+    revpar_why = (
+        f"<b style='color:{br['deep']}'>RevPAR = ADR × Occupancy</b> — "
+        f"{fmt(adr_v, currency)} average rate × {occ_v * 100:.1f}% occupancy. "
+        "A rate rise that quietly costs occupancy looks fine on the two cards "
+        "above and shows up here."
+        if (adr_v is not None and occ_v is not None) else
+        "Revenue earned per available room — blends rate and occupancy into "
+        "one number, so a rate rise that costs occupancy shows up here."
     )
 
     cards = "".join([
@@ -315,6 +396,9 @@ def _render_exec_summary(b: dict, p: Period) -> str:
         _kpi_card(bid, "bw.roas", "Ad efficiency (ROAS)",
                   f"{roas:.2f}×" if roas is not None else "—",
                   roas_light, roas_chips, roas_why),
+        _kpi_card(bid, "bw.revpar", "RevPAR (revenue per available room)",
+                  fmt(cur.get("revpar"), currency), lights.get("revpar", "w"),
+                  chips("revpar_pct", "revpar_pct"), revpar_why, span2=True),
     ])
 
     headline = _render_headline(b, p)
@@ -366,48 +450,6 @@ def _render_headline(b: dict, p: Period) -> str:
         The story of these {p.days} days</span>
       {story}
     </div>"""
-
-
-def _render_revpar(b: dict, p: Period) -> str:
-    """RevPAR gets its own section rather than living only inside the
-    Executive Summary cards — it is the one number that catches ADR and OCC
-    moving in opposite directions (a rate hike that quietly costs occupancy,
-    or vice versa), which is easy to miss when reading those two cards
-    separately.
-    """
-    br = _brand(b)
-    kpi = b.get("kpi") or {}
-    cur = kpi.get("this") or {}
-    vy, vp = kpi.get("vs_yoy") or {}, kpi.get("vs_prior") or {}
-    lights = kpi.get("lights") or {}
-    currency = b.get("currency") or ""
-    bid = b["branch_id"]
-    has_yoy = kpi.get("yoy_has_data")
-    prior_lbl = "vs prior /day" if vp.get("per_day") else "vs prior"
-
-    chips = ""
-    if has_yoy:
-        chips += _delta_chip(vy.get("revpar_pct"), "vs last year")
-    chips += _delta_chip(vp.get("revpar_pct"), prior_lbl)
-    if not chips:
-        chips = f"<span style='font-size:12px;color:{C['muted']};'>no comparison data</span>"
-
-    adr, occ = cur.get("adr"), cur.get("occ_pct")
-    why = (
-        f"<b style='color:{br['deep']}'>RevPAR = ADR × Occupancy</b> — "
-        f"{fmt(adr, currency)} average rate × {occ * 100:.1f}% occupancy."
-        if (adr is not None and occ is not None) else
-        "Revenue earned per available room — blends rate and occupancy into "
-        "one number."
-    )
-
-    card = _kpi_card(bid, "bw.revpar", "RevPAR", fmt(cur.get("revpar"), currency),
-                     lights.get("revpar", "w"), chips, why)
-    body = f"<div style='max-width:420px;'>{card}</div>"
-    return _section(2, "RevPAR (Revenue per Available Room)",
-                    "The single number that blends rate and occupancy — a rate hike that "
-                    "costs occupancy (or vice versa) can look fine on the cards above but "
-                    "shows up here.", body, br["primary"])
 
 
 def _target_gauge(bid, m: dict, currency: str, br: dict, idx: int, size: str) -> str:
@@ -516,7 +558,7 @@ def _render_target(b: dict) -> str:
         body = (f"<div style='background:{C['card']};border:1px solid {C['line']};"
                 f"border-radius:11px;padding:18px;font-size:13px;color:{C['muted']};'>"
                 f"No revenue target set for this period — add one on the KPI Targets page.</div>")
-        return _section(3, "Target Achievement", "", body, br["primary"])
+        return _section(2, "Target Achievement", "", body, br["primary"])
 
     if len(months) >= 2:
         # The period crosses a month boundary — show each month's own
@@ -551,7 +593,7 @@ def _render_target(b: dict) -> str:
         )
 
     body = gauges_html + period_line
-    return _section(3, "Target Achievement", note, body, br["primary"])
+    return _section(2, "Target Achievement", note, body, br["primary"])
 
 
 def _render_channel_mix(b: dict) -> str:
@@ -559,33 +601,37 @@ def _render_channel_mix(b: dict) -> str:
     cb = b.get("channel_bookings") or {}
     rows_in = cb.get("rows") or []
     if not rows_in:
-        return _section(4, "Which channels do guests book through?", "",
+        return _section(3, "Which channels do guests book through?", "",
                         f"<div style='color:{C['muted']};font-size:13px;'>No booking data "
                         f"for this period.</div>", br["primary"])
     bid = b["branch_id"]
     top = max((r.get("bookings") or 0) for r in rows_in) or 1
     total = cb.get("total_bookings") or 0
+    yoy_per_day = bool(cb.get("yoy_per_day"))
 
     rows = []
     for s in rows_in:
         name = s["source"]
         n = s.get("bookings") or 0
         share = s.get("share_pct")
+        # Direct rows keep the brand-colour bar, which is what actually reads
+        # as "this is the good one" at a glance. The "GOOD" badge that used to
+        # sit beside the name went out per team feedback (2026-08-12) — it
+        # labelled the channel rather than its performance, so a Direct
+        # channel down 30% still wore a green GOOD.
         bar_color = br["deep"] if s.get("is_direct") else "#9bbfbc"
-        badge = ("<span style='font-size:9.5px;font-weight:600;color:#fff;"
-                 f"background:{br['primary']};border-radius:4px;padding:1px 5px;"
-                 "margin-left:5px;'>GOOD</span>") if s.get("is_direct") else ""
         rows.append(f"""
         <div{cell_attrs(bid, f"bw.channel.{name}", f"Channel — {name}")}
              style="display:flex;align-items:center;gap:12px;margin:9px 0;">
-          <div style="flex:0 0 128px;font-size:13.5px;font-weight:600;">{name}{badge}</div>
+          <div style="flex:0 0 128px;font-size:13.5px;font-weight:600;">{name}</div>
           <div style="flex:1;height:22px;background:#f1ece5;border-radius:6px;overflow:hidden;">
             <span style="display:block;height:100%;width:{n / top * 100:.1f}%;
                   background:{bar_color};border-radius:6px;"></span>
           </div>
-          <div style="flex:0 0 148px;text-align:right;font-size:12.5px;color:{C['muted']};">
+          <div style="flex:0 0 165px;text-align:right;font-size:12.5px;color:{C['muted']};">
             <b style="color:{C['charcoal']};font-size:13.5px;">
-            {share:.1f}%</b> · {num(n)}{_inline_arrow(s.get("vs_prior_pct"))}</div>
+            {share:.1f}%</b> · {num(n)}
+            {_delta_pair(s.get("vs_prior_pct"), s.get("vs_yoy_pct"), yoy_per_day)}</div>
         </div>""" if share is not None else "")
 
     # Revenue share still comes from the occupancy-based channel_mix — the two
@@ -606,8 +652,8 @@ def _render_channel_mix(b: dict) -> str:
     body = (f"<div style='background:{C['card']};border:1px solid {C['line']};"
             f"border-radius:11px;padding:16px 18px;'>{''.join(rows)}</div>{tnote}")
     note = (f"{num(total)} bookings this period — counted once each if any night "
-            "fell inside it, ▲/▼ vs the prior period. More <b>direct</b> is better.")
-    return _section(4, "Which channels do guests book through?", note, body, br["primary"])
+            f"fell inside it. {_ARROW_LEGEND} More <b>direct</b> is better.")
+    return _section(3, "Which channels do guests book through?", note, body, br["primary"])
 
 
 def _render_markets(b: dict) -> str:
@@ -617,13 +663,14 @@ def _render_markets(b: dict) -> str:
     bid = b["branch_id"]
     currency = b.get("currency") or ""
     if not rows:
-        return _section(5, "Which markets do guests come from?", "",
+        return _section(4, "Which markets do guests come from?", "",
                         f"<div style='color:{C['muted']};font-size:13px;'>No market data "
                         f"for this period.</div>", br["primary"])
 
     # Arrows sit next to Revenue and Bookings themselves now, same as every
     # other table in this report (Ads/KOL/CRM) — a separate trailing "vs
     # prior" column was the one place in the report that broke that pattern.
+    yoy_per_day = bool(m.get("yoy_per_day"))
     trs = []
     for r in rows:
         country = r["country"]
@@ -633,9 +680,10 @@ def _render_markets(b: dict) -> str:
             f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>"
             f"{_flag(r.get('country_code') or country)} {country}</td>"
             f"<td style='{_TD}text-align:right;'>{fmt(r['revenue'], currency)}"
-            f"{_inline_arrow(r.get('vs_prior_pct'))}</td>"
+            f"{_delta_pair(r.get('vs_prior_pct'), r.get('vs_yoy_pct'), yoy_per_day)}</td>"
             f"<td style='{_TD}text-align:right;'>{num(r['bookings'])}"
-            f"{_inline_arrow(r.get('bookings_vs_prior_pct'))}</td></tr>"
+            f"{_delta_pair(r.get('bookings_vs_prior_pct'), r.get('bookings_vs_yoy_pct'), yoy_per_day)}"
+            f"</td></tr>"
         )
 
     unknown_note = ""
@@ -654,8 +702,8 @@ def _render_markets(b: dict) -> str:
       <tbody>{''.join(trs)}</tbody>
     </table>
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
-      Ranked by revenue in the period, ▲/▼ vs the prior period.{unknown_note}</div>"""
-    return _section(5, "Which markets do guests come from?",
+      Ranked by revenue in the period. {_ARROW_LEGEND}{unknown_note}</div>"""
+    return _section(4, "Which markets do guests come from?",
                     "Revenue counted per night stayed, so long stays land in the period "
                     "they were actually used.", body, br["primary"])
 
@@ -667,30 +715,39 @@ def _render_ads(b: dict) -> str:
     bid = b["branch_id"]
     currency = b.get("currency") or ""
     if not channels:
-        return _section(6, "Ad campaigns that ran", "",
+        return _section(5, "Ad campaigns that ran", "",
                         f"<div style='color:{C['muted']};font-size:13px;'>No ad spend "
                         f"recorded for this branch in the period.</div>", br["primary"])
 
+    yoy_per_day = bool(ads.get("yoy_per_day"))
     trs = [
         _channel_row(bid, "bw.ads." + c["channel"], c["channel"],
                     c.get("cost"), c.get("revenue"), c.get("roas"), c.get("bookings"),
                     currency, cost_pct=c.get("wow_cost_pct"), revenue_pct=c.get("wow_revenue_pct"),
-                    bookings_pct=c.get("wow_bookings_pct"), roas_pct=c.get("wow_roas_pct"))
+                    bookings_pct=c.get("wow_bookings_pct"), roas_pct=c.get("wow_roas_pct"),
+                    cost_yoy_pct=c.get("yoy_cost_pct"),
+                    revenue_yoy_pct=c.get("yoy_revenue_pct"),
+                    bookings_yoy_pct=c.get("yoy_bookings_pct"),
+                    roas_yoy_pct=c.get("yoy_roas_pct"), yoy_per_day=yoy_per_day)
         for c in channels
     ]
 
     tot = ads.get("last_week") or {}
+    ly_tot = ads.get("yoy_total") or {}
     footer = ""
     if tot.get("cost"):
-        footer = (f"Total ad spend {fmt(tot['cost'], currency)} in the period. ")
+        footer = (f"Total ad spend {fmt(tot['cost'], currency)} in the period")
+        if ly_tot.get("cost"):
+            footer += f", against {fmt(ly_tot['cost'], currency)} in the same period last year"
+        footer += ". "
     footer += ("Google spend reaches HiD only via the Ads Platform aggregator — a missing "
                "Google row means it is not connected for this branch, not that spend was zero.")
 
     body = f"""{_channel_table(''.join(trs))}
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">{footer}</div>"""
-    return _section(6, "Ad campaigns that ran",
-                    "ROAS = revenue returned per 1 unit of ad spend, ▲/▼ vs the prior period. "
-                    "Higher is more profitable.",
+    return _section(5, "Ad campaigns that ran",
+                    "ROAS = revenue returned per 1 unit of ad spend; higher is more "
+                    f"profitable. {_ARROW_LEGEND}",
                     body, br["primary"])
 
 
@@ -704,17 +761,23 @@ def _render_kol(b: dict) -> str:
     # Same Channel | Spend | Revenue | Efficiency | Bookings shape as Ads —
     # cost is `kol_records.cost_native` dated to this exact window, the
     # exact-dated counterpart to Ads' daily-grain spend rows.
+    kol_per_day = bool(k.get("yoy_per_day"))
+    reach_per_day = bool(reach.get("yoy_per_day"))
     channel_row = _channel_row(
         bid, "bw.kol.channel", "KOL / Influencer",
         k.get("period_cost_native"), k.get("organic_revenue_native"),
         k.get("period_roas"), k.get("organic_bookings"), currency,
         cost_pct=k.get("cost_vs_prior_pct"), revenue_pct=k.get("revenue_vs_prior_pct"),
         bookings_pct=k.get("bookings_vs_prior_pct"), roas_pct=k.get("roas_vs_prior_pct"),
+        cost_yoy_pct=k.get("cost_vs_yoy_pct"), revenue_yoy_pct=k.get("revenue_vs_yoy_pct"),
+        bookings_yoy_pct=k.get("bookings_vs_yoy_pct"), roas_yoy_pct=k.get("roas_vs_yoy_pct"),
+        yoy_per_day=kol_per_day,
     )
 
     rows = [
         ("Posts published this period",
-         num(k.get("posts_this_week")) + _inline_arrow(k.get("posts_vs_prior_pct")),
+         num(k.get("posts_this_week"))
+         + _delta_pair(k.get("posts_vs_prior_pct"), k.get("posts_vs_yoy_pct"), kol_per_day),
          "TikTok / IG / XHS"),
     ]
     if reach.get("available"):
@@ -733,18 +796,26 @@ def _render_kol(b: dict) -> str:
             er_note = f"ER {er:.2f}%"
         rows += [
             ("Views / reach",
-             num(reach.get("reach")) + _inline_arrow(reach.get("reach_vs_prior_pct")),
+             num(reach.get("reach"))
+             + _delta_pair(reach.get("reach_vs_prior_pct"),
+                           reach.get("reach_vs_yoy_pct"), reach_per_day),
              f"{num(total_posts)} post(s) in period"),
             ("Engagements",
-             num(reach.get("engagements")) + _inline_arrow(reach.get("engagements_vs_prior_pct")),
+             num(reach.get("engagements"))
+             + _delta_pair(reach.get("engagements_vs_prior_pct"),
+                           reach.get("engagements_vs_yoy_pct"), reach_per_day),
              er_note),
         ]
     rows += [
         ("KOL-driven bookings",
-         num(k.get("organic_bookings")) + _inline_arrow(k.get("bookings_vs_prior_pct")),
+         num(k.get("organic_bookings"))
+         + _delta_pair(k.get("bookings_vs_prior_pct"), k.get("bookings_vs_yoy_pct"),
+                       kol_per_day),
          f"{num(k.get('organic_nights'))} nights"),
         ("KOL-driven revenue",
-         fmt(k.get("organic_revenue_native"), currency) + _inline_arrow(k.get("revenue_vs_prior_pct")),
+         fmt(k.get("organic_revenue_native"), currency)
+         + _delta_pair(k.get("revenue_vs_prior_pct"), k.get("revenue_vs_yoy_pct"),
+                       kol_per_day),
          f"ROI {k['roi']:.2f}×" if k.get("roi") else "—"),
     ]
     # Distinguish "the Engine had nothing to give us" from "the posts got no
@@ -775,9 +846,9 @@ def _render_kol(b: dict) -> str:
     </table>
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
       {reach_note} Affiliate commission is not recorded in HiD.</div>"""
-    return _section(7, "KOL / Influencer Performance",
+    return _section(6, "KOL / Influencer Performance",
                     "Cost is KOL spend dated to this exact period, not calendar "
-                    "month-to-date, ▲/▼ vs the prior period. Sources: KOL records in "
+                    f"month-to-date. {_ARROW_LEGEND} Sources: KOL records in "
                     "HiD, reach from the KOL Engine, and bookings tagged to a KOL room type.",
                     body, br["primary"])
 
@@ -790,7 +861,7 @@ def _render_crm(b: dict) -> str:
     by_plan = crm.get("by_rate_plan") or []
 
     if not by_plan:
-        return _section(8, "CRM Performance", "",
+        return _section(7, "CRM Performance", "",
                         f"<div style='color:{C['muted']};font-size:13px;'>No CRM "
                         f"reservations for this branch in the period.</div>", br["primary"])
 
@@ -802,28 +873,47 @@ def _render_crm(b: dict) -> str:
     # per-campaign table implied a precision that didn't exist. Nights/ADR
     # dropped too, per team feedback (2026-08-11) — Bookings and Revenue are
     # what this section is actually for.
+    yoy_per_day = bool(by_plan[0].get("yoy_per_day"))
     plan_rows = "".join(
         f"<tr{cell_attrs(bid, 'bw.crm.plan.' + (r.get('rate_plan_name') or r['label']), 'CRM — ' + r['label'])}>"
         f"<td style='{_TD}font-weight:600;color:{C['charcoal']};'>{r['label']}</td>"
-        f"<td style='{_TD}text-align:right;'>{num(r.get('bookings'))}{_inline_arrow(r.get('bookings_vs_prior_pct'))}</td>"
-        f"<td style='{_TD}text-align:right;'>{fmt(r.get('revenue'), currency)}{_inline_arrow(r.get('revenue_vs_prior_pct'))}</td></tr>"
+        f"<td style='{_TD}text-align:right;'>{num(r.get('bookings'))}"
+        f"{_delta_pair(r.get('bookings_vs_prior_pct'), r.get('bookings_vs_yoy_pct'), yoy_per_day)}</td>"
+        f"<td style='{_TD}text-align:right;'>{fmt(r.get('revenue'), currency)}"
+        f"{_delta_pair(r.get('revenue_vs_prior_pct'), r.get('revenue_vs_yoy_pct'), yoy_per_day)}</td></tr>"
         for r in by_plan
     )
 
-    total_bookings = sum(r.get("bookings") or 0 for r in by_plan)
-    total_revenue = sum(r.get("revenue") or 0 for r in by_plan)
-    # A campaign with no prior-period row contributes 0 to the prior total —
-    # it's genuinely new, so its whole revenue is real growth, not a gap in
-    # the data the way a missing per-row prior would be.
-    total_prior_bookings = sum(r.get("prior_bookings") or 0 for r in by_plan)
-    total_prior_revenue = sum(r.get("prior_revenue") or 0 for r in by_plan)
+    # Totals come from the builder (`_crm_rate_plan_totals`) so the year-ago
+    # percentage is normalised for a period whose year-ago window is a
+    # different length. A payload cached before that shipped has no totals, so
+    # fall back to summing the rows here — the arrows are then un-normalised,
+    # which only differs on the one 21-day period a year.
+    tot = crm.get("rate_plan_totals") or {
+        "bookings": sum(r.get("bookings") or 0 for r in by_plan),
+        "revenue": sum(r.get("revenue") or 0 for r in by_plan),
+        "bookings_vs_prior_pct": pct_change(
+            sum(r.get("bookings") or 0 for r in by_plan),
+            sum(r.get("prior_bookings") or 0 for r in by_plan)),
+        "revenue_vs_prior_pct": pct_change(
+            sum(r.get("revenue") or 0 for r in by_plan),
+            sum(r.get("prior_revenue") or 0 for r in by_plan)),
+        "bookings_vs_yoy_pct": pct_change(
+            sum(r.get("bookings") or 0 for r in by_plan),
+            sum(r.get("yoy_bookings") or 0 for r in by_plan)),
+        "revenue_vs_yoy_pct": pct_change(
+            sum(r.get("revenue") or 0 for r in by_plan),
+            sum(r.get("yoy_revenue") or 0 for r in by_plan)),
+    }
     total_row = (
         f"<tr{cell_attrs(bid, 'bw.crm.total', 'CRM — Total')}>"
         f"<td style='{_TD}font-weight:700;color:{C['charcoal']};border-top:2px solid {C['line']};'>Total</td>"
         f"<td style='{_TD}text-align:right;font-weight:700;border-top:2px solid {C['line']};'>"
-        f"{num(total_bookings)}{_inline_arrow(pct_change(total_bookings, total_prior_bookings))}</td>"
+        f"{num(tot.get('bookings'))}"
+        f"{_delta_pair(tot.get('bookings_vs_prior_pct'), tot.get('bookings_vs_yoy_pct'), yoy_per_day)}</td>"
         f"<td style='{_TD}text-align:right;font-weight:700;border-top:2px solid {C['line']};'>"
-        f"{fmt(total_revenue, currency)}{_inline_arrow(pct_change(total_revenue, total_prior_revenue))}</td></tr>"
+        f"{fmt(tot.get('revenue'), currency)}"
+        f"{_delta_pair(tot.get('revenue_vs_prior_pct'), tot.get('revenue_vs_yoy_pct'), yoy_per_day)}</td></tr>"
     )
 
     body = f"""
@@ -838,8 +928,8 @@ def _render_crm(b: dict) -> str:
       Revenue from CRM-tagged reservations (Cloudbeds rate plans + the GoHighLevel
       integration), broken down by rate plan / campaign — see "Which channels do
       guests book through?" above for the Direct-channel breakdown.</div>"""
-    return _section(8, "CRM Performance",
-                    "Revenue from CRM Reservations, ▲/▼ vs the prior period.",
+    return _section(7, "CRM Performance",
+                    f"Revenue from CRM Reservations. {_ARROW_LEGEND}",
                     body, br["primary"])
 
 
@@ -895,7 +985,7 @@ def _render_flags(b: dict) -> str:
         f"</div>"
         + f'<div id="bw-flags-anchor-{bid}"></div>'
     )
-    return _section(9, "Highlights &amp; Watch-outs",
+    return _section(8, "Highlights &amp; Watch-outs",
                     "Automatic, from the numbers above — add your own below.",
                     body, br["primary"])
 
@@ -960,7 +1050,6 @@ def _render_branch(b: dict, p: Period) -> str:
          data-branch-name="{b['branch_name']}" data-branch-color="{br['primary']}">
       {banner}
       {_render_exec_summary(b, p)}
-      {_render_revpar(b, p)}
       {_render_target(b)}
       {_render_channel_mix(b)}
       {_render_markets(b)}

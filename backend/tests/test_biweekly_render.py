@@ -124,12 +124,18 @@ def _payload(branch_name="MEANDER Saigon"):
             "rows": [
                 {"source": "Direct", "category": "Direct", "bookings": 131,
                  "share_pct": 29.6, "prior_bookings": 112,
-                 "vs_prior_pct": 17.0, "is_direct": True},
+                 "vs_prior_pct": 17.0, "yoy_bookings": 101,
+                 "vs_yoy_pct": 29.7, "is_direct": True},
+                # No year-ago row — a channel that did not exist 12 months ago.
                 {"source": "Ctrip", "category": "OTA", "bookings": 94,
                  "share_pct": 21.3, "prior_bookings": 90,
-                 "vs_prior_pct": 4.4, "is_direct": False},
+                 "vs_prior_pct": 4.4, "yoy_bookings": 0,
+                 "vs_yoy_pct": None, "is_direct": False},
             ],
             "total_bookings": 442,
+            "yoy_total_bookings": 380,
+            "total_vs_yoy_pct": 16.3,
+            "yoy_per_day": False,
             "direct_bookings": 131,
             "direct_share_pct": 29.6,
         },
@@ -144,15 +150,20 @@ def _payload(branch_name="MEANDER Saigon"):
                 # Production shape: the "code" column carries a display name.
                 {"country": "Philippines", "country_code": "Philippines",
                  "revenue": 514_000_000, "bookings": 102, "vs_prior_pct": 219.0,
-                 "bookings_vs_prior_pct": 18.0},
+                 "bookings_vs_prior_pct": 18.0, "vs_yoy_pct": 88.0,
+                 "bookings_vs_yoy_pct": 41.0},
                 {"country": "Taiwan", "country_code": "Taiwan",
                  "revenue": 164_000_000, "bookings": 40, "vs_prior_pct": 344.0,
-                 "bookings_vs_prior_pct": -6.0},
+                 "bookings_vs_prior_pct": -6.0, "vs_yoy_pct": -22.5,
+                 "bookings_vs_yoy_pct": -14.0},
                 {"country": "Atlantis", "country_code": None,
                  "revenue": 12_000_000, "bookings": 4, "vs_prior_pct": None,
-                 "bookings_vs_prior_pct": None},
+                 "bookings_vs_prior_pct": None, "vs_yoy_pct": None,
+                 "bookings_vs_yoy_pct": None},
             ],
             "total_revenue": 1_210_000_000,
+            "yoy_total_revenue": 990_000_000,
+            "yoy_per_day": False,
             "unknown_revenue": 342_000_000,
             "unknown_bookings": 121,
             "unknown_share_pct": 28.0,
@@ -162,25 +173,40 @@ def _payload(branch_name="MEANDER Saigon"):
                 {"channel": "Google Ads", "cost": 10_600_000,
                  "revenue": 220_800_000, "roas": 20.8, "bookings": 43,
                  "wow_cost_pct": 8.0, "wow_revenue_pct": 15.0,
-                 "wow_bookings_pct": 6.0, "wow_roas_pct": 6.5},
+                 "wow_bookings_pct": 6.0, "wow_roas_pct": 6.5,
+                 "yoy_cost_pct": 31.0, "yoy_revenue_pct": 44.0,
+                 "yoy_bookings_pct": 19.0, "yoy_roas_pct": 9.9},
+                # No spend a year ago — every yoy delta is None, and the
+                # renderer must draw no second arrow rather than a 0%.
                 {"channel": "Meta Ads", "cost": 7_800_000,
                  "revenue": 11_600_000, "roas": 1.48, "bookings": 5,
                  "wow_cost_pct": -3.0, "wow_revenue_pct": -20.0,
-                 "wow_bookings_pct": -10.0, "wow_roas_pct": -18.0},
+                 "wow_bookings_pct": -10.0, "wow_roas_pct": -18.0,
+                 "yoy_cost_pct": None, "yoy_revenue_pct": None,
+                 "yoy_bookings_pct": None, "yoy_roas_pct": None},
             ],
             "last_week": {"cost": 18_400_000, "revenue": 232_400_000},
             "wow_roas_pct": 9.4,
+            "yoy_total": {"cost": 12_900_000, "revenue": 161_000_000,
+                          "roas": 12.48},
+            "yoy_roas_pct": 1.28,
+            "yoy_per_day": False,
         },
         "kol": {"posts_this_week": 9, "organic_bookings": 30,
                 "organic_nights": 61, "organic_revenue_native": 102_500_000,
                 "roi": 8.4, "period_cost_native": 12_200_000, "period_roas": 8.4,
                 "cost_vs_prior_pct": 5.0, "revenue_vs_prior_pct": 12.0,
                 "bookings_vs_prior_pct": 8.0, "posts_vs_prior_pct": -10.0,
-                "roas_vs_prior_pct": 7.0},
+                "roas_vs_prior_pct": 7.0,
+                "cost_vs_yoy_pct": 62.0, "revenue_vs_yoy_pct": 33.0,
+                "bookings_vs_yoy_pct": 20.0, "posts_vs_yoy_pct": 12.5,
+                "roas_vs_yoy_pct": -14.0, "yoy_per_day": False},
         "kol_reach": {"available": True, "posts": 11, "reach": 4916,
                       "engagements": 1348, "engagement_rate_pct": 3.43,
                       "engagement_rate_posts": 3, "reason": "ok",
-                      "reach_vs_prior_pct": 25.0, "engagements_vs_prior_pct": -8.0},
+                      "reach_vs_prior_pct": 25.0, "engagements_vs_prior_pct": -8.0,
+                      "reach_vs_yoy_pct": 51.0, "engagements_vs_yoy_pct": 17.0,
+                      "yoy_per_day": False},
         "crm": {"crm_revenue_this": {"bookings": 40, "nights": 88, "revenue": 306_000_000},
                 "crm_revenue_prev": {"bookings": 33, "nights": 70, "revenue": 250_800_000},
                 "wow_revenue_pct": 22.0, "period_cost_native": 5_000_000,
@@ -191,12 +217,25 @@ def _payload(branch_name="MEANDER Saigon"):
                     {"rate_plan_name": "Extension Promotion (>2 night", "label": "Extension Promotion (>2 night",
                      "bookings": 17, "nights": 41, "revenue": 40_905, "adr": 998,
                      "prior_revenue": 30_000, "prior_bookings": 12,
-                     "revenue_vs_prior_pct": 36.35, "bookings_vs_prior_pct": 41.67},
+                     "revenue_vs_prior_pct": 36.35, "bookings_vs_prior_pct": 41.67,
+                     "yoy_revenue": 22_000, "yoy_bookings": 9,
+                     "revenue_vs_yoy_pct": 85.93, "bookings_vs_yoy_pct": 88.89,
+                     "yoy_per_day": False},
+                    # A campaign that ran in neither comparison window.
                     {"rate_plan_name": "Extension Promotion (1 night", "label": "Extension Promotion (1 night",
                      "bookings": 37, "nights": 39, "revenue": 32_895, "adr": 843,
                      "prior_revenue": None, "prior_bookings": None,
-                     "revenue_vs_prior_pct": None, "bookings_vs_prior_pct": None},
-                ]},
+                     "revenue_vs_prior_pct": None, "bookings_vs_prior_pct": None,
+                     "yoy_revenue": None, "yoy_bookings": None,
+                     "revenue_vs_yoy_pct": None, "bookings_vs_yoy_pct": None,
+                     "yoy_per_day": False},
+                ],
+                "rate_plan_totals": {
+                    "bookings": 54, "revenue": 73_800,
+                    "bookings_vs_prior_pct": 350.0, "revenue_vs_prior_pct": 146.0,
+                    "bookings_vs_yoy_pct": 500.0, "revenue_vs_yoy_pct": 235.45,
+                    "yoy_per_day": False,
+                }},
         "highlights": ["Room rate +30% vs same period."],
         "watchouts": ["Occupancy down 5.7%."],
         "actions": [{"title": "Push Malaysia", "when": "Aug 17–25",
@@ -223,14 +262,43 @@ class TestBuildHtml:
     def test_renders_every_section(self):
         html = self._render([_payload()])
         for heading in [
-            "Executive Summary", "RevPAR (Revenue per Available Room)",
-            "Target Achievement",
+            "Executive Summary", "Target Achievement",
             "Which channels do guests book through?",
             "Which markets do guests come from?", "Ad campaigns that ran",
             "KOL / Influencer Performance", "CRM Performance",
             "Highlights", "Watch-outs", "Recommended Actions", "Quick Glossary",
         ]:
             assert heading in html, f"missing section: {heading}"
+
+    def test_revpar_is_a_card_in_the_executive_summary_not_its_own_section(self):
+        """RevPAR was section 2 of its own until 2026-08-12 feedback folded it
+        into the Executive Summary — a manager comparing it against the ADR and
+        OCC cards it derives from had to scroll away from them to read it."""
+        html = self._render([_payload()])
+        assert "RevPAR (Revenue per Available Room)" not in html   # old heading
+        assert "RevPAR (revenue per available room)" in html       # card label
+        assert 'data-metric-key="bw.revpar"' in html
+        # Inside section 1, i.e. before the next section starts.
+        assert html.index("bw.revpar") < html.index("Target Achievement")
+
+    def test_sections_are_numbered_without_a_gap(self):
+        """Dropping the standalone RevPAR section renumbered everything below
+        it. A skipped or duplicated number is the visible symptom of a
+        half-finished renumber."""
+        html = self._render([_payload()])
+        # The numbered circle each section header opens with.
+        numbers = re.findall(
+            r"align-items:center;justify-content:center;\">(\d+|\?)</div>", html)
+        assert numbers == ["1", "2", "3", "4", "5", "6", "7", "8", "?"]
+
+    def test_direct_channels_carry_no_good_badge(self):
+        """The green GOOD badge beside Direct channels went out per 2026-08-12
+        feedback: it labelled the channel, not its performance, so a Direct
+        channel down 30% still wore it. The brand-coloured bar still marks
+        Direct rows."""
+        html = self._render([_payload()])
+        assert "GOOD</span>" not in html
+        assert "More <b>direct</b> is better" in html
 
     def test_kol_shows_cost_and_roas_like_ads(self):
         """Cost + ROAS for KOL render as a Channel | Spend | Revenue |
@@ -263,6 +331,45 @@ class TestBuildHtml:
         html = self._render([_payload()])
         assert "CRM / Email</td>" not in html
         assert "61.20× · Excellent" not in html
+
+    def test_every_table_carries_both_comparisons(self):
+        """Until 2026-08-12 only the Executive Summary compared against the
+        same period last year — every table below it showed the prior period
+        alone. Each of those sections now carries both, the year-ago one
+        labelled so the second arrow is not mistaken for the first."""
+        html = self._render([_payload()])
+        for pct, where in [
+            ("+29.70%", "channel bookings"),
+            ("+88.00%", "market revenue"),
+            ("+41.00%", "market bookings"),
+            ("+44.00%", "ads revenue"),
+            ("+33.00%", "KOL revenue"),
+            ("+51.00%", "KOL reach"),
+            ("+85.93%", "CRM rate plan revenue"),
+            ("+235.45%", "CRM total revenue"),
+        ]:
+            assert pct in html, f"missing year-ago delta for {where}"
+        # Labelled, and often enough to be the table legend's subject.
+        assert html.count("vs LY") >= 8
+        assert "is vs the same period last year" in html
+
+    def test_a_zero_year_ago_base_draws_no_arrow_at_all(self):
+        """Meta Ads and Ctrip did not exist a year ago, so their year-ago
+        deltas are None. An arrow off a zero base reads as performance; the
+        absence plus the legend reads as "nothing to compare"."""
+        html = self._render([_payload()])
+        meta = html[html.index("Meta Ads</td>"):html.index("Meta Ads</td>") + 1400]
+        assert "vs LY" not in meta
+        assert "▼ -18.00%" in meta   # its prior-period arrow still renders
+
+    def test_year_ago_arrow_is_labelled_per_day_when_windows_differ(self):
+        """The 21-day W51–W53 period compares against a 14-day window in a
+        52-week prior year, so the builder normalises those deltas per day.
+        The label has to say so, or the number reads as a total."""
+        p = _payload()
+        p["markets"]["yoy_per_day"] = True
+        html = self._render([p])
+        assert "vs LY/day" in html
 
     def test_exec_summary_roas_card_has_a_vs_prior_chip(self):
         """The Executive Summary ROAS card showed a per-channel breakdown but
