@@ -308,7 +308,7 @@ class TestBuildHtml:
         figure."""
         html = self._render([_payload()])
         assert "KOL / Influencer</td>" in html
-        assert "8.40× · Excellent" in html   # KOL period_roas
+        assert "8.40×</span>" in html   # KOL period_roas
 
     def test_vs_prior_arrows_appear_on_channel_rows(self):
         html = self._render([_payload()])
@@ -330,7 +330,7 @@ class TestBuildHtml:
         table implied a precision that didn't exist."""
         html = self._render([_payload()])
         assert "CRM / Email</td>" not in html
-        assert "61.20× · Excellent" not in html
+        assert "61.20×" not in html
 
     def test_every_table_carries_both_comparisons(self):
         """Until 2026-08-12 only the Executive Summary compared against the
@@ -361,6 +361,15 @@ class TestBuildHtml:
         html = self._render([_payload()])
         assert html.count("is vs the same period last year") == 1
         assert html.index("is vs the same period last year") < html.index("Executive Summary")
+
+    def test_the_roas_pill_carries_no_verdict_word(self):
+        """"2.24× · OK" / "9.82× · Excellent" went out per 2026-08-12 feedback:
+        the pill's colour says where the number sits and the arrow beside it
+        says which way it is moving, so the word only restated the figure."""
+        html = self._render([_payload()])
+        for word in ["Excellent", "· OK", "· Good", "Weak"]:
+            assert word not in html, f"verdict word back in the ROAS pill: {word}"
+        assert "20.80×</span>" in html   # Google Ads roas, number kept
 
     def test_the_efficiency_column_is_called_roas(self):
         """"Efficiency" made the reader map a word onto a number that the
