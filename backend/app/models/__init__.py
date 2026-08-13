@@ -38,6 +38,7 @@ from app.models.weekly_report_comment import WeeklyReportComment
 from app.models.weekly_report_archive import WeeklyReportArchive
 
 # Bi-Weekly Branch Manager Report — one cached snapshot per ISO-week pair
+from app.models.biweekly_flag_override import BiweeklyFlagOverride
 from app.models.biweekly_report_cache import BiweeklyReportCache
 from app.models.webhook_event import WebhookEvent
 
@@ -57,6 +58,6 @@ __all__ = [
     "RatePlanQuota", "RatePlanQuotaStatus",
     "WeeklyReportCache",
     "WeeklyReportComment", "WeeklyReportArchive",
-    "BiweeklyReportCache",
+    "BiweeklyReportCache", "BiweeklyFlagOverride",
     "WebhookEvent",
 ]

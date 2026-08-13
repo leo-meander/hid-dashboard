@@ -943,24 +943,51 @@ def _render_crm(b: dict) -> str:
                     body, br["primary"])
 
 
-def _flag_panel(title: str, items: list, bullet: str, color: str, bg: str, border: str) -> str:
+_EDITED_MARK = (
+    "<span style='font-size:9.5px;font-weight:600;color:#6b6b6b;background:#fff;"
+    "border:1px solid rgba(0,0,0,.12);padding:0 5px;border-radius:4px;"
+    "margin-left:6px;white-space:nowrap;' title='Edited by hand — shown as "
+    "entered, not recomputed'>edited</span>"
+)
+
+
+def _flag_panel(title: str, items: list, bullet: str, color: str, bg: str,
+                border: str) -> str:
     """One coloured bullet-list card — Highlights, Watch-outs and Recommended
     Actions all render through this one function now, so "make Actions look
     like the other two" can never drift out of sync again.
+
+    Each item is `{"key", "text", "edited"}`. The key is emitted as
+    `data-flag-key` so the page can hang an inline editor off the exact line,
+    and an edited line wears a marker: it is shown as the operator typed it and
+    is NOT recomputed, so it must not be mistaken for a live number.
+
+    A plain string is still accepted — a payload cached before flags carried
+    keys renders read-only rather than not at all.
     """
     if not items:
-        items = ["Nothing notable this period."]
-    lis = "".join(
-        f"<li style='font-size:13px;padding:6px 0 6px 20px;position:relative;"
-        f"border-top:1px solid rgba(0,0,0,.05);list-style:none;'>"
-        f"<span style='position:absolute;left:0;font-weight:700;"
-        f"color:{color};'>{bullet}</span>{t}</li>"
-        for t in items
-    )
+        items = [{"key": "", "text": "Nothing notable this period."}]
+    lis = []
+    for it in items:
+        if isinstance(it, str):
+            it = {"key": "", "text": it}
+        key_attr = f' data-flag-key="{it["key"]}"' if it.get("key") else ""
+        mark = _EDITED_MARK if it.get("edited") else ""
+        # Only a keyed line is clickable, so only a keyed line gets the cursor.
+        cursor = "cursor:pointer;" if it.get("key") else ""
+        lis.append(
+            f"<li{key_attr} title='{'Click to correct or hide this line' if it.get('key') else ''}' "
+            f"style='{cursor}font-size:13px;padding:6px 0 6px 20px;"
+            f"position:relative;border-top:1px solid rgba(0,0,0,.05);"
+            f"list-style:none;'>"
+            f"<span style='position:absolute;left:0;font-weight:700;"
+            f"color:{color};'>{bullet}</span>{it['text']}{mark}</li>"
+        )
     return (f"<div style='border-radius:11px;padding:16px 18px;background:{bg};"
             f"border:1px solid {border};'>"
             f"<h4 style='font-size:14px;font-weight:600;margin:0 0 10px;color:{color};'>"
-            f"{bullet} {title}</h4><ul style='margin:0;padding:0;'>{lis}</ul></div>")
+            f"{bullet} {title}</h4><ul style='margin:0;padding:0;'>"
+            f"{''.join(lis)}</ul></div>")
 
 
 def _render_flags(b: dict) -> str:
@@ -976,13 +1003,19 @@ def _render_flags(b: dict) -> str:
     actions = b.get("actions") or []
     bid = b.get("branch_id")
 
-    action_items = [
-        f"<b>{a['title']}</b> "
-        f"<span style='font-size:10.5px;font-weight:600;color:#9a6a00;"
-        f"background:#fff;padding:1px 6px;border-radius:5px;white-space:nowrap;'>"
-        f"{a['when']}</span> — {a['body']}"
-        for a in actions
-    ]
+    # An edited action is one sentence the operator wrote, so it replaces the
+    # whole title/when/body assembly rather than being spliced back into it.
+    action_items = []
+    for a in actions:
+        if a.get("edited"):
+            action_items.append({"key": a.get("key", ""), "edited": True,
+                                 "text": a.get("text") or a.get("body") or ""})
+            continue
+        action_items.append({"key": a.get("key", ""), "text": (
+            f"<b>{a['title']}</b> "
+            f"<span style='font-size:10.5px;font-weight:600;color:#9a6a00;"
+            f"background:#fff;padding:1px 6px;border-radius:5px;white-space:nowrap;'>"
+            f"{a['when']}</span> — {a['body']}")})
     watch_panel = _flag_panel(
         "Watch-outs / Recommended Actions", watch + action_items, "!",
         "#9a6a00", C["warn_bg"], "#ecd9a8",
@@ -996,7 +1029,8 @@ def _render_flags(b: dict) -> str:
         + f'<div id="bw-flags-anchor-{bid}"></div>'
     )
     return _section(8, "Highlights &amp; Watch-outs",
-                    "Automatic, from the numbers above — add your own below.",
+                    "Automatic, from the numbers above — click any line to "
+                    "correct or hide it, or add your own below.",
                     body, br["primary"])
 
 
