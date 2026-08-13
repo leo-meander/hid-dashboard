@@ -663,6 +663,18 @@ def get_purchase_cvr_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
     return out
 
 
+def invalidate_purchase_cvr_cache(year: Optional[int] = None) -> None:
+    """Drop the hourly GA4 cache so the next read re-queries the API.
+
+    Used by the on-demand refresh endpoint — the read path caches for an hour,
+    so without this a refresh would hand back the same numbers it already had.
+    """
+    if year is None:
+        _ga4_cvr_cache.clear()
+    else:
+        _ga4_cvr_cache.pop(("ga4_cvr", year), None)
+
+
 # Oani's property counted 1948 and Osaka users too until its tag came off both
 # sites on 2026-08-09, and GA4 keeps that history. Adding it to a group sum
 # before then counts those two branches twice in the denominator, so it joins

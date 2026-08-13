@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
-import { getTeamKpiSummary, upsertTarget, upsertActual, getTaskOverview, getTaskDetail } from "../api/teamKpi";
+import { getTeamKpiSummary, upsertTarget, upsertActual, getTaskOverview, getTaskDetail, refreshAutoKpi } from "../api/teamKpi";
 
 const ROLES = [
   { key: "kol",      label: "KOL",       person: "Mel",   emoji: "🤝" },
@@ -249,6 +249,90 @@ function EditableCell({ value, onSave, placeholder = "—", disabled }) {
   );
 }
 
+// ── On-demand upstream refresh ────────────────────────────────────────────────
+
+// Two KPIs read from an upstream the grid otherwise only picks up on its own
+// schedule: GA4 sits behind a 1-hour server cache, PageSpeed Insights behind a
+// monthly cron. Everything else is already current whenever the page loads, so
+// only these two get a button.
+const REFRESHABLE_KPIS = {
+  purchase_cvr: "Re-query GA4 now for every month of this year. The page already re-reads GA4 hourly on its own — use this to pull the number through immediately. GA4 itself is 24–48h from final, so today still moves.",
+  page_load_speed: "Run a live PageSpeed Insights test on all five branch pages now and record the result as this month's reading. Normally this runs once a month (25th). Takes up to a minute.",
+};
+
+function RefreshKpiButton({ kpiKey, year, onRefresh }) {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState(null); // { ok, text, detail }
+
+  const isCurrentYear = year === CURRENT_YEAR;
+  // PSI has no history API — a Lighthouse run today can only measure today's
+  // speed, so firing it against a past year would write the wrong month.
+  const locked = kpiKey === "page_load_speed" && !isCurrentYear;
+
+  const run = async () => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      const d = await refreshAutoKpi(kpiKey, year, isCurrentYear ? CURRENT_MONTH : undefined);
+      if (kpiKey === "page_load_speed") {
+        const ok = (d.synced || []).map(s => `${s.branch} ${s.speed_index_seconds}s`).join(", ");
+        const failed = (d.errors || []).map(e => e.branch).join(", ");
+        setStatus({
+          ok: !failed,
+          text: failed ? `${d.synced.length} ok, ${d.errors.length} failed` : "Updated",
+          detail: failed ? `${ok} — failed: ${failed}` : ok,
+        });
+      } else {
+        const detail = Object.entries(d.readings || {})
+          .map(([b, v]) => `${b} ${v == null ? "—" : `${Number(v).toFixed(2)}%`}`)
+          .join(", ");
+        setStatus({ ok: true, text: "Updated", detail: detail || "no branches returned data" });
+      }
+      await onRefresh();
+    } catch (e) {
+      setStatus({
+        ok: false,
+        text: "Failed",
+        detail: e?.response?.data?.detail || e?.response?.data?.error || e?.message || "Refresh failed",
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-0.5">
+      <Tooltip text={locked
+        ? "Only the current month can be measured — PageSpeed Insights has no history to look up."
+        : REFRESHABLE_KPIS[kpiKey]}>
+        <button
+          onClick={run}
+          disabled={busy || locked}
+          className={`inline-flex items-center gap-1 text-[10px] font-normal leading-none px-1.5 py-1 rounded border transition-colors ${
+            busy || locked
+              ? "text-gray-300 border-gray-100 cursor-default"
+              : "text-gray-500 border-gray-200 hover:text-gray-900 hover:border-gray-400 hover:bg-gray-50"
+          }`}
+        >
+          <svg className={`w-3 h-3 ${busy ? "animate-spin" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          {busy ? "Fetching…" : "Refresh now"}
+        </button>
+      </Tooltip>
+      {!busy && status && (
+        <span
+          title={status.detail}
+          className={`block mt-0.5 text-[10px] font-normal cursor-help ${status.ok ? "text-green-600" : "text-red-600"}`}
+        >
+          {status.text} ⓘ
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── KPI Grid ──────────────────────────────────────────────────────────────────
 
 function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
@@ -369,6 +453,9 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                         </span>
                       </Tooltip>
                     )}
+                    {REFRESHABLE_KPIS[kpi.key] && (
+                      <RefreshKpiButton kpiKey={kpi.key} year={year} onRefresh={onRefresh} />
+                    )}
                   </td>
                   <td className="px-2 py-1.5 text-center text-gray-400" rowSpan={2}>{kpi.unit}</td>
                   <td className="px-2 py-1.5 text-center">
@@ -429,6 +516,9 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                           )}
                         </div>
                         {kpi.org_wide && <span className="text-[10px] text-blue-500 font-normal">org-wide</span>}
+                        {REFRESHABLE_KPIS[kpi.key] && (
+                          <RefreshKpiButton kpiKey={kpi.key} year={year} onRefresh={onRefresh} />
+                        )}
                       </td>
                       <td className="px-2 py-1.5 text-center text-gray-400">{kpi.unit}</td>
                     </>

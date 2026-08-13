@@ -19,6 +19,16 @@ export const upsertActual = (payload) =>
 export const deleteTarget = (id) =>
   axios.delete(`${BASE}/targets/${id}`).then(r => r.data);
 
+// On-demand re-read of one auto KPI from its upstream (purchase_cvr → GA4,
+// page_load_speed → a live PageSpeed Insights run). The PSI run is a real
+// Lighthouse test per branch, so it can take the better part of a minute —
+// hence the explicit timeout well above axios' default.
+export const refreshAutoKpi = (kpiKey, year, month) =>
+  axios.post(`${BASE}/refresh/${kpiKey}`, null, {
+    params: { year, ...(month == null ? {} : { month }) },
+    timeout: 180000,
+  }).then(r => r.data.data);
+
 export const getTaskOverview = (year) =>
   axios.get(`${BASE}/task-overview`, { params: { year } }).then(r => r.data.data);
 
