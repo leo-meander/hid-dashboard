@@ -407,6 +407,22 @@ class TestBuildHtml:
         html = self._render([_payload()])
         assert "click any line to correct or hide it" in html
 
+    def test_no_database_or_internal_names_reach_the_reader(self):
+        """The audience is a branch manager. Table and service names in the copy
+        tell them nothing and cost them confidence in the numbers — 2026-08-13
+        feedback: "branch manager họ có hiểu kĩ thuật đâu"."""
+        p = _payload()
+        p["data_notes"] = [
+            {"level": "bad", "text": "Nightly booking data is missing for this branch."},
+            {"level": "warn", "text": "12 booking(s) carry no source market."},
+        ]
+        html = self._render([p])
+        for jargon in ["reservation_daily", "ads_performance", "kol_records",
+                       "daily_metrics", "Ads Platform aggregator",
+                       "per-night revenue was never recorded",
+                       "different measurement under the same label"]:
+            assert jargon not in html, f"internal wording reached the report: {jargon}"
+
     def test_the_arrow_legend_is_stated_once_in_the_header(self):
         """It shipped in all five section notes, which put the same three lines
         of boilerplate between a manager and every table on the page (2026-08-12
