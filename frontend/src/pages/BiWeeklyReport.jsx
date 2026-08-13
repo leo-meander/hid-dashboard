@@ -605,12 +605,37 @@ export default function BiWeeklyReport() {
 
   const reportQuery = useQuery({
     queryKey: ["biweekly-preview", selectedPeriod],
-    queryFn: async () => parseBiweeklyHtml(await getPreviewHtml(selectedPeriod)),
+    // `raw` is kept alongside the parsed pieces so "Open raw preview" can hand
+    // the browser the exact same HTML without a second request — see
+    // `openRawPreview`.
+    queryFn: async () => {
+      const raw = await getPreviewHtml(selectedPeriod);
+      return { raw, ...parseBiweeklyHtml(raw) };
+    },
     enabled: Boolean(selectedPeriod),
     placeholderData: keepPreviousData,
   });
 
   const branches = reportQuery.data?.branches || [];
+
+  /**
+   * Open the unsliced report in a new tab.
+   *
+   * This was an `<a href="/api/biweekly/preview?period=…" target="_blank">`
+   * until that endpoint started requiring a login — a plain link cannot carry
+   * a Bearer token, so it just rendered a 401. The page already holds the
+   * exact HTML that endpoint returns, so hand the browser that instead of
+   * asking the server for it a second time.
+   */
+  function openRawPreview() {
+    const raw = reportQuery.data?.raw;
+    if (!raw) return;
+    const url = URL.createObjectURL(new Blob([raw], { type: "text/html" }));
+    window.open(url, "_blank", "noopener");
+    // Long enough for the new tab to have loaded it; without this the object
+    // URL leaks for the lifetime of the page.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
 
   // No effect snapping the selection to the first branch: `active` already
   // falls back on its own, and writing to the shared selection here would
@@ -779,14 +804,13 @@ export default function BiWeeklyReport() {
               </option>
             ))}
           </select>
-          <a
-            href={`/api/biweekly/preview?period=${selectedPeriod}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-3 py-1.5 border border-gray-200 text-gray-600 text-sm rounded-lg hover:bg-gray-50"
+          <button
+            onClick={openRawPreview}
+            disabled={!reportQuery.data?.raw}
+            className="px-3 py-1.5 border border-gray-200 text-gray-600 text-sm rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Open raw preview ↗
-          </a>
+          </button>
           <button
             onClick={rebuild}
             disabled={rebuilding || reportQuery.isFetching || !selectedPeriod}
