@@ -12,13 +12,22 @@ export const getPeriods = (params = {}) =>
  * Returned as text rather than JSON on purpose: the backend renders the
  * report so the exact same markup can be emailed later, and the page slices
  * per-branch blocks out of it. Same approach the Weekly Report page uses.
+ *
+ * This is the one call here that does not go through axios — it wants text,
+ * not JSON — so it does not get the interceptor in AuthContext that attaches
+ * the JWT, and has to add the header itself. It previously passed
+ * `credentials: "same-origin"`, which does nothing at all: this API
+ * authenticates with a Bearer token, not a cookie. The endpoint accepted the
+ * request anyway because it had no auth dependency, so the report was
+ * readable by anyone with the URL.
  */
 export const getPreviewHtml = async (period, { fresh = false } = {}) => {
   const p = new URLSearchParams();
   if (period) p.set("period", period);
   if (fresh) p.set("fresh", "1");
+  const token = localStorage.getItem("hid_token");
   const res = await fetch(`${BASE}/preview?${p.toString()}`, {
-    credentials: "same-origin",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!res.ok) throw new Error(`Preview failed (${res.status})`);
   return res.text();
