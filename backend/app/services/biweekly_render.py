@@ -977,13 +977,18 @@ def _flag_panel(title: str, items: list, bullet: str, color: str, bg: str,
         mark = _EDITED_MARK if it.get("edited") else ""
         # Only a keyed line is clickable, so only a keyed line gets the cursor.
         cursor = "cursor:pointer;" if it.get("key") else ""
+        # The sentence itself is wrapped in `data-flag-text` so the editor can
+        # seed its textarea with exactly that. Reading the <li> instead swept up
+        # the bullet — the first save then stored "▲Room revenue …" and the
+        # line rendered with two bullets.
         lis.append(
             f"<li{key_attr} title='{'Click to correct or hide this line' if it.get('key') else ''}' "
             f"style='{cursor}font-size:13px;padding:6px 0 6px 20px;"
             f"position:relative;border-top:1px solid rgba(0,0,0,.05);"
             f"list-style:none;'>"
             f"<span style='position:absolute;left:0;font-weight:700;"
-            f"color:{color};'>{bullet}</span>{it['text']}{mark}</li>"
+            f"color:{color};'>{bullet}</span>"
+            f"<span data-flag-text>{it['text']}</span>{mark}</li>"
         )
     return (f"<div style='border-radius:11px;padding:16px 18px;background:{bg};"
             f"border:1px solid {border};'>"

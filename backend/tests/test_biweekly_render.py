@@ -360,6 +360,16 @@ class TestBuildHtml:
         for key in ["flag.adr", "flag.occ", "act.market.Malaysia"]:
             assert f'data-flag-key="{key}"' in html
 
+    def test_the_flag_sentence_is_wrapped_so_the_editor_can_read_it_alone(self):
+        """The editor seeds its textarea from this span. Without it, it read the
+        whole <li> and swept up the bullet glyph — the first save then stored
+        "▲Room revenue …" and the line rendered with two bullets."""
+        html = self._render([_payload()])
+        assert "<span data-flag-text>Room rate +30% vs same period.</span>" in html
+        # The bullet stays outside that span, in its own absolutely-positioned one.
+        assert "<span data-flag-text>▲" not in html
+        assert "<span data-flag-text>!" not in html
+
     def test_an_edited_flag_is_marked_and_shown_as_typed(self):
         """A corrected line is NOT recomputed, so it has to be visibly
         distinguishable from a live one — same rule as a hand-entered number
