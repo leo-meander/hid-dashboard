@@ -1,10 +1,10 @@
 """
-KPI Engine — v5.1 (Cloudbeds Insights API with 1-hour in-memory cache)
+KPI Engine — v5.2
 
-Revenue, ADR, rooms_sold all come from Cloudbeds Data Insights API
-via custom reports with proper filters — cached for 1 hour.
-First request per branch/month: ~5s (API call).
-Subsequent requests within 1 hour: instant (from cache).
+Revenue, ADR, rooms_sold all come from `daily_metrics`, which the sync jobs
+fill from the Cloudbeds Data Insights API using custom reports with proper
+filters. A branch/month with no daily_metrics rows falls back to calling that
+API live — slow (~5s), so the fallback is cached in memory for 1 hour.
 
 Revenue EXCLUDES sources: "House use", "Blogger", "KOL", "Special case", "Work Exchange"
 Rooms Sold / OCC counts ALL sources (no exclusions).
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import calendar
 import logging
+import time
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -56,6 +57,22 @@ _EXCLUDED_SOURCES = {
     "special case",
     "work exchange",
 }
+
+# The Cloudbeds Insights fallback in `_get_insights_filtered` is expensive:
+# six custom reports, each a create → read → delete round trip, so up to
+# eighteen sequential HTTP calls for ONE branch/month. It fires whenever
+# daily_metrics carries no rows for that branch/month — and that is the normal
+# state of NEXT month until the sync job reaches it, which every KPI summary
+# asks for. Uncached, the Home page paid that cost again on every single
+# branch tab switch, which is what made switching branches take many seconds.
+#
+# So cache the fallback result per (branch, year, month). Empty results are
+# cached too: a month with genuinely zero bookings, or a property whose API key
+# is missing, would otherwise retry the whole round trip on every page load
+# forever. A sync that fills daily_metrics doesn't need to invalidate anything
+# — the DB path above returns before this cache is ever consulted.
+_INSIGHTS_FALLBACK_TTL_SEC = 3600
+_insights_fallback_cache: dict[tuple[str, int, int], tuple[float, dict]] = {}
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -239,6 +256,13 @@ def _get_insights_filtered(
         return result
 
     # ── FALLBACK: Cloudbeds API (only if DB has no data) ─────────────────
+    # Served from a 1-hour cache — see _insights_fallback_cache above for why.
+    cache_key = (str(branch_id), year, month)
+    now_ts = time.time()
+    hit = _insights_fallback_cache.get(cache_key)
+    if hit and now_ts - hit[0] < _INSIGHTS_FALLBACK_TTL_SEC:
+        return dict(hit[1])
+
     from app.models.branch import Branch
     from app.config import settings
 
@@ -249,6 +273,7 @@ def _get_insights_filtered(
     pid = branch.cloudbeds_property_id
     api_key = settings.get_api_key_for_property(str(pid)) if pid else None
 
+    fallback = empty
     if pid and api_key:
         try:
             from app.services.cloudbeds import fetch_occupancy_filtered
@@ -259,11 +284,12 @@ def _get_insights_filtered(
                     branch.name, year, month,
                     result["total_rev"], result["total_sold"], result["total_adr"],
                 )
-                return result
+                fallback = result
         except Exception as e:
             logger.warning("Insights API fallback failed for %s: %s", branch.name, e)
 
-    return empty
+    _insights_fallback_cache[cache_key] = (now_ts, fallback)
+    return dict(fallback)
 
 
 def _get_room_dorm_adr_from_daily(
