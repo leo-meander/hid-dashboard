@@ -839,14 +839,11 @@ export default function BiWeeklyReport() {
   function onReportClick(e) {
     const flag = e.target.closest("[data-flag-key]");
     if (flag && reportBodyRef.current?.contains(flag)) {
-      // Seed the editor with what the line reads as on screen, minus the
-      // "edited" marker the renderer appends — the operator is correcting a
-      // sentence, not editing the markup around it.
-      const text = Array.from(flag.childNodes)
-        .filter(n => !(n.nodeType === 1 && n.textContent.trim() === "edited"))
-        .map(n => n.textContent)
-        .join("")
-        .trim();
+      // Seed the editor from the renderer's [data-flag-text] span — the
+      // sentence only, without the bullet glyph in front of it or the "edited"
+      // marker after it. Reading the whole <li> swept up the bullet, which then
+      // got saved into the text and rendered twice.
+      const text = (flag.querySelector("[data-flag-text]")?.innerText ?? "").trim();
       setFlagEdit({
         period: selectedPeriod,
         periodLabel: period ? `${period.label} · ${period.date_label}` : selectedPeriod,
