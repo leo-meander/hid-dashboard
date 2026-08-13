@@ -709,7 +709,9 @@ def _render_markets(b: dict) -> str:
       <tbody>{''.join(trs)}</tbody>
     </table>
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
-      Ranked by revenue.{unknown_note}</div>"""
+      Ranked by revenue. The {_YOY_TAG} line compares <b>bookings</b> only —
+      last year's per-night revenue was never recorded, so a revenue figure for
+      it would be a different measurement under the same label.{unknown_note}</div>"""
     return _section(4, "Which markets do guests come from?",
                     "Revenue counted per night stayed, so long stays land in the period "
                     "they were actually used.", body, br["primary"])

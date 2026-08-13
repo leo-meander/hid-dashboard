@@ -138,6 +138,88 @@ def _yoy_days(p: Period) -> tuple[tuple[date, date], int, bool]:
     return yoy, days, days != p.days
 
 
+def _stay_overlaps(d_from: date, d_to: date):
+    """SQL predicate for "this reservation has at least one night inside the
+    window" — the occupancy basis, read straight off `reservations`.
+
+    This is the same population `reservation_daily` gives via
+    COUNT(DISTINCT reservation_id) over its per-night rows, without needing
+    that table. `populate_reservation_daily` writes one row per date in
+    `[check_in_date, check_out_date)` — the loop is `while current <
+    check_out_date` — so a night lands in the window exactly when
+    `check_in_date <= d_to` and `check_out_date > d_from`.
+
+    Why this matters: `reservation_daily` has no rows before 2026, which is
+    why the year-over-year columns in Markets and Channel Mix were blank. A
+    booking COUNT does not need the one thing that table uniquely holds
+    (Cloudbeds' actual per-night rate — see `nightly_rate` in
+    cloudbeds.populate_reservation_daily), so counts can be compared against
+    last year today, from data already on disk. Revenue still cannot: a
+    year-ago figure derived from `grand_total / nights` would be a different
+    measurement wearing the same label.
+
+    The third clause is not redundant. A zero-night booking — check_out equal
+    to check_in, which the data does carry — writes NO reservation_daily rows
+    (that loop never runs, and `populate_reservation_daily` skips `nights <= 0`
+    outright), yet satisfies both range comparisons whenever it sits inside the
+    window. Without it, such a booking is counted here and not there, and the
+    year-over-year percentage inherits the difference.
+    """
+    return (
+        Reservation.check_in_date <= d_to,
+        Reservation.check_out_date > d_from,
+        Reservation.check_out_date > Reservation.check_in_date,
+    )
+
+
+def _stay_bookings_by_country(db: Session, branch_id, d_from: date,
+                              d_to: date) -> dict:
+    """Bookings per source market with a night inside the window, from
+    `reservations`. Keyed by `guest_country_code` to match `markets_block`.
+    """
+    rows = (
+        db.query(
+            Reservation.guest_country_code,
+            func.count(func.distinct(Reservation.id)),
+        )
+        .filter(
+            Reservation.branch_id == branch_id,
+            *_stay_overlaps(d_from, d_to),
+            ~func.lower(func.coalesce(Reservation.status, "")).in_(
+                list(_EXCLUDED_STATUSES)
+            ),
+        )
+        .group_by(Reservation.guest_country_code)
+        .all()
+    )
+    return {(r[0] or "??"): int(r[1] or 0) for r in rows}
+
+
+def _stay_bookings_by_source(db: Session, branch_id, d_from: date,
+                             d_to: date) -> dict:
+    """Same count, grouped by booking source — for `channel_bookings_block`."""
+    rows = (
+        db.query(
+            Reservation.source,
+            func.count(func.distinct(Reservation.id)),
+        )
+        .filter(
+            Reservation.branch_id == branch_id,
+            *_stay_overlaps(d_from, d_to),
+            ~func.lower(func.coalesce(Reservation.status, "")).in_(
+                list(_EXCLUDED_STATUSES)
+            ),
+        )
+        .group_by(Reservation.source)
+        .all()
+    )
+    out: dict = {}
+    for src, n in rows:
+        name = (src or "Unknown").strip() or "Unknown"
+        out[name] = out.get(name, 0) + int(n or 0)
+    return out
+
+
 # ── 1. KPI block ─────────────────────────────────────────────────────────────
 
 
@@ -372,6 +454,18 @@ def markets_block(db: Session, branch: Branch, p: Period, limit: int = 8) -> dic
     prior = _by_country(prev[0], prev[1])
     last_year = _by_country(yoy[0], yoy[1])
 
+    # Booking COUNTS for the year-over-year comparison come from
+    # `reservations`, not `reservation_daily` — see `_stay_overlaps`. Both
+    # sides of the percentage are counted the same way, deliberately: taking
+    # "this period" from reservation_daily and "last year" from reservations
+    # would turn that table's known staleness (nothing refreshes it on a
+    # schedule) into a fake year-on-year decline. `bookings` as DISPLAYED stays
+    # on reservation_daily so it keeps agreeing with the revenue beside it; the
+    # two counts are identical whenever that table is complete, which is the
+    # normal case and the case the data notes flag when it is not.
+    cur_stay = _stay_bookings_by_country(db, branch.id, p.start, p.end)
+    yoy_stay = _stay_bookings_by_country(db, branch.id, yoy[0], yoy[1])
+
     total_rev = sum(v["revenue"] for v in cur.values())
     unknown_rev = sum(
         v["revenue"] for k, v in cur.items()
@@ -398,10 +492,17 @@ def markets_block(db: Session, branch: Branch, p: Period, limit: int = 8) -> dic
             "prior_bookings": prior_bookings,
             "bookings_vs_prior_pct": pct_change(v["bookings"], prior_bookings),
             "yoy_revenue": yoy_rev,
+            # Stays None until `reservation_daily` holds year-ago nights: the
+            # only year-ago revenue derivable from `reservations` alone is
+            # grand_total/nights, a different measurement under the same label.
             "vs_yoy_pct": _pct_norm(v["revenue"], yoy_rev, p.days, yoy_days),
-            "yoy_bookings": yoy_bookings,
-            "bookings_vs_yoy_pct": _pct_norm(v["bookings"], yoy_bookings,
-                                             p.days, yoy_days),
+            "yoy_bookings": yoy_stay.get(code, 0),
+            "bookings_vs_yoy_pct": _pct_norm(
+                cur_stay.get(code, 0), yoy_stay.get(code, 0), p.days, yoy_days),
+            # Kept for auditing: the reservation_daily count this row displays
+            # vs the reservations count the percentage above is built from.
+            "yoy_bookings_rd": yoy_bookings,
+            "bookings_stay_basis": cur_stay.get(code, 0),
         })
 
     rows.sort(key=lambda r: -r["revenue"])
@@ -471,29 +572,38 @@ def channel_bookings_block(db: Session, branch: Branch, p: Period,
     prior = _by_source(prev[0], prev[1])
     last_year = _by_source(yoy[0], yoy[1])
 
+    # Year-over-year counts read `reservations` for both sides — same reasoning
+    # as `markets_block`; `reservation_daily` holds no year-ago nights, and a
+    # booking count does not need the per-night rates that table uniquely has.
+    cur_stay = _stay_bookings_by_source(db, branch.id, p.start, p.end)
+    yoy_stay = _stay_bookings_by_source(db, branch.id, yoy[0], yoy[1])
+
     total = sum(v["bookings"] for v in cur.values())
     rows = []
     for name, v in cur.items():
         prior_n = prior.get(name, {}).get("bookings", 0)
-        yoy_n = last_year.get(name, {}).get("bookings", 0)
         rows.append({
             **v,
             "share_pct": round(v["bookings"] / total * 100, 1) if total else None,
             "prior_bookings": prior_n,
             "vs_prior_pct": pct_change(v["bookings"], prior_n),
-            "yoy_bookings": yoy_n,
-            "vs_yoy_pct": _pct_norm(v["bookings"], yoy_n, p.days, yoy_days),
+            "yoy_bookings": yoy_stay.get(name, 0),
+            "vs_yoy_pct": _pct_norm(cur_stay.get(name, 0), yoy_stay.get(name, 0),
+                                    p.days, yoy_days),
+            "yoy_bookings_rd": last_year.get(name, {}).get("bookings", 0),
+            "bookings_stay_basis": cur_stay.get(name, 0),
             "is_direct": (v["category"] or "").strip().lower() == "direct",
         })
     rows.sort(key=lambda r: -r["bookings"])
 
     direct_bookings = sum(r["bookings"] for r in rows if r["is_direct"])
-    yoy_total = sum(v["bookings"] for v in last_year.values())
+    yoy_total = sum(yoy_stay.values())
     return {
         "rows": rows[:limit],
         "total_bookings": total,
         "yoy_total_bookings": yoy_total,
-        "total_vs_yoy_pct": _pct_norm(total, yoy_total, p.days, yoy_days),
+        "total_vs_yoy_pct": _pct_norm(sum(cur_stay.values()), yoy_total,
+                                      p.days, yoy_days),
         "yoy_per_day": yoy_per_day,
         "direct_bookings": direct_bookings,
         "direct_share_pct": (
