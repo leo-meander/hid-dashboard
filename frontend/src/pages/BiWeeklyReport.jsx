@@ -771,9 +771,12 @@ export default function BiWeeklyReport() {
     setRebuildError(null);
     try {
       const html = await getPreviewHtml(selectedPeriod, { fresh: true });
+      // Shape this exactly like the queryFn, `raw` included — "Open raw
+      // preview" reads it, so writing only the parsed halves here left that
+      // button permanently disabled after a rebuild.
       queryClient.setQueryData(
         ["biweekly-preview", selectedPeriod],
-        parseBiweeklyHtml(html)
+        { raw: html, ...parseBiweeklyHtml(html) }
       );
     } catch (e) {
       setRebuildError(e?.message || "Could not rebuild this period");
