@@ -201,18 +201,22 @@ def _delta_pair(prior_pct, yoy_pct, per_day: bool = False,
 
 
 def _efficiency_pill(roas: Optional[float]) -> str:
-    """The ROAS badge — factored out so Ads, KOL and CRM render the exact
-    same pill for the exact same number, instead of three near-identical
-    copies drifting apart.
+    """The ROAS badge — factored out so Ads and KOL render the exact same pill
+    for the exact same number, instead of two near-identical copies drifting
+    apart.
+
+    The number carries no verdict word. "2.24× · OK" / "9.82× · Excellent"
+    went out per team feedback (2026-08-12): the pill's colour already says
+    where the number sits, and the vs-prior arrow beside it says which way it
+    is moving — which is the part an operator acts on. The word only restated
+    the figure in prose.
     """
     if roas is None:
         return f"<span style='color:{C['muted']};font-size:11px;'>no spend</span>"
     k = "g" if roas >= 4 else "b" if roas < 2 else "w"
-    word = "Excellent" if roas >= 8 else "Good" if roas >= 4 else \
-           "Weak" if roas < 2 else "OK"
     return (f"<span style='font-size:11px;font-weight:600;padding:2px 8px;"
             f"border-radius:20px;color:{_LIGHT[k]};background:{_LIGHT_BG[k]};'>"
-            f"{roas:.2f}× · {word}</span>")
+            f"{roas:.2f}×</span>")
 
 
 def _channel_row(bid, metric_key: str, name: str, cost, revenue, roas, bookings,
