@@ -19,6 +19,7 @@ const MONTH_NAME = now.toLocaleString("en-US", { month: "long", year: "numeric" 
 // Shared so SingleBranchView can seed itself from whatever the All Branches
 // table already fetched — see the comment where it reads this key.
 const ALL_BRANCHES_KEY = ["home-all-branches", YEAR, MONTH];
+const branchKpiKey = (branchId) => ["home-branch-kpi", branchId];
 
 
 function fmt(value, currency) {
@@ -223,8 +224,55 @@ function AchievementBadge({ value }) {
   return <span className={"px-2 py-0.5 rounded text-xs font-semibold " + cls}>{Math.round(value)}%</span>;
 }
 
-function AllBranchesTable({ data, loading }) {
-  // Per-branch deduction % state — initialized from API data
+// The R:xx% · D:xx% sub-line that sits under a number. Falls back to the
+// blended OCC when the split isn't available, and drops the Dorm half for
+// rooms-only branches (where a "D:" reading would be meaningless).
+function OccSplit({ room, dorm, fallback = null, hasDorm, className = "" }) {
+  const cls = "text-[10px] text-gray-400 mt-0.5 " + className;
+  if (room != null || dorm != null) {
+    return (
+      <div className={cls}>
+        {room != null && <span>R:{Math.round(room * 100)}%</span>}
+        {room != null && dorm != null && hasDorm && <span> · </span>}
+        {dorm != null && hasDorm && <span>D:{Math.round(dorm * 100)}%</span>}
+      </div>
+    );
+  }
+  if (fallback != null) {
+    const f = Math.round(fallback * 100);
+    return <div className={cls}>{hasDorm ? `R:${f}% · D:${f}%` : `R:${f}%`}</div>;
+  }
+  return null;
+}
+
+// "OCC Forecast" never said WHICH occupancy it assumed, so the number read as
+// a prediction of its own rather than as what it is: the revenue this branch
+// lands on IF it finishes the month at the OCC% set on the KPI target.
+function occForecastLabel(row) {
+  const pct = (v) => Math.round(v * 100) + "%";
+  const hasDorm = row.total_dorm_count > 0;
+  const r = row.predicted_room_occ_pct;
+  const d = row.predicted_dorm_occ_pct;
+  let occ = null;
+  if (r != null || d != null) {
+    const parts = [];
+    if (r != null) parts.push(hasDorm ? "Room " + pct(r) : pct(r));
+    if (d != null && hasDorm) parts.push("Dorm " + pct(d));
+    occ = parts.join(" · ");
+  } else if (row.predicted_occ_pct != null) {
+    occ = pct(row.predicted_occ_pct);
+  }
+  return occ
+    ? "Revenue if OCC ends the month at " + occ
+    : "Revenue at the predicted month-end OCC";
+}
+
+// Deduct % and Other Rev are fixed per-branch values (no monthly reset) that
+// are edited in place and saved on a debounce. Both the group table and the
+// single-branch view offer those edits, so the state, the debounce and the
+// cache write-through live here once rather than in each of them.
+function useBranchAdjustments(data) {
+  const queryClient = useQueryClient();
   const [deductions, setDeductions] = useState({});
   const [otherRevs, setOtherRevs] = useState({});
   const [saving, setSaving] = useState({});
@@ -245,6 +293,19 @@ function AllBranchesTable({ data, loading }) {
     setOtherRevs(initOther);
   }, [data]);
 
+  // The group table and the branch page hold this branch's summary under two
+  // different query keys. Patch both after a save so they can't disagree about
+  // a value they both edit — the server stored exactly what we sent, so this
+  // costs nothing next to refetching either summary.
+  const patchCaches = useCallback((branchId, patch) => {
+    queryClient.setQueryData(ALL_BRANCHES_KEY, prev =>
+      Array.isArray(prev)
+        ? prev.map(r => (r.branch_id === branchId ? { ...r, ...patch } : r))
+        : prev);
+    queryClient.setQueryData(branchKpiKey(branchId), prev =>
+      prev ? { ...prev, ...patch } : prev);
+  }, [queryClient]);
+
   // Save deduction to backend (debounced)
   const saveDeduction = useCallback((branchId, val) => {
     const num = Math.max(0, Math.min(100, parseFloat(val) || 0));
@@ -264,13 +325,14 @@ function AllBranchesTable({ data, loading }) {
         deduction_pct: num,
       })
         .then(() => {
+          patchCaches(branchId, { deduction_pct: num });
           setSaving(prev => ({ ...prev, [branchId]: false }));
         })
         .catch(() => {
           setSaving(prev => ({ ...prev, [branchId]: false }));
         });
     }, 800);
-  }, []);
+  }, [patchCaches]);
 
   const setDeduction = (branchId, val) => {
     const num = Math.max(0, Math.min(100, parseFloat(val) || 0));
@@ -290,10 +352,13 @@ function AllBranchesTable({ data, loading }) {
         month: MONTH,
         other_revenue_native: num,
       })
-        .then(() => setSavingOther(prev => ({ ...prev, [branchId]: false })))
+        .then(() => {
+          patchCaches(branchId, { other_revenue_native: num });
+          setSavingOther(prev => ({ ...prev, [branchId]: false }));
+        })
         .catch(() => setSavingOther(prev => ({ ...prev, [branchId]: false })));
     }, 800);
-  }, []);
+  }, [patchCaches]);
 
   const setOtherRev = (branchId, val) => {
     const num = Math.max(0, parseFloat(val) || 0);
@@ -301,7 +366,7 @@ function AllBranchesTable({ data, loading }) {
     saveOtherRev(branchId, num);
   };
 
-  // Compute adjusted forecasts (= forecast * (1 - ded%) + other revenue)
+  // Adjusted forecasts (= forecast × (1 − ded%) + other revenue)
   const rows = useMemo(() => {
     return data.map(row => {
       const dedPct = deductions[row.branch_id] ?? row.deduction_pct ?? 0;
@@ -320,6 +385,40 @@ function AllBranchesTable({ data, loading }) {
       };
     });
   }, [data, deductions, otherRevs]);
+
+  return { rows, setDeduction, setOtherRev, saving, savingOther };
+}
+
+// The two auto-saving number inputs, shared by the table row and the branch
+// detail panel. `wide` is the Other Rev variant (money, right-aligned).
+function AdjustmentInput({ value, onChange, isSaving, wide = false, max }) {
+  return (
+    <div className="relative inline-block">
+      <input
+        type="number"
+        min="0"
+        max={max}
+        step="1"
+        value={value || ""}
+        onChange={e => onChange(e.target.value)}
+        placeholder="0"
+        className={
+          (wide ? "w-24 text-right font-mono " : "w-14 text-center ") +
+          "px-1.5 py-1 text-xs border rounded outline-none " +
+          (isSaving
+            ? "border-yellow-400 bg-yellow-50"
+            : "border-gray-300 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400")
+        }
+      />
+      {isSaving && (
+        <span className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
+      )}
+    </div>
+  );
+}
+
+function AllBranchesTable({ data, loading }) {
+  const { rows, setDeduction, setOtherRev, saving, savingOther } = useBranchAdjustments(data);
 
   // Cross-branch average KPI achievement — branches use different currencies,
   // so we average the per-branch percentages rather than summing amounts.
@@ -378,29 +477,13 @@ function AllBranchesTable({ data, loading }) {
                   <td className="px-3 py-3.5 text-gray-500 text-xs">{cur}</td>
                   <td className="px-3 py-3.5 text-right font-mono">
                     <div>{fmt(row.actual_revenue_native, cur)}</div>
-                    {(() => {
-                      const rOcc = row.actual_room_occ_pct;
-                      const dOcc = row.actual_dorm_occ_pct;
-                      const fallback = row.actual_occ_pct;
-                      const hasDorm = row.total_dorm_count > 0;
-                      if (rOcc != null || dOcc != null) {
-                        return (
-                          <div className="text-[10px] text-gray-400 mt-0.5 font-sans">
-                            {rOcc != null && <span>R:{Math.round(rOcc * 100)}%</span>}
-                            {rOcc != null && dOcc != null && hasDorm && <span> · </span>}
-                            {dOcc != null && hasDorm && <span>D:{Math.round(dOcc * 100)}%</span>}
-                          </div>
-                        );
-                      }
-                      if (fallback != null) {
-                        return (
-                          <div className="text-[10px] text-gray-400 mt-0.5 font-sans">
-                            {hasDorm ? `R:${Math.round(fallback * 100)}% · D:${Math.round(fallback * 100)}%` : `R:${Math.round(fallback * 100)}%`}
-                          </div>
-                        );
-                      }
-                      return null;
-                    })()}
+                    <OccSplit
+                      room={row.actual_room_occ_pct}
+                      dorm={row.actual_dorm_occ_pct}
+                      fallback={row.actual_occ_pct}
+                      hasDorm={row.total_dorm_count > 0}
+                      className="font-sans"
+                    />
                   </td>
                   <td className="px-3 py-3.5 text-right font-mono text-gray-500">{fmt(row.target_revenue_native, cur)}</td>
                   <td className="px-3 py-3.5 text-center"><AchievementBadge value={row.achievement_pct != null ? row.achievement_pct * 100 : null} /></td>
@@ -418,76 +501,32 @@ function AllBranchesTable({ data, loading }) {
                                 : null}
                             </span>
                           </HoverTooltip>
-                          {(() => {
-                            const rOcc = row.predicted_room_occ_pct;
-                            const dOcc = row.predicted_dorm_occ_pct;
-                            const fallback = row.predicted_occ_pct;
-                            const hasDorm = row.total_dorm_count > 0;
-                            if (rOcc != null || dOcc != null) {
-                              return (
-                                <div className="text-[10px] text-gray-400 mt-0.5">
-                                  {rOcc != null && <span>R:{Math.round(rOcc * 100)}%</span>}
-                                  {rOcc != null && dOcc != null && hasDorm && <span> · </span>}
-                                  {dOcc != null && hasDorm && <span>D:{Math.round(dOcc * 100)}%</span>}
-                                </div>
-                              );
-                            }
-                            if (fallback != null) {
-                              return (
-                                <div className="text-[10px] text-gray-400 mt-0.5">
-                                  {hasDorm ? `R:${Math.round(fallback * 100)}% · D:${Math.round(fallback * 100)}%` : `R:${Math.round(fallback * 100)}%`}
-                                </div>
-                              );
-                            }
-                            return null;
-                          })()}
+                          <OccSplit
+                            room={row.predicted_room_occ_pct}
+                            dorm={row.predicted_dorm_occ_pct}
+                            fallback={row.predicted_occ_pct}
+                            hasDorm={row.total_dorm_count > 0}
+                          />
                         </div>
                       : <span className="text-gray-300 text-xs">Enter OCC%</span>}
                   </td>
                   {/* Deduction % input — auto-saves */}
                   <td className="px-3 py-3.5 text-center">
-                    <div className="relative inline-block">
-                      <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        step="1"
-                        value={dedPct || ""}
-                        onChange={e => setDeduction(row.branch_id, e.target.value)}
-                        placeholder="0"
-                        className={
-                          "w-14 px-1.5 py-1 text-center text-xs border rounded outline-none " +
-                          (isSaving
-                            ? "border-yellow-400 bg-yellow-50"
-                            : "border-gray-300 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400")
-                        }
-                      />
-                      {isSaving && (
-                        <span className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
-                      )}
-                    </div>
+                    <AdjustmentInput
+                      value={dedPct}
+                      max="100"
+                      onChange={v => setDeduction(row.branch_id, v)}
+                      isSaving={isSaving}
+                    />
                   </td>
                   {/* Other Revenue input — auto-saves */}
                   <td className="px-3 py-3.5 text-center">
-                    <div className="relative inline-block">
-                      <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        value={otherRev || ""}
-                        onChange={e => setOtherRev(row.branch_id, e.target.value)}
-                        placeholder="0"
-                        className={
-                          "w-24 px-1.5 py-1 text-right text-xs border rounded outline-none font-mono " +
-                          (isSavingOther
-                            ? "border-yellow-400 bg-yellow-50"
-                            : "border-gray-300 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400")
-                        }
-                      />
-                      {isSavingOther && (
-                        <span className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
-                      )}
-                    </div>
+                    <AdjustmentInput
+                      wide
+                      value={otherRev}
+                      onChange={v => setOtherRev(row.branch_id, v)}
+                      isSaving={isSavingOther}
+                    />
                   </td>
                   {/* Adjusted forecast — blue if ≥100% of target, red if below */}
                   <td className="px-3 py-3.5 text-center">
@@ -526,21 +565,12 @@ function AllBranchesTable({ data, loading }) {
                                 </span>
                               : null}
                           </span>
-                          {(() => {
-                            const rOcc = row.booked_room_occ_next;
-                            const dOcc = row.booked_dorm_occ_next;
-                            const hasDorm = row.total_dorm_count > 0;
-                            if (rOcc != null || dOcc != null) {
-                              return (
-                                <div className="text-[10px] text-gray-400 mt-0.5 font-sans">
-                                  {rOcc != null && <span>R:{Math.round(rOcc * 100)}%</span>}
-                                  {rOcc != null && dOcc != null && hasDorm && <span> · </span>}
-                                  {dOcc != null && hasDorm && <span>D:{Math.round(dOcc * 100)}%</span>}
-                                </div>
-                              );
-                            }
-                            return null;
-                          })()}
+                          <OccSplit
+                            room={row.booked_room_occ_next}
+                            dorm={row.booked_dorm_occ_next}
+                            hasDorm={row.total_dorm_count > 0}
+                            className="font-sans"
+                          />
                         </div>
                       : <span className="text-gray-300">{"—"}</span>}
                   </td>
@@ -575,29 +605,12 @@ function AllBranchesTable({ data, loading }) {
                                 : null}
                             </span>
                           </HoverTooltip>
-                          {(() => {
-                            const rOcc = row.predicted_room_occ_next;
-                            const dOcc = row.predicted_dorm_occ_next;
-                            const fallback = row.predicted_occ_next;
-                            const hasDorm = row.total_dorm_count > 0;
-                            if (rOcc != null || dOcc != null) {
-                              return (
-                                <div className="text-[10px] text-gray-400 mt-0.5">
-                                  {rOcc != null && <span>R:{Math.round(rOcc * 100)}%</span>}
-                                  {rOcc != null && dOcc != null && hasDorm && <span> · </span>}
-                                  {dOcc != null && hasDorm && <span>D:{Math.round(dOcc * 100)}%</span>}
-                                </div>
-                              );
-                            }
-                            if (fallback != null) {
-                              return (
-                                <div className="text-[10px] text-gray-400 mt-0.5">
-                                  {hasDorm ? `R:${Math.round(fallback * 100)}% · D:${Math.round(fallback * 100)}%` : `R:${Math.round(fallback * 100)}%`}
-                                </div>
-                              );
-                            }
-                            return null;
-                          })()}
+                          <OccSplit
+                            room={row.predicted_room_occ_next}
+                            dorm={row.predicted_dorm_occ_next}
+                            fallback={row.predicted_occ_next}
+                            hasDorm={row.total_dorm_count > 0}
+                          />
                         </div>
                           );
                         })()
@@ -637,6 +650,161 @@ function AllBranchesTable({ data, loading }) {
   );
 }
 
+// One labelled line of the branch detail panel.
+function DetailRow({ label, hint, children }) {
+  return (
+    <div className="flex items-start justify-between gap-4 px-5 py-3">
+      <div className="min-w-0">
+        <p className="text-xs font-medium text-gray-600">{label}</p>
+        {hint && <p className="text-[11px] text-gray-400 mt-0.5">{hint}</p>}
+      </div>
+      <div className="text-right shrink-0">{children}</div>
+    </div>
+  );
+}
+
+// The same numbers the Group Summary carries for this branch — including the
+// two editable adjustments — laid out vertically. Before this, clicking into a
+// branch showed strictly less than the All Branches table did, so anyone
+// wanting Adjusted or next month's figures had to go back to the group view.
+function BranchDetail({ row, setDeduction, setOtherRev, saving, savingOther }) {
+  const cur = row.currency || "VND";
+  const hasDorm = row.total_dorm_count > 0;
+  const dedPct = row.deduction_pct_local;
+
+  const pctOf = (value, target) =>
+    value != null && target ? value / target * 100 : null;
+
+  const adjPct = pctOf(row.adjusted_forecast, row.target_revenue_native);
+  const nextPct = pctOf(row.adjusted_next_forecast, row.next_month_target_native);
+  const fcPct = pctOf(row.occ_forecast_native, row.target_revenue_native);
+  const bookedPct = pctOf(row.next_month_booked_revenue, row.next_month_target_native);
+
+  const overUnder = (pct) => (pct == null ? "text-gray-700" : pct >= 100 ? "text-blue-600" : "text-red-600");
+  const suffix = (pct, digits = 0) =>
+    pct == null ? null : <span className="ml-1 text-xs text-gray-400 font-normal">({pct.toFixed(digits)}%)</span>;
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="px-5 py-4 border-b border-gray-100">
+        <h2 className="font-semibold text-gray-800">Details — {MONTH_NAME}</h2>
+        <p className="text-xs text-gray-400 mt-0.5">
+          Native currency ({cur})
+          <SyncBadge timestamp={row.data_synced_at} />
+        </p>
+      </div>
+
+      <div className="divide-y divide-gray-100">
+        <DetailRow label="Revenue" hint="Booked so far this month">
+          <span className="font-mono text-gray-800">{fmt(row.actual_revenue_native, cur)}</span>
+          <OccSplit
+            room={row.actual_room_occ_pct}
+            dorm={row.actual_dorm_occ_pct}
+            fallback={row.actual_occ_pct}
+            hasDorm={hasDorm}
+          />
+        </DetailRow>
+
+        <DetailRow label="Target">
+          <span className="font-mono text-gray-500">{fmt(row.target_revenue_native, cur)}</span>
+        </DetailRow>
+
+        <DetailRow label="KPI %" hint="Revenue ÷ Target">
+          <AchievementBadge value={row.achievement_pct != null ? row.achievement_pct * 100 : null} />
+        </DetailRow>
+
+        <DetailRow label="Forecast" hint={occForecastLabel(row)}>
+          {row.occ_forecast_native != null
+            ? <>
+                <HoverTooltip content={forecastBreakdown(row, "current")}>
+                  <span className="font-mono text-indigo-700 font-medium border-b border-dotted border-indigo-300">
+                    {fmt(row.occ_forecast_native, cur)}{suffix(fcPct)}
+                  </span>
+                </HoverTooltip>
+                <OccSplit
+                  room={row.predicted_room_occ_pct}
+                  dorm={row.predicted_dorm_occ_pct}
+                  fallback={row.predicted_occ_pct}
+                  hasDorm={hasDorm}
+                />
+              </>
+            : <span className="text-gray-300 text-xs">Enter OCC%</span>}
+        </DetailRow>
+
+        <DetailRow label="Deduct %" hint="Taken off the forecast before comparing to target">
+          <AdjustmentInput
+            value={dedPct}
+            max="100"
+            onChange={v => setDeduction(row.branch_id, v)}
+            isSaving={saving[row.branch_id]}
+          />
+        </DetailRow>
+
+        <DetailRow label="Other Rev" hint="Added on top of the deducted forecast">
+          <AdjustmentInput
+            wide
+            value={row.other_revenue_local}
+            onChange={v => setOtherRev(row.branch_id, v)}
+            isSaving={savingOther[row.branch_id]}
+          />
+        </DetailRow>
+
+        <DetailRow label="Adjusted" hint="Forecast × (1 − Deduct%) + Other Rev">
+          {row.adjusted_forecast != null
+            ? <HoverTooltip content={adjustedBreakdown(row, "current")}>
+                <span className={"font-mono font-medium border-b border-dotted border-gray-300 " + overUnder(adjPct)}>
+                  {fmt(row.adjusted_forecast, cur)}{suffix(adjPct, 2)}
+                </span>
+              </HoverTooltip>
+            : <span className="text-gray-300">{"—"}</span>}
+        </DetailRow>
+
+        <DetailRow label="Next Rev" hint="Already on the books for next month">
+          {row.next_month_booked_revenue > 0
+            ? <>
+                <span className="font-mono text-gray-700">
+                  {fmt(row.next_month_booked_revenue, cur)}{suffix(bookedPct)}
+                </span>
+                <OccSplit
+                  room={row.booked_room_occ_next}
+                  dorm={row.booked_dorm_occ_next}
+                  hasDorm={hasDorm}
+                />
+              </>
+            : <span className="text-gray-300">{"—"}</span>}
+        </DetailRow>
+
+        <DetailRow label="Next Forecast" hint="Next month, adjusted the same way">
+          {row.adjusted_next_forecast != null
+            ? <>
+                <HoverTooltip content={
+                  <>
+                    {forecastBreakdown(row, "next")}
+                    {(dedPct > 0 || (row.other_revenue_local || 0) > 0) && (
+                      <div className="border-t border-gray-700 mt-1.5 pt-1.5">
+                        {adjustedBreakdown(row, "next")}
+                      </div>
+                    )}
+                  </>
+                }>
+                  <span className={"font-mono font-medium border-b border-dotted border-purple-300 " + overUnder(nextPct)}>
+                    {fmt(row.adjusted_next_forecast, cur)}{suffix(nextPct)}
+                  </span>
+                </HoverTooltip>
+                <OccSplit
+                  room={row.predicted_room_occ_next}
+                  dorm={row.predicted_dorm_occ_next}
+                  fallback={row.predicted_occ_next}
+                  hasDorm={hasDorm}
+                />
+              </>
+            : <span className="text-gray-300">{"—"}</span>}
+        </DetailRow>
+      </div>
+    </div>
+  );
+}
+
 function SingleBranchView({ branch }) {
   const queryClient = useQueryClient();
 
@@ -654,7 +822,7 @@ function SingleBranchView({ branch }) {
   const {
     data: kpi, isPending: kpiPending, isPlaceholderData: kpiStale, error,
   } = useQuery({
-    queryKey: ["home-branch-kpi", branch?.id],
+    queryKey: branchKpiKey(branch?.id),
     queryFn: () =>
       axios.get("/api/kpi/summary/" + branch.id + "?year=" + YEAR + "&month=" + MONTH)
         .then(r => r.data.data || r.data),
@@ -663,6 +831,13 @@ function SingleBranchView({ branch }) {
     initialDataUpdatedAt: seededKpi ? allState.dataUpdatedAt : undefined,
     placeholderData: keepPreviousData,
   });
+
+  // Same adjustment machinery the group table uses, over a one-row list —
+  // that keeps `adjusted_forecast` computed in exactly one place, so the two
+  // views can never drift on what "Adjusted" means.
+  const kpiRows = useMemo(() => (kpi ? [kpi] : []), [kpi]);
+  const { rows, setDeduction, setOtherRev, saving, savingOther } = useBranchAdjustments(kpiRows);
+  const row = rows[0];
 
   // The heatmap loads on its own query rather than sharing one Promise.all
   // with the KPI summary: the two have very different response times, and
@@ -682,17 +857,26 @@ function SingleBranchView({ branch }) {
 
   return (
     <div className="space-y-6">
-      <div className={`transition-opacity duration-150 ${kpiStale ? "opacity-40 pointer-events-none" : "opacity-100"}`}>
-        {kpiPending && !kpi
+      <div className={`space-y-6 transition-opacity duration-150 ${kpiStale ? "opacity-40 pointer-events-none" : "opacity-100"}`}>
+        {kpiPending && !row
           ? <SectionLoading />
-          : kpi && (
-              <KPICard
-                label={branch.name + " — Revenue"}
-                actual={kpi.actual_revenue_native}
-                target={kpi.target_revenue_native}
-                currency={branch.currency || branch.native_currency}
-                forecast={{ occ: kpi.occ_forecast_native }}
-              />
+          : row && (
+              <>
+                <KPICard
+                  label={branch.name + " — Revenue"}
+                  actual={row.actual_revenue_native}
+                  target={row.target_revenue_native}
+                  currency={branch.currency || branch.native_currency}
+                  forecast={{ occ: row.occ_forecast_native, occLabel: occForecastLabel(row) }}
+                />
+                <BranchDetail
+                  row={row}
+                  setDeduction={setDeduction}
+                  setOtherRev={setOtherRev}
+                  saving={saving}
+                  savingOther={savingOther}
+                />
+              </>
             )}
       </div>
       <div className={`transition-opacity duration-150 ${occStale ? "opacity-40 pointer-events-none" : "opacity-100"}`}>

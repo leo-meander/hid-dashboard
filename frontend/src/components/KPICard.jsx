@@ -6,7 +6,10 @@
  *   target       number | null
  *   currency     string  (e.g. "VND", "USD")
  *   suffix       string  (optional, e.g. "%")
- *   forecast     { runrate, occ } | null
+ *   forecast     { runrate, occ, occLabel } | null
+ *                occLabel names the assumption behind occ — "OCC Forecast"
+ *                alone reads as a prediction of its own rather than as the
+ *                revenue that follows IF occupancy lands where it was set.
  */
 export default function KPICard({ label, actual, target, currency, suffix = "", forecast }) {
   const pct = target > 0 ? actual / target : null;
@@ -61,7 +64,12 @@ export default function KPICard({ label, actual, target, currency, suffix = "", 
 
       {/* Forecasts */}
       {forecast && (
-        <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 gap-2">
+        <div className={
+          "mt-3 pt-3 border-t border-gray-100 grid gap-2 " +
+          // A lone forecast gets the full width — its label spells out the
+          // occupancy assumption and needs the room.
+          (forecast.runrate != null && forecast.occ != null ? "grid-cols-2" : "grid-cols-1")
+        }>
           {forecast.runrate != null && (
             <div>
               <p className="text-xs text-gray-400">Run-rate</p>
@@ -70,8 +78,10 @@ export default function KPICard({ label, actual, target, currency, suffix = "", 
           )}
           {forecast.occ != null && (
             <div>
-              <p className="text-xs text-gray-400">OCC Forecast</p>
-              <p className="text-sm font-medium text-gray-700">{fmt(forecast.occ)}</p>
+              <p className="text-xs text-gray-400">{forecast.occLabel || "OCC Forecast"}</p>
+              <p className="text-sm font-medium text-gray-700">
+                {fmt(forecast.occ)}{suffix === "%" ? "" : ` ${currency || ""}`}
+              </p>
             </div>
           )}
         </div>
