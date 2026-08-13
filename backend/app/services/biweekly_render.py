@@ -116,16 +116,17 @@ _TH = (f"padding:10px 13px;text-align:left;background:#f4efe8;font-size:11px;"
 _TD = (f"padding:10px 13px;color:{C['ink']};font-size:13px;"
        f"border-top:1px solid {C['line']};")
 
-# The label the year-ago arrow wears in tables. Section footers explain it by
-# name, so it lives here rather than being spelled out at each call site —
+# The label the year-ago arrow wears in tables. The report header explains it
+# by name, so it lives here rather than being spelled out at each call site —
 # renaming it in one place renames it in the legend too.
 _YOY_TAG = "vs LY"
-# Every table footer says the same thing about the two arrows. Repeating the
-# sentence verbatim in six places is how the six drift apart.
+# Explained ONCE, in the report header, next to the two comparison windows it
+# refers to. It shipped in all five section notes, which put the same three
+# lines of boilerplate between a manager and every table on the page.
 _ARROW_LEGEND = (
-    f"Top ▲/▼ is vs the prior period, the line below ({_YOY_TAG}) is vs the "
-    "same period last year; no second line means there was nothing in that "
-    "row a year ago to compare against."
+    f"In every table the ▲▼ beside a number is vs the prior period; the line "
+    f"below it ({_YOY_TAG}) is vs the same period last year. No second line "
+    "means there was nothing there a year ago to compare against."
 )
 
 
@@ -250,7 +251,7 @@ def _channel_table(rows_html: str) -> str:
            border:1px solid {C['line']};border-radius:11px;overflow:hidden;font-size:13px;">
       <thead><tr><th style="{_TH}">Channel</th><th style="{_TH}text-align:right;">Spend</th>
       <th style="{_TH}text-align:right;">Revenue</th>
-      <th style="{_TH}text-align:right;">Efficiency</th>
+      <th style="{_TH}text-align:right;">ROAS</th>
       <th style="{_TH}text-align:right;">Bookings</th></tr></thead>
       <tbody>{rows_html}</tbody>
     </table>"""
@@ -651,8 +652,8 @@ def _render_channel_mix(b: dict) -> str:
 
     body = (f"<div style='background:{C['card']};border:1px solid {C['line']};"
             f"border-radius:11px;padding:16px 18px;'>{''.join(rows)}</div>{tnote}")
-    note = (f"{num(total)} bookings this period — counted once each if any night "
-            f"fell inside it. {_ARROW_LEGEND} More <b>direct</b> is better.")
+    note = (f"{num(total)} bookings, counted once each if any night fell inside "
+            "the period. More <b>direct</b> is better.")
     return _section(3, "Which channels do guests book through?", note, body, br["primary"])
 
 
@@ -686,12 +687,14 @@ def _render_markets(b: dict) -> str:
             f"</td></tr>"
         )
 
+    # The "How to read these numbers" block at the foot of the report says this
+    # too, at length. One clause is enough here — the point is only that the
+    # shares in THIS table do not add up to 100%.
     unknown_note = ""
     if m.get("unknown_share_pct"):
         unknown_note = (
-            f" — Data note: {num(m.get('unknown_bookings'))} booking(s) "
-            f"({fmt(m.get('unknown_revenue'), currency)}, {m['unknown_share_pct']:.0f}% of "
-            f"revenue) have no source market recorded and are excluded from this table."
+            f" Excludes {num(m.get('unknown_bookings'))} booking(s) "
+            f"({m['unknown_share_pct']:.0f}% of revenue) with no source market."
         )
 
     body = f"""
@@ -702,7 +705,7 @@ def _render_markets(b: dict) -> str:
       <tbody>{''.join(trs)}</tbody>
     </table>
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
-      Ranked by revenue in the period. {_ARROW_LEGEND}{unknown_note}</div>"""
+      Ranked by revenue.{unknown_note}</div>"""
     return _section(4, "Which markets do guests come from?",
                     "Revenue counted per night stayed, so long stays land in the period "
                     "they were actually used.", body, br["primary"])
@@ -736,19 +739,23 @@ def _render_ads(b: dict) -> str:
     ly_tot = ads.get("yoy_total") or {}
     footer = ""
     if tot.get("cost"):
-        footer = (f"Total ad spend {fmt(tot['cost'], currency)} in the period")
+        footer = f"Total ad spend {fmt(tot['cost'], currency)}"
         if ly_tot.get("cost"):
-            footer += f", against {fmt(ly_tot['cost'], currency)} in the same period last year"
-        footer += ". "
-    footer += ("Google spend reaches HiD only via the Ads Platform aggregator — a missing "
-               "Google row means it is not connected for this branch, not that spend was zero.")
+            footer += f", against {fmt(ly_tot['cost'], currency)} a year ago"
+        footer += "."
+    # The Google caveat only means something when the Google row is ABSENT —
+    # printing it under a table that already has one answers a question nobody
+    # reading that table had, and `data_notes_block` raises the same point when
+    # it actually applies.
+    if not any((c.get("channel") or "").lower().startswith("google") for c in channels):
+        footer += (" No Google row: HiD receives Google spend only via the Ads Platform "
+                   "aggregator, so this means not connected, not zero spend.")
 
     body = f"""{_channel_table(''.join(trs))}
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">{footer}</div>"""
     return _section(5, "Ad campaigns that ran",
-                    "ROAS = revenue returned per 1 unit of ad spend; higher is more "
-                    f"profitable. {_ARROW_LEGEND}",
-                    body, br["primary"])
+                    "ROAS = revenue returned per 1 unit of ad spend. Higher is more "
+                    "profitable.", body, br["primary"])
 
 
 def _render_kol(b: dict) -> str:
@@ -820,13 +827,14 @@ def _render_kol(b: dict) -> str:
     ]
     # Distinguish "the Engine had nothing to give us" from "the posts got no
     # views" — a zero in this row would be read as a performance claim.
+    # The affiliate-commission caveat that used to trail this line lives in the
+    # "How to read these numbers" block, which is where every other
+    # what-HiD-does-not-track note already is.
     if reach.get("available"):
-        reach_note = ("Reach and engagement come from the KOL Engine, counted on the "
-                      "post's publish date.")
+        reach_note = "Reach and engagement come from the KOL Engine, dated to the publish date."
     else:
-        reach_note = ("Reach and engagement are <b>unavailable for this period</b> — "
-                      "the KOL Engine returned no scored posts, so views and engagement "
-                      "rate are omitted rather than shown as zero.")
+        reach_note = ("Reach and engagement <b>unavailable this period</b> — the KOL Engine "
+                      "returned no scored posts, so they are omitted rather than shown as zero.")
 
     trs = "".join(
         f"<tr{cell_attrs(bid, f'bw.kol.{i}', label)}>"
@@ -845,11 +853,10 @@ def _render_kol(b: dict) -> str:
       <tbody>{trs}</tbody>
     </table>
     <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
-      {reach_note} Affiliate commission is not recorded in HiD.</div>"""
+      {reach_note}</div>"""
     return _section(6, "KOL / Influencer Performance",
                     "Cost is KOL spend dated to this exact period, not calendar "
-                    f"month-to-date. {_ARROW_LEGEND} Sources: KOL records in "
-                    "HiD, reach from the KOL Engine, and bookings tagged to a KOL room type.",
+                    "month-to-date. Bookings are the ones tagged to a KOL room type.",
                     body, br["primary"])
 
 
@@ -923,13 +930,12 @@ def _render_crm(b: dict) -> str:
       <th style="{_TH}text-align:right;">Bookings</th>
       <th style="{_TH}text-align:right;">Revenue</th></tr></thead>
       <tbody>{plan_rows}{total_row}</tbody>
-    </table>
-    <div style="font-size:11.5px;color:{C['muted']};margin-top:8px;font-style:italic;">
-      Revenue from CRM-tagged reservations (Cloudbeds rate plans + the GoHighLevel
-      integration), broken down by rate plan / campaign — see "Which channels do
-      guests book through?" above for the Direct-channel breakdown.</div>"""
+    </table>"""
+    # No footer: it restated the section note almost word for word, then sent
+    # the reader back up to a section they had already scrolled past.
     return _section(7, "CRM Performance",
-                    f"Revenue from CRM Reservations. {_ARROW_LEGEND}",
+                    "Revenue from CRM-tagged reservations (Cloudbeds rate plans + "
+                    "GoHighLevel), per campaign.",
                     body, br["primary"])
 
 
@@ -1095,6 +1101,8 @@ def _build_html(report: list, p: Period, computed_at: Optional[datetime]) -> str
         {chip("Reference · prior period", f"{prev.label.split(' · ')[0]} ({prev.date_label})")}
         {chip("Generated", stamp)}
       </div>
+      <div style="margin-top:14px;font-size:12px;opacity:.8;max-width:640px;">
+        {_ARROW_LEGEND}</div>
     </div>
     <div style="padding:34px 40px;">{branches}</div>
     <div style="padding:18px 40px 26px;color:{C['muted']};font-size:11.5px;

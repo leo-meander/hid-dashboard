@@ -353,6 +353,48 @@ class TestBuildHtml:
         assert html.count("vs LY") >= 8
         assert "is vs the same period last year" in html
 
+    def test_the_arrow_legend_is_stated_once_in_the_header(self):
+        """It shipped in all five section notes, which put the same three lines
+        of boilerplate between a manager and every table on the page (2026-08-12
+        feedback: "dài dòng ... nhiễu loạn thông tin"). It belongs next to the
+        two comparison windows the header already names, once."""
+        html = self._render([_payload()])
+        assert html.count("is vs the same period last year") == 1
+        assert html.index("is vs the same period last year") < html.index("Executive Summary")
+
+    def test_the_efficiency_column_is_called_roas(self):
+        """"Efficiency" made the reader map a word onto a number that the
+        glossary and the section note both already call ROAS."""
+        html = self._render([_payload()])
+        assert ">ROAS</th>" in html
+        assert "Efficiency" not in html
+
+    def test_the_google_caveat_only_appears_when_google_is_missing(self):
+        """Printed under a table that already has a Google row, it answered a
+        question nobody reading that table had."""
+        assert "not connected, not zero spend" not in self._render([_payload()])
+
+        p = _payload()
+        p["paid_ads"]["by_channel"] = [
+            c for c in p["paid_ads"]["by_channel"] if "Google" not in c["channel"]
+        ]
+        assert "not connected, not zero spend" in self._render([p])
+
+    def test_crm_does_not_restate_its_own_section_note(self):
+        """The footer repeated the note almost word for word, then pointed the
+        reader back up to a section they had already scrolled past."""
+        html = self._render([_payload()])
+        assert "above for the Direct-channel breakdown" not in html
+        assert html.count("CRM-tagged reservations") == 1
+
+    def test_affiliate_commission_is_mentioned_once_not_twice(self):
+        """It was in the KOL footer AND in the data-notes block below it."""
+        p = _payload()
+        p["data_notes"] = [{"level": "info",
+                            "text": "Affiliate commission is not recorded at all."}]
+        html = self._render([p])
+        assert html.count("ffiliate commission") == 1
+
     def test_a_zero_year_ago_base_draws_no_arrow_at_all(self):
         """Meta Ads and Ctrip did not exist a year ago, so their year-ago
         deltas are None. An arrow off a zero base reads as performance; the
@@ -540,11 +582,11 @@ class TestBuildHtml:
                           "engagements": 0, "engagement_rate_pct": None}
         html = self._render([p])
         assert "Views / reach" not in html
-        assert "unavailable for this period" in html
+        assert "unavailable this period" in html
 
     def test_channel_mix_reports_bookings_not_nights(self):
         html = self._render([_payload()])
-        assert "442 bookings this period" in html
+        assert "442 bookings, counted once each" in html
         assert "29.6%" in html
 
     def test_survives_a_completely_empty_branch(self):
