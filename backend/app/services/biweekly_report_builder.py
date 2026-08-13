@@ -1237,20 +1237,23 @@ def data_notes_block(db: Session, branch: Branch, p: Period,
     latest = db.query(func.max(ReservationDaily.date)).filter(
         ReservationDaily.branch_id == branch.id
     ).scalar()
+    # Audience is a branch manager, so these read as "what is wrong with the
+    # numbers and who fixes it", not as the table name behind the problem.
     if latest is None:
         notes.append({
             "level": "bad",
-            "text": "No reservation_daily rows for this branch — Channel Mix and "
-                    "Markets cannot be computed. Run a full Insights sync.",
+            "text": "Nightly booking data is missing for this branch, so Channels "
+                    "and Markets are empty below. Ask the data team to run a full "
+                    "booking sync.",
         })
     elif latest < p.end:
         notes.append({
             "level": "bad",
             "text": (
-                f"Nightly booking data only reaches {latest:%d %b %Y}, "
-                f"{(p.end - latest).days} day(s) short of the period end. "
-                "Channel Mix and Markets are understated for the tail of this "
-                "period — refresh before acting on a decline."
+                f"Nightly booking data stops at {latest:%d %b %Y}, "
+                f"{(p.end - latest).days} day(s) before this period ends. "
+                "Channels and Markets are undercounted for those last days — "
+                "don't read a drop there as real yet."
             ),
         })
 
@@ -1271,16 +1274,14 @@ def data_notes_block(db: Session, branch: Branch, p: Period,
     if "Google" not in channel_names:
         notes.append({
             "level": "warn",
-            "text": "No Google Ads rows for this branch this period. HiD receives "
-                    "Google spend only through the Ads Platform aggregator — an "
-                    "absent row means not connected, not zero spend.",
+            "text": "No Google Ads figures for this branch this period. That means "
+                    "Google is not connected here, not that nothing was spent.",
         })
 
     notes.append({
         "level": "info",
-        "text": "KOL reach and engagement (views, likes, engagement rate) are not "
-                "tracked in HiD — only posts published and bookings attributed to "
-                "KOLs. Affiliate commission is not recorded at all.",
+        "text": "Affiliate commission from KOLs is not tracked anywhere in HiD, so "
+                "it is not in any number above.",
     })
     return notes
 
