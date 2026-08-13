@@ -4,11 +4,10 @@
  * Single branch selected → KPI card + OCC heatmap
  */
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
-import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 import KPICard from "../components/KPICard";
-import CountryBadge from "../components/CountryBadge";
 import OCCHeatmap from "../components/OCCHeatmap";
 import SyncBadge from "../components/SyncBadge";
 
@@ -16,6 +15,10 @@ const now        = new Date();
 const YEAR       = now.getFullYear();
 const MONTH      = now.getMonth() + 1;
 const MONTH_NAME = now.toLocaleString("en-US", { month: "long", year: "numeric" });
+
+// Shared so SingleBranchView can seed itself from whatever the All Branches
+// table already fetched — see the comment where it reads this key.
+const ALL_BRANCHES_KEY = ["home-all-branches", YEAR, MONTH];
 
 
 function fmt(value, currency) {
@@ -334,12 +337,7 @@ function AllBranchesTable({ data, loading }) {
     };
   }, [rows]);
 
-  if (loading && !data.length) return (
-    <div className="bg-white rounded-xl border p-8 text-center">
-      <div className="text-gray-400 animate-pulse text-lg">Loading…</div>
-      <p className="text-xs text-gray-300 mt-2">Loading data…</p>
-    </div>
-  );
+  if (loading && !data.length) return <SectionLoading />;
   if (!data.length) return <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No data — add branches and set KPI targets.</div>;
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -640,44 +638,77 @@ function AllBranchesTable({ data, loading }) {
 }
 
 function SingleBranchView({ branch }) {
-  const { data: pageData, isPending, isPlaceholderData, error } = useQuery({
-    queryKey: ["home-single-branch", branch?.id],
-    queryFn: () => Promise.all([
-      axios.get("/api/kpi/summary/" + branch.id + "?year=" + YEAR + "&month=" + MONTH),
-      axios.get("/api/countries/ranking?top_n=5&branch_id=" + branch.id),
-      axios.get("/api/metrics/daily?branch_id=" + branch.id + "&days=30"),
-    ]).then(([kpiRes, cRes, occRes]) => ({
-      kpi: kpiRes.data.data || kpiRes.data,
-      countries: cRes.data.data || [],
-      occData: occRes.data.data || [],
-    })),
+  const queryClient = useQueryClient();
+
+  // The All Branches table has already fetched every branch's summary, and the
+  // backend builds each of its rows with the very same `_branch_summary()`
+  // that `/kpi/summary/{id}` returns. So switching from All Branches to a
+  // branch tab can paint immediately from what is already in the cache instead
+  // of waiting on a request that would answer with identical numbers.
+  // `initialDataUpdatedAt` carries the original fetch time along, so React
+  // Query still refreshes in the background once that data goes stale rather
+  // than treating the seeded copy as fresh forever.
+  const allState = queryClient.getQueryState(ALL_BRANCHES_KEY);
+  const seededKpi = allState?.data?.find(r => r.branch_id === branch?.id);
+
+  const {
+    data: kpi, isPending: kpiPending, isPlaceholderData: kpiStale, error,
+  } = useQuery({
+    queryKey: ["home-branch-kpi", branch?.id],
+    queryFn: () =>
+      axios.get("/api/kpi/summary/" + branch.id + "?year=" + YEAR + "&month=" + MONTH)
+        .then(r => r.data.data || r.data),
+    enabled: !!branch,
+    initialData: seededKpi,
+    initialDataUpdatedAt: seededKpi ? allState.dataUpdatedAt : undefined,
+    placeholderData: keepPreviousData,
+  });
+
+  // The heatmap loads on its own query rather than sharing one Promise.all
+  // with the KPI summary: the two have very different response times, and
+  // bundling them meant the card sat blank until the slower one finished.
+  const {
+    data: occData = [], isPending: occPending, isPlaceholderData: occStale,
+  } = useQuery({
+    queryKey: ["home-branch-occ", branch?.id],
+    queryFn: () =>
+      axios.get("/api/metrics/daily?branch_id=" + branch.id + "&days=30")
+        .then(r => r.data.data || []),
     enabled: !!branch,
     placeholderData: keepPreviousData,
   });
 
-  const kpi = pageData?.kpi;
-  const occData = pageData?.occData || [];
-
-  if (isPending && !pageData) return (
-    <div className="p-8 text-center">
-      <div className="text-gray-400 animate-pulse text-lg">Loading…</div>
-      <p className="text-xs text-gray-300 mt-2">Loading data…</p>
-    </div>
-  );
   if (error) return <div className="p-8 text-red-500">Error: {error.message}</div>;
 
   return (
-    <div className={`space-y-6 transition-opacity duration-150 ${isPlaceholderData ? "opacity-40 pointer-events-none" : "opacity-100"}`}>
-      {kpi && (
-        <KPICard
-          label={branch.name + " — Revenue"}
-          actual={kpi.actual_revenue_native}
-          target={kpi.target_revenue_native}
-          currency={branch.currency || branch.native_currency}
-          forecast={{ occ: kpi.occ_forecast_native }}
-        />
-      )}
-      <OCCHeatmap data={occData} title={branch.name + " — Daily OCC% (30 days)"} />
+    <div className="space-y-6">
+      <div className={`transition-opacity duration-150 ${kpiStale ? "opacity-40 pointer-events-none" : "opacity-100"}`}>
+        {kpiPending && !kpi
+          ? <SectionLoading />
+          : kpi && (
+              <KPICard
+                label={branch.name + " — Revenue"}
+                actual={kpi.actual_revenue_native}
+                target={kpi.target_revenue_native}
+                currency={branch.currency || branch.native_currency}
+                forecast={{ occ: kpi.occ_forecast_native }}
+              />
+            )}
+      </div>
+      <div className={`transition-opacity duration-150 ${occStale ? "opacity-40 pointer-events-none" : "opacity-100"}`}>
+        {occPending && !occData.length
+          ? <SectionLoading />
+          : <OCCHeatmap data={occData} title={branch.name + " — Daily OCC% (30 days)"} />}
+      </div>
+    </div>
+  );
+}
+
+function SectionLoading() {
+  return (
+    <div className="bg-white rounded-xl border p-8 text-center">
+      <div className="text-gray-400 animate-pulse text-lg">Loading…</div>
+      <p className="text-xs text-gray-300 mt-2">Loading data…</p>
     </div>
   );
 }
@@ -686,7 +717,7 @@ export default function Home() {
   const { isAll, currentBranch } = useBranch();
 
   const { data: allData = [], isPending: allLoading } = useQuery({
-    queryKey: ["home-all-branches", YEAR, MONTH],
+    queryKey: ALL_BRANCHES_KEY,
     queryFn: () =>
       axios.get("/api/kpi/summary?year=" + YEAR + "&month=" + MONTH + "&months=current,next")
         .then(r => r.data.data || []),
