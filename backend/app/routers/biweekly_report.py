@@ -43,6 +43,24 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 REPORT_TYPE = "biweekly"
+
+
+def _visible_branches(payload: list, current: User) -> list:
+    """The branches of a cached report this user is allowed to see.
+
+    The cache holds one payload per period covering every branch, shared by
+    every reader — so the access check belongs here, on the way out, not in
+    the builder. Filtering at build time would write a payload shaped by
+    whoever happened to trigger the build and then serve it to everyone else.
+
+    An admin, or a user with no `allowed_branches` set, sees all of them —
+    the same "empty means all" rule the rest of the app uses (see
+    `BranchProvider` on the frontend and `CreateUserIn.allowed_branches`).
+    """
+    if current.role == "admin" or not current.allowed_branches:
+        return payload
+    allowed = {str(b) for b in current.allowed_branches}
+    return [b for b in payload if str(b.get("branch_id")) in allowed]
 GENERAL_METRIC_KEY = "bw._general"
 
 # ── Cache ────────────────────────────────────────────────────────────────────
@@ -101,6 +119,7 @@ def _resolve_period(period: Optional[str]) -> Period:
 @router.get("/periods")
 def list_available_periods(
     back: int = Query(12, ge=1, le=52),
+    _current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Selectable periods, newest first, flagged with whether they're cached."""
@@ -118,16 +137,21 @@ def list_available_periods(
 def biweekly_report(
     period: Optional[str] = None,
     fresh: int = 0,
+    current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Bi-weekly report payload for a period (defaults to the latest completed)."""
+    """Bi-weekly report payload for a period (defaults to the latest completed).
+
+    Requires a login. This and `/preview` shipped with no auth dependency at
+    all, which made every branch's revenue readable by anyone holding the URL.
+    """
     p = _resolve_period(period)
     payload, computed_at = _get_report(db, p, force_fresh=bool(fresh))
     return envelope({
         "period": p.to_dict(),
         "computed_at": computed_at.isoformat() if computed_at else None,
         "from_cache": not bool(fresh),
-        "branches": payload,
+        "branches": _visible_branches(payload, current),
     })
 
 
@@ -135,12 +159,19 @@ def biweekly_report(
 def biweekly_preview(
     period: Optional[str] = None,
     fresh: int = 0,
+    current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Rendered HTML for a period — what the dashboard page displays."""
+    """Rendered HTML for a period — what the dashboard page displays.
+
+    Requires a login, and renders only the branches this user may see: the
+    page slices its branch tabs straight out of this markup, so a branch left
+    in here is a branch they can open.
+    """
     p = _resolve_period(period)
     payload, computed_at = _get_report(db, p, force_fresh=bool(fresh))
-    return HTMLResponse(_build_html(payload, p, computed_at))
+    visible = _visible_branches(payload, current)
+    return HTMLResponse(_build_html(visible, p, computed_at))
 
 
 @router.post("/refresh-cache", dependencies=[Depends(verify_sync_token)])
