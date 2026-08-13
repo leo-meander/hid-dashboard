@@ -650,23 +650,26 @@ function AllBranchesTable({ data, loading }) {
   );
 }
 
-// One labelled line of the branch detail panel.
-function DetailRow({ label, hint, children }) {
+// One cell of the branch detail grid. Hairlines come from the parent's
+// `gap-px` over a grey background, so a tile just paints itself white.
+function DetailTile({ label, hint, children }) {
   return (
-    <div className="flex items-start justify-between gap-4 px-5 py-3">
-      <div className="min-w-0">
-        <p className="text-xs font-medium text-gray-600">{label}</p>
-        {hint && <p className="text-[11px] text-gray-400 mt-0.5">{hint}</p>}
-      </div>
-      <div className="text-right shrink-0">{children}</div>
+    <div className="bg-white px-4 py-3">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">{label}</p>
+      <div className="mt-1">{children}</div>
+      {hint && <p className="text-[10px] text-gray-400 mt-1 leading-snug">{hint}</p>}
     </div>
   );
 }
 
 // The same numbers the Group Summary carries for this branch — including the
-// two editable adjustments — laid out vertically. Before this, clicking into a
-// branch showed strictly less than the All Branches table did, so anyone
-// wanting Adjusted or next month's figures had to go back to the group view.
+// two editable adjustments. Before this, clicking into a branch showed strictly
+// less than the All Branches table did, so anyone wanting Adjusted or next
+// month's figures had to go back to the group view.
+//
+// Laid out as a tile grid rather than as one labelled row per figure: the row
+// form put a single number on each line and left the middle of a wide screen
+// empty, so nine figures ran taller than the whole heatmap below them.
 function BranchDetail({ row, setDeduction, setOtherRev, saving, savingOther }) {
   const cur = row.currency || "VND";
   const hasDorm = row.total_dorm_count > 0;
@@ -684,40 +687,49 @@ function BranchDetail({ row, setDeduction, setOtherRev, saving, savingOther }) {
   const suffix = (pct, digits = 0) =>
     pct == null ? null : <span className="ml-1 text-xs text-gray-400 font-normal">({pct.toFixed(digits)}%)</span>;
 
+  const nextMonthName = row.next_year && row.next_month
+    ? new Date(row.next_year, row.next_month - 1, 1)
+        .toLocaleString("en-US", { month: "long", year: "numeric" })
+    : "Next month";
+
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <div className="px-5 py-4 border-b border-gray-100">
-        <h2 className="font-semibold text-gray-800">Details — {MONTH_NAME}</h2>
-        <p className="text-xs text-gray-400 mt-0.5">
+      <div className="px-4 py-3 border-b border-gray-100 flex items-baseline justify-between gap-3 flex-wrap">
+        <h2 className="font-semibold text-gray-800 text-sm">Details — {MONTH_NAME}</h2>
+        <p className="text-xs text-gray-400">
           Native currency ({cur})
           <SyncBadge timestamp={row.data_synced_at} />
         </p>
       </div>
 
-      <div className="divide-y divide-gray-100">
-        <DetailRow label="Revenue" hint="Booked so far this month">
-          <span className="font-mono text-gray-800">{fmt(row.actual_revenue_native, cur)}</span>
+      {/* Column count is set by how wide a tile has to be, not by taste: a VND
+          figure with its %-of-target suffix (₫2,357,135,067 (96.80%)) needs
+          ~200px, and the sidebar takes a fixed slice off every viewport. Four
+          columns only earn their place from xl up. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-px bg-gray-100">
+        <DetailTile label="Revenue">
+          <span className="font-mono text-sm text-gray-800">{fmt(row.actual_revenue_native, cur)}</span>
           <OccSplit
             room={row.actual_room_occ_pct}
             dorm={row.actual_dorm_occ_pct}
             fallback={row.actual_occ_pct}
             hasDorm={hasDorm}
           />
-        </DetailRow>
+        </DetailTile>
 
-        <DetailRow label="Target">
-          <span className="font-mono text-gray-500">{fmt(row.target_revenue_native, cur)}</span>
-        </DetailRow>
+        <DetailTile label="Target">
+          <span className="font-mono text-sm text-gray-500">{fmt(row.target_revenue_native, cur)}</span>
+        </DetailTile>
 
-        <DetailRow label="KPI %" hint="Revenue ÷ Target">
+        <DetailTile label="KPI %" hint="Revenue ÷ Target">
           <AchievementBadge value={row.achievement_pct != null ? row.achievement_pct * 100 : null} />
-        </DetailRow>
+        </DetailTile>
 
-        <DetailRow label="Forecast" hint={occForecastLabel(row)}>
+        <DetailTile label="Forecast">
           {row.occ_forecast_native != null
             ? <>
                 <HoverTooltip content={forecastBreakdown(row, "current")}>
-                  <span className="font-mono text-indigo-700 font-medium border-b border-dotted border-indigo-300">
+                  <span className="font-mono text-sm text-indigo-700 font-medium border-b border-dotted border-indigo-300">
                     {fmt(row.occ_forecast_native, cur)}{suffix(fcPct)}
                   </span>
                 </HoverTooltip>
@@ -729,40 +741,47 @@ function BranchDetail({ row, setDeduction, setOtherRev, saving, savingOther }) {
                 />
               </>
             : <span className="text-gray-300 text-xs">Enter OCC%</span>}
-        </DetailRow>
+        </DetailTile>
 
-        <DetailRow label="Deduct %" hint="Taken off the forecast before comparing to target">
-          <AdjustmentInput
-            value={dedPct}
-            max="100"
-            onChange={v => setDeduction(row.branch_id, v)}
-            isSaving={saving[row.branch_id]}
-          />
-        </DetailRow>
+        {/* Both adjustments share a tile — they are one decision, and the
+            Adjusted figure beside them is what they add up to. */}
+        <DetailTile label="Adjustments" hint="Deduct % comes off the forecast, Other Rev goes on top">
+          <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
+            <label className="block">
+              <span className="block text-[10px] text-gray-400 mb-0.5">Deduct %</span>
+              <AdjustmentInput
+                value={dedPct}
+                max="100"
+                onChange={v => setDeduction(row.branch_id, v)}
+                isSaving={saving[row.branch_id]}
+              />
+            </label>
+            <label className="block">
+              <span className="block text-[10px] text-gray-400 mb-0.5">Other Rev</span>
+              <AdjustmentInput
+                wide
+                value={row.other_revenue_local}
+                onChange={v => setOtherRev(row.branch_id, v)}
+                isSaving={savingOther[row.branch_id]}
+              />
+            </label>
+          </div>
+        </DetailTile>
 
-        <DetailRow label="Other Rev" hint="Added on top of the deducted forecast">
-          <AdjustmentInput
-            wide
-            value={row.other_revenue_local}
-            onChange={v => setOtherRev(row.branch_id, v)}
-            isSaving={savingOther[row.branch_id]}
-          />
-        </DetailRow>
-
-        <DetailRow label="Adjusted" hint="Forecast × (1 − Deduct%) + Other Rev">
+        <DetailTile label="Adjusted" hint="Forecast × (1 − Deduct%) + Other Rev">
           {row.adjusted_forecast != null
             ? <HoverTooltip content={adjustedBreakdown(row, "current")}>
-                <span className={"font-mono font-medium border-b border-dotted border-gray-300 " + overUnder(adjPct)}>
+                <span className={"font-mono text-sm font-medium border-b border-dotted border-gray-300 " + overUnder(adjPct)}>
                   {fmt(row.adjusted_forecast, cur)}{suffix(adjPct, 2)}
                 </span>
               </HoverTooltip>
             : <span className="text-gray-300">{"—"}</span>}
-        </DetailRow>
+        </DetailTile>
 
-        <DetailRow label="Next Rev" hint="Already on the books for next month">
+        <DetailTile label={`Next Rev · ${nextMonthName}`} hint="Already on the books">
           {row.next_month_booked_revenue > 0
             ? <>
-                <span className="font-mono text-gray-700">
+                <span className="font-mono text-sm text-gray-700">
                   {fmt(row.next_month_booked_revenue, cur)}{suffix(bookedPct)}
                 </span>
                 <OccSplit
@@ -772,9 +791,9 @@ function BranchDetail({ row, setDeduction, setOtherRev, saving, savingOther }) {
                 />
               </>
             : <span className="text-gray-300">{"—"}</span>}
-        </DetailRow>
+        </DetailTile>
 
-        <DetailRow label="Next Forecast" hint="Next month, adjusted the same way">
+        <DetailTile label="Next Forecast" hint="Next month, adjusted the same way">
           {row.adjusted_next_forecast != null
             ? <>
                 <HoverTooltip content={
@@ -787,7 +806,7 @@ function BranchDetail({ row, setDeduction, setOtherRev, saving, savingOther }) {
                     )}
                   </>
                 }>
-                  <span className={"font-mono font-medium border-b border-dotted border-purple-300 " + overUnder(nextPct)}>
+                  <span className={"font-mono text-sm font-medium border-b border-dotted border-purple-300 " + overUnder(nextPct)}>
                     {fmt(row.adjusted_next_forecast, cur)}{suffix(nextPct)}
                   </span>
                 </HoverTooltip>
@@ -799,7 +818,7 @@ function BranchDetail({ row, setDeduction, setOtherRev, saving, savingOther }) {
                 />
               </>
             : <span className="text-gray-300">{"—"}</span>}
-        </DetailRow>
+        </DetailTile>
       </div>
     </div>
   );
