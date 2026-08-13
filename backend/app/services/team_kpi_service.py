@@ -576,9 +576,15 @@ def get_ads_win_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
 
 _ga4_cvr_cache: dict[tuple, tuple[float, dict]] = {}
 # GA4 is 24–48h from final on the current day and only moves as it processes,
-# so an hour on the read path is plenty. Closed months get re-queried rather
-# than frozen: runReport is cheap and a re-query can never go stale.
-_GA4_CVR_TTL = 3600
+# so a reading younger than a day is not meaningfully more correct than one
+# from this morning — a day on the read path matches how fast the underlying
+# number can actually change. Closed months get re-queried rather than frozen:
+# runReport is cheap and a re-query can never go stale.
+#
+# One fill is 5 properties × (months so far + 1 YTD) requests, so the daily TTL
+# also keeps that at ~45 requests/day instead of up to 24× that. The process
+# restarts on deploy and the cache goes with it, so a deploy is also a refresh.
+_GA4_CVR_TTL = 86400
 
 # Synthetic bucket for the year-to-date reading. build_monthly_summary iterates
 # months 1–12, so month 0 can never leak into a monthly cell — it exists purely
@@ -661,18 +667,6 @@ def get_purchase_cvr_actuals_yearly(year: int) -> dict[int, dict[str, dict]]:
 
     _ga4_cvr_cache[cache_key] = (time.time(), out)
     return out
-
-
-def invalidate_purchase_cvr_cache(year: Optional[int] = None) -> None:
-    """Drop the hourly GA4 cache so the next read re-queries the API.
-
-    Used by the on-demand refresh endpoint — the read path caches for an hour,
-    so without this a refresh would hand back the same numbers it already had.
-    """
-    if year is None:
-        _ga4_cvr_cache.clear()
-    else:
-        _ga4_cvr_cache.pop(("ga4_cvr", year), None)
 
 
 # Oani's property counted 1948 and Osaka users too until its tag came off both

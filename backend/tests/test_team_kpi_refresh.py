@@ -1,11 +1,10 @@
-"""On-demand refresh of the two upstream-backed Paid Ads KPIs.
+"""On-demand PageSpeed run — POST /api/team-kpi/refresh/page_load_speed.
 
-Both KPIs are normally only as fresh as a schedule allows — GA4 behind a
-one-hour read cache, PageSpeed Insights behind a monthly cron — so the whole
-point of POST /api/team-kpi/refresh/{kpi_key} is that it bypasses that wait and
-reports what actually came back. The cases worth pinning are therefore the two
-ways it could lie: serving the cached number it was asked to replace, and
-answering 200 when the upstream gave it nothing.
+A PageSpeed reading only exists because a Lighthouse test ran, and that happens
+once a month by cron. Between runs there is no newer number to fetch anywhere,
+so this endpoint asks for a fresh test. The cases worth pinning are the two ways
+it could lie: leaving its own result behind the read cache it was meant to
+replace, and answering 200 when no branch actually returned anything.
 """
 from datetime import date
 
@@ -14,7 +13,6 @@ from fastapi import HTTPException
 
 from app.routers import team_kpi as router_mod
 from app.services import pagespeed_service as psi
-from app.services import team_kpi_service as svc
 
 
 YEAR = date.today().year
@@ -65,23 +63,21 @@ class _FakeDB:
 
 @pytest.fixture(autouse=True)
 def _clean_caches():
-    svc.invalidate_purchase_cvr_cache()
     psi.invalidate_page_speed_cache()
     yield
-    svc.invalidate_purchase_cvr_cache()
     psi.invalidate_page_speed_cache()
 
 
 # ── Cache invalidation ───────────────────────────────────────────────────────
 
 def test_invalidating_one_year_leaves_the_other_years_cached():
-    svc._ga4_cvr_cache[("ga4_cvr", YEAR)] = (1e12, {1: {"saigon": {}}})
-    svc._ga4_cvr_cache[("ga4_cvr", YEAR - 1)] = (1e12, {1: {"taipei": {}}})
+    psi._page_speed_cache[YEAR] = (1e12, {1: {"saigon": {}}})
+    psi._page_speed_cache[YEAR - 1] = (1e12, {1: {"taipei": {}}})
 
-    svc.invalidate_purchase_cvr_cache(YEAR)
+    psi.invalidate_page_speed_cache(YEAR)
 
-    assert ("ga4_cvr", YEAR) not in svc._ga4_cvr_cache
-    assert ("ga4_cvr", YEAR - 1) in svc._ga4_cvr_cache
+    assert YEAR not in psi._page_speed_cache
+    assert YEAR - 1 in psi._page_speed_cache
 
 
 def test_a_page_speed_sync_makes_its_own_reading_readable_immediately(monkeypatch):
@@ -108,6 +104,14 @@ def test_an_unknown_kpi_key_is_rejected():
     assert exc.value.status_code == 400
 
 
+def test_purchase_cvr_is_not_refreshable():
+    """GA4 re-reads daily on its own, which is as fast as the number moves —
+    there is no button for it, so the endpoint must not offer one either."""
+    with pytest.raises(HTTPException) as exc:
+        router_mod.refresh_auto_kpi("purchase_cvr", year=YEAR, month=None, db=_FakeDB())
+    assert exc.value.status_code == 400
+
+
 def test_page_speed_refresh_reports_a_total_upstream_failure_as_an_error(monkeypatch):
     """fetch_speed_index swallows its own failures and returns None. A refresh
     where every branch came back None has changed nothing, so it must not
@@ -131,29 +135,3 @@ def test_page_speed_refresh_names_the_branches_that_failed(monkeypatch):
     data = out["data"]
     assert [e["branch"] for e in data["errors"]] == ["osaka"]
     assert len(data["synced"]) == len(urls) - 1
-
-
-def test_purchase_cvr_refresh_errors_when_ga4_returns_nothing(monkeypatch):
-    """get_purchase_cvr_actuals_yearly returns {} on any failure — an empty
-    payload is not a successful refresh."""
-    monkeypatch.setattr(svc, "get_purchase_cvr_actuals_yearly", lambda year: {})
-
-    with pytest.raises(HTTPException) as exc:
-        router_mod.refresh_auto_kpi("purchase_cvr", year=YEAR, month=CUR_MONTH, db=_FakeDB())
-    assert exc.value.status_code == 502
-
-
-def test_purchase_cvr_refresh_returns_the_requested_month(monkeypatch):
-    monkeypatch.setattr(svc, "get_purchase_cvr_actuals_yearly", lambda year: {
-        svc.GA4_YTD_MONTH: {"saigon": {"purchase_cvr": 0.9}},
-        CUR_MONTH: {"saigon": {"purchase_cvr": 1.39}, "taipei": {"purchase_cvr": 0.72}},
-    })
-
-    out = router_mod.refresh_auto_kpi("purchase_cvr", year=YEAR, month=CUR_MONTH, db=_FakeDB())
-
-    data = out["data"]
-    assert data["month"] == CUR_MONTH
-    assert data["readings"] == {"saigon": 1.39, "taipei": 0.72}
-    # The synthetic year-to-date bucket is not a month and must never be
-    # offered as one.
-    assert svc.GA4_YTD_MONTH not in data["months_refreshed"]

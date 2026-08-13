@@ -6,7 +6,7 @@ Endpoints:
   PUT  /targets/upsert   → create-or-update one target cell
   DELETE /targets/{id}   → clear a target cell
   GET  /roles            → static role metadata
-  POST /refresh/{kpi_key} → re-read one auto KPI from its upstream, now
+  POST /refresh/{kpi_key} → run one auto KPI's upstream test on demand
 """
 from __future__ import annotations
 
@@ -484,10 +484,12 @@ def get_summary(
 
 # ── On-demand refresh of an auto KPI ──────────────────────────────────────────
 
-# Both of these read from an upstream that the grid otherwise only picks up on
-# its own schedule — GA4 behind a 1h read cache, PageSpeed behind a monthly
-# cron. This endpoint is the "get me the number as of now" path for each.
-REFRESHABLE_KPIS = {"purchase_cvr", "page_load_speed"}
+# Only PageSpeed. Every other auto KPI re-reads at least daily on its own,
+# which is as fast as its upstream actually changes — but a PageSpeed reading
+# comes from a Lighthouse run that happens once a month (cron, the 25th), so
+# between runs there is no newer number anywhere to fetch. Getting one means
+# asking for a new test, which is what this endpoint does.
+REFRESHABLE_KPIS = {"page_load_speed"}
 
 
 @router.post("/refresh/{kpi_key}")
@@ -497,53 +499,18 @@ def refresh_auto_kpi(
     month: Optional[int] = Query(None, ge=1, le=12),
     db: Session = Depends(get_db),
 ):
-    """Re-read one auto KPI from its upstream and return what actually landed.
+    """Run PageSpeed Insights now and return what actually landed.
 
-    purchase_cvr   — GA4 is a live query, so this only drops the hourly read
-                     cache and re-queries; every month of the year comes back
-                     fresh, not just the current one.
-    page_load_speed — PageSpeed Insights has no history API, so this runs a
-                     real Lighthouse test per branch *now* and writes it into
-                     page_speed_cache as that month's reading. Only the current
-                     month is a meaningful target: running it in August can
-                     only ever record August's speed.
+    PSI has no history API, so this runs a real Lighthouse test per branch at
+    call time and writes it into page_speed_cache as that month's reading. Only
+    the current month is a meaningful target: running it in August can only ever
+    record August's speed.
 
     The response reports per-branch results including failures — a branch whose
-    upstream call failed is listed in ``errors`` rather than silently omitted.
+    test failed is listed in ``errors`` rather than silently omitted.
     """
     if kpi_key not in REFRESHABLE_KPIS:
         raise HTTPException(400, f"kpi_key must be one of: {', '.join(sorted(REFRESHABLE_KPIS))}")
-
-    if kpi_key == "purchase_cvr":
-        from app.services.team_kpi_service import (
-            get_purchase_cvr_actuals_yearly,
-            invalidate_purchase_cvr_cache,
-        )
-
-        invalidate_purchase_cvr_cache(year)
-        try:
-            fresh = get_purchase_cvr_actuals_yearly(year)
-        except Exception as exc:
-            log.exception("purchase_cvr refresh failed year=%s", year)
-            raise HTTPException(502, f"GA4 refresh failed: {exc}")
-        if not fresh:
-            # get_purchase_cvr_actuals_yearly swallows its own failures and
-            # returns {} — an empty payload here means nothing was read, so it
-            # must not be reported as a successful refresh.
-            raise HTTPException(502, "GA4 returned no data — check the service account and property config")
-
-        target_month = month or max((m for m in fresh if m), default=None)
-        readings = {
-            bk: cell.get("purchase_cvr")
-            for bk, cell in (fresh.get(target_month) or {}).items()
-        }
-        return {"success": True, "error": None, "data": {
-            "kpi_key": kpi_key,
-            "year": year,
-            "month": target_month,
-            "readings": readings,
-            "months_refreshed": sorted(m for m in fresh if m),
-        }}
 
     from app.services.pagespeed_service import sync_page_speed
 
