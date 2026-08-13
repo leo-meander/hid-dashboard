@@ -28,6 +28,7 @@ import {
   deleteNote,
 } from "../api/biweekly";
 import { useAuth } from "../context/AuthContext";
+import { useBranch } from "../context/BranchContext";
 
 /**
  * The three note boards under each branch.
@@ -577,8 +578,13 @@ function BranchNotes({ period, branchId, branchName }) {
 export default function BiWeeklyReport() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  // Branch selection is the app-wide one (top nav, persisted in localStorage),
+  // the same hook TeamKPI uses — so picking a branch anywhere moves both this
+  // page's tabs and the nav, instead of the page keeping a private second
+  // answer to "which branch am I looking at". Costs nothing: every branch is
+  // already in the one report response, so switching never refetches.
+  const { selected: selectedBranch, selectBranch } = useBranch();
   const [selectedPeriod, setSelectedPeriod] = useState("");
-  const [selectedBranch, setSelectedBranch] = useState(null);
   const [rebuilding, setRebuilding] = useState(false);
   const [rebuildError, setRebuildError] = useState(null);
   const [drawer, setDrawer] = useState(null);
@@ -606,13 +612,11 @@ export default function BiWeeklyReport() {
 
   const branches = reportQuery.data?.branches || [];
 
-  // Keep the chosen branch across period switches when it still exists —
-  // a manager reviewing one branch shouldn't be bounced back to the first
-  // tab every time they step back a period.
-  useEffect(() => {
-    if (!branches.length) return;
-    if (!branches.some(b => b.id === selectedBranch)) setSelectedBranch(branches[0].id);
-  }, [branches, selectedBranch]);
+  // No effect snapping the selection to the first branch: `active` already
+  // falls back on its own, and writing to the shared selection here would
+  // hijack the nav — choosing "All Branches" there would silently flip itself
+  // to Taipei the moment this page rendered. A branch chosen on another page
+  // still survives a period switch, which is what that effect was for.
 
   /**
    * Rebuild the period server-side, don't just refetch it.
@@ -639,6 +643,9 @@ export default function BiWeeklyReport() {
     }
   }
 
+  // "all" in the nav has no meaning here — the report is one branch at a time
+  // by construction — so it falls through to the first branch rather than
+  // blanking the page.
   const active = useMemo(
     () => branches.find(b => b.id === selectedBranch) || branches[0] || null,
     [branches, selectedBranch]
@@ -842,7 +849,7 @@ export default function BiWeeklyReport() {
               return (
                 <button
                   key={b.id}
-                  onClick={() => setSelectedBranch(b.id)}
+                  onClick={() => selectBranch(b.id)}
                   style={
                     on
                       ? { background: b.color, borderColor: b.color, color: "#fff" }
