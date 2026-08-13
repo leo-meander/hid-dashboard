@@ -6,6 +6,7 @@ Endpoints:
   PUT  /targets/upsert   → create-or-update one target cell
   DELETE /targets/{id}   → clear a target cell
   GET  /roles            → static role metadata
+  POST /refresh/{kpi_key} → run one auto KPI's upstream test on demand
 """
 from __future__ import annotations
 
@@ -479,6 +480,45 @@ def get_summary(
         log.exception("team_kpi summary error role=%s year=%s", role, year)
         raise HTTPException(500, str(exc))
     return {"success": True, "data": data, "error": None}
+
+
+# ── On-demand refresh of an auto KPI ──────────────────────────────────────────
+
+# Only PageSpeed. Every other auto KPI re-reads at least daily on its own,
+# which is as fast as its upstream actually changes — but a PageSpeed reading
+# comes from a Lighthouse run that happens once a month (cron, the 25th), so
+# between runs there is no newer number anywhere to fetch. Getting one means
+# asking for a new test, which is what this endpoint does.
+REFRESHABLE_KPIS = {"page_load_speed"}
+
+
+@router.post("/refresh/{kpi_key}")
+def refresh_auto_kpi(
+    kpi_key: str,
+    year: int = Query(...),
+    month: Optional[int] = Query(None, ge=1, le=12),
+    db: Session = Depends(get_db),
+):
+    """Run PageSpeed Insights now and return what actually landed.
+
+    PSI has no history API, so this runs a real Lighthouse test per branch at
+    call time and writes it into page_speed_cache as that month's reading. Only
+    the current month is a meaningful target: running it in August can only ever
+    record August's speed.
+
+    The response reports per-branch results including failures — a branch whose
+    test failed is listed in ``errors`` rather than silently omitted.
+    """
+    if kpi_key not in REFRESHABLE_KPIS:
+        raise HTTPException(400, f"kpi_key must be one of: {', '.join(sorted(REFRESHABLE_KPIS))}")
+
+    from app.services.pagespeed_service import sync_page_speed
+
+    result = sync_page_speed(db, year=year, month=month)
+    if not result["synced"]:
+        failed = ", ".join(e["branch"] for e in result["errors"]) or "no branches configured"
+        raise HTTPException(502, f"PageSpeed Insights returned nothing for any branch ({failed})")
+    return {"success": True, "error": None, "data": {"kpi_key": kpi_key, **result}}
 
 
 # ── Targets CRUD ──────────────────────────────────────────────────────────────

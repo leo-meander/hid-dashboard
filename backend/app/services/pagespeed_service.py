@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from typing import Optional
 
@@ -75,11 +76,15 @@ def sync_page_speed(db: Session, year: Optional[int] = None, month: Optional[int
     url_map = settings.pagespeed_url_map
     synced, errors = [], []
 
-    for branch_key, url in url_map.items():
-        branch_uuid = BRANCH_KEY_TO_UUID.get(branch_key)
-        if not branch_uuid:
-            continue
-        seconds = fetch_speed_index(url)
+    # Lighthouse takes tens of seconds per URL, so the five branches run
+    # together rather than end to end — sequential runs could exceed the
+    # gateway timeout on the on-demand refresh path (POST /api/team-kpi/refresh).
+    jobs = [(bk, url, BRANCH_KEY_TO_UUID[bk])
+            for bk, url in url_map.items() if bk in BRANCH_KEY_TO_UUID]
+    with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
+        results = list(pool.map(lambda job: fetch_speed_index(job[1]), jobs))
+
+    for (branch_key, url, branch_uuid), seconds in zip(jobs, results):
         if seconds is None:
             errors.append({"branch": branch_key, "url": url})
             continue
@@ -102,11 +107,23 @@ def sync_page_speed(db: Session, year: Optional[int] = None, month: Optional[int
         synced.append({"branch": branch_key, "speed_index_seconds": seconds})
 
     db.commit()
-    return {"synced": synced, "errors": errors}
+    # A sync that does not clear the read cache is invisible for up to 10 more
+    # minutes — which is exactly the wait the on-demand refresh button exists
+    # to remove.
+    invalidate_page_speed_cache(year)
+    return {"synced": synced, "errors": errors, "year": year, "month": month}
 
 
 _page_speed_cache: dict[int, tuple[float, dict]] = {}
 _PAGE_SPEED_TTL = 600  # 10 min — mirrors _KOL_ACTUALS_TTL
+
+
+def invalidate_page_speed_cache(year: Optional[int] = None) -> None:
+    """Drop the read cache so the next read hits the table."""
+    if year is None:
+        _page_speed_cache.clear()
+    else:
+        _page_speed_cache.pop(year, None)
 
 
 def get_page_speed_actuals_yearly(db: Session, year: int) -> dict[int, dict[str, dict]]:

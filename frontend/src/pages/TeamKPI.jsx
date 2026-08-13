@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
-import { getTeamKpiSummary, upsertTarget, upsertActual, getTaskOverview, getTaskDetail } from "../api/teamKpi";
+import { getTeamKpiSummary, upsertTarget, upsertActual, getTaskOverview, getTaskDetail, refreshAutoKpi } from "../api/teamKpi";
 
 const ROLES = [
   { key: "kol",      label: "KOL",       person: "Mel",   emoji: "🤝" },
@@ -47,7 +47,7 @@ const KPI_TOOLTIPS = {
   crm_revenue:          "Revenue attributed to CRM campaigns in that month. Enter targets in mil VND (e.g. enter 56 for 56 million VND).",
   kol_posted:           "KOLs who published a post that month. Target is owned by KOL Engine → Set Targets → Posted: round(prev-month collaborated × Posted %). It moves as collaborations land, so it is read-only here.",
   kol_ads_collab:       "KOLs with ads permission who published that month (KOL Engine 'Ads-Allowed'). Target is owned by KOL Engine → Set Targets → Ads-Allowed: round(Posted target × Ads-Allowed %). Read-only here.",
-  purchase_cvr:         "Website Purchase Conversion Rate — GA4's own 'User key event rate (purchase)' for the whole property, the number under Reports → Acquisition → User acquisition. Counts every purchase the property sees, not paid traffic only. Each month is its own GA4 query over that month's dates: unique users de-duplicate over time, so a month can never be built from daily data and YTD is a separate Jan-1 query, not a sum of the months. Purchases fire on the Cloudbeds booking-engine domain, so the rate can only be read property-wide.",
+  purchase_cvr:         "Website Purchase Conversion Rate — GA4's own 'User key event rate (purchase)' for the whole property, the number under Reports → Acquisition → User acquisition. Counts every purchase the property sees, not paid traffic only. Each month is its own GA4 query over that month's dates: unique users de-duplicate over time, so a month can never be built from daily data and YTD is a separate Jan-1 query, not a sum of the months. Purchases fire on the Cloudbeds booking-engine domain, so the rate can only be read property-wide. Re-read from GA4 once a day — GA4 itself is 24–48h from final, so a fresher query would not give a more settled number.",
   ads_win_rate:         "% Ads Win — an ad wins a month when its ROAS that month beats the branch's blended CRTV ROAS for the same month, with enough data behind it (over 4,500 clicks or 5+ bookings; below that it stays TEST and counts on neither side). Each ad is judged once, ever. Formula: wins ÷ (wins + losses) among the ads decided that month. Meta only, and only ads named with CRTV. Source: Ads Platform.",
 };
 
@@ -249,6 +249,83 @@ function EditableCell({ value, onSave, placeholder = "—", disabled }) {
   );
 }
 
+// ── On-demand upstream refresh ────────────────────────────────────────────────
+
+// Only PageSpeed gets a button. Its reading comes from a Lighthouse run that
+// happens once a month (cron, the 25th), so between runs there is genuinely no
+// newer number on the page and no way to get one without asking for a new test.
+// Every other KPI — GA4's purchase_cvr included — re-reads at least daily on
+// its own, which is as fast as those upstreams actually change.
+const REFRESHABLE_KPIS = {
+  page_load_speed: "Run a live PageSpeed Insights test on all five branch pages now and record the result as this month's reading. Normally this runs once a month (25th). Takes up to a minute.",
+};
+
+function RefreshKpiButton({ kpiKey, year, onRefresh }) {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState(null); // { ok, text, detail }
+
+  const isCurrentYear = year === CURRENT_YEAR;
+  // PSI has no history API — a Lighthouse run today can only measure today's
+  // speed, so firing it against a past year would write the wrong month.
+  const locked = kpiKey === "page_load_speed" && !isCurrentYear;
+
+  const run = async () => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      const d = await refreshAutoKpi(kpiKey, year, isCurrentYear ? CURRENT_MONTH : undefined);
+      const ok = (d.synced || []).map(s => `${s.branch} ${s.speed_index_seconds}s`).join(", ");
+      const failed = (d.errors || []).map(e => e.branch).join(", ");
+      setStatus({
+        ok: !failed,
+        text: failed ? `${d.synced.length} ok, ${d.errors.length} failed` : "Updated",
+        detail: failed ? `${ok} — failed: ${failed}` : ok,
+      });
+      await onRefresh();
+    } catch (e) {
+      setStatus({
+        ok: false,
+        text: "Failed",
+        detail: e?.response?.data?.detail || e?.response?.data?.error || e?.message || "Refresh failed",
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-0.5">
+      <Tooltip text={locked
+        ? "Only the current month can be measured — PageSpeed Insights has no history to look up."
+        : REFRESHABLE_KPIS[kpiKey]}>
+        <button
+          onClick={run}
+          disabled={busy || locked}
+          className={`inline-flex items-center gap-1 text-[10px] font-normal leading-none px-1.5 py-1 rounded border transition-colors ${
+            busy || locked
+              ? "text-gray-300 border-gray-100 cursor-default"
+              : "text-gray-500 border-gray-200 hover:text-gray-900 hover:border-gray-400 hover:bg-gray-50"
+          }`}
+        >
+          <svg className={`w-3 h-3 ${busy ? "animate-spin" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          {busy ? "Fetching…" : "Refresh now"}
+        </button>
+      </Tooltip>
+      {!busy && status && (
+        <span
+          title={status.detail}
+          className={`block mt-0.5 text-[10px] font-normal cursor-help ${status.ok ? "text-green-600" : "text-red-600"}`}
+        >
+          {status.text} ⓘ
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── KPI Grid ──────────────────────────────────────────────────────────────────
 
 function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
@@ -369,6 +446,9 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                         </span>
                       </Tooltip>
                     )}
+                    {REFRESHABLE_KPIS[kpi.key] && (
+                      <RefreshKpiButton kpiKey={kpi.key} year={year} onRefresh={onRefresh} />
+                    )}
                   </td>
                   <td className="px-2 py-1.5 text-center text-gray-400" rowSpan={2}>{kpi.unit}</td>
                   <td className="px-2 py-1.5 text-center">
@@ -429,6 +509,9 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                           )}
                         </div>
                         {kpi.org_wide && <span className="text-[10px] text-blue-500 font-normal">org-wide</span>}
+                        {REFRESHABLE_KPIS[kpi.key] && (
+                          <RefreshKpiButton kpiKey={kpi.key} year={year} onRefresh={onRefresh} />
+                        )}
                       </td>
                       <td className="px-2 py-1.5 text-center text-gray-400">{kpi.unit}</td>
                     </>
