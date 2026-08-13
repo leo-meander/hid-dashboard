@@ -236,10 +236,10 @@ def _payload(branch_name="MEANDER Saigon"):
                     "bookings_vs_yoy_pct": 500.0, "revenue_vs_yoy_pct": 235.45,
                     "yoy_per_day": False,
                 }},
-        "highlights": ["Room rate +30% vs same period."],
-        "watchouts": ["Occupancy down 5.7%."],
-        "actions": [{"title": "Push Malaysia", "when": "Aug 17–25",
-                     "body": "Malaysia school holidays."}],
+        "highlights": [{"key": "flag.adr", "text": "Room rate +30% vs same period."}],
+        "watchouts": [{"key": "flag.occ", "text": "Occupancy down 5.7%."}],
+        "actions": [{"key": "act.market.Malaysia", "title": "Push Malaysia",
+                     "when": "Aug 17–25", "body": "Malaysia school holidays."}],
         "data_notes": [{"level": "warn", "text": "121 bookings lack a source market."}],
     }
 
@@ -352,6 +352,50 @@ class TestBuildHtml:
         # Labelled, and often enough to be the table legend's subject.
         assert html.count("vs LY") >= 8
         assert "is vs the same period last year" in html
+
+    def test_every_flag_line_carries_its_rule_key(self):
+        """The page hangs an inline editor off `data-flag-key`, and an override
+        is stored against that key — so a line without one cannot be corrected."""
+        html = self._render([_payload()])
+        for key in ["flag.adr", "flag.occ", "act.market.Malaysia"]:
+            assert f'data-flag-key="{key}"' in html
+
+    def test_an_edited_flag_is_marked_and_shown_as_typed(self):
+        """A corrected line is NOT recomputed, so it has to be visibly
+        distinguishable from a live one — same rule as a hand-entered number
+        anywhere else in HiD."""
+        p = _payload()
+        p["highlights"] = [{"key": "flag.adr", "edited": True,
+                            "text": "ADR up because we killed the OTA promo."}]
+        html = self._render([p])
+        assert "ADR up because we killed the OTA promo." in html
+        assert ">edited</span>" in html
+
+    def test_an_edited_action_replaces_the_whole_sentence(self):
+        """An action normally renders as title + when-pill + body. An operator
+        rewriting it types one sentence, so the pill assembly must not be
+        spliced back around their text."""
+        p = _payload()
+        p["actions"] = [{"key": "act.kol_posts", "edited": True,
+                         "text": "Skip KOL this period — budget moved to Meta."}]
+        html = self._render([p])
+        assert "Skip KOL this period — budget moved to Meta." in html
+        assert "Push Malaysia" not in html
+        assert "Aug 17–25" not in html
+
+    def test_flag_lines_still_render_from_a_pre_key_payload(self):
+        """A period cached before flags carried keys is a list of plain
+        strings. It renders read-only rather than not at all."""
+        p = _payload()
+        p["highlights"] = ["Legacy highlight string."]
+        p["watchouts"] = ["Legacy watchout string."]
+        html = self._render([p])
+        assert "Legacy highlight string." in html
+        assert "Legacy watchout string." in html
+
+    def test_the_flags_section_says_lines_are_editable(self):
+        html = self._render([_payload()])
+        assert "click any line to correct or hide it" in html
 
     def test_the_arrow_legend_is_stated_once_in_the_header(self):
         """It shipped in all five section notes, which put the same three lines

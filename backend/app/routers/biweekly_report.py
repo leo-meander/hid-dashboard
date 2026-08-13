@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.biweekly_flag_override import BiweeklyFlagOverride
 from app.models.biweekly_report_cache import BiweeklyReportCache
 from app.models.user import User
 from app.models.weekly_report_comment import WeeklyReportComment
@@ -45,6 +46,83 @@ logger = logging.getLogger(__name__)
 REPORT_TYPE = "biweekly"
 
 
+def _apply_flag_overrides(db: Session, p: Period, payload: list) -> list:
+    """Fold operator corrections into a cached payload's flag lines.
+
+    Applied here, per request, for the same reason `_visible_branches` is: the
+    cache holds one payload per period shared by every reader, and an override
+    is a later edit on top of it. Baking it in would mean the next rebuild
+    silently dropped every correction.
+
+    Keyed on the rule (`flag.revenue`, `act.kol_posts`), never on the text, so
+    a rebuild that rewrites the sentence with new numbers still matches. An
+    edited line is marked `edited` and shown exactly as typed — the same rule
+    the rest of HiD follows for a hand-entered number. `is_hidden` drops the
+    line: the rule fired and the operator judged it wrong.
+
+    An override whose rule did not fire this period simply matches nothing,
+    which is the honest outcome — there is no line left to correct.
+
+    Reading the table is wrapped: Zeabur does not run Alembic on deploy (see
+    POST /api/sync/run-migrations), so between the code landing and the
+    migration being applied this query hits a table that does not exist. That
+    must cost the reader their corrections, not the whole report.
+    """
+    if not payload:
+        return payload
+    try:
+        rows = db.query(BiweeklyFlagOverride).filter(
+            BiweeklyFlagOverride.period_key == p.key,
+        ).all()
+    except Exception:
+        logger.warning(
+            "biweekly flag overrides unavailable for %s — serving the generated "
+            "lines. Has migration 059 been applied?", p.key, exc_info=True,
+        )
+        db.rollback()
+        return payload
+    if not rows:
+        return payload
+    by_branch: dict = {}
+    for r in rows:
+        by_branch.setdefault(str(r.branch_id), {})[r.flag_key] = r
+
+    def _fold(items: list, ov: dict, text_field: str) -> list:
+        out = []
+        for it in items:
+            if not isinstance(it, dict) or not it.get("key"):
+                out.append(it)          # legacy payload, nothing to key on
+                continue
+            o = ov.get(it["key"])
+            if o is None:
+                out.append(it)
+                continue
+            if o.is_hidden:
+                continue
+            if o.body:
+                out.append({**it, text_field: o.body, "edited": True})
+            else:
+                out.append(it)
+        return out
+
+    result = []
+    for b in payload:
+        ov = by_branch.get(str(b.get("branch_id")))
+        if not ov:
+            result.append(b)
+            continue
+        result.append({
+            **b,
+            "highlights": _fold(b.get("highlights") or [], ov, "text"),
+            "watchouts": _fold(b.get("watchouts") or [], ov, "text"),
+            # Actions carry title/when/body; an override replaces the whole
+            # rendered sentence, so it lands in `text` and the renderer uses
+            # that instead of reassembling the three parts.
+            "actions": _fold(b.get("actions") or [], ov, "text"),
+        })
+    return result
+
+
 def _visible_branches(payload: list, current: User) -> list:
     """The branches of a cached report this user is allowed to see.
 
@@ -61,6 +139,8 @@ def _visible_branches(payload: list, current: User) -> list:
         return payload
     allowed = {str(b) for b in current.allowed_branches}
     return [b for b in payload if str(b.get("branch_id")) in allowed]
+
+
 GENERAL_METRIC_KEY = "bw._general"
 
 # ── Cache ────────────────────────────────────────────────────────────────────
@@ -147,6 +227,7 @@ def biweekly_report(
     """
     p = _resolve_period(period)
     payload, computed_at = _get_report(db, p, force_fresh=bool(fresh))
+    payload = _apply_flag_overrides(db, p, payload)
     return envelope({
         "period": p.to_dict(),
         "computed_at": computed_at.isoformat() if computed_at else None,
@@ -170,6 +251,7 @@ def biweekly_preview(
     """
     p = _resolve_period(period)
     payload, computed_at = _get_report(db, p, force_fresh=bool(fresh))
+    payload = _apply_flag_overrides(db, p, payload)
     visible = _visible_branches(payload, current)
     return HTMLResponse(_build_html(visible, p, computed_at))
 
@@ -345,3 +427,112 @@ def delete_note(
     c.is_deleted = True
     db.commit()
     return envelope({"id": str(comment_id), "deleted": True})
+
+
+# ── Flag overrides ───────────────────────────────────────────────────────────
+#
+# Corrections to the auto-generated Highlights / Watch-outs / Recommended
+# Action lines. See `_apply_flag_overrides` for how they are folded in, and
+# app/models/biweekly_flag_override.py for why they are not comments.
+
+
+class FlagOverrideIn(BaseModel):
+    period: str
+    branch_id: UUID
+    flag_key: str
+    # Either replacement text, or hide the line. Sending neither clears the
+    # override — the DELETE route does the same thing more explicitly.
+    body: Optional[str] = None
+    is_hidden: bool = False
+
+
+def _flag_override_out(o: BiweeklyFlagOverride) -> dict:
+    return {
+        "period": o.period_key,
+        "branch_id": str(o.branch_id),
+        "flag_key": o.flag_key,
+        "body": o.body,
+        "is_hidden": o.is_hidden,
+        "edited_by": str(o.edited_by) if o.edited_by else None,
+        "updated_at": o.updated_at.isoformat() if o.updated_at else None,
+    }
+
+
+@router.get("/flag-overrides")
+def list_flag_overrides(
+    period: str,
+    branch_id: Optional[UUID] = None,
+    _current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Every correction for a period, optionally one branch.
+
+    The page needs these separately from the rendered HTML: the HTML shows the
+    corrected text, but the editor has to offer "revert to the generated line",
+    which means knowing that a line IS overridden.
+    """
+    q = db.query(BiweeklyFlagOverride).filter(
+        BiweeklyFlagOverride.period_key == period,
+    )
+    if branch_id:
+        q = q.filter(BiweeklyFlagOverride.branch_id == branch_id)
+    return envelope([_flag_override_out(o) for o in q.all()])
+
+
+@router.put("/flag-overrides")
+def upsert_flag_override(
+    body: FlagOverrideIn,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Correct or hide one generated line.
+
+    Idempotent on (period, branch, flag_key) — the table's unique constraint —
+    so the editor can save repeatedly without piling up rows. A viewer is not
+    allowed: this changes what every other reader of the report sees.
+    """
+    if (current.role or "") not in ("admin", "editor"):
+        raise HTTPException(403, "Editor or admin only")
+
+    text = (body.body or "").strip() or None
+    if not text and not body.is_hidden:
+        raise HTTPException(400, "Provide replacement text, or set is_hidden")
+
+    # Validate the period key rather than storing whatever arrives — a typo
+    # here would write an override that can never match a rendered report.
+    p = parse_period_key(body.period)
+
+    row = db.query(BiweeklyFlagOverride).filter_by(
+        period_key=p.key, branch_id=body.branch_id, flag_key=body.flag_key,
+    ).first()
+    if row is None:
+        row = BiweeklyFlagOverride(
+            period_key=p.key, branch_id=body.branch_id, flag_key=body.flag_key,
+        )
+        db.add(row)
+    row.body = text
+    row.is_hidden = body.is_hidden
+    row.edited_by = current.id
+    db.commit()
+    db.refresh(row)
+    return envelope(_flag_override_out(row))
+
+
+@router.delete("/flag-overrides")
+def delete_flag_override(
+    period: str,
+    branch_id: UUID,
+    flag_key: str,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Revert a line to whatever the rules generate for it."""
+    if (current.role or "") not in ("admin", "editor"):
+        raise HTTPException(403, "Editor or admin only")
+    row = db.query(BiweeklyFlagOverride).filter_by(
+        period_key=period, branch_id=branch_id, flag_key=flag_key,
+    ).first()
+    if row:
+        db.delete(row)
+        db.commit()
+    return envelope({"flag_key": flag_key, "reverted": True})

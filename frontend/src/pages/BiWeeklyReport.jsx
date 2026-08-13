@@ -26,6 +26,9 @@ import {
   createNote,
   updateNote,
   deleteNote,
+  getFlagOverrides,
+  putFlagOverride,
+  deleteFlagOverride,
 } from "../api/biweekly";
 import { useAuth } from "../context/AuthContext";
 import { useBranch } from "../context/BranchContext";
@@ -315,6 +318,116 @@ function FlagsEditor({ period, branchId }) {
 }
 
 /**
+ * Correct or hide one auto-generated Highlights / Watch-outs / Action line.
+ *
+ * Opens when a manager clicks a [data-flag-key] line in the rendered report.
+ * The rules that write those lines are right most of the time and wrong some
+ * of the time, and a wrong line in a report a branch manager reads is worse
+ * than no line.
+ *
+ * Two things worth knowing about the semantics, both deliberate:
+ *   - A correction is stored against the RULE key, so it survives the rebuild
+ *     that rewrites the sentence with new numbers. It is then shown exactly as
+ *     typed and never recomputed — which is why the report marks it "edited".
+ *   - Editing is plain text. The generated lines carry <b> emphasis; a
+ *     correction is one sentence in the operator's own words, and a textarea
+ *     full of markup is a worse trade than losing the bold.
+ */
+function FlagEditDrawer({ context, canEdit, isOverridden, onClose, onSaved }) {
+  const [draft, setDraft] = useState(context.text || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function run(fn) {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError(e?.response?.data?.detail || e?.message || "Could not save");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const save = () => {
+    const body = draft.trim();
+    if (!body) {
+      setError("Write the corrected line, or use Hide to drop it.");
+      return;
+    }
+    return run(() => putFlagOverride({
+      period: context.period, branch_id: context.branchId,
+      flag_key: context.flagKey, body,
+    }));
+  };
+  const hide = () => run(() => putFlagOverride({
+    period: context.period, branch_id: context.branchId,
+    flag_key: context.flagKey, is_hidden: true,
+  }));
+  const revert = () => run(() =>
+    deleteFlagOverride(context.period, context.branchId, context.flagKey));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+         onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-xl p-5"
+           onClick={e => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="font-semibold text-gray-900">Edit this line</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {context.branchName} · {context.periodLabel}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+        </div>
+
+        {!canEdit ? (
+          <p className="text-sm text-gray-600 mt-4">
+            You have view-only access — ask an editor or admin to correct this line.
+          </p>
+        ) : (
+          <>
+            <textarea
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              rows={4}
+              className="mt-4 w-full border border-gray-200 rounded-lg p-2.5 text-sm focus:outline-none focus:border-gray-400"
+              placeholder="The corrected line, in your own words."
+            />
+            <p className="text-[11px] text-gray-400 mt-1">
+              Saved as plain text and shown exactly as typed — it is marked
+              “edited” and never recomputed, so it will not follow the numbers
+              if the period is rebuilt.
+            </p>
+            {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
+            <div className="flex items-center gap-2 mt-4">
+              <button onClick={save} disabled={busy}
+                      className="px-3 py-1.5 bg-gray-800 text-white text-sm rounded-lg disabled:opacity-50">
+                {busy ? "Saving…" : "Save"}
+              </button>
+              <button onClick={hide} disabled={busy}
+                      className="px-3 py-1.5 border border-gray-200 text-gray-600 text-sm rounded-lg disabled:opacity-50">
+                Hide this line
+              </button>
+              {isOverridden && (
+                <button onClick={revert} disabled={busy}
+                        className="px-3 py-1.5 border border-gray-200 text-gray-600 text-sm rounded-lg ml-auto disabled:opacity-50">
+                  Revert to generated
+                </button>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
  * Discussion thread for one clicked metric cell — opens when a manager
  * clicks any [data-metric-key] card/row in the rendered report body.
  *
@@ -588,6 +701,7 @@ export default function BiWeeklyReport() {
   const [rebuilding, setRebuilding] = useState(false);
   const [rebuildError, setRebuildError] = useState(null);
   const [drawer, setDrawer] = useState(null);
+  const [flagEdit, setFlagEdit] = useState(null);
   const [flagsAnchor, setFlagsAnchor] = useState(null);
   const reportBodyRef = useRef(null);
 
@@ -688,6 +802,21 @@ export default function BiWeeklyReport() {
     placeholderData: keepPreviousData,
   });
 
+  // Which flag lines already carry a correction — the rendered HTML shows the
+  // corrected text but cannot say whether it came from a rule or a person, and
+  // the editor needs that to offer "Revert to generated".
+  const flagOverridesKey = ["biweekly-flag-overrides", selectedPeriod, active?.id];
+  const { data: flagOverrides = [] } = useQuery({
+    queryKey: flagOverridesKey,
+    queryFn: () => getFlagOverrides(selectedPeriod, active.id),
+    enabled: Boolean(selectedPeriod && active?.id),
+    placeholderData: keepPreviousData,
+  });
+  const overriddenKeys = useMemo(
+    () => new Set(flagOverrides.map(o => o.flag_key)),
+    [flagOverrides]
+  );
+
   const commentCounts = useMemo(() => {
     const map = {};
     allComments.forEach(c => {
@@ -701,7 +830,30 @@ export default function BiWeeklyReport() {
 
   // Click delegation: resolve any click inside the rendered report body to
   // the closest [data-metric-key] card/row and open its discussion thread.
+  // A [data-flag-key] line is checked FIRST and wins — those lines sit inside
+  // the flags section, and a click on one means "fix this sentence", not
+  // "discuss the metric behind it".
   function onReportClick(e) {
+    const flag = e.target.closest("[data-flag-key]");
+    if (flag && reportBodyRef.current?.contains(flag)) {
+      // Seed the editor with what the line reads as on screen, minus the
+      // "edited" marker the renderer appends — the operator is correcting a
+      // sentence, not editing the markup around it.
+      const text = Array.from(flag.childNodes)
+        .filter(n => !(n.nodeType === 1 && n.textContent.trim() === "edited"))
+        .map(n => n.textContent)
+        .join("")
+        .trim();
+      setFlagEdit({
+        period: selectedPeriod,
+        periodLabel: period ? `${period.label} · ${period.date_label}` : selectedPeriod,
+        branchId: active?.id || null,
+        branchName: active?.name || null,
+        flagKey: flag.dataset.flagKey,
+        text,
+      });
+      return;
+    }
     const cell = e.target.closest("[data-metric-key]");
     if (!cell || !reportBodyRef.current?.contains(cell)) return;
     setDrawer({
@@ -921,6 +1073,21 @@ export default function BiWeeklyReport() {
             </>
           )}
         </>
+      )}
+
+      {flagEdit && (
+        <FlagEditDrawer
+          context={flagEdit}
+          canEdit={["admin", "editor"].includes(user?.role)}
+          isOverridden={overriddenKeys.has(flagEdit.flagKey)}
+          onClose={() => setFlagEdit(null)}
+          onSaved={() => {
+            // The override is folded in server-side, so the corrected line
+            // only appears once the rendered HTML is refetched.
+            queryClient.invalidateQueries({ queryKey: ["biweekly-preview", selectedPeriod] });
+            queryClient.invalidateQueries({ queryKey: flagOverridesKey });
+          }}
+        />
       )}
 
       {drawer && (

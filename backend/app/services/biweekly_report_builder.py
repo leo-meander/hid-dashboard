@@ -965,6 +965,7 @@ def recommendations_block(
             if (h.get("propensity") or "").upper() == "LOW":
                 continue
             actions.append({
+                "key": f"act.market.{r.get('country_code') or r['country']}",
                 "title": f"Push the {r['country']} market",
                 "when": h["label"],
                 "body": (
@@ -988,6 +989,7 @@ def recommendations_block(
         worst = min(weak, key=lambda c: c["roas"])
         best = max(strong, key=lambda c: c["roas"]) if strong else None
         actions.append({
+            "key": f"act.ads.{worst['channel']}",
             "title": f"Review {worst['channel']} Ads",
             "when": "This period",
             "body": (
@@ -1001,6 +1003,7 @@ def recommendations_block(
 
     if (kol or {}).get("posts_this_week") == 0:
         actions.append({
+            "key": "act.kol_posts",
             "title": "No KOL posts went live this period",
             "when": "Next period",
             "body": "Chase the pipeline — KOL-driven bookings lag posting by weeks, "
@@ -1009,6 +1012,7 @@ def recommendations_block(
 
     if target.get("period_pct") is not None and target["period_pct"] < TARGET_BAD_PCT:
         actions.append({
+            "key": "act.target",
             "title": "Period landed under target",
             "when": "Immediate",
             "body": f"Achievement was {target['period_pct']:.0f}% of the prorated goal. "
@@ -1025,38 +1029,48 @@ def highlights_block(kpi: dict, target: dict, markets: dict, ads: dict,
                      channel: dict) -> dict:
     """Rule-driven "what went well / what to watch", derived only from
     numbers already computed above — no extra queries.
+
+    Every line carries a `key` naming the RULE that produced it, not the text
+    it produced. That is what lets an operator correct a line and have the
+    correction survive a rebuild: the numbers in the sentence change, the rule
+    that fired does not. Keys are also stable across the two boxes on purpose —
+    revenue up 12% is `flag.revenue` in Highlights and revenue down 12% is
+    `flag.revenue` in Watch-outs, so an edit follows the finding rather than
+    the box it happened to land in.
     """
-    good: list[str] = []
-    watch: list[str] = []
+    good: list[dict] = []
+    watch: list[dict] = []
     d = kpi.get("vs_yoy", {})
     suffix = " vs same period last year"
 
-    def _add(delta, label, unit="%"):
+    def _add(delta, label, key, unit="%"):
         if delta is None:
             return
         if unit == "pts":
             # Still a percentage-POINT move under the hood — only the label
             # reads "%" now, matching every other delta in the report.
-            text = f"<b>{label} {delta:+.1f}%</b>{suffix}."
+            item = {"key": key, "text": f"<b>{label} {delta:+.1f}%</b>{suffix}."}
             if delta >= OCC_GOOD_PTS:
-                good.append(text)
+                good.append(item)
             elif delta < OCC_BAD_PTS:
-                watch.append(text)
+                watch.append(item)
             return
         if abs(delta) < HIGHLIGHT_PCT:
             return
-        text = f"<b>{label} {delta:+.0f}%</b>{suffix}."
-        (good if delta > 0 else watch).append(text)
+        item = {"key": key, "text": f"<b>{label} {delta:+.0f}%</b>{suffix}."}
+        (good if delta > 0 else watch).append(item)
 
-    _add(d.get("revenue_pct"), "Room revenue")
-    _add(d.get("adr_pct"), "Average room rate")
-    _add(d.get("occ_pts"), "Occupancy", unit="pts")
+    _add(d.get("revenue_pct"), "Room revenue", "flag.revenue")
+    _add(d.get("adr_pct"), "Average room rate", "flag.adr")
+    _add(d.get("occ_pts"), "Occupancy", "flag.occ", unit="pts")
 
     if target.get("period_pct") is not None:
         if target["period_pct"] >= TARGET_GOOD_PCT:
-            good.append(f"<b>Beat the period target</b> — {target['period_pct']:.0f}% of goal.")
+            good.append({"key": "flag.target", "text": (
+                f"<b>Beat the period target</b> — {target['period_pct']:.0f}% of goal.")})
         elif target["period_pct"] < TARGET_BAD_PCT:
-            watch.append(f"<b>Under target</b> — {target['period_pct']:.0f}% of the prorated goal.")
+            watch.append({"key": "flag.target", "text": (
+                f"<b>Under target</b> — {target['period_pct']:.0f}% of the prorated goal.")})
 
     booming = [
         r for r in markets.get("rows", [])
@@ -1066,29 +1080,31 @@ def highlights_block(kpi: dict, target: dict, markets: dict, ads: dict,
     if booming:
         names = ", ".join(r["country"] for r in booming[:3])
         best = max(booming, key=lambda r: r["vs_prior_pct"])
-        good.append(
-            f"<b>{names} growing fast</b> — up to {best['vs_prior_pct']:+.0f}% vs the prior period."
-        )
+        good.append({"key": "flag.markets", "text": (
+            f"<b>{names} growing fast</b> — up to {best['vs_prior_pct']:+.0f}% "
+            "vs the prior period.")})
 
     for c in _spending_channels(ads):
         name, roas = c["channel"], c["roas"]
         if roas >= ROAS_GOOD:
-            good.append(f"<b>{name} Ads at {roas:.1f}×</b> — a profitable channel.")
+            good.append({"key": f"flag.ads.{name}", "text": (
+                f"<b>{name} Ads at {roas:.1f}×</b> — a profitable channel.")})
         elif roas < ROAS_BAD:
-            watch.append(f"<b>{name} Ads only {roas:.2f}×</b> — near break-even; optimise or reallocate.")
+            watch.append({"key": f"flag.ads.{name}", "text": (
+                f"<b>{name} Ads only {roas:.2f}×</b> — near break-even; "
+                "optimise or reallocate.")})
 
     direct_share = _category_row(channel, "Direct").get("revenue_share_pct")
     if direct_share is not None and direct_share >= 25:
-        good.append(
-            f"<b>Direct is {direct_share:.0f}% of revenue</b> — saves OTA commission (~15–18%)."
-        )
+        good.append({"key": "flag.direct", "text": (
+            f"<b>Direct is {direct_share:.0f}% of revenue</b> — saves OTA "
+            "commission (~15–18%).")})
 
     unk = markets.get("unknown_share_pct")
     if unk is not None and unk >= UNKNOWN_MARKET_WARN_SHARE:
-        watch.append(
+        watch.append({"key": "flag.unknown_market", "text": (
             f"<b>{unk:.0f}% of revenue has no source market recorded</b> — "
-            "market shares below are understated until guest-source data is tagged."
-        )
+            "market shares below are understated until guest-source data is tagged.")})
 
     return {"highlights": good[:5], "watchouts": watch[:5]}
 

@@ -59,6 +59,34 @@ export const createNote = ({ period, branch_id, body, metric_key }) =>
     .post(`${BASE}/comments`, { period, branch_id, body, metric_key })
     .then(r => r.data.data);
 
+/**
+ * Corrections to the report's auto-generated Highlights / Watch-outs /
+ * Recommended Action lines.
+ *
+ * Keyed by `flag_key` — the RULE that produced a line, not its text — so a
+ * correction survives the rebuild that rewrites the sentence with new numbers.
+ * The rendered HTML already has corrections folded in; this list is what tells
+ * the editor a line IS corrected, so it can offer "revert to generated".
+ */
+export const getFlagOverrides = (period, branchId) =>
+  axios
+    .get(`${BASE}/flag-overrides`, {
+      params: { period, branch_id: branchId || undefined },
+    })
+    .then(r => r.data.data);
+
+export const putFlagOverride = ({ period, branch_id, flag_key, body, is_hidden = false }) =>
+  axios
+    .put(`${BASE}/flag-overrides`, { period, branch_id, flag_key, body, is_hidden })
+    .then(r => r.data.data);
+
+export const deleteFlagOverride = (period, branchId, flagKey) =>
+  axios
+    .delete(`${BASE}/flag-overrides`, {
+      params: { period, branch_id: branchId, flag_key: flagKey },
+    })
+    .then(r => r.data.data);
+
 export const updateNote = (id, patch) =>
   axios.patch(`${BASE}/comments/${id}`, patch).then(r => r.data.data);
 
