@@ -864,6 +864,99 @@ def get_booking_pace(
     ).all()
 
 
+def build_lead_time_cohort_query(
+    db: Session,
+    branch_id: Optional[UUID],
+    date_from: date,
+    date_to: date,
+    lead_time_min: int = 0,
+    lead_time_max: Optional[int] = None,
+):
+    """Query builder behind get_lead_time_cohort — split out so the filters can
+    be asserted in tests without a live database."""
+    lead_time_col = Reservation.check_in_date - Reservation.reservation_date
+
+    q = db.query(
+        Reservation.branch_id,
+        func.count(Reservation.id).label("bookings"),
+        func.sum(Reservation.nights).label("room_nights"),
+        func.sum(Reservation.grand_total_native).label("revenue_native"),
+        func.sum(Reservation.grand_total_vnd).label("revenue_vnd"),
+        func.avg(lead_time_col).label("avg_lead"),
+        func.min(lead_time_col).label("min_lead"),
+        func.max(lead_time_col).label("max_lead"),
+        # percentile_disc (not _cont) so the result stays an INTEGER day count
+        # and needs no float cast of the date-difference expression.
+        func.percentile_disc(0.5).within_group(
+            lead_time_col.asc()
+        ).label("median_lead"),
+    ).filter(
+        Reservation.reservation_date >= date_from,
+        Reservation.reservation_date <= date_to,
+        Reservation.reservation_date.isnot(None),
+        Reservation.check_in_date.isnot(None),
+        ~func.lower(func.coalesce(Reservation.status, "")).in_(list(EXCLUDED_STATUSES)),
+        ~func.lower(func.coalesce(Reservation.source, "")).in_(
+            [s.lower() for s in EXCLUDED_SOURCES_REVENUE]
+        ),
+        lead_time_col >= lead_time_min,
+    )
+
+    if lead_time_max is not None:
+        q = q.filter(lead_time_col <= lead_time_max)
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+
+    return q.group_by(Reservation.branch_id)
+
+
+def get_lead_time_cohort(
+    db: Session,
+    branch_id: Optional[UUID],
+    date_from: date,
+    date_to: date,
+    lead_time_min: int = 0,
+    lead_time_max: Optional[int] = None,
+) -> list:
+    """
+    Reservations BOOKED between date_from and date_to — filtered on
+    reservation_date, not check_in_date — whose lead time
+    (check_in_date - reservation_date) falls in [lead_time_min, lead_time_max].
+
+    lead_time_max=None means no upper bound. That is the reason this exists
+    alongside get_booking_pace: booking-pace only expresses "lead <= N" and its
+    endpoint caps N at 90, so the long tail was unreachable and any
+    ">30 days" answer built from it silently understated the cohort.
+
+    Exclusions match get_booking_pace exactly (cancelled/no-show statuses +
+    EXCLUDED_SOURCES_REVENUE) so figures from the two are directly comparable.
+
+    Returns one row per branch.
+    """
+    return build_lead_time_cohort_query(
+        db, branch_id, date_from, date_to, lead_time_min, lead_time_max
+    ).all()
+
+
+def get_reservation_date_coverage(
+    db: Session,
+    branch_id: Optional[UUID] = None,
+) -> list:
+    """
+    Per branch: how many reservation rows exist and how many carry a
+    reservation_date. Anything booked-date-filtered is blind to NULL rows, so
+    a low coverage % means every cohort figure is an undercount.
+    """
+    q = db.query(
+        Reservation.branch_id,
+        func.count(Reservation.id).label("total_rows"),
+        func.count(Reservation.reservation_date).label("with_reservation_date"),
+    )
+    if branch_id:
+        q = q.filter(Reservation.branch_id == branch_id)
+    return q.group_by(Reservation.branch_id).all()
+
+
 def get_daily_metrics(
     db: Session,
     branch_id: Optional[UUID],

@@ -19,6 +19,8 @@ from app.models.reservation import Reservation
 from app.services.metrics_engine import (
     EXCLUDED_STATUSES,
     get_booking_pace,
+    get_lead_time_cohort,
+    get_reservation_date_coverage,
     get_daily_metrics,
     get_ota_mix,
     get_channel_rates,
@@ -1012,4 +1014,115 @@ def get_booking_pace_endpoint(
             {"booking_date": d, "branches": blist}
             for d, blist in sorted(by_date.items())
         ],
+    })
+
+
+@router.get("/lead-time-cohort")
+def get_lead_time_cohort_endpoint(
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    lead_time_min: int = Query(0, ge=0),
+    lead_time_max: Optional[int] = Query(None, ge=0),
+    branch_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Bookings MADE in [date_from, date_to] — filtered on reservation_date, the
+    date the reservation was created, NOT check_in_date — narrowed to a lead
+    time band, grouped by branch.
+
+    lead_time = check_in_date - reservation_date, in days.
+    The band is inclusive on both ends: lead_time_min <= lead_time <= lead_time_max.
+    Omit lead_time_max for an open-ended tail (e.g. "more than 30 days" is
+    lead_time_min=31 with no max) — /booking-pace cannot express this, which is
+    why answers derived from it undercount long-lead cohorts.
+
+    Each branch also carries window_total: the same booking window with no lead
+    filter, so a cohort's share of bookings and revenue is computable without a
+    second call. Revenue comes in native currency AND VND.
+
+    Excludes cancelled/no-show and non-paying sources, matching /booking-pace.
+    """
+    if date_from > date_to:
+        return {
+            "success": False, "data": None,
+            "error": "date_from must be on or before date_to",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    if lead_time_max is not None and lead_time_max < lead_time_min:
+        return {
+            "success": False, "data": None,
+            "error": "lead_time_max must be >= lead_time_min",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    cohort = get_lead_time_cohort(
+        db, branch_id, date_from, date_to, lead_time_min, lead_time_max
+    )
+    # Same window, no lead-time band — the denominator for share figures.
+    totals = get_lead_time_cohort(db, branch_id, date_from, date_to, 0, None)
+
+    by_branch = {str(r.branch_id): r for r in cohort}
+    totals_by_branch = {str(r.branch_id): r for r in totals}
+    coverage = {
+        str(r.branch_id): r for r in get_reservation_date_coverage(db, branch_id)
+    }
+
+    branch_q = db.query(Branch)
+    if branch_id:
+        branch_q = branch_q.filter(Branch.id == branch_id)
+
+    def _num(v):
+        return float(v) if v is not None else None
+
+    results = []
+    for b in branch_q.order_by(Branch.name).all():
+        bid = str(b.id)
+        row = by_branch.get(bid)
+        tot = totals_by_branch.get(bid)
+        cov = coverage.get(bid)
+
+        bookings = row.bookings if row else 0
+        rev_native = _num(row.revenue_native) if row else 0.0
+        rev_vnd = _num(row.revenue_vnd) if row else 0.0
+        total_bookings = tot.bookings if tot else 0
+        total_rev_vnd = _num(tot.revenue_vnd) if tot else 0.0
+
+        results.append({
+            "branch_id": bid,
+            "branch_name": b.name,
+            "currency": b.currency,
+            "bookings": bookings,
+            "room_nights": row.room_nights if row else 0,
+            "revenue_native": rev_native,
+            "revenue_vnd": rev_vnd,
+            "avg_booking_revenue_native": round(rev_native / bookings, 2)
+            if bookings and rev_native is not None else None,
+            "avg_booking_revenue_vnd": round(rev_vnd / bookings, 2)
+            if bookings and rev_vnd is not None else None,
+            "avg_lead_days": round(_num(row.avg_lead), 2)
+            if row and row.avg_lead is not None else None,
+            "median_lead_days": row.median_lead if row else None,
+            "min_lead_days": row.min_lead if row else None,
+            "max_lead_days": row.max_lead if row else None,
+            "window_total_bookings": total_bookings,
+            "window_total_revenue_vnd": total_rev_vnd,
+            "share_of_bookings_pct": round(bookings / total_bookings * 100, 2)
+            if total_bookings else None,
+            "share_of_revenue_vnd_pct": round(rev_vnd / total_rev_vnd * 100, 2)
+            if total_rev_vnd else None,
+            # Booked-date filtering cannot see rows with a NULL reservation_date.
+            # Low coverage here means every number above is an undercount.
+            "reservation_date_coverage_pct": round(
+                cov.with_reservation_date / cov.total_rows * 100, 2
+            ) if cov and cov.total_rows else None,
+        })
+
+    return _envelope({
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "date_field": "reservation_date",
+        "lead_time_min": lead_time_min,
+        "lead_time_max": lead_time_max,
+        "branches": results,
     })
