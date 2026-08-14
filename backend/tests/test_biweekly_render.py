@@ -333,10 +333,24 @@ class TestBuildHtml:
         private RevPAR is per ROOM, so the two rows are not rankable against
         each other. Both the inventory line and the footer have to say so."""
         html = self._render([_payload()])
-        assert "36 rooms" in html
-        assert "48 beds" in html
         assert "never against the other row" in html
         assert "capacity-weighted average" in html
+
+    def test_room_type_split_shows_the_period_length_beside_the_inventory(self):
+        """"48 beds · 582 sold" read as 582 beds sold out of 48. The unit is
+        bed-NIGHTS over the period, so the multiplier has to be on the line:
+        48 × 14 = 672 available, of which 582 sold."""
+        html = self._render([_payload()])
+        assert "36 rooms &times; 14 nights · 433 sold" in html
+        assert "48 beds &times; 14 nights · 582 sold" in html
+
+    def test_the_inventory_line_drops_the_multiplier_if_days_is_missing(self):
+        """Rather than rendering "36 rooms × None nights"."""
+        p = _payload()
+        del p["room_types"]["days"]
+        html = self._render([p])
+        assert "36 rooms · 433 sold" in html
+        assert "None nights" not in html
 
     def test_rooms_only_branch_draws_no_split_panel(self):
         """Osaka has no dorm inventory — a split there would just restate the
