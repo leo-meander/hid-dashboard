@@ -328,6 +328,10 @@ def _render_room_split(b: dict) -> str:
     bid = b["branch_id"]
     currency = b.get("currency") or ""
     show_yoy = bool(rt.get("yoy_has_data"))
+    # "48 beds · 582 sold" read as 582 beds sold out of 48. The unit here is
+    # bed-NIGHTS over the period, so the period length has to sit in the same
+    # line as the inventory that multiplies it.
+    days = rt.get("days")
 
     th = (f"font-size:11px;color:{C['muted']};font-weight:600;"
           f"padding:0 0 7px;border-bottom:1px solid {C['line']};")
@@ -336,6 +340,9 @@ def _render_room_split(b: dict) -> str:
     rows = ""
     for s in segments:
         occ = s.get("occ_pct")
+        inventory = f"{num(s['capacity'])} {s['unit']}"
+        if days:
+            inventory += f" &times; {num(days)} nights"
         adr_arrow = (_inline_arrow(s.get("adr_vs_yoy_pct"), label=_YOY_TAG)
                      if show_yoy else "")
         occ_arrow = (_inline_arrow(s.get("occ_vs_yoy_pts"), 3.0, -3.0,
@@ -348,7 +355,7 @@ def _render_room_split(b: dict) -> str:
           <td style="{td}text-align:left;">
             <b style="color:{br['deep']};">{s['label']}</b>
             <div style="font-size:11px;color:{C['muted']};margin-top:2px;">
-              {num(s['capacity'])} {s['unit']} · {num(s['nights'])} sold</div>
+              {inventory} · {num(s['nights'])} sold</div>
           </td>
           <td style="{td}text-align:right;">{fmt(s.get('adr'), currency)}{adr_arrow}</td>
           <td style="{td}text-align:right;">
