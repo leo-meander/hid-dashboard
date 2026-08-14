@@ -303,6 +303,101 @@ def kpi_block(db: Session, branch: Branch, p: Period) -> dict:
     }
 
 
+# ── 1b. Room type split ──────────────────────────────────────────────────────
+
+
+def _segment_totals(db: Session, branch_id, d_from: date, d_to: date) -> dict:
+    """Revenue and units sold per room-type segment over a window.
+
+    Reads the Cloudbeds Insights columns on `daily_metrics` — `rooms_sold` /
+    `dorms_sold` and the revenue split beside them. NOT `room_occ_pct` /
+    `dorm_occ_pct`: no production sync writes those any more (they are only
+    touched by `recompute_occ_and_bookings`, which the `/api/sync/insights`
+    pipeline never calls), and they count dorm ROOMS against a bed capacity.
+    """
+    if d_to < d_from:
+        return {"room_rev": 0.0, "dorm_rev": 0.0, "room_nights": 0, "dorm_nights": 0}
+
+    row = db.query(
+        func.coalesce(func.sum(DailyMetrics.room_revenue_native), 0),
+        func.coalesce(func.sum(DailyMetrics.dorm_revenue_native), 0),
+        func.coalesce(func.sum(DailyMetrics.rooms_sold), 0),
+        func.coalesce(func.sum(DailyMetrics.dorms_sold), 0),
+    ).filter(
+        DailyMetrics.branch_id == branch_id,
+        DailyMetrics.date >= d_from,
+        DailyMetrics.date <= d_to,
+    ).one()
+
+    return {
+        "room_rev": float(row[0]), "dorm_rev": float(row[1]),
+        "room_nights": int(row[2]), "dorm_nights": int(row[3]),
+    }
+
+
+def _segment_rates(totals: dict, capacity: int, days: int,
+                   rev_key: str, nights_key: str) -> dict:
+    """ADR / OCC / RevPAR for one segment against its own inventory."""
+    rev, nights = totals[rev_key], totals[nights_key]
+    denom = capacity * days
+    return {
+        "revenue": round(rev, 2),
+        "nights": nights,
+        "occ_pct": round(nights / denom, 4) if denom > 0 else None,
+        "adr": round(rev / nights, 2) if nights > 0 else None,
+        "revpar": round(rev / denom, 2) if denom > 0 else None,
+    }
+
+
+def room_type_block(db: Session, branch: Branch, p: Period) -> dict:
+    """ADR / OCC / RevPAR broken out by private room vs dorm bed.
+
+    Each segment divides by its OWN inventory: a private room is one unit,
+    a dorm bed is one unit. `branches.total_rooms` mixes the two, so the
+    blended RevPAR on the cards above is a capacity-weighted average of these
+    two figures — never their sum, and never something either segment can be
+    ranked against. The renderer says so in the panel footer.
+
+    Rooms-only properties (Osaka) return `has_split=False`: the split would
+    only restate the blended cards.
+    """
+    room_cap = branch.total_room_count or 0
+    dorm_cap = branch.total_dorm_count or 0
+    if room_cap <= 0 or dorm_cap <= 0:
+        return {"has_split": False, "segments": []}
+
+    yoy, yoy_days, _ = _yoy_days(p)
+    cur = _segment_totals(db, branch.id, p.start, p.end)
+    ago = _segment_totals(db, branch.id, yoy[0], yoy[1])
+
+    segments = []
+    for key, label, unit, cap, rev_key, nights_key in (
+        ("room", "Private room", "rooms", room_cap, "room_rev", "room_nights"),
+        ("dorm", "Dorm bed", "beds", dorm_cap, "dorm_rev", "dorm_nights"),
+    ):
+        now = _segment_rates(cur, cap, p.days, rev_key, nights_key)
+        then = _segment_rates(ago, cap, yoy_days, rev_key, nights_key)
+        occ_pts = (
+            round((now["occ_pct"] - then["occ_pct"]) * 100, 1)
+            if (now["occ_pct"] is not None and then["occ_pct"] is not None)
+            else None
+        )
+        segments.append({
+            "key": key, "label": label, "unit": unit, "capacity": cap,
+            **now,
+            "adr_vs_yoy_pct": pct_change(now["adr"], then["adr"]),
+            "occ_vs_yoy_pts": occ_pts,
+            "revpar_vs_yoy_pct": pct_change(now["revpar"], then["revpar"]),
+        })
+
+    return {
+        "has_split": True,
+        "days": p.days,
+        "yoy_has_data": (ago["room_nights"] + ago["dorm_nights"]) > 0,
+        "segments": segments,
+    }
+
+
 # ── 2. Target achievement ────────────────────────────────────────────────────
 
 
@@ -1306,6 +1401,9 @@ def build_branch_biweekly(db: Session, branch: Branch, p: Period) -> dict:
 
     kpi = safe_section(db, f"bw.kpi[{branch.name}]",
                        lambda: kpi_block(db, branch, p), {})
+    room_types = safe_section(db, f"bw.room_types[{branch.name}]",
+                              lambda: room_type_block(db, branch, p),
+                              {"has_split": False, "segments": []})
     target = safe_section(db, f"bw.target[{branch.name}]",
                           lambda: target_block(db, branch, p), {})
     channel = safe_section(db, f"bw.channel[{branch.name}]",
@@ -1362,6 +1460,7 @@ def build_branch_biweekly(db: Session, branch: Branch, p: Period) -> dict:
         "branch_city": branch.city,
         "currency": branch.currency,
         "kpi": kpi,
+        "room_types": room_types,
         "target": target,
         "channel_mix": channel,
         "channel_bookings": chan_bookings,

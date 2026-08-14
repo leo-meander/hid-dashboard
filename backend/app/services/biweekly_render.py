@@ -154,21 +154,26 @@ def _delta_chip(value, label: str, kind: str = "pct") -> str:
 
 
 def _inline_arrow(pct_value, good: float = 5.0, bad: float = -5.0,
-                  label: str = "") -> str:
+                  label: str = "", kind: str = "pct") -> str:
     """Small ▲/▼/≈ shown next to a number in a table cell. `_delta_chip` is
     the pill version used on KPI cards; this is the compact version that fits
     inside a table row. `label` names the comparison when the cell carries
     more than one.
+
+    `kind="pts"` formats an occupancy move, which is a percentage-POINT delta
+    — same distinction `_delta_chip` already carries, and the caller is
+    expected to pass the ±3 thresholds that go with it.
     """
     if pct_value is None:
         return ""
+    text = signed_pts(pct_value) if kind == "pts" else signed_pct(pct_value)
     up, down = pct_value >= good, pct_value < bad
     arrow = "▲" if up else "▼" if down else "≈"
     color = C["good"] if up else C["bad"] if down else C["warn"]
     tag = (f"<span style='color:{C['muted']};font-weight:600;font-size:9.5px;'>"
            f" {label}</span>") if label else ""
     return (f" <span style='color:{color};font-weight:700;font-size:10.5px;"
-            f"white-space:nowrap;'>{arrow} {signed_pct(pct_value)}{tag}</span>")
+            f"white-space:nowrap;'>{arrow} {text}{tag}</span>")
 
 
 def _delta_pair(prior_pct, yoy_pct, per_day: bool = False,
@@ -303,6 +308,77 @@ def _section(n, title: str, note: str, body: str, accent: str = _BRAND_FALLBACK)
     </div>"""
 
 
+def _render_room_split(b: dict) -> str:
+    """Private room vs dorm bed, for the three rate metrics.
+
+    Sits inside the Executive Summary rather than in a section of its own,
+    for the same reason RevPAR was folded in on 2026-08-12: it decomposes the
+    ADR / OCC / RevPAR cards directly above it, and a manager reading a
+    segment against the blended number should not have to scroll between them.
+
+    Renders nothing for rooms-only properties (Osaka) — there the blended
+    cards already are the private-room numbers.
+    """
+    rt = b.get("room_types") or {}
+    segments = rt.get("segments") or []
+    if not rt.get("has_split") or not segments:
+        return ""
+
+    br = _brand(b)
+    bid = b["branch_id"]
+    currency = b.get("currency") or ""
+    show_yoy = bool(rt.get("yoy_has_data"))
+
+    th = (f"font-size:11px;color:{C['muted']};font-weight:600;"
+          f"padding:0 0 7px;border-bottom:1px solid {C['line']};")
+    td = f"font-size:13.5px;color:{C['charcoal']};padding:9px 0;vertical-align:top;"
+
+    rows = ""
+    for s in segments:
+        occ = s.get("occ_pct")
+        adr_arrow = (_inline_arrow(s.get("adr_vs_yoy_pct"), label=_YOY_TAG)
+                     if show_yoy else "")
+        occ_arrow = (_inline_arrow(s.get("occ_vs_yoy_pts"), 3.0, -3.0,
+                                   _YOY_TAG, "pts") if show_yoy else "")
+        revpar_arrow = (_inline_arrow(s.get("revpar_vs_yoy_pct"), label=_YOY_TAG)
+                        if show_yoy else "")
+        rows += f"""
+        <tr{cell_attrs(bid, f"bw.split.{s['key']}",
+                       f"{s['label']} — ADR, occupancy, RevPAR")}>
+          <td style="{td}text-align:left;">
+            <b style="color:{br['deep']};">{s['label']}</b>
+            <div style="font-size:11px;color:{C['muted']};margin-top:2px;">
+              {num(s['capacity'])} {s['unit']} · {num(s['nights'])} sold</div>
+          </td>
+          <td style="{td}text-align:right;">{fmt(s.get('adr'), currency)}{adr_arrow}</td>
+          <td style="{td}text-align:right;">
+            {f"{occ * 100:.1f}%" if occ is not None else "—"}{occ_arrow}</td>
+          <td style="{td}text-align:right;font-weight:600;">
+            {fmt(s.get('revpar'), currency)}{revpar_arrow}</td>
+        </tr>"""
+
+    return f"""
+    <div style="margin-top:14px;background:{C['card']};border:1px solid {C['line']};
+         border-radius:11px;padding:14px 17px;">
+      <div style="font-size:12.5px;color:{C['muted']};font-weight:600;margin-bottom:6px;">
+        Split by room type</div>
+      <table style="width:100%;border-collapse:collapse;">
+        <tr>
+          <th style="{th}text-align:left;">Room type</th>
+          <th style="{th}text-align:right;">Avg rate (ADR)</th>
+          <th style="{th}text-align:right;">Occupancy</th>
+          <th style="{th}text-align:right;">RevPAR</th>
+        </tr>{rows}
+      </table>
+      <div style="font-size:11.5px;color:{C['muted']};margin-top:9px;padding-top:9px;
+           border-top:1px dashed {C['line']};">
+        Each row divides by its own inventory — private RevPAR is per
+        <b>room</b>, dorm RevPAR is per <b>bed</b>. Compare a row against the
+        same row a year ago, never against the other row. The RevPAR card above
+        is a capacity-weighted average of these two, not their sum.</div>
+    </div>"""
+
+
 def _render_exec_summary(b: dict, p: Period) -> str:
     br = _brand(b)
     kpi = b.get("kpi") or {}
@@ -409,7 +485,8 @@ def _render_exec_summary(b: dict, p: Period) -> str:
     headline = _render_headline(b, p)
     return _section(1, "Executive Summary", "", f"""
       {headline}
-      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">{cards}</div>""",
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">{cards}</div>
+      {_render_room_split(b)}""",
                     br["primary"])
 
 

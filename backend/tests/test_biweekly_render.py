@@ -101,6 +101,23 @@ def _payload(branch_name="MEANDER Saigon"):
             "lights": {"revenue": "g", "adr": "g", "occ": "w"},
             "yoy_has_data": True,
         },
+        "room_types": {
+            "has_split": True,
+            "days": 14,
+            "yoy_has_data": True,
+            "segments": [
+                {"key": "room", "label": "Private room", "unit": "rooms",
+                 "capacity": 36, "revenue": 777_000_000, "nights": 433,
+                 "occ_pct": 0.8591, "adr": 1_794_457, "revpar": 1_541_667,
+                 "adr_vs_yoy_pct": 28.4, "occ_vs_yoy_pts": -4.1,
+                 "revpar_vs_yoy_pct": 21.7},
+                {"key": "dorm", "label": "Dorm bed", "unit": "beds",
+                 "capacity": 48, "revenue": 268_000_000, "nights": 582,
+                 "occ_pct": 0.8661, "adr": 460_481, "revpar": 398_810,
+                 "adr_vs_yoy_pct": 6.2, "occ_vs_yoy_pts": 1.4,
+                 "revpar_vs_yoy_pct": 8.0},
+            ],
+        },
         "target": {
             "period": {"actual_revenue": 1_210_000_000,
                        "target_revenue": 1_100_000_000},
@@ -290,6 +307,53 @@ class TestBuildHtml:
         numbers = re.findall(
             r"align-items:center;justify-content:center;\">(\d+|\?)</div>", html)
         assert numbers == ["1", "2", "3", "4", "5", "6", "7", "8", "?"]
+
+    def test_room_type_split_sits_inside_the_executive_summary(self):
+        """Requested 2026-08-14: ADR / OCC / RevPAR broken out by private room
+        vs dorm bed. It decomposes the three cards above it, so it belongs in
+        section 1 — not in a section of its own, which would also renumber
+        everything below."""
+        html = self._render([_payload()])
+        assert "Split by room type" in html
+        assert "Private room" in html
+        assert "Dorm bed" in html
+        assert html.index("Split by room type") < html.index("Target Achievement")
+
+    def test_room_type_split_carries_all_three_rate_metrics(self):
+        html = self._render([_payload()])
+        assert "₫1,794,457" in html      # private ADR
+        assert "85.9%" in html           # private OCC
+        assert "₫1,541,667" in html      # private RevPAR
+        assert "₫460,481" in html        # dorm ADR
+        assert "86.6%" in html           # dorm OCC
+        assert "₫398,810" in html        # dorm RevPAR
+
+    def test_room_type_split_states_its_two_denominators(self):
+        """The whole trap of this panel is that dorm RevPAR is per BED and
+        private RevPAR is per ROOM, so the two rows are not rankable against
+        each other. Both the inventory line and the footer have to say so."""
+        html = self._render([_payload()])
+        assert "36 rooms" in html
+        assert "48 beds" in html
+        assert "never against the other row" in html
+        assert "capacity-weighted average" in html
+
+    def test_rooms_only_branch_draws_no_split_panel(self):
+        """Osaka has no dorm inventory — a split there would just restate the
+        blended cards."""
+        p = _payload("MEANDER Osaka")
+        p["room_types"] = {"has_split": False, "segments": []}
+        html = self._render([p])
+        assert "Split by room type" not in html
+
+    def test_split_panel_survives_a_payload_built_before_it_existed(self):
+        """Cached reports built by the previous builder carry no `room_types`
+        key at all; the renderer must skip the panel rather than raise."""
+        p = _payload()
+        del p["room_types"]
+        html = self._render([p])
+        assert "Split by room type" not in html
+        assert "Executive Summary" in html
 
     def test_direct_channels_carry_no_good_badge(self):
         """The green GOOD badge beside Direct channels went out per 2026-08-12
