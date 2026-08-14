@@ -33,6 +33,7 @@ def _sql(**kwargs):
             kwargs.pop("date_to", Q4_TO),
             kwargs.pop("lead_time_min", 0),
             kwargs.pop("lead_time_max", None),
+            kwargs.pop("source", None),
         )
         return str(q.statement.compile(
             dialect=postgresql.dialect(),
@@ -85,6 +86,27 @@ def test_revenue_reported_in_both_native_and_vnd():
     sql = _sql()
     assert "sum(reservations.grand_total_native)" in sql
     assert "sum(reservations.grand_total_vnd)" in sql
+
+
+def test_source_filter_is_a_case_insensitive_substring():
+    """The stored value is "Website/Booking Engine" — normalize_source only
+    canonicalises OTA names, so direct sources keep their raw Cloudbeds string
+    and an exact match on "website" would silently return zero rows."""
+    sql = _sql(source="website").lower()
+    # ILIKE, not LIKE — case-insensitivity has to survive "Website/Booking Engine".
+    assert "reservations.source ilike" in sql
+    assert "'website'" in sql
+
+
+def test_source_filter_escapes_like_wildcards():
+    """A source containing % or _ must match literally, not as a wildcard."""
+    sql = _sql(source="100%_direct")
+    assert "ESCAPE" in sql.upper()
+
+
+def test_no_source_filter_leaves_source_unconstrained():
+    sql = _sql().lower()
+    assert "reservations.source ilike" not in sql
 
 
 def test_grouped_per_branch_and_scopable_to_one():
