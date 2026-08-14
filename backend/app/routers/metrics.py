@@ -1023,6 +1023,7 @@ def get_lead_time_cohort_endpoint(
     date_to: date = Query(...),
     lead_time_min: int = Query(0, ge=0),
     lead_time_max: Optional[int] = Query(None, ge=0),
+    source: Optional[str] = Query(None),
     branch_id: Optional[UUID] = Query(None),
     db: Session = Depends(get_db),
 ):
@@ -1037,10 +1038,20 @@ def get_lead_time_cohort_endpoint(
     lead_time_min=31 with no max) — /booking-pace cannot express this, which is
     why answers derived from it undercount long-lead cohorts.
 
-    Each branch also carries window_total: the same booking window with no lead
-    filter, so a cohort's share of bookings and revenue is computable without a
-    second call. Revenue comes in native currency AND VND.
+    source is an optional case-insensitive substring on the raw source name:
+    source=website matches "Website/Booking Engine". Do NOT reach for
+    source_category="Direct" as a stand-in — that bucket also holds Walk-In,
+    Extension, Phone and Facebook, so it overstates website badly.
 
+    Every percentage ships with the two counts behind it, so a share is never
+    presented without the numerator and denominator that produced it. Two
+    denominators are given per branch:
+      *_in_source  — same window and source, no lead filter
+                     ("of our website bookings, how many were long-lead")
+      *_all_sources — same window, no source and no lead filter
+                     ("of everything booked, how much is long-lead website")
+
+    Revenue comes in native currency AND VND.
     Excludes cancelled/no-show and non-paying sources, matching /booking-pace.
     """
     if date_from > date_to:
@@ -1057,13 +1068,22 @@ def get_lead_time_cohort_endpoint(
         }
 
     cohort = get_lead_time_cohort(
-        db, branch_id, date_from, date_to, lead_time_min, lead_time_max
+        db, branch_id, date_from, date_to, lead_time_min, lead_time_max, source
     )
-    # Same window, no lead-time band — the denominator for share figures.
-    totals = get_lead_time_cohort(db, branch_id, date_from, date_to, 0, None)
+    # Same window and source, no lead band — "of this source, how much is long-lead".
+    totals_in_source = get_lead_time_cohort(
+        db, branch_id, date_from, date_to, 0, None, source
+    )
+    # Same window, no source and no lead band — "of everything, how much is this".
+    # Identical to totals_in_source when no source filter was asked for, so skip
+    # the second round-trip in that case.
+    totals_all = totals_in_source if not source else get_lead_time_cohort(
+        db, branch_id, date_from, date_to, 0, None, None
+    )
 
     by_branch = {str(r.branch_id): r for r in cohort}
-    totals_by_branch = {str(r.branch_id): r for r in totals}
+    totals_by_branch = {str(r.branch_id): r for r in totals_in_source}
+    totals_all_by_branch = {str(r.branch_id): r for r in totals_all}
     coverage = {
         str(r.branch_id): r for r in get_reservation_date_coverage(db, branch_id)
     }
@@ -1080,6 +1100,7 @@ def get_lead_time_cohort_endpoint(
         bid = str(b.id)
         row = by_branch.get(bid)
         tot = totals_by_branch.get(bid)
+        tot_all = totals_all_by_branch.get(bid)
         cov = coverage.get(bid)
 
         bookings = row.bookings if row else 0
@@ -1087,6 +1108,8 @@ def get_lead_time_cohort_endpoint(
         rev_vnd = _num(row.revenue_vnd) if row else 0.0
         total_bookings = tot.bookings if tot else 0
         total_rev_vnd = _num(tot.revenue_vnd) if tot else 0.0
+        total_bookings_all = tot_all.bookings if tot_all else 0
+        total_rev_vnd_all = _num(tot_all.revenue_vnd) if tot_all else 0.0
 
         results.append({
             "branch_id": bid,
@@ -1105,12 +1128,25 @@ def get_lead_time_cohort_endpoint(
             "median_lead_days": row.median_lead if row else None,
             "min_lead_days": row.min_lead if row else None,
             "max_lead_days": row.max_lead if row else None,
-            "window_total_bookings": total_bookings,
-            "window_total_revenue_vnd": total_rev_vnd,
-            "share_of_bookings_pct": round(bookings / total_bookings * 100, 2)
-            if total_bookings else None,
-            "share_of_revenue_vnd_pct": round(rev_vnd / total_rev_vnd * 100, 2)
-            if total_rev_vnd else None,
+            # Denominators travel with every percentage — a share shown without
+            # the counts behind it is how "47.58% of bookings" got reported off
+            # an interpolated bucket nobody could check.
+            "window_total_bookings_in_source": total_bookings,
+            "window_total_revenue_vnd_in_source": total_rev_vnd,
+            "share_of_bookings_in_source_pct": round(
+                bookings / total_bookings * 100, 2
+            ) if total_bookings else None,
+            "share_of_revenue_vnd_in_source_pct": round(
+                rev_vnd / total_rev_vnd * 100, 2
+            ) if total_rev_vnd else None,
+            "window_total_bookings_all_sources": total_bookings_all,
+            "window_total_revenue_vnd_all_sources": total_rev_vnd_all,
+            "share_of_bookings_all_sources_pct": round(
+                bookings / total_bookings_all * 100, 2
+            ) if total_bookings_all else None,
+            "share_of_revenue_vnd_all_sources_pct": round(
+                rev_vnd / total_rev_vnd_all * 100, 2
+            ) if total_rev_vnd_all else None,
             # Booked-date filtering cannot see rows with a NULL reservation_date.
             # Low coverage here means every number above is an undercount.
             "reservation_date_coverage_pct": round(
@@ -1124,5 +1160,6 @@ def get_lead_time_cohort_endpoint(
         "date_field": "reservation_date",
         "lead_time_min": lead_time_min,
         "lead_time_max": lead_time_max,
+        "source": source,
         "branches": results,
     })

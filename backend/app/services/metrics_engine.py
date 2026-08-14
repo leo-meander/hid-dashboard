@@ -871,6 +871,7 @@ def build_lead_time_cohort_query(
     date_to: date,
     lead_time_min: int = 0,
     lead_time_max: Optional[int] = None,
+    source: Optional[str] = None,
 ):
     """Query builder behind get_lead_time_cohort — split out so the filters can
     be asserted in tests without a live database."""
@@ -904,6 +905,13 @@ def build_lead_time_cohort_query(
 
     if lead_time_max is not None:
         q = q.filter(lead_time_col <= lead_time_max)
+    if source:
+        # Case-insensitive substring, matching chat_tools.get_source_by_country
+        # so "website" resolves the same way in both. The raw Cloudbeds string
+        # is "Website/Booking Engine" — normalize_source only canonicalises OTA
+        # names, direct sources pass through verbatim, so an exact match on
+        # "website" would return nothing. autoescape keeps % and _ literal.
+        q = q.filter(Reservation.source.icontains(source, autoescape=True))
     if branch_id:
         q = q.filter(Reservation.branch_id == branch_id)
 
@@ -917,11 +925,17 @@ def get_lead_time_cohort(
     date_to: date,
     lead_time_min: int = 0,
     lead_time_max: Optional[int] = None,
+    source: Optional[str] = None,
 ) -> list:
     """
     Reservations BOOKED between date_from and date_to — filtered on
     reservation_date, not check_in_date — whose lead time
     (check_in_date - reservation_date) falls in [lead_time_min, lead_time_max].
+
+    `source` is an optional case-insensitive substring on the raw source name
+    ("website" -> "Website/Booking Engine"). Note that source_category "Direct"
+    is NOT a synonym for website: it also covers Walk-In, Extension, Phone,
+    Facebook and others, so filtering on the category overstates website.
 
     lead_time_max=None means no upper bound. That is the reason this exists
     alongside get_booking_pace: booking-pace only expresses "lead <= N" and its
@@ -934,7 +948,7 @@ def get_lead_time_cohort(
     Returns one row per branch.
     """
     return build_lead_time_cohort_query(
-        db, branch_id, date_from, date_to, lead_time_min, lead_time_max
+        db, branch_id, date_from, date_to, lead_time_min, lead_time_max, source
     ).all()
 
 
