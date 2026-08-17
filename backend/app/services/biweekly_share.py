@@ -314,10 +314,15 @@ def build_summary_email_html(b: dict, p: Period, share_url: str,
         upcoming = m.get("status") == "upcoming"
         k = ("w" if upcoming else
              "g" if pct_val >= 100 else "w" if pct_val >= 80 else "b")
+        # Built outside the f-string: an expression part cannot contain a
+        # backslash before Python 3.12, and the container runs 3.11.
+        note = (
+            f"<span style='color:{C['muted']};'> · booked so far</span>"
+            if upcoming else ""
+        )
         month_lines += (
             f"<tr><td style='font-size:12.5px;color:{C['ink']};padding:4px 0;'>"
-            f"{html.escape(m.get('label') or '', quote=False)}"
-            f"{'<span style=\"color:' + C['muted'] + ';\"> · booked so far</span>' if upcoming else ''}"
+            f"{html.escape(m.get('label') or '', quote=False)}{note}"
             f"</td><td style='text-align:right;padding:4px 0;'>"
             f"<span style='font-size:12.5px;font-weight:700;color:{_LIGHT[k]};'>"
             f"{pct_val:.0f}%</span></td></tr>"
