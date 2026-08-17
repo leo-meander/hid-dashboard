@@ -87,11 +87,22 @@ class TestMomDays:
         _, days, per_day = _mom_days(p)
         assert (days, per_day) == (14, True)
 
-    def test_february_compared_against_a_longer_january(self):
+    def test_february_against_january_needs_no_per_day_framing(self):
+        """15–28 Feb takes its own day numbers into January, so it meets a
+        14-day 15–28 Jan rather than January's own 17-day second half. Nothing
+        to normalise — this is a total against a total.
+        """
         p = period_for(2027, 2, 2)
         assert p.days == 14
         _, days, per_day = _mom_days(p)
-        assert (days, per_day) == (17, True)
+        assert (days, per_day) == (14, False)
+
+    def test_per_day_framing_survives_where_the_calendar_forces_it(self):
+        """The fallback is not dead code. Five end-of-month reports a year
+        still reach for a day the previous month does not have.
+        """
+        forced = [m for m in range(1, 13) if _mom_days(period_for(2027, m, 2))[2]]
+        assert forced == [3, 5, 7, 10, 12]
 
 
 class TestCrmRatePlanTotals:

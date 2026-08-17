@@ -25,12 +25,18 @@ Never the immediately preceding period: comparing 15–31 Aug against 1–14 Aug
 compares a 17-day window to a 14-day one, and compares the back half of a
 month to its front half, which have different pay-cycle and weekend shapes.
 
+Both reference windows carry the period's own day NUMBERS across, rather than
+taking whatever the reference month's own second half happens to be — 15–28
+Feb compares against 15–28 Jan, not 15–31 Jan. See `_same_dates_in` for why
+those three extra January days would be a distortion rather than a bonus.
+
 What this framing costs, and what the callers have to do about it:
 
-  1. **H2 varies in length**, so the MoM window can be shorter or longer than
-     the period. 15–31 Mar (17 days) against 15–28 Feb (14) would invent an
-     ~18% decline if the totals were compared head-on.
-  2. **The YoY window can differ too**, though only across a leap February.
+  1. **A month with a 31st cannot land on one without.** 15–31 Mar (17 days)
+     can only reach 15–28 Feb (14). Compared head-on that would invent an
+     ~18% decline. This is the one length mismatch date alignment cannot
+     remove; it hits 5 of the 12 end-of-month reports.
+  2. **A leap February does the same to YoY**, in either direction.
   3. **Weekday composition drifts.** 1–14 always holds exactly two of each
      weekday, but 15–31 Aug can hold three Saturdays where 15–31 Jul holds
      two. Rate metrics (ADR, OCC, RevPAR) absorb that; totals see it as noise.
@@ -191,31 +197,53 @@ def is_complete(p: Period, today: date) -> bool:
     return p.end < today
 
 
+def _same_dates_in(p: Period, year: int, month: int) -> tuple[date, date]:
+    """`p`'s own day NUMBERS, applied to another month.
+
+    This is the literal reading of the reporting spec's "always use the same
+    calendar date range", and it is not the same thing as "that month's own
+    second half". 15–28 Feb compares against 15–**28** Jan, not 15–31 Jan:
+    January's 29th–31st are month-end nights with their own demand shape, and
+    counting them on one side of a comparison that has no equivalent days on
+    the other is precisely the distortion the date alignment exists to avoid.
+
+    The end is capped at the reference month's real last day, because that is
+    the one direction the calendar cannot be argued with — 15–31 Mar has no
+    31 February to land on. Those cases stay length-mismatched and fall back
+    to per-day figures; capping shrinks the mismatched set from 10 of the 12
+    end-of-month reports to 5, and every one that remains is a month with a
+    31st compared against a month without one.
+    """
+    if p.half == 1:
+        return date(year, month, 1), date(year, month, SPLIT_DAY - 1)
+    return (
+        date(year, month, SPLIT_DAY),
+        date(year, month, min(p.end.day, days_in_month(year, month))),
+    )
+
+
 def mom_window(p: Period) -> tuple[date, date]:
     """Same calendar dates, previous month — the month-over-month reference.
 
-    H1 is always 1–14, so this is always 14 days against 14. H2 runs 15–EOM
-    of a month that may be a different length: 15–31 Mar lands on 15–28 Feb.
-    The window is clamped to the previous month's real last day rather than
-    invented forward, and `comparable_as_totals` is what stops a caller from
-    reading the resulting 17-vs-14 as a decline.
+    H1 is always 1–14, so it is always 14 days against 14. H2 takes its own
+    day range into the previous month: 15–28 Feb → 15–28 Jan, 15–31 Aug →
+    15–31 Jul. Where the previous month is shorter the window is capped to
+    its last day — 15–31 Mar → 15–28 Feb — and `comparable_as_totals` is what
+    stops a caller reading the resulting 17-vs-14 as a decline.
     """
     year, month = shift_month(p.year, p.month, -1)
-    if p.half == 1:
-        return _bounds(year, month, 1)
-    return _bounds(year, month, 2)
+    return _same_dates_in(p, year, month)
 
 
 def yoy_window(p: Period) -> tuple[date, date]:
     """Same calendar dates, previous year.
 
-    Same length as `p` except across a leap February — 15–29 Feb 2028 meets
-    15–28 Feb 2027 — which `comparable_as_totals` catches like any other
-    length mismatch.
+    Always the same length except where a leap February is involved, in
+    either direction: 15–29 Feb 2028 against a 14-day 15–28 Feb 2027, and
+    15–28 Feb 2029 against a 2028 that has a 29th the current period has no
+    room for. `comparable_as_totals` catches both.
     """
-    if p.half == 1:
-        return _bounds(p.year - 1, p.month, 1)
-    return _bounds(p.year - 1, p.month, 2)
+    return _same_dates_in(p, p.year - 1, p.month)
 
 
 def window_days(window: tuple[date, date]) -> int:
