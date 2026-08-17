@@ -5,7 +5,7 @@ Fan-out targets (per reservation):
   1. GHL CRM — upsert contact
   2. Meta CAPI — Purchase event (non-Website sources)
   3. Google Ads — offline conversion upload (non-Website sources)
-  4. TikTok Events API — Saigon only
+  4. TikTok Events API — branches in config.TIKTOK_BRANCHES (Saigon, Osaka)
 
 Trigger modes:
   A. Polling — APScheduler job runs every 10 min, calls getReservations for
@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 
-from app.config import settings
+from app.config import TIKTOK_BRANCHES, settings
 from app.routers.auth import require_admin
 from app.services.ghl_crm_service import upsert_contact_from_reservation
 from app.services.google_ads_service import upload_offline_conversion
@@ -182,8 +182,8 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
             logger.error("Google Ads upload error branch=%s reservation=%s: %s", branch, reservation_id, e)
             gads_log = {"success": False, "error": str(e)}
 
-    # ── TikTok Events API — Saigon only ──────────────────────────────────────
-    if branch == "saigon":
+    # ── TikTok Events API — branches advertising on TikTok ───────────────────
+    if branch in TIKTOK_BRANCHES:
         if is_website_source:
             tiktok_log = {"success": None, "action": "skipped_website_source"}
         elif not (cfg["tiktok_access_token"] and cfg["tiktok_event_source_id"]):
@@ -194,6 +194,10 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
                     reservation=reservation,
                     access_token=cfg["tiktok_access_token"],
                     event_source_id=cfg["tiktok_event_source_id"],
+                    currency=cfg["currency"],
+                    tz_offset_hours=cfg["tz_offset_hours"],
+                    event_time_extra_offset=cfg["event_time_extra_offset"],
+                    phone_country_code=cfg["phone_country_code"],
                 )
                 if webhook_log.is_nothing_to_send(result):
                     tiktok_log = {"success": None, "action": "skipped_no_user_data"}

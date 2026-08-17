@@ -2,6 +2,12 @@ import json
 from typing import List, Dict, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Branches that advertise on TikTok and therefore receive offline
+# CompletePayment events. Listed explicitly rather than inferred from the token
+# being present, so the Webhook Monitor can tell "this branch is not on TikTok"
+# (blank cell) apart from "it is, but the credentials are missing" (skip badge).
+TIKTOK_BRANCHES = ("saigon", "osaka")
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -156,9 +162,18 @@ class Settings(BaseSettings):
     PAGESPEED_URL_OSAKA: str = "https://staymeander.com/meanderosaka/en"
     PAGESPEED_URL_OANI: str = "https://staymeander.com/oani/en"
 
-    # TikTok Events API — Saigon only
+    # TikTok Events API (offline) — one event set + one access token per branch.
+    # Tokens are issued per Business Center asset, so Saigon's token cannot post
+    # to Osaka's event set; each branch needs its own.
     TIKTOK_ACCESS_TOKEN_SAIGON: str = ""
     TIKTOK_EVENT_SOURCE_ID_SAIGON: str = ""
+    TIKTOK_ACCESS_TOKEN_OSAKA: str = ""
+    # The events we send carry event_source="offline", so this is the Offline
+    # Event Set ID (numeric), NOT the web pixel ID. Osaka's pixel is
+    # D9QKA0BC77U6RO6J1O50 and belongs to the browser tag, not to this flow —
+    # posting offline events against it is rejected. Not a secret, so it ships
+    # as a default and stays overridable, like the GA4 property IDs.
+    TIKTOK_EVENT_SOURCE_ID_OSAKA: str = "7674850424402378773"
 
     # KOL Media Engine
     KOL_ENGINE_URL: str = "https://kol-media-engine.zeabur.app"
@@ -302,6 +317,13 @@ class Settings(BaseSettings):
             "osaka":  self.GOOGLE_ADS_CONVERSION_BOTH_OSAKA,
         }.get(b, "")
 
+        # TikTok pixel + token, for the branches in TIKTOK_BRANCHES. A branch
+        # absent here gets ("", "") and is skipped by the fan-out.
+        tiktok = {
+            "saigon": (self.TIKTOK_ACCESS_TOKEN_SAIGON, self.TIKTOK_EVENT_SOURCE_ID_SAIGON),
+            "osaka":  (self.TIKTOK_ACCESS_TOKEN_OSAKA,  self.TIKTOK_EVENT_SOURCE_ID_OSAKA),
+        }.get(b, ("", ""))
+
         # Per-branch timezone and currency (mirrors Make.com blueprint formulas)
         # tz_offset_hours: UTC offset of the branch local time
         # event_time_extra_offset: hours subtracted on top (Make's addHours value)
@@ -329,9 +351,8 @@ class Settings(BaseSettings):
             "tz_offset_hours": branch_meta["tz_offset_hours"],
             "event_time_extra_offset": branch_meta["event_time_extra_offset"],
             "phone_country_code": branch_meta["phone_country_code"],
-            # TikTok — Saigon only
-            "tiktok_access_token": self.TIKTOK_ACCESS_TOKEN_SAIGON if b == "saigon" else "",
-            "tiktok_event_source_id": self.TIKTOK_EVENT_SOURCE_ID_SAIGON if b == "saigon" else "",
+            "tiktok_access_token": tiktok[0],
+            "tiktok_event_source_id": tiktok[1],
         }
 
     def get_api_key_for_property(self, property_id: str) -> Optional[str]:
