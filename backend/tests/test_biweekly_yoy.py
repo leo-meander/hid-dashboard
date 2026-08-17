@@ -1,23 +1,21 @@
 """Bi-Weekly report — the comparison arithmetic behind both reference windows.
 
-Every section carries two comparisons on the same calendar dates: one month
-back (MoM) and one year back (YoY). NEITHER is guaranteed to be the same
-length as the reporting period:
+Every section carries two comparisons, built on different rules: the
+preceding window (the period's own length, immediately before it) and the
+same calendar dates a year back.
 
-  * a second half runs 15–EOM, so 15–31 Mar (17 days) meets 15–28 Feb (14)
-    one month back;
-  * a leap February shifts the year-ago window by a day.
+The preceding window is equal-length by construction. The year-ago one is
+not — a 15-day 15–29 Feb 2028 meets a 14-day 15–28 Feb 2027 — and comparing
+those totals head-on manufactures a decline out of the calendar, which is the
+specific mistake these tests exist to prevent.
 
-Comparing those totals head-on manufactures a decline out of the calendar —
-~18% for the March/February case — which is the specific mistake these tests
-exist to prevent. The old ISO-week scheme had the same hazard in one place
-(a 21-day week-triple against 14 days); the calendar scheme has it in two, so
-both `_yoy_days` and `_mom_days` are pinned here.
+Both go through `_pct_norm` even though only one can currently trip it, so
+these pin the invariant as well as the arithmetic.
 """
 from app.services.biweekly_period import period_for
 from app.services.biweekly_report_builder import (
     _crm_rate_plan_totals,
-    _mom_days,
+    _prior_days,
     _pct_norm,
     _yoy_days,
 )
@@ -68,41 +66,18 @@ class TestYoyDays:
         assert (days, per_day) == (14, True)
 
 
-class TestMomDays:
-    def test_equal_length_months_need_no_per_day_framing(self):
-        # Aug and Jul are both 31 days, so 15–31 meets 15–31.
-        _, days, per_day = _mom_days(period_for(2026, 8, 2))
-        assert (days, per_day) == (17, False)
-
-    def test_first_halves_are_always_directly_comparable(self):
-        for month in range(1, 13):
-            _, days, per_day = _mom_days(period_for(2026, month, 1))
-            assert (days, per_day) == (14, False)
-
-    def test_a_short_previous_february_forces_per_day(self):
-        """15–31 Mar (17 days) against 15–28 Feb (14). Left as totals this
-        reads as an ~18% collapse that never happened."""
-        p = period_for(2027, 3, 2)
-        assert p.days == 17
-        _, days, per_day = _mom_days(p)
-        assert (days, per_day) == (14, True)
-
-    def test_february_against_january_needs_no_per_day_framing(self):
-        """15–28 Feb takes its own day numbers into January, so it meets a
-        14-day 15–28 Jan rather than January's own 17-day second half. Nothing
-        to normalise — this is a total against a total.
-        """
-        p = period_for(2027, 2, 2)
-        assert p.days == 14
-        _, days, per_day = _mom_days(p)
-        assert (days, per_day) == (14, False)
-
-    def test_per_day_framing_survives_where_the_calendar_forces_it(self):
-        """The fallback is not dead code. Five end-of-month reports a year
-        still reach for a day the previous month does not have.
-        """
-        forced = [m for m in range(1, 13) if _mom_days(period_for(2027, m, 2))[2]]
-        assert forced == [3, 5, 7, 10, 12]
+class TestPriorDays:
+    def test_the_preceding_window_never_needs_per_day_framing(self):
+        """It is the period's own length taken backwards, so it cannot come
+        out a different size — in any month, in any year. The helper still
+        computes the flag rather than hard-coding False, so redefining the
+        window cannot silently start comparing unequal totals."""
+        for year in (2027, 2028):          # includes a leap February
+            for month in range(1, 13):
+                for half in (1, 2):
+                    p = period_for(year, month, half)
+                    _, days, per_day = _prior_days(p)
+                    assert (days, per_day) == (p.days, False)
 
 
 class TestCrmRatePlanTotals:
@@ -126,20 +101,19 @@ class TestCrmRatePlanTotals:
         assert t["bookings_vs_yoy_pct"] == 500.0          # 54 vs 9
         assert t["revenue_vs_yoy_pct"] == 250.0           # 70k vs 20k
         assert t["yoy_per_day"] is False
-        assert t["mom_per_day"] is False
+        assert t["prior_per_day"] is False
 
-    def test_a_short_month_back_window_normalises_the_total_per_day(self):
+    def test_a_leap_february_normalises_the_year_ago_total_per_day(self):
         """This is why the totals are computed in the builder rather than
-        summed in the renderer — the renderer has no way to know February was
-        three days shorter."""
-        t = _crm_rate_plan_totals(period_for(2027, 3, 2), self.ROWS)
-        assert t["mom_per_day"] is True
-        # 70000/17 = 4117.65/day against 30000/14 = 2142.86/day → +92.16%
-        assert t["revenue_vs_prior_pct"] == 92.16
-        # The year-ago window IS the same length (15–31 Mar 2026 is also 17
-        # days), so that one stays a straight total.
-        assert t["yoy_per_day"] is False
-        assert t["revenue_vs_yoy_pct"] == 250.0
+        summed in the renderer — the renderer has no way to know last February
+        was a day shorter."""
+        t = _crm_rate_plan_totals(period_for(2028, 2, 2), self.ROWS)   # 15 days
+        assert t["yoy_per_day"] is True
+        # 70000/15 = 4666.67/day against 20000/14 = 1428.57/day → +226.67%
+        assert t["revenue_vs_yoy_pct"] == 226.67
+        # The preceding window is always equal-length, so it stays a total.
+        assert t["prior_per_day"] is False
+        assert t["revenue_vs_prior_pct"] == 133.33
 
     def test_no_rows_yields_zero_totals_and_no_deltas(self):
         t = _crm_rate_plan_totals(period_for(2026, 8, 1), [])

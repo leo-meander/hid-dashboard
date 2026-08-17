@@ -284,11 +284,11 @@ def build_summary_email_html(b: dict, p: Period, share_url: str,
     vy, vp = kpi.get("vs_yoy") or {}, kpi.get("vs_prior") or {}
     has_yoy = kpi.get("yoy_has_data")
 
-    mom_lbl = "vs last month/day" if vp.get("per_day") else "vs last month"
+    prior_lbl = f"vs prev {p.days}d"
     yoy_lbl = "vs last year"
 
-    def deltas(yoy_key, mom_key, kind="pct"):
-        out = _mini_delta(vp.get(mom_key), mom_lbl, kind)
+    def deltas(yoy_key, prior_key, kind="pct"):
+        out = _mini_delta(vp.get(prior_key), prior_lbl, kind)
         if has_yoy:
             out += _mini_delta(vy.get(yoy_key), yoy_lbl, kind)
         return out or (f"<span style='font-size:10.5px;color:{C['muted']};'>"
@@ -380,7 +380,7 @@ def build_summary_email_html(b: dict, p: Period, share_url: str,
     <div style="padding:22px 28px 26px;">
       <p style="font-size:13.5px;margin:0 0 16px;">
         {greeting} here is how {html.escape(b.get('branch_name') or 'the branch', quote=False)}
-        did over {p.date_label}, against the same dates last month and last year.</p>
+        did over {p.date_label}, against the {p.days} days before it and the same dates last year.</p>
       <table style="width:100%;border-collapse:collapse;margin-bottom:4px;">{stats}</table>
       {target_block}
       {flags_block}

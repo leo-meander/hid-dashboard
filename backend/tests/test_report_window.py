@@ -14,7 +14,7 @@ must reproduce the old arithmetic exactly, for every day of the week.
 """
 from datetime import date, timedelta
 
-from app.services.biweekly_period import mom_window, period_for
+from app.services.biweekly_period import period_for, preceding_window
 from app.services.weekly_report_builder import last_week_range, resolve_window
 
 
@@ -88,32 +88,35 @@ class TestExplicitWindow:
 
 
 class TestExplicitComparison:
-    """`compare` is what lets the bi-weekly report point these shared sections
-    at the same dates one month back instead of at the half-month immediately
-    before. Without it, the `wow_*` deltas from Ads / Channel Mix / CRM would
-    disagree with every other arrow on the same page.
+    """`compare` is what keeps the shared weekly sections pointed at the same
+    reference as everything else on the bi-weekly page.
+
+    The default placement now happens to agree with `preceding_window`, so the
+    argument looks redundant — it is not. It is what makes the agreement a
+    guarantee rather than a coincidence, and the last test here is what would
+    fail if either definition drifted.
     """
 
-    def test_compare_overrides_the_placement_entirely(self):
-        p = period_for(2026, 8, 2)                      # Aug 15–31
-        mom = mom_window(p)                             # Jul 15–31
-        start, end, prev_start, prev_end = resolve_window(
-            p.end, (p.start, p.end), mom)
-        assert (start, end) == (p.start, p.end)
-        assert (prev_start, prev_end) == mom
-        # Emphatically NOT the period before this one (Aug 1–14).
-        assert prev_end + timedelta(days=1) != start
-
-    def test_compare_is_used_verbatim_even_when_shorter(self):
-        # 15–31 Mar against 15–28 Feb. `resolve_window` does not stretch it
-        # to match — the caller normalises per day.
-        p = period_for(2027, 3, 2)
-        mom = mom_window(p)
-        _, _, prev_start, prev_end = resolve_window(p.end, (p.start, p.end), mom)
-        assert (prev_start, prev_end) == (date(2027, 2, 15), date(2027, 2, 28))
-        assert (prev_end - prev_start).days + 1 == 14
-        assert (p.end - p.start).days + 1 == 17
+    def test_compare_is_used_verbatim(self):
+        p = period_for(2026, 8, 2)
+        window = (date(2026, 8, 15), date(2026, 8, 31))
+        explicit = (date(2025, 1, 1), date(2025, 1, 9))     # deliberately odd
+        start, end, prev_start, prev_end = resolve_window(p.end, window, explicit)
+        assert (start, end) == window
+        assert (prev_start, prev_end) == explicit
 
     def test_omitting_compare_keeps_the_weekly_behaviour_byte_for_byte(self):
         for d in (date(2026, 8, 3), date(2026, 1, 5), date(2027, 3, 1)):
             assert resolve_window(d) == resolve_window(d, None, None)
+
+    def test_the_default_placement_agrees_with_preceding_window(self):
+        """If these two ever disagree, the arrows inside Ads / Channel Mix /
+        CRM / KOL would silently measure against a different window than every
+        other number on the same page."""
+        for year in (2027, 2028):
+            for month in range(1, 13):
+                for half in (1, 2):
+                    p = period_for(year, month, half)
+                    _, _, prev_start, prev_end = resolve_window(
+                        p.end, (p.start, p.end))
+                    assert (prev_start, prev_end) == preceding_window(p)

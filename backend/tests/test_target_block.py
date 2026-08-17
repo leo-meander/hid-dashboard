@@ -67,7 +67,10 @@ class TestTargetBlockAssembly:
 
 
 class TestLookAhead:
-    def test_shows_the_reporting_month_then_the_months_ahead(self):
+    def test_shows_the_reporting_month_then_the_month_ahead(self):
+        """Two gauges, not three. The second month out was cut (2026-08-17):
+        its pickup is too thin to act on within this fortnight, and it pushed
+        the month that IS actionable into a crowded row."""
         p = period_for(2026, 8, 1)          # Aug 1–14
 
         def fake(db, branch, year, month, as_of):
@@ -80,10 +83,23 @@ class TestLookAhead:
         result = _run(p, fake)
 
         assert [m["label"] for m in result["months"]] == [
-            "August 2026", "September 2026", "October 2026",
+            "August 2026", "September 2026",
         ]
         assert len(result["months"]) == 1 + TARGET_LOOKAHEAD_MONTHS
-        assert [m["status"] for m in result["months"][1:]] == ["upcoming"] * 2
+        assert [m["status"] for m in result["months"][1:]] == ["upcoming"]
+
+    def test_never_reaches_past_the_look_ahead_horizon(self):
+        """The horizon is a query bound, not just a display filter — a month
+        outside it is never asked for at all."""
+        p = period_for(2026, 8, 1)
+        asked = []
+
+        def fake(db, branch, year, month, as_of):
+            asked.append((year, month))
+            return _month(f"m{month}", 50.0, "upcoming", month=month)
+
+        _run(p, fake)
+        assert asked == [(2026, 8), (2026, 9)]
 
     def test_top_level_mirrors_the_reporting_month_not_the_last_gauge(self):
         """The look-ahead months are forecast. `month_pct` has always meant
@@ -101,23 +117,34 @@ class TestLookAhead:
         assert result["month_pct"] == 70.0
 
     def test_a_future_month_with_no_target_and_no_bookings_is_dropped(self):
+        """Nothing planned, nothing sold — an empty 0/0 gauge is noise, so the
+        block falls back to the reporting month alone."""
         p = period_for(2026, 8, 1)
 
         def fake(db, branch, year, month, as_of):
             if month == 8:
                 return _month("August 2026", 70.0, "in_progress", month=8)
-            if month == 9:
-                # Nothing planned, nothing sold — an empty 0/0 gauge is noise.
-                return _month("September 2026", None, "upcoming", month=9,
-                              actual=0.0, target=0.0, has_target=False)
-            # No target set, but rooms are already on the books — that is
-            # exactly the pickup signal this block exists to surface.
-            return _month("October 2026", None, "upcoming", month=10,
+            return _month("September 2026", None, "upcoming", month=9,
+                          actual=0.0, target=0.0, has_target=False)
+
+        result = _run(p, fake)
+        assert [m["label"] for m in result["months"]] == ["August 2026"]
+
+    def test_a_future_month_with_bookings_but_no_target_is_kept(self):
+        """No target set, but rooms are already on the books. That gap is
+        exactly the thing this block exists to surface — dropping it would
+        hide a month nobody has planned."""
+        p = period_for(2026, 8, 1)
+
+        def fake(db, branch, year, month, as_of):
+            if month == 8:
+                return _month("August 2026", 70.0, "in_progress", month=8)
+            return _month("September 2026", None, "upcoming", month=9,
                           actual=250_000.0, target=0.0, has_target=False)
 
         result = _run(p, fake)
         assert [m["label"] for m in result["months"]] == [
-            "August 2026", "October 2026",
+            "August 2026", "September 2026",
         ]
 
     def test_crosses_the_year_boundary(self):
@@ -129,4 +156,4 @@ class TestLookAhead:
             return _month(f"{year}-{month}", 50.0, "upcoming", year=year, month=month)
 
         _run(p, fake)
-        assert seen == [(2026, 12), (2027, 1), (2027, 2)]
+        assert seen == [(2026, 12), (2027, 1)]

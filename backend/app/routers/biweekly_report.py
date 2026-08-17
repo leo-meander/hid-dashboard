@@ -615,10 +615,9 @@ def _share_url(token: str) -> str:
 
     Points at THIS service, not the dashboard: the shared page is a complete
     rendered HTML document served by `/shared/{token}`, and on Zeabur the
-    frontend is a separate deployment that would 404 on the path. Falls back
-    to a relative URL when `PUBLIC_API_URL` is unset — which works in local
-    dev and is obviously wrong in a real inbox, rather than silently pointing
-    somewhere plausible and broken.
+    frontend is a separate deployment that would 404 on the path.
+    `PUBLIC_API_URL` defaults to production, so this is absolute unless an
+    environment deliberately blanks it.
     """
     base = (getattr(settings, "PUBLIC_API_URL", "") or "").rstrip("/")
     return f"{base}/api/biweekly/shared/{token}"

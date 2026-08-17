@@ -73,11 +73,14 @@ class TestSummaryEmail:
         for label in ("REVENUE", "AVG ROOM RATE (ADR)", "OCCUPANCY", "REVPAR"):
             assert label in html
 
-    def test_names_both_comparison_windows_not_the_previous_period(self):
+    def test_names_both_comparison_windows(self):
+        """The headline delta says how long its window is. The two comparisons
+        on this page are built on different rules — a day count backwards and
+        a calendar range — so an unlabelled arrow would be ambiguous."""
         html = self._html()
-        assert "vs last month" in html
+        assert "vs prev 17d" in html          # P is Aug 15–31, 17 days
         assert "vs last year" in html
-        assert "vs prior" not in html
+        assert "the 17 days before it and the same dates last year" in html
 
     def test_shows_the_months_ahead_as_booked_not_as_achievement(self):
         """The same distinction the full report's gauges make. An upcoming

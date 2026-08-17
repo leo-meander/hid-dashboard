@@ -18,7 +18,7 @@ from app.services.biweekly_period import (
     Period,
     comparable_as_totals,
     is_complete,
-    mom_window,
+    preceding_window,
     yoy_window,
 )
 from app.services.country_codes import iso_code_for
@@ -130,12 +130,20 @@ _YOY_TAG = "vs LY"
 # Explained ONCE, in the report header, next to the two comparison windows it
 # refers to. It shipped in all five section notes, which put the same three
 # lines of boilerplate between a manager and every table on the page.
-_ARROW_LEGEND = (
-    f"In every table the ▲▼ beside a number is vs the same dates last month; "
-    f"the line below it ({_YOY_TAG}) is vs the same dates last year. A missing "
-    "second line means there is nothing to compare against a year ago. Neither "
-    "arrow is ever the half-month before this one."
-)
+def _arrow_legend(p: Period) -> str:
+    """Names both arrows, in the header, once.
+
+    The day count is spelled out because the two comparisons are built on
+    different rules — one is a length taken backwards, the other is a set of
+    calendar dates — and "vs the previous period" would leave a reader
+    guessing which window the unlabelled arrow means.
+    """
+    return (
+        f"In every table the ▲▼ beside a number is vs the {p.days} days "
+        f"immediately before this period; the line below it ({_YOY_TAG}) is vs "
+        "the same dates last year. A missing second line means there is "
+        "nothing to compare against a year ago."
+    )
 
 
 # ── Renderers ────────────────────────────────────────────────────────────────
@@ -188,8 +196,8 @@ def _delta_pair(prior_pct, yoy_pct, per_day: bool = False,
                 good: float = 5.0, bad: float = -5.0) -> str:
     """Both of the report's comparisons for one table cell.
 
-    Month-over-month sits inline with the number, unlabelled — that is the
-    arrow operators read first, and the header legend names it. The year-ago
+    The preceding window sits inline with the number, unlabelled — that is
+    the arrow operators read first, and the header legend names it. The year-ago
     comparison goes on a second line, labelled, because an unlabelled second
     arrow beside the first is indistinguishable from it.
 
@@ -200,9 +208,8 @@ def _delta_pair(prior_pct, yoy_pct, per_day: bool = False,
 
     `per_day` labels the year-ago arrow as a per-day comparison, which is what
     the builder falls back to when the year-ago window is a different length —
-    a leap February. The month-back window can differ too (15–31 Mar against
-    15–28 Feb); the header says so once for the whole report rather than
-    decorating every arrow on the page.
+    a leap February, the only case that can produce one. The header says so
+    once for the whole report rather than decorating every arrow on the page.
     """
     out = _inline_arrow(prior_pct, good, bad)
     if yoy_pct is not None:
@@ -406,7 +413,7 @@ def _render_exec_summary(b: dict, p: Period) -> str:
     bid = b["branch_id"]
 
     yoy_lbl = "vs last year"
-    prior_lbl = "vs last month /day" if vp.get("per_day") else "vs last month"
+    prior_lbl = f"vs prev {p.days}d"
 
     # When the prior year has no data at all, a "−100%" chip would be a lie
     # about performance rather than a statement about coverage.
@@ -448,13 +455,13 @@ def _render_exec_summary(b: dict, p: Period) -> str:
     ]
     # `wow_roas_pct` is misleadingly named (weekly-report leftover) but is
     # already the aggregate ROAS vs THIS report's comparison window — the
-    # bi-weekly builder passes `compare=mom_window(p)` into
+    # bi-weekly builder passes `compare=preceding_window(p)` into
     # `paid_ads_section`, so every `wow_*` field it emits is month-over-month
     # here even though the name still says week.
     roas_chips = ""
     if ads.get("yoy_roas_pct") is not None:
         roas_chips += _delta_chip(ads["yoy_roas_pct"], yoy_lbl)
-    roas_chips += _delta_chip(ads.get("wow_roas_pct"), "vs last month")
+    roas_chips += _delta_chip(ads.get("wow_roas_pct"), f"vs prev {p.days}d")
     roas_chips += (
         f"<span style='font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;"
         f"color:{_LIGHT[roas_light]};background:{_LIGHT_BG[roas_light]};display:inline-block;'>"
@@ -523,8 +530,8 @@ def _render_headline(b: dict, p: Period) -> str:
     target = b.get("target") or {}
 
     if not kpi.get("yoy_has_data") or rev is None:
-        story = ("No data for the same dates last year, so this report compares "
-                 "against last month only.")
+        story = ("No data for the same dates last year, so this report "
+                 "compares against the preceding period only.")
     elif rev >= 0 and (sold is not None and sold < 0):
         story = (f"Revenue is <b>up {rev:.0f}%</b> versus the same period last year — "
                  f"<b>not from selling more rooms</b> (room-nights {sold:+.0f}%), but from "
@@ -694,9 +701,14 @@ def _render_target(b: dict) -> str:
             f"<div style='display:grid;grid-template-columns:{'1fr ' * cols};"
             f"gap:12px;margin-top:12px;'>{rest}</div>"
         )
+        # Singular by default — the block ships showing one month ahead, and
+        # "the ones below" over a single card reads as a rendering bug.
+        subject = ("The ones below it are the months ahead: their percentage is"
+                   if len(ahead) > 1 else
+                   "The one below it is the month ahead: its percentage is")
         note = (
-            "The first gauge is the month this report covers. The ones below it "
-            "are the months ahead: their percentage is what is <b>already booked</b> "
+            f"The first gauge is the month this report covers. {subject} "
+            "what is <b>already booked</b> "
             "against that month's target, so the gap is what there is still time "
             "to sell. Same Target and Actual as the KPI Targets page; the vertical "
             "mark is the target."
@@ -1242,22 +1254,19 @@ def _render_branch(b: dict, p: Period) -> str:
 
 def _build_html(report: list, p: Period, computed_at: Optional[datetime]) -> str:
     yoy = yoy_window(p)
-    mom = mom_window(p)
+    prev = preceding_window(p)
     stamp = (computed_at or datetime.now(timezone.utc)).strftime("%Y-%m-%d %H:%M UTC")
 
     def _win(w) -> str:
         return f"{w[0]:%b %d} – {w[1]:%b %d}, {w[1].year}"
 
-    # A comparison window of a different length is compared per day, not as a
-    # total. Said once here rather than on every arrow — see `_delta_pair`.
-    uneven = [
-        name for name, w in (("last month", mom), ("last year", yoy))
-        if not comparable_as_totals(p, w)
-    ]
+    # Only the year-ago window can come out a different length (a leap
+    # February); the preceding window is the period's own length taken
+    # backwards. Said once here rather than on every arrow — see `_delta_pair`.
     uneven_note = (
-        f" Totals against {' and '.join(uneven)} are compared per day, because "
-        f"that window is a different number of days than this one."
-        if uneven else ""
+        " Totals against last year are compared per day this time, because "
+        "that window is a different number of days than this one."
+        if not comparable_as_totals(p, yoy) else ""
     )
     # The end-of-month report is due out ON the last day of the month, so the
     # period's final day is still running when this is built. Saying so beats
@@ -1293,13 +1302,13 @@ def _build_html(report: list, p: Period, computed_at: Optional[datetime]) -> str
         Business metrics &amp; campaign performance — for the Branch Manager &amp; Leadership</div>
       <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:18px;">
         {chip("Report period", f"{p.date_label} ({p.days} days)")}
-        {chip("Main comparison · same dates last year", _win(yoy))}
-        {chip("Reference · same dates last month", _win(mom))}
+        {chip(f"Main comparison · last {p.days} days", _win(prev))}
+        {chip("Reference · same dates last year", _win(yoy))}
         {chip("Generated", stamp)}
       </div>
       {open_note}
       <div style="margin-top:14px;font-size:12px;opacity:.8;max-width:640px;">
-        {_ARROW_LEGEND}{uneven_note}</div>
+        {_arrow_legend(p)}{uneven_note}</div>
     </div>
     <div style="padding:34px 40px;">{branches}</div>
     <div style="padding:18px 40px 26px;color:{C['muted']};font-size:11.5px;

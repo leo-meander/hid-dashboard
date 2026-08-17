@@ -430,6 +430,7 @@ class TestBuildHtml:
         # Labelled, and often enough to be the table legend's subject.
         assert html.count("vs LY") >= 8
         assert "is vs the same dates last year" in html
+        assert "vs the 14 days immediately before this period" in html
 
     def test_every_flag_line_carries_its_rule_key(self):
         """The page hangs an inline editor off `data-flag-key`, and an override
@@ -570,12 +571,14 @@ class TestBuildHtml:
         html = self._render([p])
         assert "vs LY/day" in html
 
-    def test_exec_summary_roas_card_has_a_month_over_month_chip(self):
+    def test_exec_summary_roas_card_carries_the_headline_delta(self):
         """The Executive Summary ROAS card showed a per-channel breakdown but
-        no vs-last-month delta, unlike Revenue/ADR/OCC beside it."""
+        no delta at all, unlike Revenue/ADR/OCC beside it. The label names the
+        window's length, because the two comparisons on this page are built on
+        different rules and an unlabelled arrow would be ambiguous."""
         html = self._render([_payload()])
         assert "▲ +9.40%" in html
-        assert "vs last month</span></span>" in html
+        assert "vs prev 14d</span></span>" in html
 
     def test_kol_reach_and_engagements_show_month_over_month_arrows(self):
         html = self._render([_payload()])
@@ -683,25 +686,27 @@ class TestBuildHtml:
                  "achievement": {"actual_revenue": 9_000_000,
                                  "target_revenue": 30_000_000},
                  "pct": 30.0, "closed": False, "is_override": False},
-                {"label": "October 2026", "status": "upcoming",
-                 "achievement": {"actual_revenue": 2_000_000,
-                                 "target_revenue": 25_000_000},
-                 "pct": 8.0, "closed": False, "is_override": False},
             ],
         }
         return p
 
-    def test_the_months_ahead_get_their_own_gauges(self):
+    def test_the_month_ahead_gets_its_own_gauge(self):
         """The block exists to be planned against, not only reported from —
-        the reporting month leads, and the months after it follow so a soft
-        one is visible while there is still time to sell into it."""
+        the reporting month leads and the one after it follows, so a soft
+        month is visible while there is still time to sell into it. Two
+        gauges, not three: the second month out was cut (2026-08-17)."""
         html = self._render([self._lookahead_payload()])
         plain = re.sub(r"</?span[^>]*>", "", html)
 
         assert "September 2026: 30% booked" in plain
-        assert "October 2026: 8% booked" in plain
-        assert html.count("bw.target.") == 3
-        assert "months ahead" in html
+        assert html.count("bw.target.") == 2
+
+    def test_the_note_reads_singular_for_a_single_month_ahead(self):
+        """"The ones below it are the months ahead" over one card reads as a
+        rendering bug, which is how a manager learns to distrust the panel."""
+        html = self._render([self._lookahead_payload()])
+        assert "The one below it is the month ahead" in html
+        assert "the months ahead" not in html
 
     def test_an_upcoming_month_is_never_scored_as_a_failure(self):
         """30% of October sold in mid-August is normal pickup. Painting it

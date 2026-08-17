@@ -39,9 +39,13 @@ class Settings(BaseSettings):
     # which is served by the backend (it is a whole rendered HTML page, not a
     # dashboard route). FRONTEND_URL cannot stand in for it: on Zeabur the
     # frontend is a separate deployment on a different domain and would 404.
-    # Empty falls back to a relative path, which works in local dev and is
-    # visibly broken in an email — the right way round for a missing setting.
-    PUBLIC_API_URL: str = ""
+    #
+    # Defaulted to production rather than left empty, the same way
+    # ADS_PLATFORM_BASE_URL and KOL_ENGINE_URL are. An empty value put a
+    # relative path into an outgoing email, which is a dead link in an inbox
+    # and only discoverable after sending one — a bad failure to leave one
+    # unset env var away. Override per environment when it is not this host.
+    PUBLIC_API_URL: str = "https://meander-hid-dashboard.zeabur.app"
 
     # Shared secret used by GitHub Actions cron workflows to call /api/sync/*
     # endpoints. Empty string disables the check (dev convenience).
