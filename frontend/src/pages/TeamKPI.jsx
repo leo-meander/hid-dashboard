@@ -23,29 +23,31 @@ const CURRENT_MONTH = new Date().getMonth() + 1; // 1-indexed
 const CURRENT_INDEX = CURRENT_YEAR * 12 + CURRENT_MONTH;
 const monthIndex = (year, month) => year * 12 + month;
 
-// The normal rule, used by every target cell and by most actual cells: this
-// month and anything ahead of it can be typed into, months that have already
-// run are settled.
+// Targets are set ahead of time: this month and anything later.
 function isLockedMonth(year, month) {
   return monthIndex(year, month) < CURRENT_INDEX;
 }
 
-// A month-end KPI is the mirror image. Front-desk data-entry accuracy can only
-// be counted over a finished month — read mid-month it scores an incomplete set
-// of check-ins — so the current month is the locked side and the closed months
-// are the open one. Months further back stay open on purpose: the number only
-// ever arrives by hand, so a month nobody got to has to remain fillable later.
-function isLockedActualMonth(kpi, year, month) {
-  return kpi.measured_at_month_end
-    ? monthIndex(year, month) >= CURRENT_INDEX
-    : isLockedMonth(year, month);
+// Hand-typed actuals get a grace period instead. Several of them can only be
+// counted once the month has ended — front-desk data-entry accuracy read
+// mid-month is scoring check-ins that haven't happened yet — so the month a
+// number belongs to is never the month you fill it in. One rule for every
+// manual row: a month stays open until the 20th of the month after it, then
+// it's settled for good.
+const ENTRY_DEADLINE_DAY = 20;
+const TODAY_DAY = new Date().getDate();
+
+function isLockedActualMonth(year, month) {
+  const monthsBack = CURRENT_INDEX - monthIndex(year, month);
+  if (monthsBack <= 0) return false;                            // this month and ahead
+  if (monthsBack === 1) return TODAY_DAY > ENTRY_DEADLINE_DAY;  // last month, until the 20th
+  return true;
 }
 
-function lockedActualTitle(kpi) {
-  return kpi.measured_at_month_end
-    ? "Opens once the month has ended — this KPI can only be counted on a finished month"
-    : "Locked (past month)";
-}
+const MANUAL_ENTRY_RULE =
+  `Enter manually. A month stays open until the ${ENTRY_DEADLINE_DAY}th of the month after it — most of these can only be counted once the month has ended.`;
+const LOCKED_ACTUAL_TITLE =
+  `Locked — entry closed on the ${ENTRY_DEADLINE_DAY}th of the following month`;
 
 // ── Color helpers ─────────────────────────────────────────────────────────────
 
@@ -70,7 +72,7 @@ const COLOR_CLASSES = {
 // ── Per-KPI formula tooltips ──────────────────────────────────────────────────
 
 const KPI_TOOLTIPS = {
-  data_fill_rate:       "Front-desk data-entry accuracy — the share of check-ins recorded with complete, correct guest details. Entered by hand, and only once the month has ended: a rate read mid-month is scoring check-ins that haven't happened yet. So the current month stays locked and last month is the one open for entry. A month that was missed stays open too, so it can still be filled in.",
+  data_fill_rate:       "Front-desk data-entry accuracy — the share of check-ins recorded with complete, correct guest details. Counted over a finished month: a rate read mid-month is scoring check-ins that haven't happened yet. Entered by hand, so it lands in the month after the one it measures — the cell stays open until the 20th.",
   delivery_rate:        "On-Time Delivery Rate — the same number as Nora's card in Task Overview. Formula: on-time ÷ scored × 100, where scored = completed tasks marked On-time or Late, grouped by Deadline month. Misses carrying a Late Reason are dropped from both sides, and tasks still open are not scored. Source: Lark Base, from Jul 2026.",
   task_completion_rate: "Team Task Completion Rate — all tasks across the team with a Deadline in that month, regardless of assignee. Formula: completed tasks ÷ total tasks due × 100. Source: Lark Base.",
   branch_kpi_rate:      "Branch KPI Achievement Rate — actual revenue (Cloudbeds or manual override, after deductions) ÷ target revenue × 100. Mirrors the Revenue KPI page formula.",
@@ -550,7 +552,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                   )}
                   <td className="px-2 py-1.5 text-center">
                     {kpi.auto_actuals === false
-                      ? <span title="Enter manually" className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-100 text-orange-600 cursor-help">M</span>
+                      ? <span title={MANUAL_ENTRY_RULE} className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-100 text-orange-600 cursor-help">M</span>
                       : <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700">A</span>
                     }
                   </td>
@@ -600,27 +602,16 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     }
 
                     // Manual actual entry
-                    const actualLocked = isLockedActualMonth(kpi, year, m.month);
-                    // A month-end KPI withholds the month that is still
-                    // running. Grey it like the other cells nobody can type
-                    // into, so the row reads as "last month is what's due" —
-                    // but never over a value already there, which keeps its
-                    // achievement colour.
-                    const notYetCountable = actualLocked && !isLockedMonth(year, m.month);
                     return (
-                      <td key={m.month} className={`px-1 py-1.5 ${
-                        m.is_future ? "opacity-30 bg-gray-50"
-                        : cls ? cls.bg
-                        : notYetCountable ? "bg-gray-50"
-                        : "bg-white"}`}>
+                      <td key={m.month} className={`px-1 py-1.5 ${m.is_future ? "opacity-30 bg-gray-50" : cls ? cls.bg : "bg-white"}`}>
                         {isSaving ? (
                           <div className="flex justify-center"><div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" /></div>
                         ) : (
                           <div className="flex flex-col items-center gap-0.5">
                             <EditableCell
                               value={m.actual}
-                              disabled={actualLocked}
-                              disabledTitle={lockedActualTitle(kpi)}
+                              disabled={isLockedActualMonth(year, m.month)}
+                              disabledTitle={LOCKED_ACTUAL_TITLE}
                               onSave={val => saveActual(kpi.key, m.month, val)}
                               placeholder="—"
                             />
@@ -1826,9 +1817,9 @@ export default function TeamKPI() {
                 <span className="inline-block w-3 h-3 rounded bg-green-100 border border-green-300" />
                 A = Actual (auto)
               </span>
-              <span className="flex items-center gap-1">
+              <span className="flex items-center gap-1" title={MANUAL_ENTRY_RULE}>
                 <span className="inline-block w-3 h-3 rounded bg-orange-100 border border-orange-300" />
-                M = Manual (click to enter)
+                M = Manual (open until the {ENTRY_DEADLINE_DAY}th of the next month)
               </span>
             </div>
           </div>
