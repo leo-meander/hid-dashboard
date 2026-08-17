@@ -2,15 +2,15 @@
 Bi-Weekly Branch Manager Report — analytical payload.
 
 Audience is a branch manager, not an analyst: the question is "how did my
-branch do over this half of the month, versus the same dates last month and
+branch do over this half of the month, versus the run-up to it and versus
 the same dates last year, and what should I do next". That framing drives
 three differences from the weekly report:
 
   - **Single branch at a time.** Every section is scoped to one branch.
-  - **Two fixed comparisons, both on the same calendar dates**: the previous
-    month (MoM) and the previous year (YoY). Never the immediately preceding
-    period — 15–31 Aug against 1–14 Aug compares unequal windows with
-    different weekend and pay-cycle shapes.
+  - **Two fixed comparisons.** The headline is the run-up: the same number
+    of days immediately before this period. The second is the same calendar
+    dates a year ago, which is the seasonal question. See `biweekly_period`
+    for why the two are built on different rules.
   - **Every number carries a traffic light and a plain-English "why".**
 
 Reuses the weekly report's section code wherever the shape matches — those
@@ -42,7 +42,7 @@ from app.models.reservation_daily import ReservationDaily
 from app.services.biweekly_period import (
     Period,
     comparable_as_totals,
-    mom_window,
+    preceding_window,
     shift_month,
     window_days,
     yoy_window,
@@ -112,15 +112,17 @@ def verdict(delta: Optional[float], good: float, bad: float) -> str:
 
 # ── Comparison helpers ───────────────────────────────────────────────────────
 #
-# Every section carries the same two comparisons, both on the same calendar
-# dates as the period itself: one month back (MoM) and one year back (YoY).
+# Every section carries the same two comparisons: the preceding window (the
+# period's own length, immediately before it) and the same calendar dates a
+# year back.
 #
-# NEITHER window is guaranteed to be the same length as the period. A second
-# half runs 15–EOM, so 15–31 Mar (17 days) meets 15–28 Feb (14) one month
-# back, and a leap February shifts the year-ago window by a day. Comparing
-# those totals head-on would invent an ~18% decline out of the calendar, so
-# EVERY comparison of a TOTAL — MoM and YoY alike — goes through `_pct_norm`,
-# which falls back to per-day averages when the lengths differ.
+# The preceding window is equal-length by construction. The year-ago one is
+# not, across a leap February — a 15-day 15–29 Feb 2028 meets a 14-day 15–28
+# Feb 2027, and comparing those totals head-on would invent a decline out of
+# the calendar. So EVERY comparison of a TOTAL goes through `_pct_norm`,
+# which falls back to per-day averages when the lengths differ. Routing both
+# through it costs nothing and means a change to either window definition
+# cannot quietly produce a wrong percentage.
 #
 # Rate metrics (ADR, OCC, RevPAR, ROAS, engagement rate) are already
 # normalised by their own denominator and are compared directly either way.
@@ -144,14 +146,18 @@ def _yoy_days(p: Period) -> tuple[tuple[date, date], int, bool]:
     return yoy, days, days != p.days
 
 
-def _mom_days(p: Period) -> tuple[tuple[date, date], int, bool]:
-    """The same-dates-last-month window, its length, and whether it needs
-    per-day framing. Same shape as `_yoy_days` so the two read alike at every
-    call site.
+def _prior_days(p: Period) -> tuple[tuple[date, date], int, bool]:
+    """The preceding window, its length, and whether it needs per-day framing.
+
+    Same shape as `_yoy_days` so the two read alike at every call site, but
+    the third value is always False: `preceding_window` takes the period's own
+    length backwards, so it cannot come out a different size. It is returned
+    anyway rather than assumed, so that redefining the window can never
+    silently start comparing a 17-day total against a 14-day one.
     """
-    mom = mom_window(p)
-    days = window_days(mom)
-    return mom, days, days != p.days
+    prev = preceding_window(p)
+    days = window_days(prev)
+    return prev, days, days != p.days
 
 
 def _stay_overlaps(d_from: date, d_to: date):
@@ -286,19 +292,19 @@ def _delta_block(
 
 
 def kpi_block(db: Session, branch: Branch, p: Period) -> dict:
-    """Headline metrics for the period, vs the same dates last year and the
-    same dates last month.
+    """Headline metrics for the period, vs the days immediately before it and
+    vs the same dates last year.
     """
     total_rooms = branch.total_rooms or 0
     yoy = yoy_window(p)
-    mom = mom_window(p)
+    prev = preceding_window(p)
 
     this = range_metrics(db, branch.id, total_rooms, p.start, p.end)
-    prior = range_metrics(db, branch.id, total_rooms, mom[0], mom[1])
+    prior = range_metrics(db, branch.id, total_rooms, prev[0], prev[1])
     last_year = range_metrics(db, branch.id, total_rooms, yoy[0], yoy[1])
 
     d_yoy = _delta_block(this, last_year, p.days, window_days(yoy))
-    d_prior = _delta_block(this, prior, p.days, window_days(mom))
+    d_prior = _delta_block(this, prior, p.days, window_days(prev))
 
     return {
         "this": this,
@@ -307,9 +313,9 @@ def kpi_block(db: Session, branch: Branch, p: Period) -> dict:
         "vs_yoy": d_yoy,
         "vs_prior": d_prior,
         "yoy_window": [yoy[0].isoformat(), yoy[1].isoformat()],
-        "prior_window": [mom[0].isoformat(), mom[1].isoformat()],
+        "prior_window": [prev[0].isoformat(), prev[1].isoformat()],
         "yoy_comparable": comparable_as_totals(p, yoy),
-        "mom_comparable": comparable_as_totals(p, mom),
+        "prior_comparable": comparable_as_totals(p, prev),
         "yoy_has_data": (last_year.get("sold") or 0) > 0,
         "lights": {
             "revenue": verdict(d_yoy["revenue_pct"], REVENUE_GOOD_PCT, REVENUE_BAD_PCT),
@@ -591,10 +597,10 @@ def markets_block(db: Session, branch: Branch, p: Period, limit: int = 8) -> dic
             for r in rows
         }
 
-    mom, mom_days, mom_per_day = _mom_days(p)
+    prev, prior_days, prior_per_day = _prior_days(p)
     yoy, yoy_days, yoy_per_day = _yoy_days(p)
     cur = _by_country(p.start, p.end)
-    prior = _by_country(mom[0], mom[1])
+    prior = _by_country(prev[0], prev[1])
     last_year = _by_country(yoy[0], yoy[1])
 
     # Booking COUNTS for the year-over-year comparison come from
@@ -631,10 +637,10 @@ def markets_block(db: Session, branch: Branch, p: Period, limit: int = 8) -> dic
             "is_unknown": is_unknown,
             "share_pct": round(v["revenue"] / total_rev * 100, 1) if total_rev else None,
             "prior_revenue": prior_rev,
-            "vs_prior_pct": _pct_norm(v["revenue"], prior_rev, p.days, mom_days),
+            "vs_prior_pct": _pct_norm(v["revenue"], prior_rev, p.days, prior_days),
             "prior_bookings": prior_bookings,
             "bookings_vs_prior_pct": _pct_norm(
-                v["bookings"], prior_bookings, p.days, mom_days),
+                v["bookings"], prior_bookings, p.days, prior_days),
             "yoy_revenue": yoy_rev,
             # Stays None until `reservation_daily` holds year-ago nights: the
             # only year-ago revenue derivable from `reservations` alone is
@@ -657,7 +663,7 @@ def markets_block(db: Session, branch: Branch, p: Period, limit: int = 8) -> dic
         "total_revenue": round(total_rev, 2),
         "yoy_total_revenue": round(sum(v["revenue"] for v in last_year.values()), 2),
         "yoy_per_day": yoy_per_day,
-        "mom_per_day": mom_per_day,
+        "prior_per_day": prior_per_day,
         "unknown_revenue": round(unknown_rev, 2),
         "unknown_bookings": unknown_bookings,
         "unknown_share_pct": (
@@ -711,10 +717,10 @@ def channel_bookings_block(db: Session, branch: Branch, p: Period,
             entry["bookings"] += int(n or 0)
         return out
 
-    mom, mom_days, mom_per_day = _mom_days(p)
+    prev, prior_days, prior_per_day = _prior_days(p)
     yoy, yoy_days, yoy_per_day = _yoy_days(p)
     cur = _by_source(p.start, p.end)
-    prior = _by_source(mom[0], mom[1])
+    prior = _by_source(prev[0], prev[1])
     last_year = _by_source(yoy[0], yoy[1])
 
     # Year-over-year counts read `reservations` for both sides — same reasoning
@@ -731,7 +737,7 @@ def channel_bookings_block(db: Session, branch: Branch, p: Period,
             **v,
             "share_pct": round(v["bookings"] / total * 100, 1) if total else None,
             "prior_bookings": prior_n,
-            "vs_prior_pct": _pct_norm(v["bookings"], prior_n, p.days, mom_days),
+            "vs_prior_pct": _pct_norm(v["bookings"], prior_n, p.days, prior_days),
             "yoy_bookings": yoy_stay.get(name, 0),
             "vs_yoy_pct": _pct_norm(cur_stay.get(name, 0), yoy_stay.get(name, 0),
                                     p.days, yoy_days),
@@ -750,7 +756,7 @@ def channel_bookings_block(db: Session, branch: Branch, p: Period,
         "total_vs_yoy_pct": _pct_norm(sum(cur_stay.values()), yoy_total,
                                       p.days, yoy_days),
         "yoy_per_day": yoy_per_day,
-        "mom_per_day": mom_per_day,
+        "prior_per_day": prior_per_day,
         "direct_bookings": direct_bookings,
         "direct_share_pct": (
             round(direct_bookings / total * 100, 1) if total else None
@@ -763,7 +769,7 @@ def channel_bookings_block(db: Session, branch: Branch, p: Period,
 
 def kol_reach_block(branch: Branch, p: Period) -> dict:
     """Reach + engagement for the period, from the KOL Engine, plus the
-    MoM and YoY deltas every other metric in this report carries.
+    prior-window and year-ago deltas every other metric here carries.
 
     HiD's `kol_records` has no reach/engagement columns, so this is the only
     source. It degrades to `available: False` on any failure — see
@@ -794,8 +800,8 @@ def kol_reach_block(branch: Branch, p: Period) -> dict:
     if not this.get("available"):
         return this
 
-    mom, mom_days, mom_per_day = _mom_days(p)
-    prior = fetch_kol_insights(**kwargs, date_from=mom[0], date_to=mom[1])
+    prev, prior_days, prior_per_day = _prior_days(p)
+    prior = fetch_kol_insights(**kwargs, date_from=prev[0], date_to=prev[1])
     prior_reach = prior.get("reach") if prior.get("available") else None
     prior_engagements = prior.get("engagements") if prior.get("available") else None
 
@@ -810,14 +816,14 @@ def kol_reach_block(branch: Branch, p: Period) -> dict:
     return {
         **this,
         "reach_vs_prior_pct": _pct_norm(this.get("reach"), prior_reach,
-                                        p.days, mom_days),
+                                        p.days, prior_days),
         "engagements_vs_prior_pct": _pct_norm(this.get("engagements"),
-                                              prior_engagements, p.days, mom_days),
+                                              prior_engagements, p.days, prior_days),
         "reach_vs_yoy_pct": _pct_norm(this.get("reach"), yoy_reach, p.days, yoy_days),
         "engagements_vs_yoy_pct": _pct_norm(this.get("engagements"), yoy_engagements,
                                             p.days, yoy_days),
         "yoy_per_day": yoy_per_day,
-        "mom_per_day": mom_per_day,
+        "prior_per_day": prior_per_day,
     }
 
 
@@ -838,12 +844,12 @@ def _kol_period_cost_roas(db: Session, branch: Branch, p: Period, kol: dict) -> 
     invited inside `[p.start, p.end]` instead, the exact-dated counterpart
     already used for organic bookings/revenue.
 
-    Also computes the same dates one month back, so the renderer can show a
-    MoM arrow next to Cost, Revenue and ROAS, the same as every other channel
-    in this report.
+    Also computes the preceding window, so the renderer can show a prior
+    arrow next to Cost, Revenue and ROAS, the same as every other channel in
+    this report.
     """
-    mom, mom_days, mom_per_day = _mom_days(p)
-    prev_start, prev_end = mom
+    prev, prior_days, prior_per_day = _prior_days(p)
+    prev_start, prev_end = prev
 
     def _cost(d_from: date, d_to: date) -> float:
         total = db.query(func.coalesce(func.sum(KOLRecord.cost_native), 0)).filter(
@@ -900,13 +906,13 @@ def _kol_period_cost_roas(db: Session, branch: Branch, p: Period, kol: dict) -> 
         # ROAS is a ratio and compares directly; cost, revenue, bookings and
         # posts are totals, so they go through `_pct_norm` for the case where
         # the month-back window is a different length (15–31 vs 15–28).
-        "cost_vs_prior_pct": _pct_norm(cost, prior_cost, p.days, mom_days),
-        "revenue_vs_prior_pct": _pct_norm(revenue, prior_revenue, p.days, mom_days),
+        "cost_vs_prior_pct": _pct_norm(cost, prior_cost, p.days, prior_days),
+        "revenue_vs_prior_pct": _pct_norm(revenue, prior_revenue, p.days, prior_days),
         "roas_vs_prior_pct": pct_change(roas, prior_roas),
-        "bookings_vs_prior_pct": _pct_norm(bookings, prior_bookings, p.days, mom_days),
+        "bookings_vs_prior_pct": _pct_norm(bookings, prior_bookings, p.days, prior_days),
         "posts_vs_prior_pct": _pct_norm(kol.get("posts_this_week"), prior_posts,
-                                        p.days, mom_days),
-        "mom_per_day": mom_per_day,
+                                        p.days, prior_days),
+        "prior_per_day": prior_per_day,
         # Same dates last year, on the same rules.
         "yoy_cost_native": round(yoy_cost, 2),
         "yoy_revenue_native": round(yoy_revenue, 2),
@@ -937,8 +943,8 @@ def _crm_period_cost_roas(db: Session, branch: Branch, p: Period, crm: dict) -> 
     """
     from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
 
-    mom, mom_days, mom_per_day = _mom_days(p)
-    prev_start, prev_end = mom
+    prev, prior_days, prior_per_day = _prior_days(p)
+    prev_start, prev_end = prev
     currency = branch.currency or "VND"
     rate = _get_rate_to_vnd(currency)
     cache = ActualsCache(db)
@@ -976,11 +982,11 @@ def _crm_period_cost_roas(db: Session, branch: Branch, p: Period, crm: dict) -> 
         "period_roas": roas,
         "prior_cost_native": prior_cost,
         "prior_roas": prior_roas,
-        "cost_vs_prior_pct": _pct_norm(cost, prior_cost, p.days, mom_days),
-        "revenue_vs_prior_pct": _pct_norm(revenue, prior_revenue, p.days, mom_days),
+        "cost_vs_prior_pct": _pct_norm(cost, prior_cost, p.days, prior_days),
+        "revenue_vs_prior_pct": _pct_norm(revenue, prior_revenue, p.days, prior_days),
         "roas_vs_prior_pct": pct_change(roas, prior_roas),
-        "bookings_vs_prior_pct": _pct_norm(bookings, prior_bookings, p.days, mom_days),
-        "mom_per_day": mom_per_day,
+        "bookings_vs_prior_pct": _pct_norm(bookings, prior_bookings, p.days, prior_days),
+        "prior_per_day": prior_per_day,
     }
 
 
@@ -999,8 +1005,8 @@ def _crm_rate_plan_deltas(db: Session, branch: Branch, p: Period, crm: dict) -> 
     this_rows = crm.get("by_rate_plan") or []
     if not this_rows:
         return []
-    mom, mom_days, mom_per_day = _mom_days(p)
-    prev_start, prev_end = mom
+    prev, prior_days, prior_per_day = _prior_days(p)
+    prev_start, prev_end = prev
     yoy, yoy_days, yoy_per_day = _yoy_days(p)
     prior_by_name = {
         r["rate_plan_name"]: r
@@ -1019,9 +1025,9 @@ def _crm_rate_plan_deltas(db: Session, branch: Branch, p: Period, crm: dict) -> 
             "prior_revenue": prior.get("revenue"),
             "prior_bookings": prior.get("bookings"),
             "revenue_vs_prior_pct": _pct_norm(r.get("revenue"), prior.get("revenue"),
-                                              p.days, mom_days),
+                                              p.days, prior_days),
             "bookings_vs_prior_pct": _pct_norm(r.get("bookings"), prior.get("bookings"),
-                                               p.days, mom_days),
+                                               p.days, prior_days),
             "yoy_revenue": last_year.get("revenue"),
             "yoy_bookings": last_year.get("bookings"),
             "revenue_vs_yoy_pct": _pct_norm(r.get("revenue"), last_year.get("revenue"),
@@ -1029,7 +1035,7 @@ def _crm_rate_plan_deltas(db: Session, branch: Branch, p: Period, crm: dict) -> 
             "bookings_vs_yoy_pct": _pct_norm(r.get("bookings"), last_year.get("bookings"),
                                              p.days, yoy_days),
             "yoy_per_day": yoy_per_day,
-            "mom_per_day": mom_per_day,
+            "prior_per_day": prior_per_day,
         })
     return out
 
@@ -1046,7 +1052,7 @@ def _crm_rate_plan_totals(p: Period, rows: list[dict]) -> dict:
     per-row comparison which is an absence of data.
     """
     _, yoy_days, yoy_per_day = _yoy_days(p)
-    _, mom_days, mom_per_day = _mom_days(p)
+    _, prior_days, prior_per_day = _prior_days(p)
 
     def s(key):
         return sum(r.get(key) or 0 for r in rows)
@@ -1056,13 +1062,13 @@ def _crm_rate_plan_totals(p: Period, rows: list[dict]) -> dict:
         "bookings": bookings,
         "revenue": round(revenue, 2),
         "bookings_vs_prior_pct": _pct_norm(bookings, s("prior_bookings"),
-                                           p.days, mom_days),
+                                           p.days, prior_days),
         "revenue_vs_prior_pct": _pct_norm(revenue, s("prior_revenue"),
-                                          p.days, mom_days),
+                                          p.days, prior_days),
         "bookings_vs_yoy_pct": _pct_norm(bookings, s("yoy_bookings"), p.days, yoy_days),
         "revenue_vs_yoy_pct": _pct_norm(revenue, s("yoy_revenue"), p.days, yoy_days),
         "yoy_per_day": yoy_per_day,
-        "mom_per_day": mom_per_day,
+        "prior_per_day": prior_per_day,
     }
 
 
@@ -1471,7 +1477,7 @@ def build_branch_biweekly(db: Session, branch: Branch, p: Period) -> dict:
     # the month. Naming the month-back window here is what keeps their
     # `wow_*` arrows pointing at the same reference as everything else on
     # the page.
-    compare = mom_window(p)
+    compare = preceding_window(p)
 
     kpi = safe_section(db, f"bw.kpi[{branch.name}]",
                        lambda: kpi_block(db, branch, p), {})

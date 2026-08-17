@@ -430,6 +430,7 @@ class TestBuildHtml:
         # Labelled, and often enough to be the table legend's subject.
         assert html.count("vs LY") >= 8
         assert "is vs the same dates last year" in html
+        assert "vs the 14 days immediately before this period" in html
 
     def test_every_flag_line_carries_its_rule_key(self):
         """The page hangs an inline editor off `data-flag-key`, and an override
@@ -570,12 +571,14 @@ class TestBuildHtml:
         html = self._render([p])
         assert "vs LY/day" in html
 
-    def test_exec_summary_roas_card_has_a_month_over_month_chip(self):
+    def test_exec_summary_roas_card_carries_the_headline_delta(self):
         """The Executive Summary ROAS card showed a per-channel breakdown but
-        no vs-last-month delta, unlike Revenue/ADR/OCC beside it."""
+        no delta at all, unlike Revenue/ADR/OCC beside it. The label names the
+        window's length, because the two comparisons on this page are built on
+        different rules and an unlabelled arrow would be ambiguous."""
         html = self._render([_payload()])
         assert "▲ +9.40%" in html
-        assert "vs last month</span></span>" in html
+        assert "vs prev 14d</span></span>" in html
 
     def test_kol_reach_and_engagements_show_month_over_month_arrows(self):
         html = self._render([_payload()])

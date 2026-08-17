@@ -19,7 +19,7 @@ from app.services.biweekly_period import (
     days_in_month,
     is_complete,
     list_periods,
-    mom_window,
+    preceding_window,
     next_period,
     parse_period_key,
     period_containing,
@@ -169,74 +169,49 @@ class TestNeighbours:
         assert next_period(p).start == p.end + timedelta(days=1)
 
 
-class TestMoMWindow:
-    def test_first_half_lands_on_the_same_dates_last_month(self):
-        # 1–14 Aug 2026 → 1–14 Jul 2026, per the reporting spec.
+class TestPrecedingWindow:
+    """The headline comparison: the period's own LENGTH taken backwards."""
+
+    def test_the_days_immediately_before_the_period(self):
+        # Aug 1–14 is 14 days, so it meets the 14 days ending 31 Jul.
         p = period_for(2026, 8, 1)
-        assert mom_window(p) == (date(2026, 7, 1), date(2026, 7, 14))
+        assert preceding_window(p) == (date(2026, 7, 18), date(2026, 7, 31))
 
-    def test_second_half_lands_on_the_same_dates_last_month(self):
-        # 15–31 Aug 2026 → 15–31 Jul 2026. Both months are 31 days, so this
-        # is a straight 17-vs-17 comparison.
-        p = period_for(2026, 8, 2)
-        w = mom_window(p)
-        assert w == (date(2026, 7, 15), date(2026, 7, 31))
-        assert comparable_as_totals(p, w)
-
-    def test_never_the_immediately_preceding_period(self):
-        # The one thing the spec explicitly forbids: 15–31 Aug must NOT be
-        # compared against 1–14 Aug.
-        p = period_for(2026, 8, 2)
-        assert mom_window(p) != (previous_period(p).start, previous_period(p).end)
-
-    def test_crosses_the_year_boundary(self):
-        p = period_for(2026, 1, 2)
-        assert mom_window(p) == (date(2025, 12, 15), date(2025, 12, 31))
-
-    def test_february_example_from_the_spec(self):
-        # 15–28 Feb 2027 → 15–**28** Jan 2027, exactly as the spec writes it.
-        # NOT January's own second half: 29–31 Jan are month-end nights with
-        # their own demand shape, and February has no equivalent days to put
-        # opposite them.
-        p = period_for(2027, 2, 2)
-        w = mom_window(p)
-        assert w == (date(2027, 1, 15), date(2027, 1, 28))
-        assert window_days(w) == 14 == p.days
-        assert comparable_as_totals(p, w)
-
-    def test_a_longer_month_is_capped_at_the_shorter_one(self):
-        # 15–31 Mar (17 days) can only reach 15–28 Feb (14) — there is no
-        # 31 February. This is the mismatch date alignment cannot remove, and
-        # comparing the totals head-on would invent an ~18% decline.
-        p = period_for(2027, 3, 2)
-        w = mom_window(p)
-        assert w == (date(2027, 2, 15), date(2027, 2, 28))
-        assert not comparable_as_totals(p, w)
-
-    def test_only_months_with_a_31st_can_mismatch(self):
-        """The shape of the whole year, pinned.
-
-        Taking the period's own day numbers across leaves exactly five
-        end-of-month reports length-mismatched, and every one of them is a
-        31-day month reaching for a day the previous month does not have.
-        Taking "the previous month's own second half" instead mismatched ten
-        of twelve — that regression would be invisible in any single-month
-        test, so it is asserted over the full year here.
-        """
-        mismatched = [
-            m for m in range(1, 13)
-            if not comparable_as_totals(period_for(2027, m, 2),
-                                        mom_window(period_for(2027, m, 2)))
-        ]
-        assert mismatched == [3, 5, 7, 10, 12]
-        for m in mismatched:
-            prev_year, prev_month = (2026, 12) if m == 1 else (2027, m - 1)
-            assert days_in_month(2027, m) > days_in_month(prev_year, prev_month)
-
-    def test_first_halves_never_mismatch(self):
+    def test_it_is_contiguous_with_the_period(self):
         for month in range(1, 13):
-            p = period_for(2027, month, 1)
-            assert comparable_as_totals(p, mom_window(p))
+            for half in (1, 2):
+                p = period_for(2027, month, half)
+                assert preceding_window(p)[1] + timedelta(days=1) == p.start
+
+    def test_it_is_always_the_same_length_as_the_period(self):
+        """The whole reason this is the headline: no per-day fallback can ever
+        apply to it, in any month of any year."""
+        for year in (2027, 2028):          # includes a leap February
+            for month in range(1, 13):
+                for half in (1, 2):
+                    p = period_for(year, month, half)
+                    w = preceding_window(p)
+                    assert window_days(w) == p.days
+                    assert comparable_as_totals(p, w)
+
+    def test_an_end_of_month_period_reaches_back_across_the_15th(self):
+        """Aug 15–31 is 17 days, so its run-up is mostly the first half of
+        August. That is a real property of this framing, not an accident —
+        the header prints the dates rather than calling it "last period"
+        precisely because of it."""
+        p = period_for(2026, 8, 2)
+        w = preceding_window(p)
+        assert w == (date(2026, 7, 29), date(2026, 8, 14))
+        assert window_days(w) == p.days == 17
+
+    def test_it_is_not_the_previous_reporting_period(self):
+        p = period_for(2026, 8, 1)
+        prev = previous_period(p)
+        assert preceding_window(p) != (prev.start, prev.end)
+
+    def test_it_crosses_the_year_boundary(self):
+        p = period_for(2027, 1, 1)
+        assert preceding_window(p) == (date(2026, 12, 18), date(2026, 12, 31))
 
 
 class TestYoYWindow:
@@ -288,19 +263,23 @@ class TestSpecExamples:
         assert p.key == key
         assert (p.start, p.end) == window
 
-    def test_documented_comparison_windows(self):
+    def test_the_year_ago_window_is_the_documented_calendar_range(self):
+        """The spec writes YoY as dates, and that is what it stays — the
+        headline comparison moving to a day count did not touch it."""
+        assert yoy_window(period_for(2026, 8, 1)) == (
+            date(2025, 8, 1), date(2025, 8, 14))
+        assert yoy_window(period_for(2026, 8, 2)) == (
+            date(2025, 8, 15), date(2025, 8, 31))
+        assert yoy_window(period_for(2027, 2, 2)) == (
+            date(2026, 2, 15), date(2026, 2, 28))
+
+    def test_the_headline_window_is_the_run_up_not_a_calendar_range(self):
+        """Chosen over "same dates last month" (2026-08-17). Aug 1–14 is
+        measured against the fortnight that ran into it, not against 1–14
+        Jul."""
         aug_h1 = period_for(2026, 8, 1)
-        assert mom_window(aug_h1) == (date(2026, 7, 1), date(2026, 7, 14))
-        assert yoy_window(aug_h1) == (date(2025, 8, 1), date(2025, 8, 14))
-
-        aug_h2 = period_for(2026, 8, 2)
-        assert mom_window(aug_h2) == (date(2026, 7, 15), date(2026, 7, 31))
-        assert yoy_window(aug_h2) == (date(2025, 8, 15), date(2025, 8, 31))
-
-        # The spec's February example, both windows, exactly as written.
-        feb_h2 = period_for(2027, 2, 2)
-        assert mom_window(feb_h2) == (date(2027, 1, 15), date(2027, 1, 28))
-        assert yoy_window(feb_h2) == (date(2026, 2, 15), date(2026, 2, 28))
+        assert preceding_window(aug_h1) == (date(2026, 7, 18), date(2026, 7, 31))
+        assert preceding_window(aug_h1) != (date(2026, 7, 1), date(2026, 7, 14))
 
 
 class TestPeriodKey:
