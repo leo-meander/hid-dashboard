@@ -21,7 +21,7 @@ class BiweeklyReportCache(Base):
     __tablename__ = "biweekly_report_cache"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    # ISO-week-pair key, e.g. "2026-W29" — see services/biweekly_period.py
+    # Half-month key, e.g. "2026-08-H2" — see services/biweekly_period.py
     period_key = Column(String(16), nullable=False, unique=True)
     period_start = Column(Date, nullable=False)
     period_end = Column(Date, nullable=False)

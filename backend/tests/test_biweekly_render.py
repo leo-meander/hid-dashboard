@@ -263,7 +263,7 @@ def _payload(branch_name="MEANDER Saigon"):
 
 class TestBuildHtml:
     def _render(self, payloads):
-        return _build_html(payloads, period_for(2026, 29),
+        return _build_html(payloads, period_for(2026, 8, 1),
                            datetime(2026, 8, 3, tzinfo=timezone.utc))
 
     def test_occupancy_delta_reads_percent_not_points(self):
@@ -429,7 +429,7 @@ class TestBuildHtml:
             assert pct in html, f"missing year-ago delta for {where}"
         # Labelled, and often enough to be the table legend's subject.
         assert html.count("vs LY") >= 8
-        assert "is vs the same period last year" in html
+        assert "is vs the same dates last year" in html
 
     def test_every_flag_line_carries_its_rule_key(self):
         """The page hangs an inline editor off `data-flag-key`, and an override
@@ -507,8 +507,8 @@ class TestBuildHtml:
         feedback: "dài dòng ... nhiễu loạn thông tin"). It belongs next to the
         two comparison windows the header already names, once."""
         html = self._render([_payload()])
-        assert html.count("is vs the same period last year") == 1
-        assert html.index("is vs the same period last year") < html.index("Executive Summary")
+        assert html.count("is vs the same dates last year") == 1
+        assert html.index("is vs the same dates last year") < html.index("Executive Summary")
 
     def test_the_roas_pill_carries_no_verdict_word(self):
         """"2.24× · OK" / "9.82× · Excellent" went out per 2026-08-12 feedback:
@@ -570,14 +570,14 @@ class TestBuildHtml:
         html = self._render([p])
         assert "vs LY/day" in html
 
-    def test_exec_summary_roas_card_has_a_vs_prior_chip(self):
+    def test_exec_summary_roas_card_has_a_month_over_month_chip(self):
         """The Executive Summary ROAS card showed a per-channel breakdown but
-        no vs-prior delta, unlike Revenue/ADR/OCC beside it."""
+        no vs-last-month delta, unlike Revenue/ADR/OCC beside it."""
         html = self._render([_payload()])
         assert "▲ +9.40%" in html
-        assert "vs prior</span></span>" in html
+        assert "vs last month</span></span>" in html
 
-    def test_kol_reach_and_engagements_show_vs_prior_arrows(self):
+    def test_kol_reach_and_engagements_show_month_over_month_arrows(self):
         html = self._render([_payload()])
         assert "▲ +25.00%" in html   # reach_vs_prior_pct
         assert "▼ -8.00%" in html    # engagements_vs_prior_pct
@@ -668,36 +668,53 @@ class TestBuildHtml:
         assert "106% of the July 2026 target" in plain
         assert "No revenue target set" not in html
 
-    def test_period_spanning_two_months_shows_both_targets(self):
-        """A bi-weekly period like Jul 25 – Aug 2 touches two calendar
-        months. Each gets its own full-month achievement — July already
-        closed at 107%, August already 67% of its FULL month's target (not
-        prorated) — rather than folding both into whichever one the period
-        happens to end in."""
+    @staticmethod
+    def _lookahead_payload():
         p = _payload()
         p["target"] = {
             "period": {"actual_revenue": 32_000_000, "target_revenue": 15_500_000},
             "period_pct": 206.5,
             "months": [
-                {"label": "July 2026",
-                 "achievement": {"actual_revenue": 30_000_000, "target_revenue": 28_000_000},
-                 "pct": 107.1, "closed": True, "is_override": False},
-                {"label": "August 2026",
-                 "achievement": {"actual_revenue": 2_000_000, "target_revenue": 3_000_000},
-                 "pct": 66.7, "closed": False, "is_override": False},
+                {"label": "August 2026", "status": "in_progress",
+                 "achievement": {"actual_revenue": 30_000_000,
+                                 "target_revenue": 28_000_000},
+                 "pct": 107.1, "closed": False, "is_override": False},
+                {"label": "September 2026", "status": "upcoming",
+                 "achievement": {"actual_revenue": 9_000_000,
+                                 "target_revenue": 30_000_000},
+                 "pct": 30.0, "closed": False, "is_override": False},
+                {"label": "October 2026", "status": "upcoming",
+                 "achievement": {"actual_revenue": 2_000_000,
+                                 "target_revenue": 25_000_000},
+                 "pct": 8.0, "closed": False, "is_override": False},
             ],
         }
-        html = self._render([p])
+        return p
+
+    def test_the_months_ahead_get_their_own_gauges(self):
+        """The block exists to be planned against, not only reported from —
+        the reporting month leads, and the months after it follow so a soft
+        one is visible while there is still time to sell into it."""
+        html = self._render([self._lookahead_payload()])
         plain = re.sub(r"</?span[^>]*>", "", html)
 
-        assert "This period spans two calendar months" in html
-        assert "July 2026: 107%" in plain
-        assert "August 2026: 67%" in plain
-        assert "fully closed" in html                          # July's state
-        assert "month in progress" in html                     # August's state
-        assert "through 2026" not in html   # no false date cutoff on either
-        assert html.count("bw.target.") == 2
-        assert "grid-template-columns:1fr 1fr" in html
+        assert "September 2026: 30% booked" in plain
+        assert "October 2026: 8% booked" in plain
+        assert html.count("bw.target.") == 3
+        assert "months ahead" in html
+
+    def test_an_upcoming_month_is_never_scored_as_a_failure(self):
+        """30% of October sold in mid-August is normal pickup. Painting it
+        red — or calling it "short by" — would train the team to ignore the
+        one part of this block that is actionable."""
+        html = self._render([self._lookahead_payload()])
+        plain = re.sub(r"</?span[^>]*>", "", html)
+
+        assert "Still to sell" in plain
+        assert "booked so far; the month has not started" in html
+        # The reporting month keeps the ordinary results wording.
+        assert "month in progress" in html
+        assert "through 2026" not in html   # no false date cutoff on any gauge
         # The period-on-its-own line still appears underneath both gauges.
         assert "This period on its own" in html
         assert "206%" in html

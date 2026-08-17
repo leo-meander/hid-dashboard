@@ -2,7 +2,7 @@ import axios from "axios";
 
 const BASE = "/api/biweekly";
 
-/** Selectable ISO-week-pair periods, newest first. */
+/** Selectable half-month periods, newest first. */
 export const getPeriods = (params = {}) =>
   axios.get(`${BASE}/periods`, { params }).then(r => r.data.data);
 

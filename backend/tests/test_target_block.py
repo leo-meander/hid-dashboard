@@ -1,42 +1,54 @@
-"""`target_block`'s dict assembly.
+"""`target_block` assembly.
 
-Its two DB-touching dependencies — `compute_period_achievement` and
-`_month_achievement` — are mocked out here, because what actually broke in
-production wasn't either of them: it was `target_block` itself reaching for
-a `"through"` key that `_month_achievement` had stopped returning a commit
-earlier in the same PR. `safe_section` in the caller swallows any exception
-from a section and degrades it to `{}`, so that KeyError never surfaced as
-an error anywhere — Target Achievement just went blank for every branch,
-silently, until the payload was inspected by hand. These tests exercise the
-assembly directly against a real DB session isn't available in this
-environment) so a stale key reference here fails loudly instead.
+Two things are pinned here.
+
+The first is the shape of the payload. `target_block` is the one section that
+mirrors part of itself at the top level (`month_pct`, `month_label`, …) for
+consumers written before `months` existed, and a cached report is never
+rebuilt on its own — so a shape change here goes unnoticed until a manager
+opens a period from last month and finds the block blank.
+
+The second is which months appear. The block now looks AHEAD as well as back:
+the reporting month, then the months after it, so the team can see a soft
+month while there is still time to sell into it. A look-ahead month with no
+target and nothing booked is dropped rather than drawn as an empty gauge.
 """
 from unittest.mock import patch
 
 from app.services.biweekly_period import period_for
-from app.services.biweekly_report_builder import target_block
+from app.services.biweekly_report_builder import TARGET_LOOKAHEAD_MONTHS, target_block
 
 
-def _month(label, pct, closed):
+def _month(label, pct, status="closed", year=2026, month=7,
+           actual=100.0, target=90.0, has_target=True):
     return {
-        "year": 2026, "month": 7, "label": label,
-        "achievement": {"actual_revenue": 100.0, "target_revenue": 90.0},
-        "pct": pct, "closed": closed, "is_override": False,
+        "year": year, "month": month, "label": label,
+        "achievement": {"actual_revenue": actual, "target_revenue": target},
+        "pct": pct, "closed": status == "closed", "status": status,
+        "has_target": has_target, "is_override": False,
     }
 
 
+def _run(p, side_effect, period_pct=0.90):
+    with patch("app.services.biweekly_report_builder.compute_period_achievement",
+               return_value={"achievement_pct": period_pct}), \
+         patch("app.services.biweekly_report_builder._month_achievement",
+               side_effect=side_effect):
+        return target_block(db=None, branch=None, p=p)
+
+
 class TestTargetBlockAssembly:
-    def test_single_month_period_builds_a_complete_dict(self):
-        p = period_for(2026, 29)   # Jul 13 – 26, entirely within July
+    def test_builds_a_complete_dict_for_the_reporting_month(self):
+        p = period_for(2026, 7, 2)          # Jul 15–31, entirely within July
         assert p.start.month == p.end.month == 7
 
-        with patch("app.services.biweekly_report_builder.compute_period_achievement",
-                   return_value={"achievement_pct": 0.90}), \
-             patch("app.services.biweekly_report_builder._month_achievement",
-                   return_value=_month("July 2026", 106.0, True)):
-            result = target_block(db=None, branch=None, p=p)
+        result = _run(p, lambda db, branch, year, month, as_of: (
+            _month("July 2026", 106.0) if month == 7
+            else _month("later", None, "upcoming", month=month,
+                        actual=0.0, target=0.0, has_target=False)
+        ))
 
-        assert result["months"] == [_month("July 2026", 106.0, True)]
+        assert [m["label"] for m in result["months"]] == ["July 2026"]
         assert result["month_label"] == "July 2026"
         assert result["month_pct"] == 106.0
         assert result["month_closed"] is True
@@ -47,28 +59,74 @@ class TestTargetBlockAssembly:
         # honest left to report here.
         assert "month_through" not in result
 
-    def test_period_spanning_two_months_builds_a_complete_dict(self):
-        """The exact production case that broke: Week 31–32 2026 runs
-        Jul 27 – Aug 9, so target_block calls _month_achievement once for
-        July and once for August."""
-        p = period_for(2026, 31)
-        assert (p.start.month, p.end.month) == (7, 8)
+    def test_a_half_month_period_never_spans_two_months(self):
+        for month in range(1, 13):
+            for half in (1, 2):
+                p = period_for(2026, month, half)
+                assert p.start.month == p.end.month == p.month
 
-        def fake_month_achievement(db, branch, year, month, as_of):
-            return (_month("July 2026", 94.0, True) if month == 7
-                   else _month("August 2026", 85.0, False))
 
-        with patch("app.services.biweekly_report_builder.compute_period_achievement",
-                   return_value={"achievement_pct": 2.065}), \
-             patch("app.services.biweekly_report_builder._month_achievement",
-                   side_effect=fake_month_achievement):
-            result = target_block(db=None, branch=None, p=p)
+class TestLookAhead:
+    def test_shows_the_reporting_month_then_the_months_ahead(self):
+        p = period_for(2026, 8, 1)          # Aug 1–14
 
-        assert [m["label"] for m in result["months"]] == ["July 2026", "August 2026"]
-        # Top-level fields mirror the LATEST month (the one the period ends
-        # in) for backward compatibility with anything reading this payload
-        # from before `months` existed.
-        assert result["month_label"] == "August 2026"
-        assert result["month_pct"] == 85.0
-        assert result["month_closed"] is False
-        assert "month_through" not in result
+        def fake(db, branch, year, month, as_of):
+            return {
+                8: _month("August 2026", 70.0, "in_progress", month=8),
+                9: _month("September 2026", 41.0, "upcoming", month=9),
+                10: _month("October 2026", 12.0, "upcoming", month=10),
+            }[month]
+
+        result = _run(p, fake)
+
+        assert [m["label"] for m in result["months"]] == [
+            "August 2026", "September 2026", "October 2026",
+        ]
+        assert len(result["months"]) == 1 + TARGET_LOOKAHEAD_MONTHS
+        assert [m["status"] for m in result["months"][1:]] == ["upcoming"] * 2
+
+    def test_top_level_mirrors_the_reporting_month_not_the_last_gauge(self):
+        """The look-ahead months are forecast. `month_pct` has always meant
+        "the month this report covers", and a consumer reading it must not
+        silently start getting October's pickup instead."""
+        p = period_for(2026, 8, 1)
+
+        def fake(db, branch, year, month, as_of):
+            return _month(f"m{month}", 70.0 if month == 8 else 5.0,
+                          "in_progress" if month == 8 else "upcoming",
+                          month=month)
+
+        result = _run(p, fake)
+        assert result["month_label"] == "m8"
+        assert result["month_pct"] == 70.0
+
+    def test_a_future_month_with_no_target_and_no_bookings_is_dropped(self):
+        p = period_for(2026, 8, 1)
+
+        def fake(db, branch, year, month, as_of):
+            if month == 8:
+                return _month("August 2026", 70.0, "in_progress", month=8)
+            if month == 9:
+                # Nothing planned, nothing sold — an empty 0/0 gauge is noise.
+                return _month("September 2026", None, "upcoming", month=9,
+                              actual=0.0, target=0.0, has_target=False)
+            # No target set, but rooms are already on the books — that is
+            # exactly the pickup signal this block exists to surface.
+            return _month("October 2026", None, "upcoming", month=10,
+                          actual=250_000.0, target=0.0, has_target=False)
+
+        result = _run(p, fake)
+        assert [m["label"] for m in result["months"]] == [
+            "August 2026", "October 2026",
+        ]
+
+    def test_crosses_the_year_boundary(self):
+        p = period_for(2026, 12, 2)
+        seen = []
+
+        def fake(db, branch, year, month, as_of):
+            seen.append((year, month))
+            return _month(f"{year}-{month}", 50.0, "upcoming", year=year, month=month)
+
+        _run(p, fake)
+        assert seen == [(2026, 12), (2027, 1), (2027, 2)]

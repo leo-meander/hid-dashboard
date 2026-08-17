@@ -14,11 +14,18 @@ That constraint is why this reads more verbosely than page CSS would.
 from datetime import datetime, timezone
 from typing import Optional
 
-from app.services.biweekly_period import Period, previous_period, yoy_window
+from app.services.biweekly_period import (
+    Period,
+    comparable_as_totals,
+    is_complete,
+    mom_window,
+    yoy_window,
+)
 from app.services.country_codes import iso_code_for
 from app.services.report_common import (
     cell_attrs,
     fmt,
+    ict_today,
     num,
     signed_pct,
     signed_pts,
@@ -124,9 +131,10 @@ _YOY_TAG = "vs LY"
 # refers to. It shipped in all five section notes, which put the same three
 # lines of boilerplate between a manager and every table on the page.
 _ARROW_LEGEND = (
-    f"In every table the ▲▼ beside a number is vs the prior period; the line "
-    f"below it ({_YOY_TAG}) is vs the same period last year. A missing second "
-    "line means there is nothing to compare against a year ago."
+    f"In every table the ▲▼ beside a number is vs the same dates last month; "
+    f"the line below it ({_YOY_TAG}) is vs the same dates last year. A missing "
+    "second line means there is nothing to compare against a year ago. Neither "
+    "arrow is ever the half-month before this one."
 )
 
 
@@ -180,10 +188,10 @@ def _delta_pair(prior_pct, yoy_pct, per_day: bool = False,
                 good: float = 5.0, bad: float = -5.0) -> str:
     """Both of the report's comparisons for one table cell.
 
-    The prior period sits inline with the number, unlabelled — that is the
-    arrow that was already there and the one operators read first. The
-    year-ago comparison goes on a second line, labelled, because an unlabelled
-    second arrow beside the first is indistinguishable from it.
+    Month-over-month sits inline with the number, unlabelled — that is the
+    arrow operators read first, and the header legend names it. The year-ago
+    comparison goes on a second line, labelled, because an unlabelled second
+    arrow beside the first is indistinguishable from it.
 
     A year-ago delta of None draws nothing: the year-ago window has a zero
     base (a channel, market or campaign that did not exist twelve months ago),
@@ -192,7 +200,9 @@ def _delta_pair(prior_pct, yoy_pct, per_day: bool = False,
 
     `per_day` labels the year-ago arrow as a per-day comparison, which is what
     the builder falls back to when the year-ago window is a different length —
-    the 21-day W51–W53 period against a 14-day week pair in a 52-week year.
+    a leap February. The month-back window can differ too (15–31 Mar against
+    15–28 Feb); the header says so once for the whole report rather than
+    decorating every arrow on the page.
     """
     out = _inline_arrow(prior_pct, good, bad)
     if yoy_pct is not None:
@@ -396,7 +406,7 @@ def _render_exec_summary(b: dict, p: Period) -> str:
     bid = b["branch_id"]
 
     yoy_lbl = "vs last year"
-    prior_lbl = "vs prior /day" if vp.get("per_day") else "vs prior"
+    prior_lbl = "vs last month /day" if vp.get("per_day") else "vs last month"
 
     # When the prior year has no data at all, a "−100%" chip would be a lie
     # about performance rather than a statement about coverage.
@@ -437,13 +447,14 @@ def _render_exec_summary(b: dict, p: Period) -> str:
         for c in (ads.get("by_channel") or []) if c.get("roas") is not None
     ]
     # `wow_roas_pct` is misleadingly named (weekly-report leftover) but is
-    # already the aggregate ROAS vs THIS report's prior period — every other
-    # KPI card on this row carries a vs-prior chip, and ROAS was the one
-    # silently missing it.
+    # already the aggregate ROAS vs THIS report's comparison window — the
+    # bi-weekly builder passes `compare=mom_window(p)` into
+    # `paid_ads_section`, so every `wow_*` field it emits is month-over-month
+    # here even though the name still says week.
     roas_chips = ""
     if ads.get("yoy_roas_pct") is not None:
         roas_chips += _delta_chip(ads["yoy_roas_pct"], yoy_lbl)
-    roas_chips += _delta_chip(ads.get("wow_roas_pct"), "vs prior")
+    roas_chips += _delta_chip(ads.get("wow_roas_pct"), "vs last month")
     roas_chips += (
         f"<span style='font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;"
         f"color:{_LIGHT[roas_light]};background:{_LIGHT_BG[roas_light]};display:inline-block;'>"
@@ -512,8 +523,8 @@ def _render_headline(b: dict, p: Period) -> str:
     target = b.get("target") or {}
 
     if not kpi.get("yoy_has_data") or rev is None:
-        story = ("No data for the same period last year, so this report compares "
-                 "against the prior period only.")
+        story = ("No data for the same dates last year, so this report compares "
+                 "against last month only.")
     elif rev >= 0 and (sold is not None and sold < 0):
         story = (f"Revenue is <b>up {rev:.0f}%</b> versus the same period last year — "
                  f"<b>not from selling more rooms</b> (room-nights {sold:+.0f}%), but from "
@@ -544,14 +555,21 @@ def _render_headline(b: dict, p: Period) -> str:
 def _target_gauge(bid, m: dict, currency: str, br: dict, idx: int, size: str) -> str:
     """One gauge card for a single calendar month's achievement.
 
-    `size` is "lg" for the common single-month case (this is what shipped
-    before periods could show two months, unchanged) or "sm" for a compact
-    card used when two sit side by side.
+    `size` is "lg" for the common single-month case or "sm" for a compact
+    card used when several sit side by side.
+
+    A month with `status == "upcoming"` is drawn differently on purpose. Its
+    percentage is pickup — rooms already sold for nights that have not
+    happened — so the red/amber/green scale would call a perfectly normal
+    30%-booked October a failure, and a manager who saw that twice would stop
+    reading the block. Upcoming months get neutral colour, "still to sell"
+    instead of "short by", and wording that says what the number is.
     """
     m_pct = m.get("pct")
     ach = m.get("achievement") or {}
     m_actual, m_goal = ach.get("actual_revenue"), ach.get("target_revenue")
     label = m.get("label") or "this month"
+    upcoming = m.get("status") == "upcoming"
 
     if m_pct is None:
         return (f"<div style='background:{C['card']};border:1px solid {C['line']};"
@@ -566,25 +584,36 @@ def _target_gauge(bid, m: dict, currency: str, br: dict, idx: int, size: str) ->
     goal_left = 100.0 / scale * 100
 
     diff = (m_actual or 0) - (m_goal or 0)
-    pill_color = "g" if m_pct >= 100 else "w" if m_pct >= 80 else "b"
+    if upcoming:
+        pill_color = "w"
+        pill_text = (f"✓ Already past target by {fmt(diff, currency)}" if diff >= 0
+                     else f"Still to sell {fmt(abs(diff), currency)}")
+    else:
+        pill_color = "g" if m_pct >= 100 else "w" if m_pct >= 80 else "b"
+        pill_text = (f"{'✓ Beat by' if diff >= 0 else '▼ Short by'} "
+                     f"{fmt(abs(diff), currency)}")
     pill = (f"<span style='font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;"
             f"color:{_LIGHT[pill_color]};background:{_LIGHT_BG[pill_color]};'>"
-            f"{'✓ Beat by' if diff >= 0 else '▼ Short by'} {fmt(abs(diff), currency)}</span>")
+            f"{pill_text}</span>")
     # Not "through {date}" — actual is the whole month's on-the-books revenue,
     # not capped at today, so a date here would imply a cutoff that isn't real.
     if m.get("is_override"):
         state = " — manually entered"
+    elif upcoming:
+        state = " — booked so far; the month has not started"
     elif m.get("closed"):
         state = " — fully closed"
     else:
         state = " — month in progress, incl. nights already on the books"
 
-    heading = (
-        f"Hit <span style='color:{_LIGHT[pill_color]};'>{m_pct:.0f}%</span> "
-        f"of the {label} target"
-        if size == "lg" else
-        f"{label}: <span style='color:{_LIGHT[pill_color]};'>{m_pct:.0f}%</span>"
-    )
+    if upcoming:
+        heading = (f"{label}: <span style='color:{_LIGHT[pill_color]};'>"
+                   f"{m_pct:.0f}%</span> booked")
+    elif size == "lg":
+        heading = (f"Hit <span style='color:{_LIGHT[pill_color]};'>{m_pct:.0f}%</span> "
+                   f"of the {label} target")
+    else:
+        heading = f"{label}: <span style='color:{_LIGHT[pill_color]};'>{m_pct:.0f}%</span>"
     head_size = "22px" if size == "lg" else "15.5px"
     bar_h = "16px" if size == "lg" else "13px"
     pad = "18px" if size == "lg" else "14px 15px"
@@ -649,24 +678,39 @@ def _render_target(b: dict) -> str:
                 f"No revenue target set for this period — add one on the KPI Targets page.</div>")
         return _section(2, "Target Achievement", "", body, br["primary"])
 
+    ahead = [m for m in months if m.get("status") == "upcoming"]
     if len(months) >= 2:
-        # The period crosses a month boundary — show each month's own
-        # progress rather than folding both into whichever one it ends in.
-        gauges = "".join(
+        # The reporting month leads at full width; the months ahead of it sit
+        # underneath in a row. They are forecast, not results, so giving them
+        # equal billing with the month being reported on would misread the
+        # page at a glance.
+        gauges_html = _target_gauge(bid, months[0], currency, br, 0, size="lg")
+        rest = "".join(
             _target_gauge(bid, m, currency, br, i, size="sm")
-            for i, m in enumerate(months)
+            for i, m in enumerate(months[1:], start=1)
         )
-        gauges_html = (
-            f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:12px;'>{gauges}</div>"
+        cols = min(len(months) - 1, 2)
+        gauges_html += (
+            f"<div style='display:grid;grid-template-columns:{'1fr ' * cols};"
+            f"gap:12px;margin-top:12px;'>{rest}</div>"
         )
-        note = ("This period spans two calendar months, so each gets its own gauge — "
-                "same Target and Actual as the KPI Targets page. The vertical mark "
-                "is the target.")
+        note = (
+            "The first gauge is the month this report covers. The ones below it "
+            "are the months ahead: their percentage is what is <b>already booked</b> "
+            "against that month's target, so the gap is what there is still time "
+            "to sell. Same Target and Actual as the KPI Targets page; the vertical "
+            "mark is the target."
+            if ahead else
+            "Each calendar month gets its own gauge — same Target and Actual as the "
+            "KPI Targets page. The vertical mark is the target."
+        )
     elif months:
         gauges_html = _target_gauge(bid, months[0], currency, br, 0, size="lg")
         note = ("Same Target and Actual as the KPI Targets page for this month — "
                 "Actual includes nights already on the books, not just ones that "
-                "have happened. The vertical mark is the target.")
+                "have happened. The vertical mark is the target. No targets are "
+                "set for the months ahead yet, so there is nothing to plan "
+                "against on the KPI Targets page.")
     else:
         gauges_html = ""
         note = ""
@@ -1198,8 +1242,33 @@ def _render_branch(b: dict, p: Period) -> str:
 
 def _build_html(report: list, p: Period, computed_at: Optional[datetime]) -> str:
     yoy = yoy_window(p)
-    prev = previous_period(p)
+    mom = mom_window(p)
     stamp = (computed_at or datetime.now(timezone.utc)).strftime("%Y-%m-%d %H:%M UTC")
+
+    def _win(w) -> str:
+        return f"{w[0]:%b %d} – {w[1]:%b %d}, {w[1].year}"
+
+    # A comparison window of a different length is compared per day, not as a
+    # total. Said once here rather than on every arrow — see `_delta_pair`.
+    uneven = [
+        name for name, w in (("last month", mom), ("last year", yoy))
+        if not comparable_as_totals(p, w)
+    ]
+    uneven_note = (
+        f" Totals against {' and '.join(uneven)} are compared per day, because "
+        f"that window is a different number of days than this one."
+        if uneven else ""
+    )
+    # The end-of-month report is due out ON the last day of the month, so the
+    # period's final day is still running when this is built. Saying so beats
+    # a manager discovering it from a number that looks soft.
+    open_note = (
+        f"<div style='margin-top:10px;font-size:12px;background:rgba(255,255,255,.16);"
+        f"border-radius:7px;padding:7px 11px;display:inline-block;'>"
+        f"⏳ {p.end:%b %d} is still in progress — its bookings are not final yet."
+        f"</div>"
+        if not is_complete(p, ict_today()) else ""
+    )
 
     def chip(label, value):
         return (f"<div style='background:rgba(255,255,255,.15);"
@@ -1223,14 +1292,14 @@ def _build_html(report: list, p: Period, computed_at: Optional[datetime]) -> str
       <div style="opacity:.9;font-size:14.5px;">
         Business metrics &amp; campaign performance — for the Branch Manager &amp; Leadership</div>
       <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:18px;">
-        {chip("Report period", f"{p.label} · {p.date_label}")}
-        {chip("Main comparison · same weeks last year",
-              f"W{p.week_a}–{min(p.week_b, 52)} {p.iso_year - 1} ({yoy[0]:%b %d} – {yoy[1]:%b %d})")}
-        {chip("Reference · prior period", f"{prev.label.split(' · ')[0]} ({prev.date_label})")}
+        {chip("Report period", f"{p.date_label} ({p.days} days)")}
+        {chip("Main comparison · same dates last year", _win(yoy))}
+        {chip("Reference · same dates last month", _win(mom))}
         {chip("Generated", stamp)}
       </div>
+      {open_note}
       <div style="margin-top:14px;font-size:12px;opacity:.8;max-width:640px;">
-        {_ARROW_LEGEND}</div>
+        {_ARROW_LEGEND}{uneven_note}</div>
     </div>
     <div style="padding:34px 40px;">{branches}</div>
     <div style="padding:18px 40px 26px;color:{C['muted']};font-size:11.5px;

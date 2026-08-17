@@ -1,6 +1,6 @@
 """
 Bi-Weekly Branch Manager Report router
-- GET  /biweekly/periods       → selectable ISO-week-pair periods
+- GET  /biweekly/periods       → selectable half-month periods
 - GET  /biweekly/report        → report payload (JSON)
 - GET  /biweekly/preview       → rendered HTML (what the dashboard shows)
 - POST /biweekly/refresh-cache → rebuild a period's snapshot (X-Sync-Token)
@@ -33,6 +33,7 @@ from app.routers.sync import verify_sync_token
 from app.services.biweekly_period import (
     Period,
     current_period,
+    is_complete,
     list_periods,
     parse_period_key,
 )
@@ -202,15 +203,25 @@ def list_available_periods(
     _current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Selectable periods, newest first, flagged with whether they're cached."""
-    periods = list_periods(ict_today(), back)
+    """Selectable periods, newest first, flagged with whether they're cached.
+
+    The newest entry is the period a report sent today would cover, which on
+    the 14th or the last day of the month is the period still running — see
+    `current_period`. `is_complete` is how the page says so.
+    """
+    today = ict_today()
+    periods = list_periods(today, back)
     cached = {
         r.period_key for r in
         db.query(BiweeklyReportCache.period_key).filter(
             BiweeklyReportCache.period_key.in_([p.key for p in periods])
         ).all()
     }
-    return envelope([{**p.to_dict(), "has_cache": p.key in cached} for p in periods])
+    return envelope([
+        {**p.to_dict(), "has_cache": p.key in cached,
+         "is_complete": is_complete(p, today)}
+        for p in periods
+    ])
 
 
 @router.get("/report")
@@ -220,7 +231,8 @@ def biweekly_report(
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Bi-weekly report payload for a period (defaults to the latest completed).
+    """Bi-weekly report payload for a period (defaults to the one a report
+    sent today would cover).
 
     Requires a login. This and `/preview` shipped with no auth dependency at
     all, which made every branch's revenue readable by anyone holding the URL.
@@ -229,7 +241,7 @@ def biweekly_report(
     payload, computed_at = _get_report(db, p, force_fresh=bool(fresh))
     payload = _apply_flag_overrides(db, p, payload)
     return envelope({
-        "period": p.to_dict(),
+        "period": {**p.to_dict(), "is_complete": is_complete(p, ict_today())},
         "computed_at": computed_at.isoformat() if computed_at else None,
         "from_cache": not bool(fresh),
         "branches": _visible_branches(payload, current),

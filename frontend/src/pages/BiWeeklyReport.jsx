@@ -1,8 +1,10 @@
 /**
  * Bi-Weekly Branch Manager Report.
  *
- * A period is two ISO weeks of the year (Week 29–30, Week 31–32, …). The
- * backend renders the whole report as inline-styled HTML — the same markup
+ * A period is half a calendar month — the 1st–14th, or the 15th to the last
+ * day of the month — compared against the same dates one month back and one
+ * year back. The backend renders the whole report as inline-styled HTML —
+ * the same markup
  * that will be emailed once delivery is wired — and this page slices the
  * per-branch blocks out of it on the `.hid-bw-branch` anchor so switching
  * branches costs nothing.
@@ -846,7 +848,7 @@ export default function BiWeeklyReport() {
       const text = (flag.querySelector("[data-flag-text]")?.innerText ?? "").trim();
       setFlagEdit({
         period: selectedPeriod,
-        periodLabel: period ? `${period.label} · ${period.date_label}` : selectedPeriod,
+        periodLabel: period ? period.date_label : selectedPeriod,
         branchId: active?.id || null,
         branchName: active?.name || null,
         flagKey: flag.dataset.flagKey,
@@ -858,7 +860,7 @@ export default function BiWeeklyReport() {
     if (!cell || !reportBodyRef.current?.contains(cell)) return;
     setDrawer({
       period: selectedPeriod,
-      periodLabel: period ? `${period.label} · ${period.date_label}` : selectedPeriod,
+      periodLabel: period ? period.date_label : selectedPeriod,
       branchId: cell.dataset.branchId || active?.id || null,
       branchName: active?.name || null,
       metricKey: cell.dataset.metricKey,
@@ -935,9 +937,15 @@ export default function BiWeeklyReport() {
             🗓 Bi-Weekly Branch Manager Report
           </h2>
           <p className="text-[11px] text-gray-500 mt-0.5">
-            Two ISO weeks per period, compared against the same weeks last year.
+            Half a calendar month per period, compared against the same dates
+            last month and last year.
             {period && (
-              <span> Showing <b>{period.label}</b> · {period.date_label} ({period.days} days).</span>
+              <span> Showing <b>{period.date_label}</b> ({period.days} days).</span>
+            )}
+            {period && period.is_complete === false && (
+              <span className="text-amber-600">
+                {" "}⏳ {period.end} is still in progress.
+              </span>
             )}
           </p>
         </div>
@@ -951,8 +959,8 @@ export default function BiWeeklyReport() {
           >
             {periods.map(p => (
               <option key={p.key} value={p.key}>
-                {p.label} · {p.date_label}
-                {p.is_extended ? " (21d)" : ""}
+                {p.date_label} ({p.days}d)
+                {p.is_complete === false ? " — in progress" : ""}
               </option>
             ))}
           </select>
