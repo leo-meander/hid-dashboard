@@ -1,8 +1,11 @@
 """
-TikTok Events API (offline) service — Saigon branch only.
+TikTok Events API (offline) service.
 
-Sends a CompletePayment event when a new Saigon reservation is created.
-Mirrors the Make.com TikTok branch in the SGN blueprint.
+Sends a CompletePayment event when a new reservation is created on a branch
+that advertises on TikTok (see config.TIKTOK_BRANCHES). Mirrors the Make.com
+TikTok branch in the SGN blueprint; the per-branch currency, timezone and phone
+country code come from get_webhook_config_for_branch, exactly as they do for
+Meta CAPI and Google Ads.
 """
 import hashlib
 import logging
@@ -18,10 +21,6 @@ logger = logging.getLogger(__name__)
 
 TIKTOK_EVENTS_URL = "https://business-api.tiktok.com/open_api/v1.3/event/track/"
 
-# Saigon is the only branch on TikTok — guest phones without a country code are
-# assumed Vietnamese.
-SAIGON_PHONE_COUNTRY_CODE = "84"
-
 
 def _sha256(value: Optional[str]) -> Optional[str]:
     if not value or not str(value).strip():
@@ -29,16 +28,25 @@ def _sha256(value: Optional[str]) -> Optional[str]:
     return hashlib.sha256(value.strip().lower().encode()).hexdigest()
 
 
-def _parse_event_time(date_created: Optional[str]) -> Optional[int]:
+def _parse_event_time(
+    date_created: Optional[str],
+    tz_offset_hours: int = 7,
+    extra_offset_hours: int = 0,
+) -> Optional[int]:
     """
-    Convert Cloudbeds dateCreated (Vietnam local time, UTC+7) to Unix timestamp.
-    Saigon Make flow passes raw dateCreated without any timezone conversion.
+    Convert Cloudbeds dateCreated (branch local time) to a Unix timestamp.
+
+    Same two-part offset Meta CAPI and Google Ads use, so a reservation carries
+    one timestamp across all three channels:
+      - tz_offset_hours: UTC offset of branch local time (7=Saigon, 9=Tokyo)
+      - extra_offset_hours: additional hours subtracted (Make's addHours value;
+        0 for Saigon, which is why the defaults reproduce the old behaviour)
     """
     if not date_created:
         return None
     try:
         local_dt = datetime.strptime(date_created[:16], "%Y-%m-%d %H:%M")
-        utc_dt = local_dt - timedelta(hours=7)
+        utc_dt = local_dt - timedelta(hours=tz_offset_hours) - timedelta(hours=extra_offset_hours)
         return int(utc_dt.replace(tzinfo=timezone.utc).timestamp())
     except (ValueError, TypeError):
         return None
@@ -55,19 +63,31 @@ def send_complete_payment_event(
     reservation: dict,
     access_token: str,
     event_source_id: str,
+    currency: str = "VND",
+    tz_offset_hours: int = 7,
+    event_time_extra_offset: int = 0,
+    phone_country_code: str = "84",
 ) -> dict:
     """
     Send a CompletePayment offline event to TikTok Events API for the given reservation.
+
+    `event_source_id` is the branch's Offline Event Set ID, not its web pixel.
+    Defaults describe Saigon, the first branch on this path.
+
     Returns {"success": bool, "status_code": int, "response": dict}.
     """
-    # None for OTA alias addresses and Cloudbeds "N/A" placeholders — Saigon
-    # sells heavily through Ctrip, so this is most of the branch's volume.
+    # None for OTA alias addresses and Cloudbeds "N/A" placeholders — both
+    # branches sell heavily through Ctrip, so this is most of their volume.
     email = usable_email(reservation.get("guestEmail"))
     guest_list = reservation.get("guestList") or {}
     guest = _first_guest(guest_list)
-    phone = normalize_e164_digits(guest.get("guestPhone", ""), SAIGON_PHONE_COUNTRY_CODE)
+    phone = normalize_e164_digits(guest.get("guestPhone", ""), phone_country_code)
 
-    event_time = _parse_event_time(reservation.get("dateCreated"))
+    event_time = _parse_event_time(
+        reservation.get("dateCreated"),
+        tz_offset_hours=tz_offset_hours,
+        extra_offset_hours=event_time_extra_offset,
+    )
     if not event_time:
         logger.warning(
             "TikTok CAPI: could not parse dateCreated=%s", reservation.get("dateCreated")
@@ -104,7 +124,7 @@ def send_complete_payment_event(
                 "user": user,
                 "properties": {
                     "value": value,
-                    "currency": "VND",
+                    "currency": currency,
                     "order_id": order_id,
                 },
             }
