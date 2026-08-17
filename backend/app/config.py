@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "changeme"
     FRONTEND_URL: str = ""
 
+    # Public origin of THIS service, used to build links that are opened from
+    # outside the app — currently the Bi-Weekly report's no-login share link,
+    # which is served by the backend (it is a whole rendered HTML page, not a
+    # dashboard route). FRONTEND_URL cannot stand in for it: on Zeabur the
+    # frontend is a separate deployment on a different domain and would 404.
+    # Empty falls back to a relative path, which works in local dev and is
+    # visibly broken in an email — the right way round for a missing setting.
+    PUBLIC_API_URL: str = ""
+
     # Shared secret used by GitHub Actions cron workflows to call /api/sync/*
     # endpoints. Empty string disables the check (dev convenience).
     SYNC_TRIGGER_TOKEN: str = ""

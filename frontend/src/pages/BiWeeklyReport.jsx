@@ -1,11 +1,15 @@
 /**
  * Bi-Weekly Branch Manager Report.
  *
- * A period is two ISO weeks of the year (Week 29–30, Week 31–32, …). The
- * backend renders the whole report as inline-styled HTML — the same markup
- * that will be emailed once delivery is wired — and this page slices the
- * per-branch blocks out of it on the `.hid-bw-branch` anchor so switching
- * branches costs nothing.
+ * A period is half a calendar month — the 1st–14th, or the 15th to the last
+ * day of the month — compared against the same dates one month back and one
+ * year back. The backend renders the whole report as inline-styled HTML, and
+ * this page slices the per-branch blocks out of it on the `.hid-bw-branch`
+ * anchor so switching branches costs nothing.
+ *
+ * "Send report" emails one branch's summary to chosen users, with a link that
+ * opens the full report — notes included — without a HiD login. See
+ * SendReportModal below and backend/app/services/biweekly_share.py.
  *
  * Two ways to leave a comment, both on the Weekly Report's comment table
  * (tagged report_type='biweekly'):
@@ -29,6 +33,10 @@ import {
   getFlagOverrides,
   putFlagOverride,
   deleteFlagOverride,
+  getRecipients,
+  sendBranchReport,
+  getShare,
+  revokeShare,
 } from "../api/biweekly";
 import { useAuth } from "../context/AuthContext";
 import { useBranch } from "../context/BranchContext";
@@ -688,6 +696,277 @@ function BranchNotes({ period, branchId, branchName }) {
   );
 }
 
+/**
+ * "Send report" — pick who gets this branch's report by email.
+ *
+ * The email carries a summary plus a link that opens the full report with no
+ * HiD login, so the picker is a disclosure control, not a convenience: it only
+ * offers users who are already allowed to see this branch (the backend returns
+ * that list and re-checks it on send). The link's reach is spelled out in the
+ * dialog rather than buried, because "no login needed" is the part a sender
+ * has to weigh before clicking.
+ *
+ * Result reporting is deliberately literal. A send that reached three of four
+ * recipients renders as three sent and one failed, never as "Sent" — the
+ * sender cannot verify delivery themselves, so this is the only place the
+ * truth is available.
+ */
+function SendReportModal({ period, periodLabel, branch, onClose }) {
+  const [picked, setPicked] = useState(() => new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [result, setResult] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [revoked, setRevoked] = useState(false);
+  const queryClient = useQueryClient();
+
+  const { data: recipients = [], isPending, isError, error: loadError } =
+    useQuery({
+      queryKey: ["biweekly-recipients", branch?.id],
+      queryFn: () => getRecipients(branch.id),
+      enabled: Boolean(branch?.id),
+    });
+
+  // The link that already exists for this (period, branch), if one was minted
+  // by an earlier send — shown so it can be copied or revoked without having
+  // to send the email a second time to get it back.
+  const { data: share } = useQuery({
+    queryKey: ["biweekly-share", period, branch?.id],
+    queryFn: () => getShare(period, branch.id),
+    enabled: Boolean(period && branch?.id),
+  });
+
+  const liveUrl = revoked ? null : result?.share_url || share?.url || null;
+
+  function toggle(id) {
+    setPicked(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function send() {
+    if (!picked.size) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setResult(
+        await sendBranchReport({
+          period,
+          branch_id: branch.id,
+          user_ids: [...picked],
+        })
+      );
+    } catch (e) {
+      setError(e?.response?.data?.detail || e?.message || "Could not send");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyLink() {
+    if (!liveUrl) return;
+    try {
+      await navigator.clipboard.writeText(liveUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("Could not copy — select the link and copy it manually.");
+    }
+  }
+
+  // Revoking is destructive and silent from the recipient's side — the link
+  // in their inbox simply stops working — so it asks first.
+  async function revoke() {
+    if (!window.confirm(
+      `Stop the existing link from working?
+
+Anyone who already has it — ` +
+      `including people you emailed earlier — will see "no longer available" ` +
+      `instead of the report. Sending again issues a fresh link.`
+    )) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await revokeShare(period, branch.id);
+      queryClient.invalidateQueries({
+        queryKey: ["biweekly-share", period, branch.id],
+      });
+      setResult(r => (r ? { ...r, share_url: null } : r));
+      setRevoked(true);
+    } catch (e) {
+      setError(e?.response?.data?.detail || e?.message || "Could not revoke");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return createPortal(
+    <div
+      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+      onMouseDown={e => e.target === e.currentTarget && onClose()}
+    >
+      <div className="bg-white rounded-2xl w-full max-w-lg max-h-[86vh] flex flex-col shadow-xl">
+        <div className="px-5 py-4 border-b border-gray-100">
+          <h3 className="font-semibold text-gray-800">
+            📧 Send {branch?.name} report
+          </h3>
+          <p className="text-[11px] text-gray-500 mt-0.5">{periodLabel}</p>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto flex-1">
+          {result ? (
+            <div className="space-y-3">
+              {result.sent_to?.length > 0 && (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                  <p className="text-sm font-semibold text-green-800">
+                    Sent to {result.sent_to.length}{" "}
+                    {result.sent_to.length === 1 ? "person" : "people"}
+                  </p>
+                  <p className="text-xs text-green-700 mt-1 break-words">
+                    {result.sent_to.join(", ")}
+                  </p>
+                </div>
+              )}
+              {result.failed?.length > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                  <p className="text-sm font-semibold text-red-800">
+                    Did not reach {result.failed.length}
+                  </p>
+                  <p className="text-xs text-red-700 mt-1 break-words">
+                    {result.failed.join(", ")}
+                  </p>
+                  <p className="text-[11px] text-red-600 mt-1">
+                    The email provider rejected these. Check the address, then
+                    send again to just those people.
+                  </p>
+                </div>
+              )}
+            </div>
+          ) : isPending ? (
+            <p className="text-sm text-gray-500">Loading recipients…</p>
+          ) : isError ? (
+            <ErrorBox
+              title="Could not load the recipient list"
+              detail={loadError?.message}
+            />
+          ) : recipients.length === 0 ? (
+            <p className="text-sm text-gray-600">
+              Nobody has access to {branch?.name} yet. Grant it on the Users
+              page — this list only offers people who are already allowed to
+              see this branch.
+            </p>
+          ) : (
+            <>
+              <p className="text-xs text-gray-500 mb-2">
+                Everyone here can already see {branch?.name} in HiD.
+              </p>
+              <div className="space-y-1">
+                {recipients.map(r => (
+                  <label
+                    key={r.id}
+                    className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={picked.has(r.id)}
+                      onChange={() => toggle(r.id)}
+                      className="w-4 h-4 accent-teal-700"
+                    />
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm text-gray-800 truncate">
+                        {r.name}
+                      </span>
+                      <span className="block text-[11px] text-gray-400 truncate">
+                        {r.email}
+                      </span>
+                    </span>
+                    <span className="text-[10px] uppercase tracking-wide text-gray-400">
+                      {r.role}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <p className="text-[11px] text-amber-800 leading-relaxed">
+                  The email contains a summary and a link that opens{" "}
+                  <b>{branch?.name}</b>'s full report for this period{" "}
+                  <b>without a HiD login</b>. Anyone the link is forwarded to
+                  can read it, so it only covers this one branch and this one
+                  period, and it expires. You can revoke it here at any time.
+                </p>
+              </div>
+            </>
+          )}
+
+          {liveUrl && (
+            <div className="mt-4 border-t border-gray-100 pt-3">
+              <p className="text-[11px] font-semibold text-gray-500 mb-1">
+                No-login link for this period
+              </p>
+              <div className="flex gap-2 items-center">
+                <code className="flex-1 min-w-0 text-[11px] text-gray-600 bg-gray-50 border border-gray-200 rounded px-2 py-1.5 truncate">
+                  {liveUrl}
+                </code>
+                <button
+                  onClick={copyLink}
+                  className="px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 shrink-0"
+                >
+                  {copied ? "Copied" : "Copy"}
+                </button>
+                <button
+                  onClick={revoke}
+                  disabled={busy}
+                  className="px-2.5 py-1.5 text-xs border border-red-200 rounded-lg text-red-600 hover:bg-red-50 shrink-0 disabled:opacity-40"
+                >
+                  Revoke
+                </button>
+              </div>
+            </div>
+          )}
+
+          {revoked && (
+            <p className="text-xs text-gray-600 mt-3">
+              The old link no longer works. Send the report again to issue a
+              fresh one.
+            </p>
+          )}
+
+          {error && (
+            <p className="text-xs text-red-600 mt-3">{error}</p>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-gray-100 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 text-sm text-gray-600 rounded-lg hover:bg-gray-100"
+          >
+            {result ? "Done" : "Cancel"}
+          </button>
+          {!result && (
+            <button
+              onClick={send}
+              disabled={busy || picked.size === 0}
+              className="px-4 py-1.5 bg-teal-700 text-white text-sm rounded-lg hover:bg-teal-800 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {busy
+                ? "Sending…"
+                : picked.size
+                  ? `Send to ${picked.size}`
+                  : "Send"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+
 export default function BiWeeklyReport() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
@@ -702,6 +981,7 @@ export default function BiWeeklyReport() {
   const [rebuildError, setRebuildError] = useState(null);
   const [drawer, setDrawer] = useState(null);
   const [flagEdit, setFlagEdit] = useState(null);
+  const [sending, setSending] = useState(false);
   const [flagsAnchor, setFlagsAnchor] = useState(null);
   const reportBodyRef = useRef(null);
 
@@ -846,7 +1126,7 @@ export default function BiWeeklyReport() {
       const text = (flag.querySelector("[data-flag-text]")?.innerText ?? "").trim();
       setFlagEdit({
         period: selectedPeriod,
-        periodLabel: period ? `${period.label} · ${period.date_label}` : selectedPeriod,
+        periodLabel: period ? period.date_label : selectedPeriod,
         branchId: active?.id || null,
         branchName: active?.name || null,
         flagKey: flag.dataset.flagKey,
@@ -858,7 +1138,7 @@ export default function BiWeeklyReport() {
     if (!cell || !reportBodyRef.current?.contains(cell)) return;
     setDrawer({
       period: selectedPeriod,
-      periodLabel: period ? `${period.label} · ${period.date_label}` : selectedPeriod,
+      periodLabel: period ? period.date_label : selectedPeriod,
       branchId: cell.dataset.branchId || active?.id || null,
       branchName: active?.name || null,
       metricKey: cell.dataset.metricKey,
@@ -935,9 +1215,15 @@ export default function BiWeeklyReport() {
             🗓 Bi-Weekly Branch Manager Report
           </h2>
           <p className="text-[11px] text-gray-500 mt-0.5">
-            Two ISO weeks per period, compared against the same weeks last year.
+            Half a calendar month per period, compared against the same dates
+            last month and last year.
             {period && (
-              <span> Showing <b>{period.label}</b> · {period.date_label} ({period.days} days).</span>
+              <span> Showing <b>{period.date_label}</b> ({period.days} days).</span>
+            )}
+            {period && period.is_complete === false && (
+              <span className="text-amber-600">
+                {" "}⏳ {period.end} is still in progress.
+              </span>
             )}
           </p>
         </div>
@@ -951,8 +1237,8 @@ export default function BiWeeklyReport() {
           >
             {periods.map(p => (
               <option key={p.key} value={p.key}>
-                {p.label} · {p.date_label}
-                {p.is_extended ? " (21d)" : ""}
+                {p.date_label} ({p.days}d)
+                {p.is_complete === false ? " — in progress" : ""}
               </option>
             ))}
           </select>
@@ -963,6 +1249,20 @@ export default function BiWeeklyReport() {
           >
             Open raw preview ↗
           </button>
+          {["admin", "editor"].includes(user?.role) && (
+            <button
+              onClick={() => setSending(true)}
+              disabled={!active || !selectedPeriod}
+              title={
+                active
+                  ? `Email the ${active.name} report to the people who can see it`
+                  : "Pick a branch first"
+              }
+              className="px-3 py-1.5 border border-gray-200 text-gray-600 text-sm rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              📧 Send report
+            </button>
+          )}
           <button
             onClick={rebuild}
             disabled={rebuilding || reportQuery.isFetching || !selectedPeriod}
@@ -1096,6 +1396,15 @@ export default function BiWeeklyReport() {
           currentUser={user}
           onClose={() => setDrawer(null)}
           onChanged={() => queryClient.invalidateQueries({ queryKey: allCommentsKey })}
+        />
+      )}
+
+      {sending && active && (
+        <SendReportModal
+          period={selectedPeriod}
+          periodLabel={period ? period.date_label : selectedPeriod}
+          branch={active}
+          onClose={() => setSending(false)}
         />
       )}
 

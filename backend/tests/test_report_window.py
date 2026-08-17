@@ -14,7 +14,7 @@ must reproduce the old arithmetic exactly, for every day of the week.
 """
 from datetime import date, timedelta
 
-from app.services.biweekly_period import period_for
+from app.services.biweekly_period import mom_window, period_for
 from app.services.weekly_report_builder import last_week_range, resolve_window
 
 
@@ -59,25 +59,25 @@ class TestWeeklyBehaviourUnchanged:
 
 class TestExplicitWindow:
     def test_comparison_matches_the_reporting_window_length(self):
-        p = period_for(2026, 29)
+        p = period_for(2026, 8, 1)                      # Aug 1–14
         start, end, prev_start, prev_end = resolve_window(p.end, (p.start, p.end))
-        assert (start, end) == (date(2026, 7, 13), date(2026, 7, 26))
+        assert (start, end) == (date(2026, 8, 1), date(2026, 8, 14))
         assert (end - start).days + 1 == 14
         assert (prev_end - prev_start).days + 1 == 14
         assert prev_end + timedelta(days=1) == start
-        assert (prev_start, prev_end) == (date(2026, 6, 29), date(2026, 7, 12))
+        assert (prev_start, prev_end) == (date(2026, 7, 18), date(2026, 7, 31))
 
-    def test_extended_21_day_period_gets_a_21_day_comparison(self):
-        p = period_for(2026, 51)          # W51–W53, 21 days
+    def test_a_17_day_period_gets_a_17_day_comparison(self):
+        p = period_for(2026, 8, 2)                      # Aug 15–31, 17 days
         start, end, prev_start, prev_end = resolve_window(p.end, (p.start, p.end))
-        assert (end - start).days + 1 == 21
-        assert (prev_end - prev_start).days + 1 == 21
+        assert (end - start).days + 1 == 17
+        assert (prev_end - prev_start).days + 1 == 17
 
     def test_explicit_window_ignores_today(self):
         # `today` still drives a section's internal "as of" logic, but must not
         # move the reporting window when one is given.
-        p = period_for(2026, 29)
-        for anchor in (date(2026, 7, 26), date(2026, 8, 7), date(2027, 1, 1)):
+        p = period_for(2026, 8, 1)
+        for anchor in (date(2026, 8, 14), date(2026, 8, 31), date(2027, 1, 1)):
             assert resolve_window(anchor, (p.start, p.end))[:2] == (p.start, p.end)
 
     def test_single_day_window(self):
@@ -85,3 +85,35 @@ class TestExplicitWindow:
         start, end, prev_start, prev_end = resolve_window(d, (d, d))
         assert (start, end) == (d, d)
         assert (prev_start, prev_end) == (d - timedelta(days=1), d - timedelta(days=1))
+
+
+class TestExplicitComparison:
+    """`compare` is what lets the bi-weekly report point these shared sections
+    at the same dates one month back instead of at the half-month immediately
+    before. Without it, the `wow_*` deltas from Ads / Channel Mix / CRM would
+    disagree with every other arrow on the same page.
+    """
+
+    def test_compare_overrides_the_placement_entirely(self):
+        p = period_for(2026, 8, 2)                      # Aug 15–31
+        mom = mom_window(p)                             # Jul 15–31
+        start, end, prev_start, prev_end = resolve_window(
+            p.end, (p.start, p.end), mom)
+        assert (start, end) == (p.start, p.end)
+        assert (prev_start, prev_end) == mom
+        # Emphatically NOT the period before this one (Aug 1–14).
+        assert prev_end + timedelta(days=1) != start
+
+    def test_compare_is_used_verbatim_even_when_shorter(self):
+        # 15–31 Mar against 15–28 Feb. `resolve_window` does not stretch it
+        # to match — the caller normalises per day.
+        p = period_for(2027, 3, 2)
+        mom = mom_window(p)
+        _, _, prev_start, prev_end = resolve_window(p.end, (p.start, p.end), mom)
+        assert (prev_start, prev_end) == (date(2027, 2, 15), date(2027, 2, 28))
+        assert (prev_end - prev_start).days + 1 == 14
+        assert (p.end - p.start).days + 1 == 17
+
+    def test_omitting_compare_keeps_the_weekly_behaviour_byte_for_byte(self):
+        for d in (date(2026, 8, 3), date(2026, 1, 5), date(2027, 3, 1)):
+            assert resolve_window(d) == resolve_window(d, None, None)

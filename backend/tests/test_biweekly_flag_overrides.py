@@ -12,7 +12,7 @@ from app.routers.biweekly_report import _apply_flag_overrides
 from app.services.biweekly_period import period_for
 
 
-P = period_for(2026, 31)
+P = period_for(2026, 8, 1)
 BRANCH = "11111111-1111-1111-1111-111111111111"
 
 

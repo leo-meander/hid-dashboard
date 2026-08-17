@@ -2,7 +2,7 @@ import axios from "axios";
 
 const BASE = "/api/biweekly";
 
-/** Selectable ISO-week-pair periods, newest first. */
+/** Selectable half-month periods, newest first. */
 export const getPeriods = (params = {}) =>
   axios.get(`${BASE}/periods`, { params }).then(r => r.data.data);
 
@@ -92,3 +92,38 @@ export const updateNote = (id, patch) =>
 
 export const deleteNote = (id) =>
   axios.delete(`${BASE}/comments/${id}`).then(r => r.data.data);
+
+/**
+ * Emailing one branch's report.
+ *
+ * `getRecipients` returns only users who are allowed to SEE that branch — the
+ * picker is the last thing between a branch's revenue and the wrong inbox, so
+ * it is not a list of everyone with an account. The backend re-checks each
+ * recipient on send; this call just draws the list.
+ */
+export const getRecipients = (branchId) =>
+  axios
+    .get(`${BASE}/recipients`, { params: { branch_id: branchId } })
+    .then(r => r.data.data);
+
+/**
+ * Send the summary email. Resolves to `{ sent_to, failed, share_url, ... }` —
+ * `failed` is not an error case to swallow: a send that reached three of four
+ * recipients has to be reported as exactly that.
+ */
+export const sendBranchReport = ({ period, branch_id, user_ids }) =>
+  axios
+    .post(`${BASE}/send`, { period, branch_id, user_ids })
+    .then(r => r.data.data);
+
+/** The live no-login link for a (period, branch), or null if none is issued. */
+export const getShare = (period, branchId) =>
+  axios
+    .get(`${BASE}/shares`, { params: { period, branch_id: branchId } })
+    .then(r => r.data.data);
+
+/** Kill a link that was forwarded somewhere it shouldn't have been. */
+export const revokeShare = (period, branchId) =>
+  axios
+    .delete(`${BASE}/shares`, { params: { period, branch_id: branchId } })
+    .then(r => r.data.data);
