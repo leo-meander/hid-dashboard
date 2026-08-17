@@ -107,16 +107,12 @@ KPI_DEFS: dict[str, list[dict]] = {
         {"key": "delivery_rate",   "label": "On-Time Delivery Rate",  "unit": "%",      "org_wide": True,  "higher_is_better": True,  "decimals": 1, "is_pct": True, "starts": "2026-07"},
     ],
     "crm": [
-        # measured_at_month_end: front-desk data-entry accuracy is counted over
-        # a finished month — a rate read while the month is still running is
-        # measuring an incomplete set of check-ins, not the team's accuracy.
-        # So the entry window is the mirror image of every other row's: the
-        # current month is locked and the closed months are open (see
-        # isLockedActualMonth in TeamKPI.jsx). Earlier months stay open too —
-        # this number only ever arrives by hand, so a month nobody filled in
-        # has to remain fillable later.
-        {"key": "data_fill_rate",  "label": "Data Fill-Rate",         "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True, "auto": False,
-         "measured_at_month_end": True},
+        # Front-desk data-entry accuracy, counted over a finished month — a rate
+        # read while the month is still running measures an incomplete set of
+        # check-ins. Like every hand-entered row it lands in the month after the
+        # one it measures; the grid keeps the cell open until the 20th
+        # (isLockedActualMonth in TeamKPI.jsx).
+        {"key": "data_fill_rate",  "label": "Data Fill-Rate",         "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True, "auto": False},
         {"key": "crm_campaigns",   "label": "CRM Campaigns Sent",     "unit": "campaigns","org_wide": False,"higher_is_better": True,  "auto": False},
         {"key": "crm_revenue",     "label": "Revenue from CRM",       "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True},
     ],
@@ -198,6 +194,46 @@ def kpi_target_start_month(defn: dict, year: int) -> Optional[int]:
     if year < s_year:
         return 13
     return s_month if year == s_year else None
+
+
+def _manual_actual(
+    by_branch: Optional[dict[str, float]],
+    *,
+    all_branches_view: bool,
+    branch_key: Optional[str],
+    org_wide: bool,
+    is_pct: bool,
+) -> Optional[float]:
+    """The one hand-typed actual this view should show, out of the stored branches.
+
+    A manual number is per branch like any other. Flattening the rows to one
+    value per month — what this used to do — let whichever row the DB returned
+    last stand in for the group: on the All tab, Data Fill-Rate for Jun 2026
+    read 89.01, which was Saigon's, while the five branches ran 89.01–99.59.
+    The All tab has to combine them the way the auto path does — average a
+    rate, sum a count.
+
+    A number typed on the All tab saves with no branch and lands in the "all"
+    bucket. That is a real group-level entry — CRM Campaigns Sent has only ever
+    been recorded that way — so it still answers for the group. What it must not
+    do is answer for a *branch*: the branch query matches ``branch_id IS NULL``
+    as well as the branch, which is how one figure typed on the All tab came
+    back as four separate branches' Jul 2026 Data Fill-Rate (96.64 for Saigon,
+    1948, Oani and Osaka alike, a number none of them had reported).
+    """
+    if not by_branch:
+        return None
+    if org_wide:
+        return by_branch.get("all")
+    per_branch = {bk: v for bk, v in by_branch.items() if bk != "all"}
+    if not all_branches_view:
+        # A branch shows the number entered for it, and nothing else.
+        return per_branch.get(branch_key or "")
+    if per_branch:
+        vals = list(per_branch.values())
+        return round(sum(vals) / len(vals), 2) if is_pct else sum(vals)
+    # Nothing per branch — this KPI has only ever been entered for the group.
+    return by_branch.get("all")
 
 
 ROLE_META = {
@@ -1031,7 +1067,9 @@ def build_monthly_summary(
     _revenue_keys = {d["key"] for d in defs if d.get("is_revenue")}
 
     targets_map: dict[tuple, float] = {}        # (kpi_key, month) → target value (summed for All)
-    manual_actuals_map: dict[tuple, float] = {} # (kpi_key, month) → manual actual value
+    # (kpi_key, month) → {branch_key: manual actual}. Per branch, not one value
+    # per month — see _manual_actual for what flattening them cost.
+    manual_actuals_map: dict[tuple, dict[str, float]] = {}
     per_branch_targets_map: dict[tuple, dict[str, float]] = {}  # (kpi_key, month) → {branch_key: value}
     # Separate accumulator for branch revenue sums (merged after loop to avoid double-counting org-wide)
     _branch_rev_sums: dict[tuple, float] = {}
@@ -1040,7 +1078,8 @@ def build_monthly_summary(
             continue
         if row.kpi_key.endswith("__actual"):
             base_key = row.kpi_key[:-len("__actual")]
-            manual_actuals_map[(base_key, row.month)] = float(row.target_value)
+            bucket = BRANCH_UUID_TO_KEY.get(str(row.branch_id), "all") if row.branch_id else "all"
+            manual_actuals_map.setdefault((base_key, row.month), {})[bucket] = float(row.target_value)
         else:
             key = (row.kpi_key, row.month)
             raw_val = float(row.target_value)
@@ -1335,7 +1374,13 @@ def build_monthly_summary(
                     elif scale:
                         actual = round(actual / scale, decimals or 1)
             if actual is None and not is_future:
-                actual = manual_actuals_map.get((kpi_key, m))
+                actual = _manual_actual(
+                    manual_actuals_map.get((kpi_key, m)),
+                    all_branches_view=all_branches_view,
+                    branch_key=branch_key,
+                    org_wide=org_wide,
+                    is_pct=is_pct,
+                )
 
             # Upstream flags a value it may still revise (see the KPI's own
             # actuals fetcher for what "provisional" means for that source).
@@ -1470,9 +1515,6 @@ def build_monthly_summary(
             "higher_is_better": higher,
             "org_wide": org_wide,
             "auto_actuals": kpi_auto,
-            # Only countable on a month that has finished — flips which side of
-            # today the manual-entry window sits on.
-            "measured_at_month_end": defn.get("measured_at_month_end", False),
             "no_target": no_target,
             "computed_target": computed_target_t is not None,
             "computed_target_note": note,
