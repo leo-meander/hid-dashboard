@@ -683,25 +683,27 @@ class TestBuildHtml:
                  "achievement": {"actual_revenue": 9_000_000,
                                  "target_revenue": 30_000_000},
                  "pct": 30.0, "closed": False, "is_override": False},
-                {"label": "October 2026", "status": "upcoming",
-                 "achievement": {"actual_revenue": 2_000_000,
-                                 "target_revenue": 25_000_000},
-                 "pct": 8.0, "closed": False, "is_override": False},
             ],
         }
         return p
 
-    def test_the_months_ahead_get_their_own_gauges(self):
+    def test_the_month_ahead_gets_its_own_gauge(self):
         """The block exists to be planned against, not only reported from —
-        the reporting month leads, and the months after it follow so a soft
-        one is visible while there is still time to sell into it."""
+        the reporting month leads and the one after it follows, so a soft
+        month is visible while there is still time to sell into it. Two
+        gauges, not three: the second month out was cut (2026-08-17)."""
         html = self._render([self._lookahead_payload()])
         plain = re.sub(r"</?span[^>]*>", "", html)
 
         assert "September 2026: 30% booked" in plain
-        assert "October 2026: 8% booked" in plain
-        assert html.count("bw.target.") == 3
-        assert "months ahead" in html
+        assert html.count("bw.target.") == 2
+
+    def test_the_note_reads_singular_for_a_single_month_ahead(self):
+        """"The ones below it are the months ahead" over one card reads as a
+        rendering bug, which is how a manager learns to distrust the panel."""
+        html = self._render([self._lookahead_payload()])
+        assert "The one below it is the month ahead" in html
+        assert "the months ahead" not in html
 
     def test_an_upcoming_month_is_never_scored_as_a_failure(self):
         """30% of October sold in mid-August is normal pickup. Painting it

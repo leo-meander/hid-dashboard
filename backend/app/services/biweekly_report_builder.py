@@ -485,10 +485,11 @@ def _month_achievement(db: Session, branch: Branch, year: int, month: int,
 
 
 #: How many months past the reporting month the target gauges look ahead.
-#: Two is the planning horizon the team actually acts on — enough to see a
-#: soft month coming while a campaign can still be booked against it, short
-#: enough that the months shown still have targets set.
-TARGET_LOOKAHEAD_MONTHS = 2
+#: One. Two was tried and cut (2026-08-17): the second month out reads as
+#: noise — its pickup is so thin that the gauge says nothing a manager can
+#: act on this fortnight, and it pushed the month that IS actionable into a
+#: row of three.
+TARGET_LOOKAHEAD_MONTHS = 1
 
 
 def target_block(db: Session, branch: Branch, p: Period) -> dict:

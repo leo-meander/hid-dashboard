@@ -694,9 +694,14 @@ def _render_target(b: dict) -> str:
             f"<div style='display:grid;grid-template-columns:{'1fr ' * cols};"
             f"gap:12px;margin-top:12px;'>{rest}</div>"
         )
+        # Singular by default — the block ships showing one month ahead, and
+        # "the ones below" over a single card reads as a rendering bug.
+        subject = ("The ones below it are the months ahead: their percentage is"
+                   if len(ahead) > 1 else
+                   "The one below it is the month ahead: its percentage is")
         note = (
-            "The first gauge is the month this report covers. The ones below it "
-            "are the months ahead: their percentage is what is <b>already booked</b> "
+            f"The first gauge is the month this report covers. {subject} "
+            "what is <b>already booked</b> "
             "against that month's target, so the gap is what there is still time "
             "to sell. Same Target and Actual as the KPI Targets page; the vertical "
             "mark is the target."
