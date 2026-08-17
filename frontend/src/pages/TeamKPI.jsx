@@ -16,6 +16,37 @@ const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov
 const CURRENT_YEAR = new Date().getFullYear();
 const CURRENT_MONTH = new Date().getMonth() + 1; // 1-indexed
 
+// ── Which months are open for entry ───────────────────────────────────────────
+
+// One number per month across years, so "the month before this one" crosses a
+// year boundary without a special case (Jan 2027 → Dec 2026).
+const CURRENT_INDEX = CURRENT_YEAR * 12 + CURRENT_MONTH;
+const monthIndex = (year, month) => year * 12 + month;
+
+// The normal rule, used by every target cell and by most actual cells: this
+// month and anything ahead of it can be typed into, months that have already
+// run are settled.
+function isLockedMonth(year, month) {
+  return monthIndex(year, month) < CURRENT_INDEX;
+}
+
+// A month-end KPI is the mirror image. Front-desk data-entry accuracy can only
+// be counted over a finished month — read mid-month it scores an incomplete set
+// of check-ins — so the current month is the locked side and the closed months
+// are the open one. Months further back stay open on purpose: the number only
+// ever arrives by hand, so a month nobody got to has to remain fillable later.
+function isLockedActualMonth(kpi, year, month) {
+  return kpi.measured_at_month_end
+    ? monthIndex(year, month) >= CURRENT_INDEX
+    : isLockedMonth(year, month);
+}
+
+function lockedActualTitle(kpi) {
+  return kpi.measured_at_month_end
+    ? "Opens once the month has ended — this KPI can only be counted on a finished month"
+    : "Locked (past month)";
+}
+
 // ── Color helpers ─────────────────────────────────────────────────────────────
 
 // Every `pct` reaching this function is already direction-normalized by the
@@ -39,6 +70,7 @@ const COLOR_CLASSES = {
 // ── Per-KPI formula tooltips ──────────────────────────────────────────────────
 
 const KPI_TOOLTIPS = {
+  data_fill_rate:       "Front-desk data-entry accuracy — the share of check-ins recorded with complete, correct guest details. Entered by hand, and only once the month has ended: a rate read mid-month is scoring check-ins that haven't happened yet. So the current month stays locked and last month is the one open for entry. A month that was missed stays open too, so it can still be filled in.",
   delivery_rate:        "On-Time Delivery Rate — the same number as Nora's card in Task Overview. Formula: on-time ÷ scored × 100, where scored = completed tasks marked On-time or Late, grouped by Deadline month. Misses carrying a Late Reason are dropped from both sides, and tasks still open are not scored. Source: Lark Base, from Jul 2026.",
   task_completion_rate: "Team Task Completion Rate — all tasks across the team with a Deadline in that month, regardless of assignee. Formula: completed tasks ÷ total tasks due × 100. Source: Lark Base.",
   branch_kpi_rate:      "Branch KPI Achievement Rate — actual revenue (Cloudbeds or manual override, after deductions) ÷ target revenue × 100. Mirrors the Revenue KPI page formula.",
@@ -203,7 +235,7 @@ function YtdBars({ kpis }) {
 
 // ── Editable cell ─────────────────────────────────────────────────────────────
 
-function EditableCell({ value, onSave, placeholder = "—", disabled }) {
+function EditableCell({ value, onSave, placeholder = "—", disabled, disabledTitle = "Locked (past month)" }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef(null);
@@ -237,7 +269,7 @@ function EditableCell({ value, onSave, placeholder = "—", disabled }) {
   return (
     <button
       onClick={start}
-      title={disabled ? "Locked (past month)" : "Click to edit"}
+      title={disabled ? disabledTitle : "Click to edit"}
       className={`w-full text-center text-xs rounded px-1 py-0.5 transition-colors
         ${disabled ? "cursor-default text-gray-400" : "hover:bg-yellow-100 cursor-pointer text-gray-700"}
         ${value !== null && value !== undefined ? "font-medium" : "text-gray-300"}`}
@@ -472,7 +504,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                       ) : (
                         <EditableCell
                           value={m.target}
-                          disabled={year < CURRENT_YEAR || (year === CURRENT_YEAR && m.month < CURRENT_MONTH)}
+                          disabled={isLockedMonth(year, m.month)}
                           onSave={val => saveTarget(kpi.key, m.month, val)}
                           placeholder="—"
                         />
@@ -568,15 +600,27 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                     }
 
                     // Manual actual entry
+                    const actualLocked = isLockedActualMonth(kpi, year, m.month);
+                    // A month-end KPI withholds the month that is still
+                    // running. Grey it like the other cells nobody can type
+                    // into, so the row reads as "last month is what's due" —
+                    // but never over a value already there, which keeps its
+                    // achievement colour.
+                    const notYetCountable = actualLocked && !isLockedMonth(year, m.month);
                     return (
-                      <td key={m.month} className={`px-1 py-1.5 ${m.is_future ? "opacity-30 bg-gray-50" : cls ? cls.bg : "bg-white"}`}>
+                      <td key={m.month} className={`px-1 py-1.5 ${
+                        m.is_future ? "opacity-30 bg-gray-50"
+                        : cls ? cls.bg
+                        : notYetCountable ? "bg-gray-50"
+                        : "bg-white"}`}>
                         {isSaving ? (
                           <div className="flex justify-center"><div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" /></div>
                         ) : (
                           <div className="flex flex-col items-center gap-0.5">
                             <EditableCell
                               value={m.actual}
-                              disabled={year < CURRENT_YEAR || (year === CURRENT_YEAR && m.month < CURRENT_MONTH)}
+                              disabled={actualLocked}
+                              disabledTitle={lockedActualTitle(kpi)}
                               onSave={val => saveActual(kpi.key, m.month, val)}
                               placeholder="—"
                             />

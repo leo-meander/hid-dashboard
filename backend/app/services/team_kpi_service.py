@@ -107,7 +107,16 @@ KPI_DEFS: dict[str, list[dict]] = {
         {"key": "delivery_rate",   "label": "On-Time Delivery Rate",  "unit": "%",      "org_wide": True,  "higher_is_better": True,  "decimals": 1, "is_pct": True, "starts": "2026-07"},
     ],
     "crm": [
-        {"key": "data_fill_rate",  "label": "Data Fill-Rate",         "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True, "auto": False},
+        # measured_at_month_end: front-desk data-entry accuracy is counted over
+        # a finished month — a rate read while the month is still running is
+        # measuring an incomplete set of check-ins, not the team's accuracy.
+        # So the entry window is the mirror image of every other row's: the
+        # current month is locked and the closed months are open (see
+        # isLockedActualMonth in TeamKPI.jsx). Earlier months stay open too —
+        # this number only ever arrives by hand, so a month nobody filled in
+        # has to remain fillable later.
+        {"key": "data_fill_rate",  "label": "Data Fill-Rate",         "unit": "%",      "org_wide": False, "higher_is_better": True,  "decimals": 1, "is_pct": True, "auto": False,
+         "measured_at_month_end": True},
         {"key": "crm_campaigns",   "label": "CRM Campaigns Sent",     "unit": "campaigns","org_wide": False,"higher_is_better": True,  "auto": False},
         {"key": "crm_revenue",     "label": "Revenue from CRM",       "unit": "mil VND","org_wide": False, "higher_is_better": True,  "is_revenue": True},
     ],
@@ -1461,6 +1470,9 @@ def build_monthly_summary(
             "higher_is_better": higher,
             "org_wide": org_wide,
             "auto_actuals": kpi_auto,
+            # Only countable on a month that has finished — flips which side of
+            # today the manual-entry window sits on.
+            "measured_at_month_end": defn.get("measured_at_month_end", False),
             "no_target": no_target,
             "computed_target": computed_target_t is not None,
             "computed_target_note": note,
