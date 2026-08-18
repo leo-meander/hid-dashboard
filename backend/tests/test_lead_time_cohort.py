@@ -35,6 +35,7 @@ def _sql(**kwargs):
             kwargs.pop("lead_time_max", None),
             kwargs.pop("source", None),
             kwargs.pop("room_type_category", None),
+            kwargs.pop("date_basis", "reservation"),
         )
         return str(q.statement.compile(
             dialect=postgresql.dialect(),
@@ -108,6 +109,34 @@ def test_source_filter_escapes_like_wildcards():
 def test_no_source_filter_leaves_source_unconstrained():
     sql = _sql().lower()
     assert "reservations.source ilike" not in sql
+
+
+def test_checkin_basis_moves_the_window_to_check_in_date():
+    """date_basis="checkin" must filter check_in_date and stop filtering
+    reservation_date, otherwise the two bases silently return the same rows."""
+    sql = _sql(date_basis="checkin")
+    assert "reservations.check_in_date >= '2025-10-01'" in sql
+    assert "reservations.check_in_date <= '2025-12-31'" in sql
+    assert "reservations.reservation_date >= '2025-10-01'" not in sql
+    assert "reservations.reservation_date <= '2025-12-31'" not in sql
+
+
+def test_reservation_basis_is_the_default_and_unchanged():
+    """Adding a second basis must not move the existing default."""
+    assert _sql() == _sql(date_basis="reservation")
+    sql = _sql()
+    assert "reservations.reservation_date >= '2025-10-01'" in sql
+    assert "reservations.check_in_date >=" not in sql
+
+
+def test_both_bases_still_require_both_dates_and_keep_lead_time():
+    """Lead time is check_in - reservation on either basis, so neither column
+    may go unconstrained-null just because the window moved."""
+    for basis in ("reservation", "checkin"):
+        sql = _sql(date_basis=basis, lead_time_min=31)
+        assert "reservations.reservation_date IS NOT NULL" in sql
+        assert "reservations.check_in_date IS NOT NULL" in sql
+        assert "reservations.check_in_date - reservations.reservation_date >= 31" in sql
 
 
 def test_room_type_filter_matches_the_stored_category():

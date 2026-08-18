@@ -873,10 +873,17 @@ def build_lead_time_cohort_query(
     lead_time_max: Optional[int] = None,
     source: Optional[str] = None,
     room_type_category: Optional[str] = None,
+    date_basis: str = "reservation",
 ):
     """Query builder behind get_lead_time_cohort — split out so the filters can
     be asserted in tests without a live database."""
     lead_time_col = Reservation.check_in_date - Reservation.reservation_date
+    # Which date the window filters. Lead time stays check_in - reservation
+    # either way, so both columns are still required to be non-null.
+    window_col = (
+        Reservation.check_in_date if date_basis == "checkin"
+        else Reservation.reservation_date
+    )
 
     q = db.query(
         Reservation.branch_id,
@@ -900,8 +907,8 @@ def build_lead_time_cohort_query(
             or_(Reservation.room_type.is_(None), Reservation.room_type == "")
         ).label("room_type_unknown"),
     ).filter(
-        Reservation.reservation_date >= date_from,
-        Reservation.reservation_date <= date_to,
+        window_col >= date_from,
+        window_col <= date_to,
         Reservation.reservation_date.isnot(None),
         Reservation.check_in_date.isnot(None),
         ~func.lower(func.coalesce(Reservation.status, "")).in_(list(EXCLUDED_STATUSES)),
@@ -942,10 +949,13 @@ def get_lead_time_cohort(
     lead_time_max: Optional[int] = None,
     source: Optional[str] = None,
     room_type_category: Optional[str] = None,
+    date_basis: str = "reservation",
 ) -> list:
     """
-    Reservations BOOKED between date_from and date_to — filtered on
-    reservation_date, not check_in_date — whose lead time
+    Reservations in the [date_from, date_to] window — filtered on
+    reservation_date when date_basis="reservation" (default: when the booking
+    was made), or on check_in_date when date_basis="checkin" (when the stay
+    starts) — whose lead time
     (check_in_date - reservation_date) falls in [lead_time_min, lead_time_max].
 
     `source` is an optional case-insensitive substring on the raw source name
@@ -971,7 +981,7 @@ def get_lead_time_cohort(
     """
     return build_lead_time_cohort_query(
         db, branch_id, date_from, date_to, lead_time_min, lead_time_max,
-        source, room_type_category,
+        source, room_type_category, date_basis,
     ).all()
 
 
