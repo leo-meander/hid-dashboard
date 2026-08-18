@@ -1025,13 +1025,26 @@ def get_lead_time_cohort_endpoint(
     lead_time_max: Optional[int] = Query(None, ge=0),
     source: Optional[str] = Query(None),
     room_type_category: Optional[str] = Query(None),
+    date_basis: str = Query("reservation"),
     branch_id: Optional[UUID] = Query(None),
     db: Session = Depends(get_db),
 ):
     """
-    Bookings MADE in [date_from, date_to] — filtered on reservation_date, the
-    date the reservation was created, NOT check_in_date — narrowed to a lead
-    time band, grouped by branch.
+    Bookings in [date_from, date_to], narrowed to a lead time band, grouped
+    by branch.
+
+    date_basis picks which date the window filters:
+      "reservation" (default) — when the booking was MADE (reservation_date)
+      "checkin"               — when the STAY starts (check_in_date)
+    These select different populations and are not interchangeable: a booking
+    made in December with a 70-day lead time falls in a Q4 reservation window
+    but a Q1 check-in window. The response echoes date_field so the answer
+    always states which column it actually filtered.
+
+    Revenue is SUM(grand_total) — the whole reservation, counted once against
+    whichever date the basis selects. It is not per-night attribution, so a
+    stay straddling the window boundary still contributes its full value; for
+    revenue earned per stayed night, daily_metrics is the right source.
 
     lead_time = check_in_date - reservation_date, in days.
     The band is inclusive on both ends: lead_time_min <= lead_time <= lead_time_max.
@@ -1074,6 +1087,12 @@ def get_lead_time_cohort_endpoint(
             "error": "lead_time_max must be >= lead_time_min",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+    if date_basis not in ("reservation", "checkin"):
+        return {
+            "success": False, "data": None,
+            "error": 'date_basis must be "reservation" or "checkin"',
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
     if room_type_category and room_type_category.lower() not in ("room", "dorm"):
         # Rejected rather than passed through: an unrecognised value would match
         # no rows and return a table of zeros that reads like a real answer.
@@ -1085,20 +1104,23 @@ def get_lead_time_cohort_endpoint(
 
     cohort = get_lead_time_cohort(
         db, branch_id, date_from, date_to, lead_time_min, lead_time_max,
-        source, room_type_category,
+        source, room_type_category, date_basis,
     )
     # Same window, source and room type, no lead band — "of this slice, how
     # much is long-lead". Keeping room_type_category here matters: mixing a
     # Room-only numerator with an all-room-type denominator would understate
     # the share without anything in the output revealing it.
     totals_in_source = get_lead_time_cohort(
-        db, branch_id, date_from, date_to, 0, None, source, room_type_category,
+        db, branch_id, date_from, date_to, 0, None, source,
+        room_type_category, date_basis,
     )
     # Same window, no source / room type / lead band — "of everything, how much
     # is this". Identical to totals_in_source when neither narrowing filter was
     # asked for, so skip the second round-trip in that case.
     totals_all = totals_in_source if not (source or room_type_category) else (
-        get_lead_time_cohort(db, branch_id, date_from, date_to, 0, None, None, None)
+        get_lead_time_cohort(
+            db, branch_id, date_from, date_to, 0, None, None, None, date_basis,
+        )
     )
 
     by_branch = {str(r.branch_id): r for r in cohort}
@@ -1181,7 +1203,12 @@ def get_lead_time_cohort_endpoint(
     return _envelope({
         "date_from": date_from.isoformat(),
         "date_to": date_to.isoformat(),
-        "date_field": "reservation_date",
+        # Reported, never assumed: this is the column the window actually
+        # filtered. A hardcoded value here would misreport a checkin-based run.
+        "date_field": (
+            "check_in_date" if date_basis == "checkin" else "reservation_date"
+        ),
+        "date_basis": date_basis,
         "lead_time_min": lead_time_min,
         "lead_time_max": lead_time_max,
         "source": source,
