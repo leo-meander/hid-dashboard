@@ -22,7 +22,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.models.branch import Branch
@@ -872,6 +872,7 @@ def build_lead_time_cohort_query(
     lead_time_min: int = 0,
     lead_time_max: Optional[int] = None,
     source: Optional[str] = None,
+    room_type_category: Optional[str] = None,
 ):
     """Query builder behind get_lead_time_cohort — split out so the filters can
     be asserted in tests without a live database."""
@@ -891,6 +892,13 @@ def build_lead_time_cohort_query(
         func.percentile_disc(0.5).within_group(
             lead_time_col.asc()
         ).label("median_lead"),
+        # map_room_type_category defaults to "Room" whenever room_type is absent
+        # or unrecognised, so "Room" doubles as the catch-all bucket. Counting the
+        # rows with no raw room_type keeps that visible instead of letting
+        # unknowns quietly inflate a Room-only figure.
+        func.count(Reservation.id).filter(
+            or_(Reservation.room_type.is_(None), Reservation.room_type == "")
+        ).label("room_type_unknown"),
     ).filter(
         Reservation.reservation_date >= date_from,
         Reservation.reservation_date <= date_to,
@@ -912,6 +920,13 @@ def build_lead_time_cohort_query(
         # names, direct sources pass through verbatim, so an exact match on
         # "website" would return nothing. autoescape keeps % and _ literal.
         q = q.filter(Reservation.source.icontains(source, autoescape=True))
+    if room_type_category:
+        # Stored values are exactly "Room" / "Dorm" (map_room_type_category);
+        # compared case-insensitively so callers can pass "room".
+        q = q.filter(
+            func.lower(func.coalesce(Reservation.room_type_category, ""))
+            == room_type_category.lower()
+        )
     if branch_id:
         q = q.filter(Reservation.branch_id == branch_id)
 
@@ -926,6 +941,7 @@ def get_lead_time_cohort(
     lead_time_min: int = 0,
     lead_time_max: Optional[int] = None,
     source: Optional[str] = None,
+    room_type_category: Optional[str] = None,
 ) -> list:
     """
     Reservations BOOKED between date_from and date_to — filtered on
@@ -936,6 +952,12 @@ def get_lead_time_cohort(
     ("website" -> "Website/Booking Engine"). Note that source_category "Direct"
     is NOT a synonym for website: it also covers Walk-In, Extension, Phone,
     Facebook and others, so filtering on the category overstates website.
+
+    `room_type_category` is "Room" (private rooms) or "Dorm", matched
+    case-insensitively. Be aware that map_room_type_category assigns "Room" to
+    anything whose room_type is missing or does not contain "dorm", so the Room
+    bucket absorbs unclassifiable rows; the returned room_type_unknown count
+    says how many of them carried no room_type at all.
 
     lead_time_max=None means no upper bound. That is the reason this exists
     alongside get_booking_pace: booking-pace only expresses "lead <= N" and its
@@ -948,7 +970,8 @@ def get_lead_time_cohort(
     Returns one row per branch.
     """
     return build_lead_time_cohort_query(
-        db, branch_id, date_from, date_to, lead_time_min, lead_time_max, source
+        db, branch_id, date_from, date_to, lead_time_min, lead_time_max,
+        source, room_type_category,
     ).all()
 
 

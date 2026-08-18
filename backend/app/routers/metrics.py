@@ -1024,6 +1024,7 @@ def get_lead_time_cohort_endpoint(
     lead_time_min: int = Query(0, ge=0),
     lead_time_max: Optional[int] = Query(None, ge=0),
     source: Optional[str] = Query(None),
+    room_type_category: Optional[str] = Query(None),
     branch_id: Optional[UUID] = Query(None),
     db: Session = Depends(get_db),
 ):
@@ -1051,6 +1052,13 @@ def get_lead_time_cohort_endpoint(
       *_all_sources — same window, no source and no lead filter
                      ("of everything booked, how much is long-lead website")
 
+    room_type_category narrows to "Room" (private rooms) or "Dorm". Note that
+    map_room_type_category labels anything without "dorm" in its room_type as
+    "Room", including rows with no room_type at all, so Room is also the
+    catch-all bucket — room_type_unknown reports how many rows in the returned
+    cohort carried no room_type, and window totals stay on the same filter so
+    shares remain like-for-like.
+
     Revenue comes in native currency AND VND.
     Excludes cancelled/no-show and non-paying sources, matching /booking-pace.
     """
@@ -1066,19 +1074,31 @@ def get_lead_time_cohort_endpoint(
             "error": "lead_time_max must be >= lead_time_min",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+    if room_type_category and room_type_category.lower() not in ("room", "dorm"):
+        # Rejected rather than passed through: an unrecognised value would match
+        # no rows and return a table of zeros that reads like a real answer.
+        return {
+            "success": False, "data": None,
+            "error": 'room_type_category must be "Room" or "Dorm"',
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
 
     cohort = get_lead_time_cohort(
-        db, branch_id, date_from, date_to, lead_time_min, lead_time_max, source
+        db, branch_id, date_from, date_to, lead_time_min, lead_time_max,
+        source, room_type_category,
     )
-    # Same window and source, no lead band — "of this source, how much is long-lead".
+    # Same window, source and room type, no lead band — "of this slice, how
+    # much is long-lead". Keeping room_type_category here matters: mixing a
+    # Room-only numerator with an all-room-type denominator would understate
+    # the share without anything in the output revealing it.
     totals_in_source = get_lead_time_cohort(
-        db, branch_id, date_from, date_to, 0, None, source
+        db, branch_id, date_from, date_to, 0, None, source, room_type_category,
     )
-    # Same window, no source and no lead band — "of everything, how much is this".
-    # Identical to totals_in_source when no source filter was asked for, so skip
-    # the second round-trip in that case.
-    totals_all = totals_in_source if not source else get_lead_time_cohort(
-        db, branch_id, date_from, date_to, 0, None, None
+    # Same window, no source / room type / lead band — "of everything, how much
+    # is this". Identical to totals_in_source when neither narrowing filter was
+    # asked for, so skip the second round-trip in that case.
+    totals_all = totals_in_source if not (source or room_type_category) else (
+        get_lead_time_cohort(db, branch_id, date_from, date_to, 0, None, None, None)
     )
 
     by_branch = {str(r.branch_id): r for r in cohort}
@@ -1126,6 +1146,10 @@ def get_lead_time_cohort_endpoint(
             "avg_lead_days": round(_num(row.avg_lead), 2)
             if row and row.avg_lead is not None else None,
             "median_lead_days": row.median_lead if row else None,
+            # Rows counted here had no room_type, so their category was defaulted
+            # to "Room" rather than observed. Non-zero means a Room-only figure
+            # is carrying unclassified bookings.
+            "room_type_unknown": row.room_type_unknown if row else 0,
             "min_lead_days": row.min_lead if row else None,
             "max_lead_days": row.max_lead if row else None,
             # Denominators travel with every percentage — a share shown without
@@ -1161,5 +1185,6 @@ def get_lead_time_cohort_endpoint(
         "lead_time_min": lead_time_min,
         "lead_time_max": lead_time_max,
         "source": source,
+        "room_type_category": room_type_category,
         "branches": results,
     })

@@ -34,6 +34,7 @@ def _sql(**kwargs):
             kwargs.pop("lead_time_min", 0),
             kwargs.pop("lead_time_max", None),
             kwargs.pop("source", None),
+            kwargs.pop("room_type_category", None),
         )
         return str(q.statement.compile(
             dialect=postgresql.dialect(),
@@ -109,7 +110,57 @@ def test_no_source_filter_leaves_source_unconstrained():
     assert "reservations.source ilike" not in sql
 
 
+def test_room_type_filter_matches_the_stored_category():
+    sql = _sql(room_type_category="Room").lower()
+    assert "lower(coalesce(reservations.room_type_category" in sql
+    assert "'room'" in sql
+
+
+def test_room_type_filter_is_case_insensitive():
+    """Callers pass "room"; the column stores "Room"."""
+    assert _sql(room_type_category="room") == _sql(room_type_category="ROOM")
+
+
+def test_no_room_type_filter_leaves_category_unconstrained():
+    assert "room_type_category" not in _sql().lower()
+
+
+def test_unknown_room_type_is_always_counted():
+    """map_room_type_category defaults to "Room" when room_type is missing, so
+    Room silently absorbs unclassified rows. The count that exposes that must be
+    selected whether or not a room-type filter was asked for."""
+    for sql in (_sql(), _sql(room_type_category="Room")):
+        assert "room_type_unknown" in sql.lower()
+        assert "filter (where" in sql.lower()
+
+
 def test_grouped_per_branch_and_scopable_to_one():
     assert "GROUP BY reservations.branch_id" in _sql()
     scoped = _sql(branch_id="11111111-1111-1111-1111-111111111101")
     assert "reservations.branch_id = '11111111-1111-1111-1111-111111111101'" in scoped
+
+
+def test_invalid_room_type_is_rejected_not_silently_empty():
+    """An unrecognised room_type_category must fail loudly. Passing it through
+    would match no rows and hand back a table of zeros that reads like a real
+    answer. This also guards the validation itself: the first attempt used a
+    Query(pattern="^(?i)...") regex, which Python 3.11+ refuses to compile
+    because the inline flag is not at position 0 — the query-builder tests all
+    passed while the route was broken, because they never touch validation.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.routers import metrics
+
+    app = FastAPI()
+    app.include_router(metrics.router, prefix="/api/metrics")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.get("/api/metrics/lead-time-cohort", params={
+        "date_from": "2025-10-01", "date_to": "2025-12-31",
+        "room_type_category": "Suite",
+    })
+    body = resp.json()
+    assert body["success"] is False
+    assert "Room" in body["error"] and "Dorm" in body["error"]
+    assert body["data"] is None
