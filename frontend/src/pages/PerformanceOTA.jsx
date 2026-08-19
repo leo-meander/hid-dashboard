@@ -1,6 +1,13 @@
 /**
- * OTA Channel Mix — Cancel Rate & Check-in Rate pivot table
+ * OTA Channel Mix — Cancel Rate + a second rate pivot, by booking source
  * Same format as Channel Mix: channels × periods, two section blocks
+ *
+ * The second block depends on the date basis:
+ *   By Check-in Date → Check-in Rate  (channel's share of the period's check-ins)
+ *   By Date Booked   → Valid Booking Rate  (bookings that still stand ÷ bookings made)
+ * Check-in share on the booked basis mostly restated the check-in-date view, so
+ * the booked cohort gets the metric that actually belongs to it: how much of
+ * what we booked survived, cancellations and no-shows removed.
  */
 import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
@@ -39,6 +46,21 @@ function checkinBg(rate) {
   return { backgroundColor: `rgb(${r},${g},${b})` };
 }
 
+// Valid booking rate: mirror of the cancel bands (valid ≈ 100% − cancel − no-show)
+function validBg(rate) {
+  if (rate === null) return {};
+  if (rate < 0.75) return { backgroundColor: "#fca5a5" };   // red-300
+  if (rate < 0.90) return { backgroundColor: "#fde68a" };   // amber-200
+  return { backgroundColor: "#bbf7d0" };                    // green-200
+}
+
+function validTextColor(rate) {
+  if (rate === null) return "text-gray-400";
+  if (rate < 0.75) return "text-red-800 font-semibold";
+  if (rate < 0.90) return "text-amber-800";
+  return "text-green-800";
+}
+
 // ── main component ────────────────────────────────────────────────────────────
 export default function PerformanceOTA() {
   const { selected, isAll } = useBranch();
@@ -46,6 +68,7 @@ export default function PerformanceOTA() {
   const [months,   setMonths]   = useState(3);      // monthly mode: how many months to show
   const [dateType, setDateType] = useState("check_in");
 
+  const isBooked = dateType === "booked";
   const bParam = !isAll && selected ? `&branch_id=${selected}` : "";
   const mParam = mode === "monthly" ? `&months=${months}` : "";
 
@@ -64,7 +87,7 @@ export default function PerformanceOTA() {
         <div>
           <h1 className="text-xl font-bold text-gray-800">OTA Channel Mix</h1>
           <p className="text-sm text-gray-500">
-            Cancellation &amp; check-in rate by booking source
+            Cancellation &amp; {isBooked ? "valid booking" : "check-in"} rate by booking source
             <SyncBadge timestamp={data?.data_synced_at} />
           </p>
         </div>
@@ -127,7 +150,7 @@ export default function PerformanceOTA() {
         <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No data for this period.</div>
       ) : (
         <div className={"transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
-          <RatesPivotTable periods={data.periods} channels={data.channels} />
+          <RatesPivotTable periods={data.periods} channels={data.channels} isBooked={isBooked} />
         </div>
       )}
     </div>
@@ -135,7 +158,7 @@ export default function PerformanceOTA() {
 }
 
 // ── Pivot table with two sections ─────────────────────────────────────────────
-function RatesPivotTable({ periods, channels }) {
+function RatesPivotTable({ periods, channels, isBooked }) {
   const grandBookings = channels.reduce((s, ch) => s + (ch.total || 0), 0);
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
@@ -165,27 +188,37 @@ function RatesPivotTable({ periods, channels }) {
               grandTotal={grandBookings}
               cells={ch.cancel_cells}
               bgFn={cancelBg}
+              textFn={cancelTextColor}
+              countKey="total"
               valueKey="rate"
               altRow={i % 2 === 1}
             />
           ))}
           <TotalRow label="Avg cancel rate" periods={periods} channels={channels} grandTotal={grandBookings} />
 
-          {/* ── Check-in Rate section ── */}
-          <SectionHeader label="Check-in Rate %" colSpan={periods.length + 2} color="bg-green-700" />
+          {/* ── Second section: check-in share (check-in basis) or valid rate (booked basis) ── */}
+          <SectionHeader
+            label={isBooked ? "Valid Booking Rate % (excl. cancelled & no-show)" : "Check-in Rate %"}
+            colSpan={periods.length + 2}
+            color="bg-green-700"
+          />
           {channels.map((ch, i) => (
-            <DataRow key={`checkin-${ch.channel}`}
+            <DataRow key={`rate2-${ch.channel}`}
               channel={ch.channel}
               isDirect={ch.is_direct}
               total={ch.total}
               grandTotal={grandBookings}
-              cells={ch.checkin_cells}
-              bgFn={checkinBg}
+              cells={isBooked ? ch.valid_cells : ch.checkin_cells}
+              bgFn={isBooked ? validBg : checkinBg}
+              textFn={isBooked ? validTextColor : null}
+              countKey={isBooked ? "valid" : "checked_in"}
               valueKey="rate"
               altRow={i % 2 === 1}
             />
           ))}
-          <CheckinTotalRow periods={periods} channels={channels} grandTotal={grandBookings} />
+          {isBooked
+            ? <ValidTotalRow   periods={periods} channels={channels} grandTotal={grandBookings} />
+            : <CheckinTotalRow periods={periods} channels={channels} grandTotal={grandBookings} />}
         </tbody>
       </table>
 
@@ -205,8 +238,19 @@ function RatesPivotTable({ periods, channels }) {
           &gt;25% (bad)
         </span>
         <span className="text-gray-300 mx-2">|</span>
-        <span className="font-medium text-gray-400 uppercase tracking-wide">Check-in %:</span>
-        <span className="text-gray-400">source check-ins ÷ total check-ins all sources (sums to 100% per period)</span>
+        {isBooked ? (
+          <>
+            <span className="font-medium text-gray-400 uppercase tracking-wide">Valid Booking %:</span>
+            <span className="text-gray-400">
+              bookings still standing (all statuses except cancelled &amp; no-show) ÷ bookings made that period
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="font-medium text-gray-400 uppercase tracking-wide">Check-in %:</span>
+            <span className="text-gray-400">source check-ins ÷ total check-ins all sources (sums to 100% per period)</span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -223,7 +267,7 @@ function SectionHeader({ label, colSpan, color }) {
   );
 }
 
-function DataRow({ channel, isDirect, total, grandTotal, cells, bgFn, valueKey, altRow }) {
+function DataRow({ channel, isDirect, total, grandTotal, cells, bgFn, textFn, countKey, valueKey, altRow }) {
   const isLocalTA = channel === "Local travel agency";
   const rowBase = isDirect
     ? "bg-green-50 text-green-900"
@@ -249,10 +293,10 @@ function DataRow({ channel, isDirect, total, grandTotal, cells, bgFn, valueKey, 
       {cells.map((cell, ci) => {
         const rate     = cell[valueKey];
         const bg       = bgFn(rate);
-        const textCls  = bgFn === cancelBg ? cancelTextColor(rate) : "text-gray-800";
-        // Cancel section: show channel's total bookings for the period
-        // Check-in section: show channel's checked-in bookings for the period
-        const count = bgFn === cancelBg ? cell.total : cell.checked_in;
+        const textCls  = textFn ? textFn(rate) : "text-gray-800";
+        // The count under the rate is the numerator's cohort: total bookings in
+        // the cancel section, checked-in / still-valid bookings in the second.
+        const count = cell[countKey];
         return (
           <td key={ci} style={bg}
             className={`px-3 py-2 text-center text-xs tabular-nums ${textCls}`}>
@@ -314,6 +358,49 @@ function TotalRow({ label, periods, channels, grandTotal }) {
         {grandTotal > 0 ? (
           <div className="flex flex-col leading-tight">
             <span>{grandTotal.toLocaleString()}</span>
+            <span className="font-normal opacity-70 text-[11px]">({grandD > 0 ? pct(grandN / grandD) : "—"})</span>
+          </div>
+        ) : "—"}
+      </td>
+    </tr>
+  );
+}
+
+// Valid-booking section total row: weighted average across every channel
+function ValidTotalRow({ periods, channels, grandTotal }) {
+  const periodStats = periods.map((_, pi) => {
+    let validN = 0, totalD = 0;
+    channels.forEach(ch => {
+      const cell = ch.valid_cells?.[pi];
+      if (!cell) return;
+      validN += cell.valid;
+      totalD += cell.total;
+    });
+    return { rate: totalD > 0 ? validN / totalD : null, valid: validN };
+  });
+
+  const grandN = channels.reduce((s, ch) =>
+    s + (ch.valid_cells || []).reduce((ss, c) => ss + c.valid, 0), 0);
+  const grandD = channels.reduce((s, ch) =>
+    s + (ch.valid_cells || []).reduce((ss, c) => ss + c.total, 0), 0);
+
+  return (
+    <tr className="bg-gray-100 font-semibold text-gray-700 text-xs border-t border-gray-300">
+      <td className="px-4 py-2 sticky left-0 bg-gray-100 z-10 italic text-gray-500">Avg valid rate</td>
+      {periodStats.map((s, i) => (
+        <td key={i} className="px-3 py-2 text-center tabular-nums text-gray-600">
+          {s.rate !== null ? (
+            <div className="flex flex-col leading-tight">
+              <span>{pct(s.rate)}</span>
+              <span className="font-normal opacity-70 text-[11px]">({s.valid.toLocaleString()})</span>
+            </div>
+          ) : <span className="text-gray-300">—</span>}
+        </td>
+      ))}
+      <td className="px-3 py-2 text-center tabular-nums">
+        {grandTotal > 0 ? (
+          <div className="flex flex-col leading-tight">
+            <span>{grandN.toLocaleString()}</span>
             <span className="font-normal opacity-70 text-[11px]">({grandD > 0 ? pct(grandN / grandD) : "—"})</span>
           </div>
         ) : "—"}
