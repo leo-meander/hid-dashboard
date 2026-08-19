@@ -1063,33 +1063,71 @@ def get_channel_rates(
     branch_id: Optional[UUID],
     date_from: date,
     date_to: date,
+    date_basis: str = "checkin",
+    group_by: str = "channel",
+    source: Optional[str] = None,
+    source_category: Optional[str] = None,
 ) -> list[dict]:
-    """Cancellation rate and check-in rate by channel (individual OTA source or Direct).
-    Includes ALL statuses so cancelled bookings count toward the totals.
+    """Cancellation / no-show / check-in rates per booking channel.
+
+    Counts EVERY status, so cancelled bookings sit in the denominator — this is
+    the only place a cancel rate can be split by channel at all (daily_metrics
+    carries one blended number with no channel dimension).
+
+    date_basis:
+      "checkin"     — the window holds the arrivals scheduled in it (default;
+                      what Performance -> OTA shows).
+      "reservation" — the window holds the bookings MADE in it. That is the
+                      cohort basis: a period's cancellations measured against
+                      the bookings that produced them, rather than against a
+                      different period's arrivals.
+    group_by:
+      "channel" — Direct and Local travel agency rolled up under their category
+                  (dashboard behaviour).
+      "source"  — one row per raw source, so Website, Booking Engine and
+                  Extension stay separate instead of merging into "Direct".
+    source is a case-insensitive substring; source_category an exact
+    (case-insensitive) match. Both filter before grouping.
     """
     from sqlalchemy import case as sa_case
+
+    date_col = Reservation.reservation_date if date_basis == "reservation" else Reservation.check_in_date
+    # Status matching is lower-cased here: Cloudbeds writes "Cancelled" as well
+    # as "cancelled", and a case-sensitive IN quietly counted the capitalised
+    # ones as bookings that still stand.
+    status_l = func.lower(func.coalesce(Reservation.status, ""))
+    # coalesce before the NOT IN: lower(NULL) is NULL, so a source-less booking
+    # failed the filter and dropped out of the denominator entirely.
+    source_l = func.lower(func.coalesce(Reservation.source, ""))
 
     q = db.query(
         Reservation.source,
         Reservation.source_category,
         func.count(Reservation.id).label("total"),
-        func.sum(sa_case((Reservation.status.in_(["cancelled", "canceled"]), 1), else_=0)).label("cancelled"),
-        func.sum(sa_case((Reservation.status.in_(["no_show", "noshow"]), 1), else_=0)).label("no_show"),
-        func.sum(sa_case((Reservation.status.in_(["checked_in", "checked_out"]), 1), else_=0)).label("checked_in"),
+        func.sum(sa_case((status_l.in_(CANCELLED_STATUSES), 1), else_=0)).label("cancelled"),
+        func.sum(sa_case((status_l.in_(NO_SHOW_STATUSES), 1), else_=0)).label("no_show"),
+        func.sum(sa_case((status_l.in_(["checked_in", "checked_out"]), 1), else_=0)).label("checked_in"),
     ).filter(
-        Reservation.check_in_date >= date_from,
-        Reservation.check_in_date <= date_to,
-        func.lower(Reservation.source).notin_(list(EXCLUDED_SOURCES)),
+        date_col >= date_from,
+        date_col <= date_to,
+        date_col.isnot(None),
+        source_l.notin_(list(EXCLUDED_SOURCES)),
     )
     if branch_id:
         q = q.filter(Reservation.branch_id == branch_id)
+    if source:
+        q = q.filter(source_l.like(f"%{str(source).lower().strip()}%"))
+    if source_category:
+        q = q.filter(
+            func.lower(func.coalesce(Reservation.source_category, "")) == str(source_category).lower().strip()
+        )
 
     rows = q.group_by(Reservation.source, Reservation.source_category).all()
 
     channels: dict = {}
     for row in rows:
         cat = row.source_category or "OTA"
-        key = _channel_key(cat, row.source)
+        key = _channel_key(cat, row.source) if group_by == "channel" else (row.source or "Unknown")
         if key not in channels:
             channels[key] = {"total": 0, "cancelled": 0, "no_show": 0, "checked_in": 0, "category": cat}
         channels[key]["total"]      += row.total
@@ -1104,6 +1142,10 @@ def get_channel_rates(
         no_show      = v["no_show"]
         checked_in   = v["checked_in"]
         non_cancelled = total - cancelled
+        # Bookings that still stand — every status except cancelled and no-show.
+        # On the reservation basis this is the cohort's own rate; check-in rate
+        # says little there, since a fresh cohort has barely started arriving.
+        valid = max(0, total - cancelled - no_show)
         result.append({
             "channel":      channel,
             "category":     v["category"],
@@ -1112,7 +1154,9 @@ def get_channel_rates(
             "no_show":      no_show,
             "checked_in":   checked_in,
             "confirmed":    max(0, non_cancelled - no_show - checked_in),
+            "valid":        valid,
             "cancel_rate":  round(cancelled / total, 4) if total > 0 else 0,
+            "valid_rate":   round(valid / total, 4) if total > 0 else 0,
             "checkin_rate": round(checked_in / non_cancelled, 4) if non_cancelled > 0 else 0,
             "noshow_rate":  round(no_show / non_cancelled, 4) if non_cancelled > 0 else 0,
         })
