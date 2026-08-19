@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 # ── Exclusion filter constants (v2.0 — split OCC vs Revenue) ─────────────────
 EXCLUDED_STATUSES = {"cancelled", "canceled", "no_show", "noshow", "no show", "no-show"}
+# The two halves of EXCLUDED_STATUSES, for queries that count them separately.
+CANCELLED_STATUSES = ["cancelled", "canceled"]
+NO_SHOW_STATUSES = ["no_show", "noshow", "no show", "no-show"]
 
 # OCC: only exclude maintenance (inactive in PMS) — blogger/kol/house use/day use count occupancy
 EXCLUDED_SOURCES_OCC = {"maintain", "maintenance"}
@@ -1233,10 +1236,16 @@ def get_rates_trend(
     date_type: str = "check_in",
     months: int = 3,
 ) -> dict:
-    """Cancel rate & check-in rate pivot: per channel × per time period.
+    """Cancel rate, check-in share & valid-booking rate pivot: channel × period.
     mode: daily (last 7 days) | weekly (last 7 weeks) | monthly (last `months` months)
     date_type: check_in (by check-in date) | booked (by reservation/booking date)
     months: number of months to show in monthly mode (ignored for daily/weekly)
+
+    Every channel carries all three cell series; the caller picks which to show.
+    checkin_cells is a share of the period's check-ins across channels, so it
+    only tells you something on the check_in basis — on the booked basis a fresh
+    cohort has hardly checked in yet. valid_cells is the booked-basis companion:
+    bookings minus cancellations and no-shows, over bookings made.
     """
     months = max(1, months)
     from collections import defaultdict
@@ -1270,9 +1279,9 @@ def get_rates_trend(
         Reservation.source,
         Reservation.source_category,
         func.count(Reservation.id).label("total"),
-        func.sum(sa_case((Reservation.status.in_(["cancelled", "canceled"]), 1), else_=0)).label("cancelled"),
-        func.sum(sa_case((Reservation.status.in_(["no_show", "noshow"]), 1), else_=0)).label("no_show"),
-        func.sum(sa_case((Reservation.status.in_(["checked_in", "checked_out"]), 1), else_=0)).label("checked_in"),
+        func.sum(sa_case((func.lower(Reservation.status).in_(CANCELLED_STATUSES), 1), else_=0)).label("cancelled"),
+        func.sum(sa_case((func.lower(Reservation.status).in_(NO_SHOW_STATUSES), 1), else_=0)).label("no_show"),
+        func.sum(sa_case((func.lower(Reservation.status).in_(["checked_in", "checked_out"]), 1), else_=0)).label("checked_in"),
     ).filter(
         date_col >= date_from,
         date_col <= today,
@@ -1345,10 +1354,12 @@ def get_rates_trend(
     for channel in sorted_channels:
         cancel_cells  = []
         checkin_cells = []
+        valid_cells   = []
         for p in periods:
             v = period_channel.get(p, {}).get(channel) or _empty()
             total         = v["total"]
             cancelled     = v["cancelled"]
+            no_show       = v["no_show"]
             total_ckin    = period_total_checkin.get(p, 0)
             cancel_cells.append({
                 "total":     total,
@@ -1361,15 +1372,33 @@ def get_rates_trend(
                 "checked_in": v["checked_in"],
                 "rate":       round(v["checked_in"] / total_ckin, 4) if total_ckin > 0 else None,
             })
+            # Valid rate = bookings that still stand (everything except cancelled
+            # and no-show) / bookings made. Meaningful on the "booked" basis,
+            # where a fresh cohort has barely any check-ins yet: it answers "how
+            # much of what we booked survived", not "who has already arrived".
+            # Matches Cloudbeds' Date Booked filter with cancelled + no-show
+            # statuses unticked.
+            valid = total - cancelled - no_show
+            valid_cells.append({
+                "total": total,
+                "valid": valid,
+                "rate":  round(valid / total, 4) if total > 0 else None,
+            })
         result_channels.append({
             "channel":       channel,
             "is_direct":     channel == "Direct",
             "total":         channel_totals[channel],
             "cancel_cells":  cancel_cells,
             "checkin_cells": checkin_cells,
+            "valid_cells":   valid_cells,
         })
 
-    return {"mode": mode, "periods": labels, "channels": result_channels}
+    return {
+        "mode":      mode,
+        "date_type": date_type,
+        "periods":   labels,
+        "channels":  result_channels,
+    }
 
 
 def get_country_yoy(
