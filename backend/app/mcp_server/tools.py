@@ -317,6 +317,45 @@ def register_tools(mcp: FastMCP) -> None:
         })
 
     @mcp.tool()
+    def get_channel_rates(
+        branch_id: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        days: int = 30,
+        date_basis: str = "reservation",
+        group_by: str = "source",
+        source: Optional[str] = None,
+        source_category: Optional[str] = None,
+    ) -> dict:
+        """Cancel rate BY CHANNEL — the only tool that splits cancellations by
+        booking source. One row per source (Website, Booking Engine, Agoda,
+        Booking.com, Ctrip, Extension, Walk-in, ...) with bookings, cancelled,
+        no_show, cancel_rate_pct and valid_rate_pct, plus the same figures for
+        the equal-length period immediately before and the change in percentage
+        points. Use for any cancellation-rate question, and especially a
+        per-channel one ("cancel rate of guests who booked on the website",
+        "is Agoda cancelling more than Direct").
+
+        Do NOT derive a cancel rate from get_performance: its new_bookings
+        counts by booking date while its cancellations count by check-in date,
+        so one over the other divides two different cohorts — and it carries no
+        channel dimension.
+
+        date_basis='reservation' (default) measures a period's cancellations
+        against the bookings MADE in it — the cohort reading, and the right one
+        for "guests who booked in this window". date_basis='checkin' reads the
+        arrivals scheduled in the window instead, matching the Performance ->
+        OTA page. group_by='source' (default) keeps Website separate;
+        group_by='channel' rolls Direct up. Defaults to the last 30 days vs the
+        30 before. House Use and Maintenance are excluded; every status is
+        counted, cancelled included, so the denominator is whole."""
+        return _run("get_channel_rates", {
+            "branch_id": branch_id, "date_from": date_from, "date_to": date_to,
+            "days": days, "date_basis": date_basis, "group_by": group_by,
+            "source": source, "source_category": source_category,
+        })
+
+    @mcp.tool()
     def get_cancellation_leadtime(
         branch_id: Optional[str] = None,
         date_from: Optional[str] = None,

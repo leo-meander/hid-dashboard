@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.models.branch import Branch
 from app.services.persona_engine import build_all_personas
 from app.services.metrics_engine import (
+    get_channel_rates,
     get_daily_metrics,
     get_ota_mix,
 )
@@ -286,6 +287,52 @@ TOOL_DEFS: list[dict] = [
                 "branch_id": {"type": "string", "description": "UUID of branch, or 'all'. Defaults to all."},
                 "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD start of current period (reservation_date)."},
                 "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD end of current period (reservation_date)."},
+            },
+        },
+    },
+    {
+        "name": "get_channel_rates",
+        "description": (
+            "Cancel rate BY CHANNEL — the only tool that splits cancellations by "
+            "booking source. Each row is one source (Website, Booking Engine, "
+            "Agoda, Booking.com, Ctrip, Extension, Walk-in, ...) with bookings, "
+            "cancelled, no_show, cancel_rate_pct and valid_rate_pct, plus the same "
+            "for the equal-length period immediately before and the change in "
+            "percentage points. Use for ANY 'cancel rate' / 'cancellation rate' / "
+            "'ty le huy' question, especially per channel ('cancel rate of guests "
+            "who booked on the website', 'is Agoda cancelling more than Direct'). "
+            "DO NOT compute cancel rate from get_performance: its new_bookings "
+            "counts by booking date while its cancellations count by check-in "
+            "date, so dividing one by the other mixes two different cohorts, and "
+            "it has no channel dimension at all. "
+            "date_basis='reservation' (default) puts a period's cancellations over "
+            "the bookings MADE in that period — the cohort reading, and the right "
+            "one for 'guests who booked in this window'. date_basis='checkin' "
+            "instead reads the arrivals scheduled in the window, which is what the "
+            "Performance -> OTA page shows. Defaults to the last 30 days vs the 30 "
+            "before that. House Use and Maintenance rows are excluded; every other "
+            "status is counted, cancelled bookings included, so the denominator is "
+            "whole."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch_id": {"type": "string", "description": "UUID of branch, or 'all'. Defaults to current."},
+                "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD, start of the current period."},
+                "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD, end of the current period."},
+                "days": {"type": "integer", "description": "Window length when date_from/date_to are omitted. Default 30."},
+                "date_basis": {
+                    "type": "string",
+                    "enum": ["reservation", "checkin"],
+                    "description": "reservation = bookings made in the window (default); checkin = arrivals scheduled in it.",
+                },
+                "group_by": {
+                    "type": "string",
+                    "enum": ["source", "channel"],
+                    "description": "source = one row per raw source, keeps Website separate (default); channel = Direct rolled up.",
+                },
+                "source": {"type": "string", "description": "Case-insensitive substring on the source name, e.g. 'website', 'agoda'."},
+                "source_category": {"type": "string", "description": "'OTA' | 'Direct' | 'Local travel agency'."},
             },
         },
     },
@@ -1439,6 +1486,103 @@ def tool_get_cancellation_leadtime(db: Session, inp: dict, default_branch: Optio
     }
 
 
+def tool_get_channel_rates(db: Session, inp: dict, default_branch: Optional[str]) -> dict:
+    """Cancel rate per channel for a window and the equal window before it.
+
+    The blended cancel rate on daily_metrics has no channel dimension, and its
+    two halves are counted on different date bases — new_bookings by booking
+    date, cancellations by check-in date — so a rate divided out of them
+    compares two different cohorts. This reads reservations directly instead,
+    where booking source and status sit on the same row.
+    """
+    branch_id = _resolve_branch_id(inp.get("branch_id"), default_branch)
+
+    date_basis = str(inp.get("date_basis") or "reservation").lower()
+    if date_basis not in ("reservation", "checkin"):
+        date_basis = "reservation"
+    group_by = str(inp.get("group_by") or "source").lower()
+    if group_by not in ("source", "channel"):
+        group_by = "source"
+
+    d_from, d_to, prev_from, prev_to = _resolve_compare_windows(inp, date.today(), default_days=30)
+    bid = UUID(branch_id) if branch_id else None
+    kwargs = {
+        "date_basis": date_basis,
+        "group_by": group_by,
+        "source": inp.get("source"),
+        "source_category": inp.get("source_category"),
+    }
+    current = get_channel_rates(db, bid, d_from, d_to, **kwargs)
+    prior = get_channel_rates(db, bid, prev_from, prev_to, **kwargs)
+    prior_by_channel = {r["channel"]: r for r in prior}
+
+    def pct(part: int, whole: int) -> float:
+        return round(part / whole * 100, 2) if whole > 0 else 0.0
+
+    rows = []
+    for c in current:
+        p = prior_by_channel.get(c["channel"])
+        cur_rate = pct(c["cancelled"], c["total"])
+        prv_rate = pct(p["cancelled"], p["total"]) if p else None
+        row = {
+            "channel": c["channel"],
+            "source_category": c["category"],
+            "bookings": c["total"],
+            "cancelled": c["cancelled"],
+            "no_show": c["no_show"],
+            "valid_bookings": c["valid"],
+            "cancel_rate_pct": cur_rate,
+            "valid_rate_pct": pct(c["valid"], c["total"]),
+            "prior_bookings": p["total"] if p else 0,
+            "prior_cancelled": p["cancelled"] if p else 0,
+            "prior_cancel_rate_pct": prv_rate,
+            "cancel_rate_delta_pp": round(cur_rate - prv_rate, 2) if prv_rate is not None else None,
+        }
+        # Check-in rate only means something on the check-in basis. On the booked
+        # basis most of a fresh cohort has not arrived yet, so the figure would
+        # read as a collapse that never happened.
+        if date_basis == "checkin":
+            row["checkin_rate_pct"] = round(c["checkin_rate"] * 100, 2)
+        rows.append(row)
+
+    def totals(source_rows: list) -> dict:
+        bookings = sum(r["total"] for r in source_rows)
+        cancelled = sum(r["cancelled"] for r in source_rows)
+        no_show = sum(r["no_show"] for r in source_rows)
+        valid = sum(r["valid"] for r in source_rows)
+        return {
+            "bookings": bookings,
+            "cancelled": cancelled,
+            "no_show": no_show,
+            "valid_bookings": valid,
+            "cancel_rate_pct": pct(cancelled, bookings),
+            "valid_rate_pct": pct(valid, bookings),
+        }
+
+    cur_tot, prv_tot = totals(current), totals(prior)
+
+    return {
+        "metric": "cancel_rate_by_channel",
+        "date_basis": "reservation_date" if date_basis == "reservation" else "check_in_date",
+        "grouped_by": group_by,
+        "branch_id": branch_id or "all",
+        "current_period": {"date_from": d_from.isoformat(), "date_to": d_to.isoformat(), **cur_tot},
+        "prior_period": {"date_from": prev_from.isoformat(), "date_to": prev_to.isoformat(), **prv_tot},
+        "cancel_rate_delta_pp": round(cur_tot["cancel_rate_pct"] - prv_tot["cancel_rate_pct"], 2),
+        "filters": {"source": inp.get("source"), "source_category": inp.get("source_category")},
+        "exclusions": "House Use and Maintenance sources only — every status is counted, cancelled included.",
+        "note": (
+            "cancel_rate_pct = cancelled / bookings in the same window, on the same "
+            "date basis, so numerator and denominator are the one cohort. "
+            "valid_rate_pct = bookings that still stand (every status except "
+            "cancelled and no-show) / bookings. Deltas are in percentage points. "
+            "prior_cancel_rate_pct is null for a channel with no bookings in the "
+            "prior window."
+        ),
+        "channels": rows,
+    }
+
+
 # ── Dispatch ────────────────────────────────────────────────────────────────
 
 def tool_get_guest_persona(db: Session, inp: dict, default_branch: Optional[str]) -> dict:
@@ -1465,6 +1609,7 @@ TOOL_HANDLERS = {
     "get_extension_channel": tool_get_extension_channel,
     "get_blogger_channel": tool_get_blogger_channel,
     "get_cancellation_leadtime": tool_get_cancellation_leadtime,
+    "get_channel_rates": tool_get_channel_rates,
     "get_guest_persona": tool_get_guest_persona,
 }
 
