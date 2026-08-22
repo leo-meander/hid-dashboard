@@ -309,7 +309,10 @@ function RefreshKpiButton({ kpiKey, year, onRefresh }) {
     try {
       const d = await refreshAutoKpi(kpiKey, year, isCurrentYear ? CURRENT_MONTH : undefined);
       const ok = (d.synced || []).map(s => `${s.branch} ${s.speed_index_seconds}s`).join(", ");
-      const failed = (d.errors || []).map(e => e.branch).join(", ");
+      // The reason matters more than the branch — a PSI failure is almost
+      // always one config problem hitting all five at once.
+      const failed = (d.errors || [])
+        .map(e => (e.error ? `${e.branch} (${e.error})` : e.branch)).join("; ");
       setStatus({
         ok: !failed,
         text: failed ? `${d.synced.length} ok, ${d.errors.length} failed` : "Updated",
@@ -433,8 +436,13 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
             // produces a meaningless number. Its YTD is server-computed as
             // Σrevenue ÷ Σspend instead (see team_kpi_service.py).
             const ytdIsRatio = kpi.ytd_mode === "ratio";
+            // A level, not an accumulation: page load speed simply *is* ~3s
+            // each month, so its year figure is the mean of those months.
+            // Server-computed so the target row averages the same months.
+            const ytdIsAvg = kpi.ytd_mode === "avg";
+            const ytdServerSide = ytdIsQuery || ytdIsRatio || ytdIsAvg;
             const ytdSum = targetedMonths.filter(m => m.actual !== null).reduce((s, m) => s + m.actual, 0);
-            const ytdActual = (ytdIsQuery || ytdIsRatio) ? kpi.ytd_actual : (ytdSum > 0 ? ytdSum : null);
+            const ytdActual = ytdServerSide ? kpi.ytd_actual : (ytdSum > 0 ? ytdSum : null);
             // m.pct is already direction-normalized by the backend (higher =
             // better for every KPI), so this is a plain average.
             const actPcts = targetedMonths.filter(m => m.pct !== null).map(m => m.pct);
@@ -518,7 +526,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                         are not addable. "ratio" KPIs (ROAS) get a real
                         server-computed YTD target instead of a blank cell;
                         "query" KPIs (GA4 rates) have none to show. */}
-                    {ytdIsRatio
+                    {(ytdIsRatio || ytdIsAvg)
                       ? (kpi.ytd_target !== null && kpi.ytd_target !== undefined
                           ? kpi.ytd_target.toLocaleString(undefined, { maximumFractionDigits: kpi.decimals ?? 1 })
                           : "—")
@@ -627,6 +635,7 @@ function KpiGrid({ kpis, roleKey, branchId, year, autoActuals, onRefresh }) {
                       title={
                         ytdIsQuery ? "Year-to-date is its own query over Jan 1 → today — these months cannot be added together"
                         : ytdIsRatio ? "Year-to-date ROAS = total revenue ÷ total spend (VND) across the included months — not a sum of monthly ratios"
+                        : ytdIsAvg ? (kpi.ytd_note || "Year-to-date is the average of the included months, not their sum")
                         : undefined
                       }>
                     {ytdActual !== null && ytdActual !== undefined ? (

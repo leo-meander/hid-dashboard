@@ -2398,7 +2398,12 @@ def trigger_page_speed_sync(
     single past month (only meaningful for months on/after this KPI's
     automation start — PSI has no history API, so it can't backfill months
     before the sync existed)."""
-    from app.services.pagespeed_service import sync_page_speed
+    from app.services.pagespeed_service import page_speed_failure_detail, sync_page_speed
 
     result = sync_page_speed(db, year=year, month=month)
+    if not result["synced"]:
+        # A run that recorded nothing is a failed run. Returning 200 here let
+        # the monthly cron print "OK" for months where every branch 429'd, so
+        # the KPI silently stopped updating with nothing going red.
+        raise HTTPException(502, page_speed_failure_detail(result))
     return _envelope(result)

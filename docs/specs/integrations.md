@@ -217,7 +217,40 @@ reading per branch plus both candidate denominators.
 
 ---
 
-## 5. Future Integrations (Phase 7+)
+## 5. Google PageSpeed Insights
+
+Powers the Paid Ads KPI **Avg Website Load Speed**.
+
+- Endpoint: `GET https://www.googleapis.com/pagespeedonline/v5/runPagespeed`
+- Params: `url`, `strategy=mobile`, `category=performance`, `key`
+- Metric read: `lighthouseResult.audits.speed-index.numericValue` (ms → s).
+  Speed Index, not LCP — it is the number this KPI's history was built on.
+- Service: `backend/app/services/pagespeed_service.py`
+
+### `PAGESPEED_API_KEY` is required, not optional
+PSI is a *live synthetic test*, so there is no history to query — a run measures
+the month it runs in. It is triggered monthly by GitHub Actions on the 25th
+(`.github/workflows/cron-page-speed.yml` → `POST /api/sync/page-speed`), and
+on demand from the KPI grid's **Refresh now** button
+(`POST /api/team-kpi/refresh/page_load_speed`).
+
+Keyless calls are **quota 0** — Google's anonymous project reports
+`limit 'Queries per day' … quota_limit_value: "0"` and every request 429s
+instantly. With `PAGESPEED_API_KEY` empty, the KPI simply stops updating.
+Get a key at
+https://developers.google.com/speed/docs/insights/v5/get-started and set it in
+the backend environment (Zeabur).
+
+A sync where **no** branch answered returns HTTP 502, not 200 — so the cron
+goes red instead of printing `OK` over an empty result, and the grid's Refresh
+button shows Google's own error text.
+
+### Storage
+`page_speed_cache` (branch_id, year, month, speed_index_seconds, strategy,
+synced_at). One row per branch per month; the read path caches for 10 minutes
+and is invalidated by every sync.
+
+## 6. Future Integrations (Phase 7+)
 
 ### Meta Ads API 🔮
 - Graph API v19+
