@@ -512,12 +512,11 @@ def refresh_auto_kpi(
     if kpi_key not in REFRESHABLE_KPIS:
         raise HTTPException(400, f"kpi_key must be one of: {', '.join(sorted(REFRESHABLE_KPIS))}")
 
-    from app.services.pagespeed_service import sync_page_speed
+    from app.services.pagespeed_service import page_speed_failure_detail, sync_page_speed
 
     result = sync_page_speed(db, year=year, month=month)
     if not result["synced"]:
-        failed = ", ".join(e["branch"] for e in result["errors"]) or "no branches configured"
-        raise HTTPException(502, f"PageSpeed Insights returned nothing for any branch ({failed})")
+        raise HTTPException(502, page_speed_failure_detail(result))
     return {"success": True, "error": None, "data": {"kpi_key": kpi_key, **result}}
 
 

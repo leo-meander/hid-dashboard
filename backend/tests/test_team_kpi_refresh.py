@@ -87,7 +87,7 @@ def test_a_page_speed_sync_makes_its_own_reading_readable_immediately(monkeypatc
     # Pre-warm the read cache with a stale value, as a page load would.
     psi._page_speed_cache[YEAR] = (1e12, {CUR_MONTH: {"saigon": {"page_load_speed": 9.9}}})
 
-    monkeypatch.setattr(psi, "fetch_speed_index", lambda url: 4.2)
+    monkeypatch.setattr(psi, "fetch_speed_index", lambda url: (4.2, None))
     psi.sync_page_speed(db, year=YEAR, month=CUR_MONTH)
 
     fresh = psi.get_page_speed_actuals_yearly(db, YEAR)
@@ -113,14 +113,17 @@ def test_purchase_cvr_is_not_refreshable():
 
 
 def test_page_speed_refresh_reports_a_total_upstream_failure_as_an_error(monkeypatch):
-    """fetch_speed_index swallows its own failures and returns None. A refresh
-    where every branch came back None has changed nothing, so it must not
-    answer 200."""
-    monkeypatch.setattr(psi, "fetch_speed_index", lambda url: None)
+    """fetch_speed_index swallows its own failures and reports the reason. A
+    refresh where every branch came back empty has changed nothing, so it must
+    not answer 200 — and the reason has to reach the caller, because the fix is
+    always something only a human can do (set a key, wait out a quota)."""
+    monkeypatch.setattr(psi, "fetch_speed_index",
+                        lambda url: (None, "HTTP 429: Quota exceeded"))
 
     with pytest.raises(HTTPException) as exc:
         router_mod.refresh_auto_kpi("page_load_speed", year=YEAR, month=CUR_MONTH, db=_FakeDB())
     assert exc.value.status_code == 502
+    assert "Quota exceeded" in exc.value.detail
 
 
 def test_page_speed_refresh_names_the_branches_that_failed(monkeypatch):
@@ -128,10 +131,12 @@ def test_page_speed_refresh_names_the_branches_that_failed(monkeypatch):
     travel back in the payload rather than being silently dropped."""
     urls = psi.settings.pagespeed_url_map
     failing = psi.settings.PAGESPEED_URL_OSAKA
-    monkeypatch.setattr(psi, "fetch_speed_index", lambda url: None if url == failing else 3.1)
+    monkeypatch.setattr(psi, "fetch_speed_index",
+                        lambda url: (None, "HTTP 500") if url == failing else (3.1, None))
 
     out = router_mod.refresh_auto_kpi("page_load_speed", year=YEAR, month=CUR_MONTH, db=_FakeDB())
 
     data = out["data"]
     assert [e["branch"] for e in data["errors"]] == ["osaka"]
+    assert data["errors"][0]["error"] == "HTTP 500"
     assert len(data["synced"]) == len(urls) - 1

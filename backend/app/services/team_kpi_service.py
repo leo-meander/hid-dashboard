@@ -85,9 +85,16 @@ KPI_DEFS: dict[str, list[dict]] = {
         # Target is a fixed <3s goal rather than something planned per month, so
         # it auto-fills to 2.99 unless a cell is manually overridden. Lower is
         # better, so pct = actual/target×100 reads like budget_utilisation
-        # (>100% = slower than goal, not "ahead").
+        # (>100% = slower than goal, not "ahead"). Seconds are a level, not an
+        # amount, so nothing about this row ever sums: the group figure is the
+        # average of the five branch pages (five pages at 5.8s each is a 5.8s
+        # average, not a 29s website) and YTD is the average of the months.
         {"key": "page_load_speed", "label": "Avg Website Load Speed", "unit": "s", "org_wide": False,
-         "higher_is_better": False, "decimals": 1, "fixed_target": 2.99, "fixed_target_from": "2026-07"},
+         "higher_is_better": False, "decimals": 1, "fixed_target": 2.99, "fixed_target_from": "2026-07",
+         "avg_across_branches": True, "ytd_mode": "avg",
+         "all_view_label": "branch average",
+         "all_view_note": "Average of the branch pages tested, not their total — each branch site is measured separately and every branch counts equally.",
+         "ytd_note": "Year-to-date is the average of the months shown, not their sum — seconds from different months cannot be added."},
     ],
     "designer": [
         # Temporarily hidden (2026-08-06) — remove "hidden" to bring them back
@@ -202,7 +209,7 @@ def _manual_actual(
     all_branches_view: bool,
     branch_key: Optional[str],
     org_wide: bool,
-    is_pct: bool,
+    average: bool,
 ) -> Optional[float]:
     """The one hand-typed actual this view should show, out of the stored branches.
 
@@ -210,8 +217,8 @@ def _manual_actual(
     value per month — what this used to do — let whichever row the DB returned
     last stand in for the group: on the All tab, Data Fill-Rate for Jun 2026
     read 89.01, which was Saigon's, while the five branches ran 89.01–99.59.
-    The All tab has to combine them the way the auto path does — average a
-    rate, sum a count.
+    The All tab has to combine them the way the auto path does — ``average``
+    says which: a rate or a per-page measurement averages, a count sums.
 
     A number typed on the All tab saves with no branch and lands in the "all"
     bucket. That is a real group-level entry — CRM Campaigns Sent has only ever
@@ -231,7 +238,7 @@ def _manual_actual(
         return per_branch.get(branch_key or "")
     if per_branch:
         vals = list(per_branch.values())
-        return round(sum(vals) / len(vals), 2) if is_pct else sum(vals)
+        return round(sum(vals) / len(vals), 2) if average else sum(vals)
     # Nothing per branch — this KPI has only ever been entered for the group.
     return by_branch.get("all")
 
@@ -1051,9 +1058,12 @@ def build_monthly_summary(
         )
     # All view: load every branch + org-wide so we can sum per-branch targets
 
-    # is_pct KPIs are never summed across branches for the All view — the
-    # denominators differ, so a sum of percentages means nothing.
-    _pct_keys = {d["key"] for d in defs if d.get("is_pct")}
+    # Some KPIs are never summed across branches for the All view: percentages
+    # (the denominators differ, so a sum of them means nothing) and per-branch
+    # measurements like load speed (five 3s targets are not a 15s target).
+    _unsummable_keys = {
+        d["key"] for d in defs if d.get("is_pct") or d.get("avg_across_branches")
+    }
     # Most is_pct targets may have been entered as fractions (e.g. 0.9 = 90%);
     # normalize those on load. KPIs whose real targets are small percentages
     # opt out via normalize_fraction_targets — for them 1.8 means 1.8%.
@@ -1099,7 +1109,7 @@ def build_monthly_summary(
                         vnd_val = raw_val * rate
                     sum_val = round(vnd_val / 1_000_000, 3)
                     _branch_rev_sums[key] = round(_branch_rev_sums.get(key, 0.0) + sum_val, 3)
-                elif row.kpi_key in _pct_keys:
+                elif row.kpi_key in _unsummable_keys:
                     targets_map.setdefault(key, raw_val)
                 else:
                     # Count KPIs: sum across branches
@@ -1379,7 +1389,7 @@ def build_monthly_summary(
                     all_branches_view=all_branches_view,
                     branch_key=branch_key,
                     org_wide=org_wide,
-                    is_pct=is_pct,
+                    average=is_pct or defn.get("avg_across_branches", False),
                 )
 
             # Upstream flags a value it may still revise (see the KPI's own
@@ -1432,13 +1442,14 @@ def build_monthly_summary(
             note = pct_tmpl.format(pct=shown)
 
         # YTD: "sum" (the default — add up the monthly actuals), "query",
-        # for metrics whose months cannot legitimately be added together, or
+        # for metrics whose months cannot legitimately be added together,
         # "ratio" for a rate built from an underlying numerator/denominator
         # (ROAS) — same "can't add ratios" problem as "query" but computed
-        # from data already in hand instead of a live upstream call. A
-        # "query"/"ratio" KPI carries its own year-to-date reading and shows
-        # nothing when that reading is missing, rather than falling back to
-        # a sum.
+        # from data already in hand instead of a live upstream call — or
+        # "avg", the plain mean of the months, for a level that each month
+        # simply *is* (page load speed) rather than accumulates. A non-"sum"
+        # KPI carries its own year-to-date reading and shows nothing when
+        # that reading is missing, rather than falling back to a sum.
         ytd_mode = defn.get("ytd_mode", "sum")
         ytd_actual = None
         ytd_target = None
@@ -1503,6 +1514,23 @@ def build_monthly_summary(
             if tot_tested > 0:
                 ytd_actual = round(tot_wins / tot_tested * 100, decimals)
                 ytd_target = round(tot_target_tested / tot_tested, decimals)
+        elif ytd_mode == "avg":
+            # Mean of the months that count, on both rows. Target and actual
+            # average over the same months so the two stay comparable: a
+            # target row averaged over all twelve months against an actual
+            # row averaged over the months measured so far would be reading
+            # two different years against each other.
+            counted = [
+                cell for cell in monthly
+                if not cell["is_future"] and cell["has_target"] and cell["actual"] is not None
+            ]
+            if counted:
+                ytd_actual = round(
+                    sum(cell["actual"] for cell in counted) / len(counted), decimals
+                )
+                ytd_target = round(
+                    sum(cell["target"] for cell in counted) / len(counted), decimals
+                )
 
         kpis_out.append({
             "key": kpi_key,
@@ -1521,12 +1549,15 @@ def build_monthly_summary(
             "starts": starts_str,
             "starts_note": starts_note,
             "ytd_mode": ytd_mode,
+            "ytd_note": defn.get("ytd_note"),
             "ytd_actual": ytd_actual,
             "ytd_target": ytd_target,
-            # A caveat about this view specifically: either the number cannot
-            # be measured here at all, or it can only be approximated.
+            # A caveat about this view specifically: the number cannot be
+            # measured here at all, can only be approximated, or is combined
+            # across branches in a way worth naming.
             "view_note": (
-                {"label": "approximate", "text": defn["all_view_note"]}
+                {"label": defn.get("all_view_label", "approximate"),
+                 "text": defn["all_view_note"]}
                 if all_branches_view and defn.get("all_view_note") else None
             ),
             "provisional_note": defn.get("provisional_note"),

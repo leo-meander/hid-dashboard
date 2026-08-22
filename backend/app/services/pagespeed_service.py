@@ -42,24 +42,54 @@ BRANCH_KEY_TO_UUID: dict[str, str] = {
 }
 
 
-def fetch_speed_index(url: str) -> Optional[float]:
+def _upstream_reason(exc: Exception, resp: Optional[httpx.Response]) -> str:
+    """Google's own words for why the call failed, not a generic message.
+
+    PSI reports quota and key problems in a JSON ``error.message`` body. A
+    caller staring at "Failed" cannot act; "Quota exceeded … limit 'Queries
+    per day'" tells them exactly what to fix, so the upstream text is what
+    gets carried back to the KPI grid.
+    """
+    detail = ""
+    if resp is not None:
+        try:
+            detail = str(resp.json().get("error", {}).get("message") or "").strip()
+        except Exception:
+            detail = (resp.text or "").strip()[:200]
+        detail = f"HTTP {resp.status_code}: {detail}" if detail else f"HTTP {resp.status_code}"
+    else:
+        detail = f"{type(exc).__name__}: {exc}"
+    if resp is not None and resp.status_code == 429 and not settings.PAGESPEED_API_KEY:
+        # Keyless PSI is quota 0 as of 2026 — the anonymous project's
+        # "Queries per day" limit is literally zero, so every keyless call
+        # 429s instantly. Nothing in the app can fix that; only a key can.
+        detail += " — PAGESPEED_API_KEY is not set, and keyless PageSpeed Insights is rate-limited to zero queries per day"
+    return detail
+
+
+def fetch_speed_index(url: str) -> tuple[Optional[float], Optional[str]]:
     """Run a PageSpeed Insights (mobile) test against ``url``.
 
-    Returns Speed Index in seconds, or None on any failure — never raises,
-    same convention as every other upstream API call in this codebase.
+    Returns ``(speed_index_seconds, None)``, or ``(None, reason)`` on any
+    failure — never raises, same convention as every other upstream API call
+    in this codebase. The reason travels back to the caller because a failed
+    PSI run is nearly always a config problem (missing key, exhausted quota)
+    that only a human can clear, and they need to be told which one.
     """
     params = {"url": url, "strategy": "mobile", "category": "performance"}
     if settings.PAGESPEED_API_KEY:
         params["key"] = settings.PAGESPEED_API_KEY
+    resp = None
     try:
         resp = httpx.get(PSI_URL, params=params, timeout=DEFAULT_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         ms = data["lighthouseResult"]["audits"]["speed-index"]["numericValue"]
-        return round(float(ms) / 1000.0, 2)
+        return round(float(ms) / 1000.0, 2), None
     except Exception as exc:
-        log.error("PageSpeed Insights fetch failed for %s: %s", url, exc)
-        return None
+        reason = _upstream_reason(exc, resp if resp is not None and resp.is_error else None)
+        log.error("PageSpeed Insights fetch failed for %s: %s", url, reason)
+        return None, reason
 
 
 def sync_page_speed(db: Session, year: Optional[int] = None, month: Optional[int] = None) -> dict:
@@ -84,9 +114,9 @@ def sync_page_speed(db: Session, year: Optional[int] = None, month: Optional[int
     with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
         results = list(pool.map(lambda job: fetch_speed_index(job[1]), jobs))
 
-    for (branch_key, url, branch_uuid), seconds in zip(jobs, results):
+    for (branch_key, url, branch_uuid), (seconds, reason) in zip(jobs, results):
         if seconds is None:
-            errors.append({"branch": branch_key, "url": url})
+            errors.append({"branch": branch_key, "url": url, "error": reason})
             continue
 
         row = (
@@ -112,6 +142,21 @@ def sync_page_speed(db: Session, year: Optional[int] = None, month: Optional[int
     # to remove.
     invalidate_page_speed_cache(year)
     return {"synced": synced, "errors": errors, "year": year, "month": month}
+
+
+def page_speed_failure_detail(result: dict) -> str:
+    """One line explaining why a sync recorded nothing, for an HTTP 502 detail.
+
+    Every branch fails for the same reason (missing key, exhausted quota), so
+    the distinct reasons are shown once each rather than repeated per branch.
+    """
+    errors = result.get("errors") or []
+    if not errors:
+        return "PageSpeed Insights recorded nothing — no branch URLs are configured"
+    branches = ", ".join(e["branch"] for e in errors)
+    reasons = list(dict.fromkeys(e.get("error") for e in errors if e.get("error")))
+    why = f" — {'; '.join(reasons)}" if reasons else ""
+    return f"PageSpeed Insights returned nothing for any branch ({branches}){why}"
 
 
 _page_speed_cache: dict[int, tuple[float, dict]] = {}
