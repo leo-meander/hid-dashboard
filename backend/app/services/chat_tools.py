@@ -212,14 +212,20 @@ TOOL_DEFS: list[dict] = [
         "name": "get_country_profile",
         "description": (
             "Detailed booking profile for one or many source countries: lead time "
-            "(avg + 0-7/8-30/31-60/60+ buckets), length of stay — both blended "
+            "— blended (lead_time_avg_days + lead_time_distribution_pct) and split "
+            "by room type (lead_time_avg_days_room / lead_time_avg_days_dorm, plus "
+            "lead_time_distribution_pct_room / lead_time_distribution_pct_dorm, whose "
+            "0-7/8-30/31-60/60+ buckets are % of that room type's own bookings) — "
+            "length of stay, both blended "
             "(los_avg_nights) and split by room type (los_avg_nights_room = "
             "Private Room only, los_avg_nights_dorm = Dorm only) — pax distribution "
             "(solo=1 adult, couple=2, friends=3-4, family=5+), room type split "
-            "(Dorm vs Room), and revenue. Use when the user asks about lead time, "
+            "(Dorm vs Room), booking counts per room type (bookings_room / "
+            "bookings_dorm), and revenue. Use when the user asks about lead time, "
+            "how far ahead Dorm or Private Room guests book, "
             "pax/segment composition, room type by country, 'who books from X', "
-            "'what target should we run for X', Private-Room-only or Dorm-only LOS, "
-            "or any booking-behavior question. Pass `country` to drill into one "
+            "'what target should we run for X', Private-Room-only or Dorm-only LOS "
+            "or lead time, or any booking-behavior question. Pass `country` to drill into one "
             "country (also returns its top 5 room_type names); omit to get top N "
             "countries. Pass `date_from`/`date_to` (YYYY-MM-DD) for a specific "
             "historical window (e.g. a past quarter); omit both to use a rolling "
@@ -355,6 +361,29 @@ TOOL_DEFS: list[dict] = [
                 "branch_id": {"type": "string", "description": "UUID of branch, or 'all'. Defaults to current."},
                 "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD (by check-in date)"},
                 "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD (by check-in date)"},
+            },
+        },
+    },
+    {
+        "name": "get_guest_persona",
+        "description": (
+            "Whole-branch guest persona (the Persona page): age bands + avg age, "
+            "gender split, top source countries, OTA vs Direct mix, Room vs Dorm "
+            "split, party size (solo / couple / group), length of stay, ADR, "
+            "cancellation rate, cancellation lead time, and booking lead time — "
+            "avg + median blended, plus lead_time.by_room_type.dorm and "
+            ".by_room_type.room (each with avg_days, median_days, bookings). Use "
+            "for branch-level 'who stays with us', 'how far ahead do Dorm guests "
+            "book', 'lead time for Dorm / Private Room' (no country given), or any "
+            "persona question that is not sliced by source country — for a single "
+            "country use get_country_profile instead. `months` sets the look-back "
+            "window, default 12."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch_id": {"type": "string", "description": "UUID of branch, or 'all'. Defaults to current."},
+                "months": {"type": "integer", "description": "Look-back window in months, default 12."},
             },
         },
     },
@@ -1052,6 +1081,8 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
                AVG(nights) AS los_avg,
                AVG(nights) FILTER (WHERE room_type_category = 'Room') AS los_avg_room,
                AVG(nights) FILTER (WHERE room_type_category = 'Dorm') AS los_avg_dorm,
+               AVG(lead_days) FILTER (WHERE lead_days >= 0 AND room_type_category = 'Room') AS lead_avg_room,
+               AVG(lead_days) FILTER (WHERE lead_days >= 0 AND room_type_category = 'Dorm') AS lead_avg_dorm,
                COUNT(*) FILTER (WHERE adults = 1) AS p_solo,
                COUNT(*) FILTER (WHERE adults = 2) AS p_couple,
                COUNT(*) FILTER (WHERE adults BETWEEN 3 AND 4) AS p_group,
@@ -1065,6 +1096,16 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
                COUNT(*) FILTER (WHERE lead_days BETWEEN 31 AND 60) AS lt_31_60,
                COUNT(*) FILTER (WHERE lead_days > 60) AS lt_60_plus,
                COUNT(*) FILTER (WHERE lead_days IS NULL OR lead_days < 0) AS lt_unknown,
+               COUNT(*) FILTER (WHERE room_type_category = 'Dorm' AND lead_days BETWEEN 0 AND 7) AS dorm_lt_0_7,
+               COUNT(*) FILTER (WHERE room_type_category = 'Dorm' AND lead_days BETWEEN 8 AND 30) AS dorm_lt_8_30,
+               COUNT(*) FILTER (WHERE room_type_category = 'Dorm' AND lead_days BETWEEN 31 AND 60) AS dorm_lt_31_60,
+               COUNT(*) FILTER (WHERE room_type_category = 'Dorm' AND lead_days > 60) AS dorm_lt_60_plus,
+               COUNT(*) FILTER (WHERE room_type_category = 'Dorm' AND (lead_days IS NULL OR lead_days < 0)) AS dorm_lt_unknown,
+               COUNT(*) FILTER (WHERE room_type_category = 'Room' AND lead_days BETWEEN 0 AND 7) AS room_lt_0_7,
+               COUNT(*) FILTER (WHERE room_type_category = 'Room' AND lead_days BETWEEN 8 AND 30) AS room_lt_8_30,
+               COUNT(*) FILTER (WHERE room_type_category = 'Room' AND lead_days BETWEEN 31 AND 60) AS room_lt_31_60,
+               COUNT(*) FILTER (WHERE room_type_category = 'Room' AND lead_days > 60) AS room_lt_60_plus,
+               COUNT(*) FILTER (WHERE room_type_category = 'Room' AND (lead_days IS NULL OR lead_days < 0)) AS room_lt_unknown,
                COUNT(*) FILTER (WHERE gender = 'M') AS g_male,
                COUNT(*) FILTER (WHERE gender = 'F') AS g_female,
                COUNT(*) FILTER (WHERE gender IS NULL OR gender = 'N/A' OR gender = '') AS g_unknown,
@@ -1088,6 +1129,22 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
     for row in rows:
         r = row._mapping
         total = int(r["bookings"]) or 1
+        n_dorm = int(r["rt_dorm"] or 0)
+        n_room = int(r["rt_room"] or 0)
+
+        def lead_dist(prefix: str, den: int) -> Optional[dict]:
+            # Denominator is that room type's own bookings, so the buckets are
+            # read as "% of Dorm bookings", not % of everything. None (not a
+            # row of zeros) when the room type has no bookings in the window.
+            if not den:
+                return None
+            return {
+                "0_7_days": pct(int(r[f"{prefix}_lt_0_7"] or 0), den),
+                "8_30_days": pct(int(r[f"{prefix}_lt_8_30"] or 0), den),
+                "31_60_days": pct(int(r[f"{prefix}_lt_31_60"] or 0), den),
+                "60_plus_days": pct(int(r[f"{prefix}_lt_60_plus"] or 0), den),
+                "unknown": pct(int(r[f"{prefix}_lt_unknown"] or 0), den),
+            }
         age_unknown = int(r["a_unknown"] or 0)
         age_with_data = total - age_unknown
         out.append({
@@ -1096,6 +1153,10 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
             "bookings": int(r["bookings"]),
             "revenue_vnd": float(r["revenue_vnd"] or 0),
             "lead_time_avg_days": round(float(r["lead_avg"]), 1) if r["lead_avg"] is not None else None,
+            "lead_time_avg_days_room": round(float(r["lead_avg_room"]), 1) if r["lead_avg_room"] is not None else None,
+            "lead_time_avg_days_dorm": round(float(r["lead_avg_dorm"]), 1) if r["lead_avg_dorm"] is not None else None,
+            "bookings_room": n_room,
+            "bookings_dorm": n_dorm,
             "los_avg_nights": round(float(r["los_avg"]), 2) if r["los_avg"] is not None else None,
             "los_avg_nights_room": round(float(r["los_avg_room"]), 2) if r["los_avg_room"] is not None else None,
             "los_avg_nights_dorm": round(float(r["los_avg_dorm"]), 2) if r["los_avg_dorm"] is not None else None,
@@ -1118,6 +1179,8 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
                 "60_plus_days": pct(int(r["lt_60_plus"]), total),
                 "unknown": pct(int(r["lt_unknown"]), total),
             },
+            "lead_time_distribution_pct_room": lead_dist("room", n_room),
+            "lead_time_distribution_pct_dorm": lead_dist("dorm", n_dorm),
             "gender_split_pct": {
                 "male": pct(int(r["g_male"] or 0), total),
                 "female": pct(int(r["g_female"] or 0), total),

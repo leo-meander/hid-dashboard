@@ -200,6 +200,22 @@ def build_persona(db: Session, branch: Branch, df: date, dt: date) -> dict:
         "avg_days": round(float(lead_row[0]), 1) if lead_row[0] is not None else None,
         "median_days": round(float(lead_row[1]), 1) if lead_row[1] is not None else None,
     }
+    # Dorm and Private Room book on different horizons, and a blended average
+    # hides that — split the same cohort by room_type_category.
+    by_room_type = {}
+    for key, category in (("room", "Room"), ("dorm", "Dorm")):
+        rt_row = db.query(
+            func.count(Reservation.id),
+            func.avg(lead_expr),
+            func.percentile_cont(0.5).within_group(lead_expr.asc()),
+        ).filter(base, Reservation.reservation_date.isnot(None), lead_expr >= 0,
+                 Reservation.room_type_category == category).first()
+        by_room_type[key] = {
+            "bookings": int(rt_row[0] or 0),
+            "avg_days": round(float(rt_row[1]), 1) if rt_row[1] is not None else None,
+            "median_days": round(float(rt_row[2]), 1) if rt_row[2] is not None else None,
+        }
+    persona["lead_time"]["by_room_type"] = by_room_type
 
     # ── Cancellation lead time (cancelled cohort: how far ahead they cancel) ─
     # lead_days = check_in − cancel date. >0 = cancelled in advance; <=0 = on
