@@ -5,7 +5,13 @@ the compare-window math is pure and is where off-by-one bugs hide, so it's
 covered here."""
 from datetime import date
 
-from app.services.chat_tools import _resolve_compare_windows, _resolve_window, TOOL_DEFS, TOOL_HANDLERS
+from app.services.chat_tools import (
+    _resolve_compare_windows,
+    _resolve_window,
+    tool_get_country_profile,
+    TOOL_DEFS,
+    TOOL_HANDLERS,
+)
 
 
 def test_default_days_window_is_last_7_vs_prior_7():
@@ -70,3 +76,88 @@ def test_country_profile_schema_advertises_date_range_and_room_type_los():
     assert "date_from" in props and "date_to" in props
     assert "Private Room only" in schema["description"]
     assert "los_avg_nights_room" in schema["description"]
+
+
+def test_country_profile_schema_advertises_room_type_lead_time():
+    # The chatbot used to answer "lead time for Dorm?" with "the tool only
+    # splits LOS by room type" — it must now see the lead-time split too.
+    schema = next(t for t in TOOL_DEFS if t["name"] == "get_country_profile")
+    desc = schema["description"]
+    assert "lead_time_avg_days_dorm" in desc
+    assert "lead_time_distribution_pct_dorm" in desc
+
+
+def test_guest_persona_is_advertised_to_the_chat_model():
+    # It had a handler but no schema, so the chat model could never call it —
+    # branch-wide persona questions (incl. Dorm lead time) went unanswered.
+    schema = next(t for t in TOOL_DEFS if t["name"] == "get_guest_persona")
+    assert "by_room_type" in schema["description"]
+    assert "months" in schema["input_schema"]["properties"]
+
+
+class _FakeRow:
+    def __init__(self, mapping):
+        self._mapping = mapping
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+
+class _FakeDB:
+    """Returns one canned country row, then an empty top-room-types result."""
+
+    def __init__(self, mapping):
+        self._results = [_FakeResult([_FakeRow(mapping)]), _FakeResult([])]
+
+    def execute(self, *_args, **_kwargs):
+        return self._results.pop(0)
+
+
+def _country_row(**overrides):
+    mapping = {
+        "guest_country": "China", "guest_country_code": "CN",
+        "bookings": 100, "revenue_vnd": 0,
+        "lead_avg": 10.0, "lead_avg_room": 30.0, "lead_avg_dorm": 5.0,
+        "los_avg": 2.0, "los_avg_room": 2.0, "los_avg_dorm": 2.0,
+        "p_solo": 0, "p_couple": 0, "p_group": 0, "p_family": 0, "p_unknown": 100,
+        "rt_dorm": 80, "rt_room": 20, "rt_unknown": 0,
+        "lt_0_7": 60, "lt_8_30": 20, "lt_31_60": 10, "lt_60_plus": 10, "lt_unknown": 0,
+        "dorm_lt_0_7": 60, "dorm_lt_8_30": 20, "dorm_lt_31_60": 0,
+        "dorm_lt_60_plus": 0, "dorm_lt_unknown": 0,
+        "room_lt_0_7": 0, "room_lt_8_30": 0, "room_lt_31_60": 10,
+        "room_lt_60_plus": 10, "room_lt_unknown": 0,
+        "g_male": 0, "g_female": 0, "g_unknown": 100,
+        "age_avg": None, "a_18_24": 0, "a_25_34": 0, "a_35_44": 0,
+        "a_45_54": 0, "a_55_plus": 0, "a_unknown": 100,
+    }
+    mapping.update(overrides)
+    return mapping
+
+
+def test_country_profile_splits_lead_time_by_room_type():
+    out = tool_get_country_profile(_FakeDB(_country_row()), {"country": "China"}, None)
+    c = out["countries"][0]
+    assert c["lead_time_avg_days_dorm"] == 5.0
+    assert c["lead_time_avg_days_room"] == 30.0
+    assert c["bookings_dorm"] == 80 and c["bookings_room"] == 20
+    # Buckets are % of that room type's own bookings (60/80), not of all 100 —
+    # otherwise a Dorm-heavy country reads as if Dorm books later than it does.
+    assert c["lead_time_distribution_pct_dorm"]["0_7_days"] == 75.0
+    assert c["lead_time_distribution_pct_dorm"]["8_30_days"] == 25.0
+    assert c["lead_time_distribution_pct_room"]["31_60_days"] == 50.0
+
+
+def test_country_profile_omits_room_type_buckets_when_no_such_bookings():
+    # No Dorm bookings must read as "no data", never as a row of 0%.
+    row = _country_row(rt_dorm=0, rt_room=100, lead_avg_dorm=None,
+                       dorm_lt_0_7=0, dorm_lt_8_30=0, room_lt_0_7=60,
+                       room_lt_8_30=20, room_lt_31_60=10, room_lt_60_plus=10)
+    c = tool_get_country_profile(_FakeDB(row), {"country": "Japan"}, None)["countries"][0]
+    assert c["lead_time_distribution_pct_dorm"] is None
+    assert c["lead_time_avg_days_dorm"] is None
+    assert c["lead_time_distribution_pct_room"]["0_7_days"] == 60.0

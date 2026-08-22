@@ -232,17 +232,23 @@ def register_tools(mcp: FastMCP) -> None:
         limit: int = 10,
     ) -> dict:
         """Detailed booking profile for one or many source countries: lead time
-        (avg + 0-7 / 8-30 / 31-60 / 60+ buckets), length of stay — both blended
-        (los_avg_nights) and split by room type (los_avg_nights_room = Private
-        Room only, los_avg_nights_dorm = Dorm only) — pax distribution (solo=1
-        adult, couple=2, friends=3-4, family=5+), room type split (Dorm vs Room),
+        — blended (lead_time_avg_days + lead_time_distribution_pct with 0-7 /
+        8-30 / 31-60 / 60+ buckets) and split by room type
+        (lead_time_avg_days_room / lead_time_avg_days_dorm, plus
+        lead_time_distribution_pct_room / lead_time_distribution_pct_dorm, whose
+        buckets are % of that room type's own bookings) — length of stay, both
+        blended (los_avg_nights) and split by room type (los_avg_nights_room =
+        Private Room only, los_avg_nights_dorm = Dorm only) — pax distribution
+        (solo=1 adult, couple=2, friends=3-4, family=5+), room type split (Dorm
+        vs Room), bookings per room type (bookings_room / bookings_dorm),
         revenue, gender split (male/female %), and age distribution (18-24 /
         25-34 / 35-44 / 45-54 / 55+ buckets, avg age, data coverage %).
 
-        Use when the user asks about lead time, pax/segment composition, room
+        Use when the user asks about lead time, how far ahead Dorm or Private
+        Room guests book, pax/segment composition, room
         type by country, 'who books from X', 'what target should we run for X',
         guest persona, age group, gender breakdown, Private-Room-only or
-        Dorm-only LOS, or any booking-behavior question. Pass `country` to
+        Dorm-only LOS or lead time, or any booking-behavior question. Pass `country` to
         drill into one country (also returns its top 5 room_type names); omit
         to get top N countries. Pass `date_from`/`date_to` (YYYY-MM-DD) for an
         explicit historical window — e.g. a past quarter like Q4 last year —
@@ -265,12 +271,14 @@ def register_tools(mcp: FastMCP) -> None:
         """Full guest persona for one or all branches: age group (18-24/25-34/…),
         avg age, gender split (M/F %), top source countries, OTA vs Direct channel
         mix, Room vs Dorm split, party size (solo/couple/group), avg pax, length
-        of stay, lead time, ADR, cancellation rate, cancellation lead time, and
-        demographic data coverage %.
+        of stay, lead time (avg + median blended, plus lead_time.by_room_type.dorm
+        and .by_room_type.room — each with avg_days, median_days, bookings), ADR,
+        cancellation rate, cancellation lead time, and demographic data coverage %.
 
         Use when the user asks about guest persona, who our guests are, age of
-        guests, gender breakdown, typical traveller profile, target audience, or
-        any holistic 'who stays with us' question. Returns the same data as the
+        guests, gender breakdown, typical traveller profile, target audience,
+        how far ahead Dorm or Private Room guests book (branch-wide, no country
+        given), or any holistic 'who stays with us' question. Returns the same data as the
         Persona page in the dashboard. Pass `branch_id` to get one branch;
         omit for all branches. `months` controls the look-back window (default 12)."""
         return _run("get_guest_persona", {"branch_id": branch_id, "months": months})
