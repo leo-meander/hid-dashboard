@@ -72,6 +72,17 @@ MAX_STAY_MONTHS = 12
 # assumption, and it lives here where it can be found and raised.
 MAX_STAY_DAYS = 400
 
+# The seasonal norm is a ratio of two year-ago windows, and a ratio is only as
+# steady as its denominator. 1948's December ran 12 room-nights in one window
+# and 14 in the next: a norm of 1.17x that a five-night wobble would have moved
+# by forty per cent, while the group's own December over the same stretch ran
+# 4.47x. Publishing the 1.17x would have turned a raw 3.25x into "2.8x ahead of
+# normal" when the fuller picture says it is behind. Below this many room-nights
+# in the year-ago denominator, no norm is offered at all — the page says the
+# figure is unchecked, which is the truth. The floor is a judgement, not a
+# derivation: it is set where a handful of nights stops swinging the answer.
+MIN_NORM_BASE_ROOM_NIGHTS = 30
+
 
 # ── small helpers ────────────────────────────────────────────────────────────
 
@@ -475,6 +486,12 @@ def get_fill_pace(
     src_category: dict[str, str] = {}
     br_cur: dict[str, list[dict]] = {}
     br_ly: dict[str, list[dict]] = {}
+    # The window immediately before this one, same stay month — and what last
+    # year did across that same pair, which is the only way to tell a real
+    # acceleration from the natural one. See _compare_windows.
+    prev_summaries: list[dict] = []
+    prev_curves: list[list[dict]] = []
+    ly_prev_summaries: list[dict] = []
 
     for (year, month) in months:
         month_start, _, dim = month_bounds(year, month)
@@ -487,8 +504,16 @@ def get_fill_pace(
         scoped = [r for r in rows if _matches_sources(r, wanted)]
         curve, summary = build_curve(scoped, as_of_dates)
 
+        # No second query: the rows for this stay month hold every booking date
+        # already, so the previous window is the same set walked again over an
+        # earlier list of as-of dates.
+        prev_dates = [d - timedelta(days=days) for d in as_of_dates]
+        prev_curve, prev_summary = build_curve(scoped, prev_dates)
+
         cur_summaries.append(summary)
         cur_curves.append(curve)
+        prev_summaries.append(prev_summary)
+        prev_curves.append(prev_curve)
         _accumulate(src_cur, _group_summaries(rows, as_of_dates, _source_key))
         _accumulate(br_cur, _group_summaries(scoped, as_of_dates, _branch_key))
         for r in rows:
@@ -519,6 +544,9 @@ def get_fill_pace(
             _accumulate(br_ly, _group_summaries(ly_scoped, ly_dates, _branch_key))
             for r in ly_all:
                 src_category.setdefault(_source_key(r), r.source_category or "OTA")
+
+            ly_prev_dates = [d - timedelta(days=days) for d in ly_dates]
+            ly_prev_summaries.append(build_curve(ly_scoped, ly_prev_dates)[1])
 
             month_row["last_year"] = {
                 "stay_month": f"{year - 1:04d}-{month:02d}",
@@ -582,6 +610,12 @@ def get_fill_pace(
             ],
             **_decorate(ly_total, ly_available, include_final=True),
         }
+        # How much of the month last year had actually sold by this point. At
+        # 84 days out that is 3-5% for this group, which is the single number
+        # that says how early any of this is being read.
+        result["last_year"]["share_of_final_pct"] = pct(
+            ly_total["otb_room_nights"], ly_total["final_room_nights"]
+        )
         if single:
             result["last_year"]["as_of"] = month_rows[0]["last_year"]["as_of"]
             result["last_year"]["window"] = month_rows[0]["last_year"]["window"]
@@ -601,6 +635,25 @@ def get_fill_pace(
             if single:
                 point["days_out"] = month_rows[0]["days_out"]["from"] - i
 
+    prev_curve = _sum_curves(prev_curves)
+    for i, point in enumerate(curve):
+        point["prev_day_room_nights"] = prev_curve[i]["day_room_nights"]
+        point["prev_otb_room_nights"] = prev_curve[i]["otb_room_nights"]
+        point["prev_date"] = prev_curve[i]["date"]
+
+    prev_total = _sum_summaries(prev_summaries)
+    prev_window_from = window_from - timedelta(days=days)
+    result["previous_period"] = {
+        "window": {
+            "from": prev_window_from.isoformat(),
+            "to": (window_from - timedelta(days=1)).isoformat(),
+        },
+        "days": days,
+        **_decorate(prev_total, available),
+    }
+    ly_prev_total = _sum_summaries(ly_prev_summaries) if compare_last_year else None
+    result["vs_previous_period"] = _compare_windows(total, prev_total, ly_prev_total,
+                                                    result.get("last_year"))
     result["curve"] = curve
     result["by_source"] = _assemble(
         src_cur, src_ly, available, ly_available, compare_last_year,
@@ -622,6 +675,52 @@ def get_fill_pace(
             ly_avail_of=lambda k: branches[k]["units"] * ly_stay_days,
         )
     return result
+
+
+def _compare_windows(
+    now: dict,
+    before: dict,
+    ly_before: Optional[dict],
+    ly_now: Optional[dict],
+) -> dict:
+    """This booking window against the one before it, same stay month.
+
+    The raw ratio is nearly useless on its own and the page must never show it
+    alone. Bookings arrive faster as check-in approaches, so a window beats the
+    one before it whether or not anything was done: measured across settled
+    months this group runs 1.5x to 4.6x window over window, never below 1. A
+    "3.2x" therefore means nothing until you know whether the norm for that
+    stretch was 1.5x or 4.5x.
+
+    `natural` is what last year did between the same two countdown positions,
+    and `excess` is the raw ratio divided by it — above 1 means genuinely
+    outpacing the seasonal shape, below 1 means falling behind it while still
+    posting a number greater than one.
+
+    Where there is no year-ago volume to divide by — or too little of it, see
+    MIN_NORM_BASE_ROOM_NIGHTS — `natural` and `excess` are None. That is not a
+    gap to paper over: it is the honest state for a branch without a year-ago
+    base, and it is exactly where a bare raw ratio would look most impressive
+    and mean least.
+    """
+    raw = (round(now["pickup_room_nights"] / before["pickup_room_nights"], 3)
+           if before["pickup_room_nights"] else None)
+    natural = None
+    ly_base = (ly_before or {}).get("pickup_room_nights") or 0
+    ly_pickup_now = (ly_now or {}).get("pickup_room_nights") or 0
+    if ly_base >= MIN_NORM_BASE_ROOM_NIGHTS and ly_pickup_now:
+        natural = round(ly_pickup_now / ly_base, 3)
+    return {
+        "pickup_room_nights_pct": change_pct(
+            now["pickup_room_nights"], before["pickup_room_nights"]
+        ),
+        "pickup_bookings_pct": change_pct(now["pickup_bookings"], before["pickup_bookings"]),
+        "acceleration": raw,
+        "natural_acceleration": natural,
+        "excess_acceleration": (
+            round(raw / natural, 3) if raw is not None and natural else None
+        ),
+    }
 
 
 def _assemble(
