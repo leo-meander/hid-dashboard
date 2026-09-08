@@ -203,6 +203,18 @@ function verdict(d) {
   const { pace_index, pickup_room_nights_pct } = d.vs_last_year;
   const picked = d.current?.pickup_room_nights || 0;
 
+  // A verdict needs something settled to judge against. When last year's month
+  // is itself still selling, "2.4x the pace" is two moving numbers divided by
+  // each other, and stating it in green would be the page's loudest lie.
+  const status = d.last_year?.status;
+  if (status && status !== "finished") {
+    return {
+      tone: "neutral",
+      headline: "Nothing to judge yet — last year has not settled",
+      detail: `${nights(picked)} room-nights booked in this window against ${nights(d.last_year.pickup_room_nights)} in the same countdown last year. But ${monthsLabel(d.last_year.unfinished_stay_months)} is still taking bookings, so that gap is between two unfinished numbers.`,
+    };
+  }
+
   if (pace_index === null || pace_index === undefined) {
     return picked > 0
       ? {
@@ -477,6 +489,12 @@ export default function PerformanceFillPace() {
   });
 
   const compare = Boolean(data?.last_year);
+  // "Finished at" is only true of a month that has ended. Pick a stay month far
+  // enough ahead and its "last year" is also in the future, and the card would
+  // otherwise report today's on-the-books number as an outcome.
+  const lyStatus = data?.last_year?.status;
+  const lySettled = lyStatus === "finished";
+  const unfinishedLabel = monthsLabel(data?.last_year?.unfinished_stay_months || []);
   const currency = data?.scope?.currency;
   const v = useMemo(() => (data ? verdict(data) : null), [data]);
 
@@ -656,7 +674,7 @@ export default function PerformanceFillPace() {
         {data && (
           <div className="text-xs text-gray-500 ml-auto leading-relaxed">
             Booked {shortDate(data.window.from)}–{shortDate(data.window.to)} ({data.days}d)
-            {oneMonth && <> ·{" "}{data.days_out.to} days before {monthStartLabel.split(" ")[0]} 1</>}
+            {oneMonth && <> ·{" "}{data.days_out?.to} days before {monthStartLabel.split(" ")[0]} 1</>}
             {compare && oneMonth && (
               <>
                 <br />
@@ -693,6 +711,27 @@ export default function PerformanceFillPace() {
             </div>
           )}
 
+          {/* When last year has not finished either, every comparison below is
+              measuring against a period still taking bookings. Said once, up
+              top, rather than left for someone to infer from a suspiciously
+              low "finished at". */}
+          {compare && !lySettled && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900">
+              <div className="font-semibold">
+                {lyStatus === "future"
+                  ? "Last year has not happened yet"
+                  : "Last year has not finished yet"}
+              </div>
+              <div className="mt-1 opacity-90">
+                The comparison period {unfinishedLabel} {lyStatus === "future" ? "is" : "is still"}{" "}
+                {lyStatus === "future" ? "in the future" : "taking bookings"}, so every year-ago
+                figure on this page is a snapshot rather than an outcome. Pace, the points gap and
+                the percentage change are all measured against a number that has not settled — read
+                them as direction, not as a verdict.
+              </div>
+            </div>
+          )}
+
           {/* Headline numbers */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Stat
@@ -715,22 +754,34 @@ export default function PerformanceFillPace() {
               value={compare ? ptsLabel(data.vs_last_year.otb_occ_pts) : "—"}
               sub={compare
                 ? `LY was ${occ(data.last_year.otb_occ_pct)}${
-                    oneMonth ? ` at ${data.days_out.to} days out` : " at the same point"
+                    oneMonth ? ` at ${data.days_out?.to} days out` : " at the same point"
                   }`
                 : "comparison off"}
               subTone="text-gray-500"
               hint="Difference in fill %, both read at the same distance from the month"
             />
             <Stat
-              label="Last year finished at"
+              label={lySettled ? "Last year finished at" : "Last year, so far"}
               value={compare ? occ(data.last_year.final_occ_pct) : "—"}
-              sub={compare
-                ? `${nights(data.last_year.remaining_after_window_room_nights)} room-nights still came in after this point`
-                : "comparison off"}
-              subTone="text-gray-500"
-              hint="How much of the month was still left to sell from here"
+              sub={!compare ? "comparison off"
+                : lySettled
+                  ? `${nights(data.last_year.remaining_after_window_room_nights)} room-nights still came in after this point`
+                  : `${monthsLabel(data.last_year.stay_months)} has not happened yet — this is what it holds today, not what it ends at`}
+              subTone={lySettled ? "text-gray-500" : "text-amber-700"}
+              hint={lySettled
+                ? "How much of the month was still left to sell from here"
+                : "Not an outcome: an unfinished period keeps taking bookings"}
             />
           </div>
+
+          {/* The window control moves exactly one of the four cards above, and
+              it is not obvious which — so it is stated rather than inferred. */}
+          <p className="text-xs text-gray-500 -mt-2">
+            Only <span className="font-medium text-gray-600">Picked up</span> follows the booking
+            window. The other three are read at {shortDate(data.as_of)} whatever the window is:
+            on the books is everything sold so far, and the year-ago figures are the same date
+            counted back from each stay month.
+          </p>
 
           {/* Cumulative fill curve */}
           <div className="bg-white border border-gray-200 rounded-xl p-4">

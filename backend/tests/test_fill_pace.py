@@ -955,3 +955,68 @@ def test_the_lower_bound_still_admits_a_long_stay():
     ninety_night_stay_start = month_start - timedelta(days=90)
     assert ninety_night_stay_start > earliest_check_in
     assert MAX_STAY_DAYS >= 365
+
+
+# ── is last year actually over? ──────────────────────────────────────────────
+# "Last year finished at 14.6%" was reported for a December that had not
+# happened yet: pick a stay month far enough ahead and the year-ago month is
+# also in the future, so its "final" occupancy is just today's on-the-books
+# number wearing the word final. Every comparison on the page inherits that.
+
+def test_a_settled_year_ago_month_is_marked_finished(branches, stub_rows):
+    stub_rows({})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
+        days=60, as_of=date(2026, 9, 8), today=date(2026, 9, 8),
+    )
+    assert result["last_year"]["stay_months"] == ["2025-12"]
+    assert result["last_year"]["status"] == "finished"
+    assert result["last_year"]["unfinished_stay_months"] == []
+
+
+def test_a_year_ago_month_still_in_the_future_is_not_finished(branches, stub_rows):
+    """December 2027's "last year" is December 2026, which has not happened."""
+    stub_rows({})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, months=[(2027, 12)],
+        days=60, as_of=date(2026, 9, 8), today=date(2026, 9, 8),
+    )
+    assert result["last_year"]["status"] == "future"
+    assert result["last_year"]["unfinished_stay_months"] == ["2026-12"]
+    assert result["months"][0]["last_year"]["status"] == "future"
+
+
+def test_a_month_underway_is_neither_finished_nor_future(branches, stub_rows):
+    """September 2027's "last year" is the September we are standing in."""
+    stub_rows({})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, months=[(2027, 9)],
+        days=60, as_of=date(2026, 9, 8), today=date(2026, 9, 8),
+    )
+    assert result["months"][0]["last_year"]["status"] == "in_progress"
+    assert result["last_year"]["status"] == "partial"
+
+
+def test_a_mixed_selection_names_which_months_are_not_final(branches, stub_rows):
+    """A quarter straddling the boundary must not be reported as settled just
+    because most of it is — the total is only as final as its weakest month."""
+    stub_rows({})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None,
+        months=[(2027, 8), (2027, 9), (2027, 10)],
+        days=60, as_of=date(2026, 9, 8), today=date(2026, 9, 8),
+    )
+    assert result["last_year"]["status"] == "partial"
+    assert result["last_year"]["unfinished_stay_months"] == ["2026-09", "2026-10"]
+
+
+def test_finality_follows_the_calendar_not_a_backdated_as_of(branches, stub_rows):
+    """A custom booking window can end months ago, but the table still holds
+    only today's rows — so what has finished is a question about today."""
+    stub_rows({})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
+        days=30, as_of=date(2026, 3, 1), today=date(2026, 9, 8),
+    )
+    # December 2025 is over whatever as_of the caller passed.
+    assert result["last_year"]["status"] == "finished"
