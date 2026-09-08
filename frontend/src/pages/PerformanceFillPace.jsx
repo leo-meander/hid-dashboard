@@ -20,7 +20,7 @@ import { useMemo, useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import {
-  ComposedChart, LineChart, Line, Bar,
+  LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
 import SyncBadge from "../components/SyncBadge";
@@ -753,23 +753,25 @@ export default function PerformanceFillPace() {
               label="vs last year, same point"
               value={compare ? ptsLabel(data.vs_last_year.otb_occ_pts) : "—"}
               sub={compare
-                ? `LY was ${occ(data.last_year.otb_occ_pct)}${
-                    oneMonth ? ` at ${data.days_out?.to} days out` : " at the same point"
+                ? `You ${occ(data.current.otb_occ_pct)} · last year ${occ(data.last_year.otb_occ_pct)}${
+                    oneMonth ? ` with ${data.days_out?.to} days to go` : " at the same point"
                   }`
                 : "comparison off"}
               subTone="text-gray-500"
-              hint="Difference in fill %, both read at the same distance from the month"
+              hint={compare && oneMonth
+                ? `Both read ${data.days_out?.to} days before the month starts — the same distance from check-in, not the same calendar date. In points, because ${occ(data.last_year.otb_occ_pct)} → ${occ(data.current.otb_occ_pct)} as a percentage change would read far larger than the gap really is.`
+                : "Both read at the same distance from the month, not the same calendar date"}
             />
             <Stat
-              label={lySettled ? "Last year finished at" : "Last year, so far"}
+              label={lySettled ? "Last year ended at" : "Last year, so far"}
               value={compare ? occ(data.last_year.final_occ_pct) : "—"}
               sub={!compare ? "comparison off"
                 : lySettled
-                  ? `${nights(data.last_year.remaining_after_window_room_nights)} room-nights still came in after this point`
+                  ? `${nights(data.last_year.otb_room_nights)} → ${nights(data.last_year.final_room_nights)} room-nights: +${nights(data.last_year.remaining_after_window_room_nights)} arrived after this point`
                   : `${monthsLabel(data.last_year.stay_months)} has not happened yet — this is what it holds today, not what it ends at`}
               subTone={lySettled ? "text-gray-500" : "text-amber-700"}
               hint={lySettled
-                ? "How much of the month was still left to sell from here"
+                ? `Answers "from where I stand, how much more is there left to sell?" — last year that stretch was worth ${nights(data.last_year.remaining_after_window_room_nights)} room-nights.`
                 : "Not an outcome: an unfinished period keeps taking bookings"}
             />
           </div>
@@ -786,7 +788,7 @@ export default function PerformanceFillPace() {
           {/* Cumulative fill curve */}
           <div className="bg-white border border-gray-200 rounded-xl p-4">
             <h2 className="text-sm font-semibold text-gray-800">
-              How full the month was, day by day
+              How full it is — position, not speed
             </h2>
             <p className="text-xs text-gray-500 mt-0.5 mb-3">
               {oneMonth
@@ -836,14 +838,15 @@ export default function PerformanceFillPace() {
           {/* Daily pickup — the slope, smoothed */}
           <div className="bg-white border border-gray-200 rounded-xl p-4">
             <h2 className="text-sm font-semibold text-gray-800">
-              Room-nights booked per day
+              How fast it is selling
             </h2>
             <p className="text-xs text-gray-500 mt-0.5 mb-3">
-              Bars are what each booking day added; the lines are a 7-day trailing average, which
-              is what makes speeding up or slowing down visible through the noise.
+              Room-nights sold per booking day, smoothed over 7 days. This is the speed: the chart
+              above is the height reached, this one is how quickly it is being reached. Above the
+              other line means selling faster than the same run-up last year.
             </p>
             <ResponsiveContainer width="100%" height={240}>
-              <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+              <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                 <XAxis
                   dataKey={oneMonth ? "days_out" : "date"}
@@ -861,14 +864,13 @@ export default function PerformanceFillPace() {
                   ]}
                 />
                 <Legend iconSize={10} wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="day_room_nights" name="Booked that day" fill="#c7d2fe" />
-                <Line type="monotone" dataKey="day_avg" name="This year (7-day avg)"
+                <Line type="monotone" dataKey="day_avg" name="This year"
                       stroke={THIS_YEAR} strokeWidth={2.5} dot={false} />
                 {compare && (
-                  <Line type="monotone" dataKey="ly_day_avg" name="Last year (7-day avg)"
+                  <Line type="monotone" dataKey="ly_day_avg" name="Last year, same countdown"
                         stroke={LAST_YEAR} strokeWidth={2} strokeDasharray="5 4" dot={false} />
                 )}
-              </ComposedChart>
+              </LineChart>
             </ResponsiveContainer>
           </div>
 
