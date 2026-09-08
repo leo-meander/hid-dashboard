@@ -58,6 +58,20 @@ MAX_WINDOW_DAYS = 365
 # a whole year of months readable without turning one page load into fifty.
 MAX_STAY_MONTHS = 12
 
+# How far before a stay month a reservation may have started and still overlap
+# it. Interval overlap cannot use an index without a bound like this: written as
+# `check_in_date < month_end` alone the predicate is open-ended and matches every
+# row ever taken, which is why one query cost ~3 seconds against production even
+# for a month with almost no reservations in it. With both ends bounded the
+# range is a narrow one an index can serve.
+#
+# The bound is a real cutoff, not a formality: a single reservation whose stay
+# began more than this long before the month would be missed. 400 nights is far
+# past anything the properties sell — the longest products are the weekly-rent
+# and extension rate plans, which run in weeks and months — but it is an
+# assumption, and it lives here where it can be found and raised.
+MAX_STAY_DAYS = 400
+
 
 # ── small helpers ────────────────────────────────────────────────────────────
 
@@ -157,6 +171,9 @@ def fetch_month_rows(
         func.coalesce(func.sum(revenue_native).filter(paying), 0).label("revenue_native"),
         func.coalesce(func.sum(revenue_vnd).filter(paying), 0).label("revenue_vnd"),
     ).filter(
+        # Both ends bounded so the range is one an index can serve — see
+        # MAX_STAY_DAYS for why the lower bound exists and what it assumes.
+        Reservation.check_in_date >= month_start - timedelta(days=MAX_STAY_DAYS),
         Reservation.check_in_date < month_end_excl,
         Reservation.check_out_date > month_start,
         Reservation.check_out_date > Reservation.check_in_date,

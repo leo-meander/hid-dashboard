@@ -923,3 +923,35 @@ def test_the_month_count_is_capped_in_the_service_too(branches, stub_rows):
         days=30, as_of=date(2026, 9, 8),
     )
     assert len(result["stay_months"]) == fill_pace.MAX_STAY_MONTHS
+
+
+# ── the shape of the query, which is what makes the page fast or slow ────────
+# One call cost ~3 seconds against production and cost the same for a month with
+# almost no reservations in it — the signature of a predicate that touches every
+# row whatever the answer is. Interval overlap cannot use an index unless both
+# ends of the range are bounded, so the bound is asserted here rather than left
+# to be re-discovered from a slow page.
+
+def test_check_in_date_is_bounded_at_both_ends():
+    sql = _compiled_month_query(2026, 12)
+
+    assert "reservations.check_in_date < '2027-01-01'" in sql
+    # 400 days before 1 Dec 2026. Without this the range is open-ended and every
+    # reservation ever taken is read, however few of them overlap the month.
+    assert "reservations.check_in_date >= '2025-10-27'" in sql
+
+
+def test_the_lower_bound_still_admits_a_long_stay():
+    """The bound is a real cutoff, so it has to be far past anything sold. A
+    stay of a few weeks or months — the weekly-rent and extension rate plans —
+    must comfortably clear it."""
+    from datetime import timedelta
+
+    from app.services.fill_pace import MAX_STAY_DAYS, month_bounds
+
+    month_start = month_bounds(2026, 12)[0]
+    earliest_check_in = month_start - timedelta(days=MAX_STAY_DAYS)
+    # A 90-night stay ending inside December started well after the bound.
+    ninety_night_stay_start = month_start - timedelta(days=90)
+    assert ninety_night_stay_start > earliest_check_in
+    assert MAX_STAY_DAYS >= 365
