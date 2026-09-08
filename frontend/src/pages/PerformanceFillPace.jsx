@@ -682,7 +682,9 @@ export default function PerformanceFillPace() {
 
   return (
     <div className="space-y-5">
-      {/* Header */}
+      {/* Header — the comparison basis lives here rather than down among the
+          filters: it changes what every number on the page is measured against,
+          which is a different kind of control from narrowing the scope. */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-800">Fill Pace</h1>
@@ -691,6 +693,25 @@ export default function PerformanceFillPace() {
             countdown one year earlier
             <SyncBadge timestamp={data?.data_synced_at} />
           </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-400">Compare with</span>
+          <div className="flex gap-0.5 bg-gray-100 rounded-lg p-1">
+            {[
+              { key: "last_year", label: "Last year" },
+              { key: "previous", label: `Previous ${data?.days ?? 30}d` },
+            ].map((v) => (
+              <button key={v.key} onClick={() => setBasis(v.key)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                  basis === v.key
+                    ? "bg-white text-gray-800 shadow-sm"
+                    : "text-gray-500 hover:text-gray-700"
+                }`}>
+                {v.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -762,22 +783,6 @@ export default function PerformanceFillPace() {
             onToggleGroup={toggleGroup}
             onClear={() => setSources([])}
           />
-        </Field>
-
-        <Field label="Compare with">
-          <div className="flex items-center gap-1.5">
-            {[["last_year", "Last year"], ["previous", `Previous ${data?.days ?? ""}d`]].map(
-              ([k, label]) => (
-                <button key={k} onClick={() => setBasis(k)}
-                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                    basis === k
-                      ? "bg-indigo-600 text-white shadow-sm"
-                      : "bg-white border border-gray-200 text-gray-600 hover:border-indigo-300"
-                  }`}>
-                  {label}
-                </button>
-              ))}
-          </div>
         </Field>
 
         <Field label="Room type">
