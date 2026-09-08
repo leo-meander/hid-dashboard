@@ -965,65 +965,16 @@ export default function PerformanceFillPace() {
             counted back from each stay month.
           </p>
 
-          {/* Cumulative fill curve */}
-          <div className="bg-white border border-gray-200 rounded-xl p-4">
-            <h2 className="text-sm font-semibold text-gray-800">
-              How full it is — position, not speed
-            </h2>
-            <p className="text-xs text-gray-500 mt-0.5 mb-3">
-              {oneMonth
-                ? `Cumulative fill %, counting down to ${monthStartLabel.split(" ")[0]} 1. Both years read at the same distance from the month, so the lines are directly comparable.`
-                : "Cumulative fill % across every selected month, by booking date. Each month is still measured against its own countdown a year earlier before they are added up."}
-            </p>
-            <ResponsiveContainer width="100%" height={280}>
-              <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis
-                  dataKey={oneMonth ? "days_out" : "date"}
-                  tick={{ fontSize: 11, fill: "#9ca3af" }}
-                  tickFormatter={(d) =>
-                    oneMonth ? (d >= 0 ? `${d}d` : `+${-d}d`) : shortDate(d)}
-                  label={{
-                    value: oneMonth ? "days before the month starts" : "booking date",
-                    position: "insideBottom",
-                    offset: -2,
-                    style: { fontSize: 11, fill: "#9ca3af" },
-                  }}
-                />
-                <YAxis
-                  tick={{ fontSize: 11, fill: "#9ca3af" }}
-                  tickFormatter={(v2) => `${v2}%`}
-                  width={44}
-                />
-                <Tooltip
-                  contentStyle={{ fontSize: 12, borderRadius: 8 }}
-                  labelFormatter={axisLabel}
-                  formatter={(val, name) => [
-                    val === null || val === undefined ? "—" : `${Number(val).toFixed(1)}%`,
-                    name,
-                  ]}
-                />
-                <Legend iconSize={10} wrapperStyle={{ fontSize: 12 }} />
-                <Line type="monotone" dataKey="otb_occ_pct" name={`${monthStartLabel} (on the books)`}
-                      stroke={THIS_YEAR} strokeWidth={2.5} dot={false} />
-                {compare && (
-                  <Line type="monotone" dataKey="ly_otb_occ_pct"
-                        name={`${monthsLabel(data.last_year.stay_months)} (same countdown)`}
-                        stroke={LAST_YEAR} strokeWidth={2} strokeDasharray="5 4" dot={false} />
-                )}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-
-          {/* Daily pickup — the slope, smoothed */}
+          {/* The speed. The cumulative curve that used to sit above this was
+              dropped: a line that only ever rises said less about pace than
+              its own slope does, and the position it carried is on the cards. */}
           <div className="bg-white border border-gray-200 rounded-xl p-4">
             <h2 className="text-sm font-semibold text-gray-800">
               How fast it is selling
             </h2>
             <p className="text-xs text-gray-500 mt-0.5 mb-3">
-              Room-nights sold per booking day, smoothed over {SMOOTHING_DAYS} days. This is the
-              speed: the chart above is the height reached, this one is how quickly it is being
-              reached. Above the other line means selling faster than the same run-up last year.
+              Room-nights sold per booking day, smoothed over {SMOOTHING_DAYS} days. Above the
+              other line means selling faster than {onPrev ? `the ${data.days} days before` : "the same run-up last year"}.
               The line starts on day {SMOOTHING_DAYS} — before that there is not a full week to
               average{endsToday ? " — and today is left off, being a day still in progress." : "."}
             </p>
