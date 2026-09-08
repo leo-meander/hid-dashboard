@@ -347,10 +347,13 @@ def get_fill_pace_endpoint(
                       description="Booking window ending at as_of."),
     as_of: Optional[date] = Query(None, description="Snapshot date. Defaults to today."),
     branch_id: Optional[UUID] = Query(None),
-    channel: Optional[str] = Query(
+    source: Optional[list[str]] = Query(
         None,
-        description='Narrow to one source: "Direct", "Local travel agency", '
-                    'or an OTA name exactly as OTA Mix labels it.',
+        description="Narrow to a set of booking sources; repeat the parameter "
+                    "for each one. A value matches a raw source exactly "
+                    '("Website/Booking Engine", "Agoda"), or a category '
+                    '("Direct", "OTA", "Local travel agency") as a shorthand '
+                    "for every source under it. Omit for all sources.",
     ),
     room_category: Optional[str] = Query(None, pattern="^(?:[Rr]oom|[Dd]orm)$"),
     compare_last_year: bool = Query(True),
@@ -382,7 +385,7 @@ def get_fill_pace_endpoint(
         month=month,
         days=days,
         as_of=as_of,
-        channel=channel,
+        sources=source,
         room_category=room_category,
         compare_last_year=compare_last_year,
     )

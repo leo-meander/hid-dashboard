@@ -40,7 +40,7 @@ from app.services.fill_pace import (
 # ── fakes ────────────────────────────────────────────────────────────────────
 
 class Row:
-    """One (branch, booking date, channel) bucket as the query returns it."""
+    """One (branch, booking date, source) bucket as the query returns it."""
 
     def __init__(self, branch_id, reservation_date, room_nights, bookings=1,
                  source="Agoda", source_category="OTA", revenue_native=0.0,
@@ -338,9 +338,9 @@ def test_mixed_currency_scope_gets_no_currency_label(branches, stub_rows):
 
 # ── the source filter ────────────────────────────────────────────────────────
 
-def test_channel_filter_narrows_the_headline_but_not_the_breakdown(branches, stub_rows):
+def test_selection_narrows_the_headline_but_not_the_breakdown(branches, stub_rows):
     """Selecting Agoda answers "how fast is Agoda filling December". The
-    per-channel table must stay whole regardless, because the question it
+    per-source table must stay whole regardless, because the question it
     answers — which source is pacing ahead — dies if it collapses to one row."""
     stub_rows({
         (2026, 12): [
@@ -353,51 +353,164 @@ def test_channel_filter_narrows_the_headline_but_not_the_breakdown(branches, stu
     })
     result = get_fill_pace(
         FakeDB(branches), branch_id=None, year=2026, month=12,
-        days=60, as_of=date(2026, 9, 8), channel="Agoda",
+        days=60, as_of=date(2026, 9, 8), sources=["Agoda"],
     )
 
     assert result["current"]["otb_room_nights"] == 100
     assert result["vs_last_year"]["pace_index"] == 2.0
+    assert result["sources"] == ["Agoda"]
 
-    channels = {c["channel"]: c for c in result["by_channel"]}
-    assert set(channels) == {"Agoda", "Booking.com", "Direct"}
-    assert channels["Booking.com"]["otb_room_nights"] == 60
-    # Direct rolls every own-channel source under one row, as the mix pages do.
-    assert channels["Direct"]["otb_room_nights"] == 40
-    assert channels["Direct"]["category"] == "Direct"
-    # Sorted with the biggest channel first.
-    assert result["by_channel"][0]["channel"] == "Agoda"
+    by_source = {c["source"]: c for c in result["by_source"]}
+    assert set(by_source) == {"Agoda", "Booking.com", "Website/Booking Engine"}
+    assert by_source["Booking.com"]["otb_room_nights"] == 60
+    # Sorted with the biggest source first.
+    assert result["by_source"][0]["source"] == "Agoda"
 
 
-def test_direct_selects_by_category_not_by_source_name(branches, stub_rows):
-    """"Direct" is a category covering website, walk-in, phone, email and the
-    rest. Matching it against the raw source string would return nothing."""
+def test_every_direct_source_gets_its_own_row(branches, stub_rows):
+    """The mix pages roll website, walk-in and phone into one "Direct" row,
+    because the question there is how much we booked ourselves. Here the
+    question is which individual channel to push, so each stands alone — and
+    the rows still partition the month."""
     stub_rows({
         (2026, 12): [
             Row("b-saigon", date(2026, 8, 1), 30, source="Website/Booking Engine",
                 source_category="Direct"),
-            Row("b-saigon", date(2026, 8, 2), 12, source="Walk-in",
-                source_category="Direct"),
+            Row("b-saigon", date(2026, 8, 2), 12, source="Walk-in", source_category="Direct"),
             Row("b-saigon", date(2026, 8, 1), 99, source="Agoda"),
         ],
         (2025, 12): [],
     })
     result = get_fill_pace(
         FakeDB(branches), branch_id=None, year=2026, month=12,
-        days=60, as_of=date(2026, 9, 8), channel="Direct",
+        days=60, as_of=date(2026, 9, 8),
+    )
+
+    by_source = {c["source"]: c for c in result["by_source"]}
+    assert set(by_source) == {"Website/Booking Engine", "Walk-in", "Agoda"}
+    assert by_source["Website/Booking Engine"]["otb_room_nights"] == 30
+    assert by_source["Walk-in"]["otb_room_nights"] == 12
+    assert by_source["Website/Booking Engine"]["category"] == "Direct"
+    # Rows partition the month: they sum back to the unfiltered total.
+    assert sum(c["otb_room_nights"] for c in result["by_source"]) == \
+        result["current"]["otb_room_nights"] == 141
+
+
+def test_the_website_alone_can_be_selected(branches, stub_rows):
+    """The reason the roll-up had to go: "how fast is our own website filling
+    December" was unanswerable while website sat inside a Direct bucket."""
+    stub_rows({
+        (2026, 12): [
+            Row("b-saigon", date(2026, 8, 1), 30, source="Website/Booking Engine",
+                source_category="Direct"),
+            Row("b-saigon", date(2026, 8, 2), 12, source="Walk-in", source_category="Direct"),
+            Row("b-saigon", date(2026, 8, 1), 99, source="Agoda"),
+        ],
+        (2025, 12): [
+            Row("b-saigon", date(2025, 8, 1), 20, source="Website/Booking Engine",
+                source_category="Direct"),
+        ],
+    })
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, year=2026, month=12,
+        days=60, as_of=date(2026, 9, 8), sources=["Website/Booking Engine"],
+    )
+    assert result["current"]["otb_room_nights"] == 30
+    assert result["vs_last_year"]["pace_index"] == 1.5
+
+
+def test_several_sources_can_be_selected_at_once(branches, stub_rows):
+    stub_rows({
+        (2026, 12): [
+            Row("b-saigon", date(2026, 8, 1), 30, source="Website/Booking Engine",
+                source_category="Direct"),
+            Row("b-saigon", date(2026, 8, 2), 12, source="Walk-in", source_category="Direct"),
+            Row("b-saigon", date(2026, 8, 1), 99, source="Agoda"),
+        ],
+        (2025, 12): [],
+    })
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, year=2026, month=12,
+        days=60, as_of=date(2026, 9, 8),
+        sources=["Website/Booking Engine", "Agoda"],
+    )
+    assert result["current"]["otb_room_nights"] == 129
+    assert result["sources"] == ["Agoda", "Website/Booking Engine"]
+
+
+def test_a_category_still_selects_everything_under_it(branches, stub_rows):
+    """"Direct" is no longer a row, but it stays a useful shorthand: one value
+    that means website, walk-in, phone, email and the rest."""
+    stub_rows({
+        (2026, 12): [
+            Row("b-saigon", date(2026, 8, 1), 30, source="Website/Booking Engine",
+                source_category="Direct"),
+            Row("b-saigon", date(2026, 8, 2), 12, source="Walk-in", source_category="Direct"),
+            Row("b-saigon", date(2026, 8, 1), 99, source="Agoda"),
+        ],
+        (2025, 12): [],
+    })
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, year=2026, month=12,
+        days=60, as_of=date(2026, 9, 8), sources=["Direct"],
     )
     assert result["current"]["otb_room_nights"] == 42
 
 
-def test_unknown_channel_returns_an_empty_line_not_the_whole_month(branches, stub_rows):
+def test_overlapping_selections_do_not_double_count(branches, stub_rows):
+    """A set membership test, not a sum: picking both a category and a source
+    inside it still counts every booking exactly once."""
+    stub_rows({
+        (2026, 12): [
+            Row("b-saigon", date(2026, 8, 1), 30, source="Website/Booking Engine",
+                source_category="Direct"),
+            Row("b-saigon", date(2026, 8, 2), 12, source="Walk-in", source_category="Direct"),
+        ],
+        (2025, 12): [],
+    })
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, year=2026, month=12,
+        days=60, as_of=date(2026, 9, 8),
+        sources=["Direct", "Website/Booking Engine"],
+    )
+    assert result["current"]["otb_room_nights"] == 42
+
+
+def test_a_booking_with_no_source_still_lands_in_the_table(branches, stub_rows):
+    """The rows have to sum back to the month, so an empty source gets a label
+    rather than dropping out of the breakdown."""
+    stub_rows({
+        (2026, 12): [Row("b-saigon", date(2026, 8, 1), 25, source=None, source_category=None)],
+        (2025, 12): [],
+    })
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, year=2026, month=12,
+        days=60, as_of=date(2026, 9, 8),
+    )
+    assert result["by_source"][0]["source"] == "Unknown"
+    assert result["by_source"][0]["otb_room_nights"] == 25
+
+
+def test_unknown_source_returns_an_empty_line_not_the_whole_month(branches, stub_rows):
     stub_rows({(2026, 12): [Row("b-saigon", date(2026, 8, 1), 99, source="Agoda")],
                (2025, 12): []})
     result = get_fill_pace(
         FakeDB(branches), branch_id=None, year=2026, month=12,
-        days=60, as_of=date(2026, 9, 8), channel="Expedia",
+        days=60, as_of=date(2026, 9, 8), sources=["Expedia"],
     )
     assert result["current"]["otb_room_nights"] == 0
     assert result["curve"][-1]["otb_room_nights"] == 0
+
+
+def test_an_empty_selection_means_every_source(branches, stub_rows):
+    stub_rows({(2026, 12): [Row("b-saigon", date(2026, 8, 1), 99, source="Agoda")],
+               (2025, 12): []})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, year=2026, month=12,
+        days=60, as_of=date(2026, 9, 8), sources=[],
+    )
+    assert result["current"]["otb_room_nights"] == 99
+    assert result["sources"] == []
 
 
 # ── the window itself ────────────────────────────────────────────────────────
@@ -515,3 +628,84 @@ def test_day_use_rows_carry_no_nights_and_are_dropped():
 def test_room_category_filter_is_case_insensitive_in_sql():
     sql = _compiled_month_query(2026, 12, "dorm")
     assert "lower(coalesce(reservations.room_type_category, '')) = 'dorm'" in sql
+
+
+# ── the endpoint wiring ──────────────────────────────────────────────────────
+# The service is exercised above with plain Python arguments. What these add is
+# the HTTP surface: a source name reaches the service intact after a round trip
+# through the query string, and repeating the parameter builds a set rather than
+# overwriting itself.
+
+@pytest.fixture
+def client(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.database import get_db
+    from app.routers import metrics
+
+    captured = {}
+
+    def spy(db, **kwargs):
+        captured.update(kwargs)
+        return {"stay_month": "x", "current": {}, "curve": []}
+
+    monkeypatch.setattr(metrics, "get_fill_pace", spy)
+    monkeypatch.setattr(metrics, "_last_reservations_synced_at", lambda db, b: None)
+
+    api = FastAPI()
+    api.include_router(metrics.router, prefix="/api/metrics")
+    api.dependency_overrides[get_db] = lambda: MagicMock()
+    return TestClient(api), captured
+
+
+def test_one_source_survives_the_query_string(client):
+    """"Website/Booking Engine" carries a slash and a space. Both have to come
+    back out of the URL exactly as stored, or the filter matches nothing."""
+    http, captured = client
+    r = http.get("/api/metrics/fill-pace",
+                 params={"stay_month": "2026-12", "source": "Website/Booking Engine"})
+
+    assert r.status_code == 200
+    assert captured["sources"] == ["Website/Booking Engine"]
+
+
+def test_repeating_the_parameter_builds_a_set(client):
+    http, captured = client
+    r = http.get("/api/metrics/fill-pace?stay_month=2026-12"
+                 "&source=Website%2FBooking+Engine&source=Agoda")
+
+    assert r.status_code == 200
+    assert captured["sources"] == ["Website/Booking Engine", "Agoda"]
+
+
+def test_no_source_parameter_means_every_source(client):
+    http, captured = client
+    http.get("/api/metrics/fill-pace", params={"stay_month": "2026-12"})
+    assert captured["sources"] is None
+
+
+def test_the_window_defaults_and_bounds_are_enforced(client):
+    http, captured = client
+
+    http.get("/api/metrics/fill-pace", params={"stay_month": "2026-12"})
+    assert captured["days"] == 60
+    assert captured["as_of"] is None
+
+    http.get("/api/metrics/fill-pace",
+             params={"stay_month": "2026-12", "days": 20, "as_of": "2026-09-08"})
+    assert captured["days"] == 20
+    assert captured["as_of"] == date(2026, 9, 8)
+
+    over = http.get("/api/metrics/fill-pace", params={"stay_month": "2026-12", "days": 400})
+    assert over.status_code == 422
+
+
+def test_a_bad_stay_month_is_refused_rather_than_guessed(client):
+    http, _ = client
+    assert http.get("/api/metrics/fill-pace",
+                    params={"stay_month": "2026-13"}).json()["success"] is False
+    assert http.get("/api/metrics/fill-pace",
+                    params={"stay_month": "December"}).status_code == 422
