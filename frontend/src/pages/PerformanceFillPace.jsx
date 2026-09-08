@@ -36,6 +36,8 @@ const WINDOWS = [30, 60, 90, 180];
 const MAX_WINDOW_DAYS = 365;
 // Mirrors MAX_STAY_MONTHS on the endpoint, which refuses a longer list.
 const MAX_STAY_MONTHS = 12;
+// Days in the trailing mean on the speed chart.
+const SMOOTHING_DAYS = 7;
 
 // ── dates ────────────────────────────────────────────────────────────────────
 // All arithmetic goes through UTC midnight so a range never drifts by a day for
@@ -88,10 +90,24 @@ function occ(v) {
   return `${v.toFixed(1)}%`;
 }
 
-/** Percentage POINTS, signed. The gap between two occupancy rates. */
-function ptsLabel(v) {
+/** A signed figure whose unit is carried by its column header, not repeated
+ *  on every row — "pts" beside a number reads as "%" to anyone who has not met
+ *  the distinction, and the two differ by a factor of twenty-five here. */
+function signedNumber(v) {
   if (v === null || v === undefined) return "—";
-  return `${v > 0 ? "+" : ""}${v.toFixed(1)} pts`;
+  return `${v > 0 ? "+" : ""}${v.toFixed(1)}`;
+}
+
+/**
+ * The same gap in words. "pts" is the correct unit and an unfamiliar one, and
+ * a reader who takes it for "%" is out by a factor of twenty-five here: the gap
+ * between 4.1% and 19.2% is 15.1 points of fill, or +368% relative.
+ */
+function gapLabel(v) {
+  if (v === null || v === undefined) return "no year-ago figure to compare";
+  const size = Math.abs(v).toFixed(1);
+  if (Math.abs(v) < 0.05) return "level with last year";
+  return `${size} points of fill ${v > 0 ? "ahead of" : "behind"} last year`;
 }
 
 /** Relative change. null means there was no year-ago base to divide by. */
@@ -386,7 +402,14 @@ function PaceTable({ title, subtitle, rows, nameKey, nameLabel, currency, compar
               <th className="text-left  font-medium px-4 py-2">{nameLabel}</th>
               <th className="text-right font-medium px-4 py-2">On the books</th>
               <th className="text-right font-medium px-4 py-2">Fill %</th>
-              {compare && <th className="text-right font-medium px-4 py-2">vs LY</th>}
+              {compare && (
+                <th className="text-right font-medium px-4 py-2">
+                  vs LY
+                  <span className="block text-[10px] font-normal text-gray-400 leading-none">
+                    points of fill
+                  </span>
+                </th>
+              )}
               <th className="text-right font-medium px-4 py-2">Pickup</th>
               {compare && <th className="text-right font-medium px-4 py-2">LY pickup</th>}
               {compare && <th className="text-right font-medium px-4 py-2">Pace</th>}
@@ -419,7 +442,7 @@ function PaceTable({ title, subtitle, rows, nameKey, nameLabel, currency, compar
                   </td>
                   {compare && (
                     <td className={`px-4 py-2 text-right tabular-nums ${toneFor(r.vs_last_year?.otb_occ_pts, 0.5)}`}>
-                      {ptsLabel(r.vs_last_year?.otb_occ_pts)}
+                      {signedNumber(r.vs_last_year?.otb_occ_pts)}
                     </td>
                   )}
                   <td className="px-4 py-2 text-right tabular-nums text-gray-800">
@@ -502,10 +525,15 @@ export default function PerformanceFillPace() {
   // mean is what makes "speeding up / slowing down" visible at all.
   const chartData = useMemo(() => {
     if (!data?.curve) return [];
-    const roll = (arr, key, i, n = 7) => {
-      const from = Math.max(0, i - n + 1);
-      const slice = arr.slice(from, i + 1);
-      return slice.reduce((s, p) => s + (p[key] || 0), 0) / slice.length;
+    // Null until seven days are actually available. Dividing by however many
+    // days happened to be in range made the first point a single day, the
+    // second a pair, and so on — so every window opened with a low, rising
+    // stretch that was the arithmetic warming up rather than bookings speeding
+    // up, and it read as an acceleration wherever the window happened to start.
+    const roll = (arr, key, i, n = SMOOTHING_DAYS) => {
+      if (i < n - 1) return null;
+      const slice = arr.slice(i - n + 1, i + 1);
+      return slice.reduce((s, p) => s + (p[key] || 0), 0) / n;
     };
     return data.curve.map((p, i) => ({
       ...p,
@@ -513,6 +541,16 @@ export default function PerformanceFillPace() {
       ly_day_avg: compare ? roll(data.curve, "ly_day_room_nights", i) : undefined,
     }));
   }, [data, compare]);
+
+  // Today is a day still in progress: its bookings are a few hours old, not a
+  // day's worth, so the speed line always drooped at the right edge whatever
+  // was really happening. The cumulative chart keeps it — on the books today is
+  // a true figure — but the per-day chart drops it and says so.
+  const endsToday = data?.as_of === todayISO();
+  const speedData = useMemo(
+    () => (endsToday ? chartData.slice(0, -1) : chartData),
+    [chartData, endsToday],
+  );
 
   // Every source the month actually saw, grouped by category so the picker can
   // offer "all of Direct" in one click without needing a rolled-up row.
@@ -751,15 +789,25 @@ export default function PerformanceFillPace() {
             />
             <Stat
               label="vs last year, same point"
-              value={compare ? ptsLabel(data.vs_last_year.otb_occ_pts) : "—"}
+              // Both sides shown rather than the gap alone: two percentages side
+              // by side cannot be misread, where a lone "+15.1 pts" needed the
+              // reader to know that pts and % are different things — and the
+              // same gap written as a percentage change would say +368%.
+              value={compare ? (
+                <span className="whitespace-nowrap">
+                  {occ(data.current.otb_occ_pct)}
+                  <span className="text-base font-normal text-gray-400 mx-1.5">vs</span>
+                  <span style={{ color: LAST_YEAR }}>{occ(data.last_year.otb_occ_pct)}</span>
+                </span>
+              ) : "—"}
               sub={compare
-                ? `You ${occ(data.current.otb_occ_pct)} · last year ${occ(data.last_year.otb_occ_pct)}${
-                    oneMonth ? ` with ${data.days_out?.to} days to go` : " at the same point"
+                ? `${gapLabel(data.vs_last_year.otb_occ_pts)}${
+                    oneMonth ? ` · ${data.days_out?.to} days to go` : " at the same point"
                   }`
                 : "comparison off"}
-              subTone="text-gray-500"
+              subTone={toneFor(data?.vs_last_year?.otb_occ_pts, 0.5)}
               hint={compare && oneMonth
-                ? `Both read ${data.days_out?.to} days before the month starts — the same distance from check-in, not the same calendar date. In points, because ${occ(data.last_year.otb_occ_pct)} → ${occ(data.current.otb_occ_pct)} as a percentage change would read far larger than the gap really is.`
+                ? `Both read ${data.days_out?.to} days before the month starts — the same distance from check-in, not the same calendar date. Stated as a gap in fill, not as a percentage change: ${occ(data.last_year.otb_occ_pct)} → ${occ(data.current.otb_occ_pct)} is +${Math.round((data.current.otb_occ_pct / data.last_year.otb_occ_pct - 1) * 100)}% relative, which is true and useless on a base this small.`
                 : "Both read at the same distance from the month, not the same calendar date"}
             />
             <Stat
@@ -841,12 +889,14 @@ export default function PerformanceFillPace() {
               How fast it is selling
             </h2>
             <p className="text-xs text-gray-500 mt-0.5 mb-3">
-              Room-nights sold per booking day, smoothed over 7 days. This is the speed: the chart
-              above is the height reached, this one is how quickly it is being reached. Above the
-              other line means selling faster than the same run-up last year.
+              Room-nights sold per booking day, smoothed over {SMOOTHING_DAYS} days. This is the
+              speed: the chart above is the height reached, this one is how quickly it is being
+              reached. Above the other line means selling faster than the same run-up last year.
+              The line starts on day {SMOOTHING_DAYS} — before that there is not a full week to
+              average{endsToday ? " — and today is left off, being a day still in progress." : "."}
             </p>
             <ResponsiveContainer width="100%" height={240}>
-              <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+              <LineChart data={speedData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                 <XAxis
                   dataKey={oneMonth ? "days_out" : "date"}
