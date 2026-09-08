@@ -44,8 +44,6 @@ from app.services.metrics_engine import (
     EXCLUDED_STATUSES,
     EXCLUDED_SOURCES_OCC,
     EXCLUDED_SOURCES_REVENUE,
-    _AGGREGATED_CATEGORIES,
-    _channel_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,7 +111,7 @@ def fetch_month_rows(
     """Room-nights in one stay month, bucketed by the date they were booked.
 
     Grouped by (branch, booking date, source category, source) so the same row
-    set answers the headline, the per-branch table and the per-channel table
+    set answers the headline, the per-branch table and the per-source table
     without going back to the database for each.
 
     Nights are clipped to the month: a stay running 28 Nov → 3 Dec contributes
@@ -319,20 +317,25 @@ def get_fill_pace(
     month: int,
     days: int = 60,
     as_of: Optional[date] = None,
-    channel: Optional[str] = None,
+    sources: Optional[list[str]] = None,
     room_category: Optional[str] = None,
     compare_last_year: bool = True,
 ) -> dict:
-    """Fill pace for one stay month, optionally narrowed to a single channel.
+    """Fill pace for one stay month, optionally narrowed to a set of sources.
 
     `days` is the booking window ending at `as_of` (default today). The year-ago
     comparison reads the same countdown to the same month one year back — never
     the same calendar dates — so both curves sit at the same distance from
     check-in at every point.
 
-    `channel` narrows the headline and the curve only. The per-channel table is
-    always built from the full month, so it stays usable as the answer to
-    "which source is pacing ahead" rather than collapsing to the one selected.
+    `sources` is a set, not one name: "how fast is our own website filling
+    December" and "how fast are the OTAs filling it" are both one selection.
+    A value matches a booking's raw source, or its category ("Direct", "OTA",
+    "Local travel agency") as a shorthand for every source under it.
+
+    The selection narrows the headline and the curve only. The per-source table
+    is always built from the full month, so it stays usable as the answer to
+    "which source is pacing ahead" rather than collapsing to what is selected.
     """
     as_of = as_of or date.today()
     days = max(1, min(int(days), MAX_WINDOW_DAYS))
@@ -361,10 +364,12 @@ def get_fill_pace(
     units = sum(b["units"] for b in branches.values())
     available = units * dim
 
+    wanted = set(sources) if sources else None
+
     rows = fetch_month_rows(db, branch_id, year, month, room_category)
     rows = [r for r in rows if str(r.branch_id) in branches]
 
-    scoped = [r for r in rows if _matches_channel(r, channel)]
+    scoped = [r for r in rows if _matches_sources(r, wanted)]
     curve, summary = build_curve(scoped, as_of_dates)
     current = _decorate(summary, available)
 
@@ -375,7 +380,7 @@ def get_fill_pace(
         "days": days,
         "window": {"from": window_from.isoformat(), "to": as_of.isoformat()},
         "days_out": {"from": days_out[0], "to": days_out[-1]},
-        "channel": channel,
+        "sources": sorted(wanted) if wanted else [],
         "room_category": room_category,
         "scope": {
             "branch_id": str(branch_id) if branch_id else None,
@@ -399,7 +404,7 @@ def get_fill_pace(
 
         ly_rows = fetch_month_rows(db, branch_id, ly_year, ly_month, room_category)
         ly_rows = [r for r in ly_rows if str(r.branch_id) in branches]
-        ly_scoped = [r for r in ly_rows if _matches_channel(r, channel)]
+        ly_scoped = [r for r in ly_rows if _matches_sources(r, wanted)]
         ly_curve, ly_summary = build_curve(ly_scoped, ly_dates)
         last_year = _decorate(ly_summary, ly_available, include_final=True)
 
@@ -437,41 +442,47 @@ def get_fill_pace(
             for i, point in enumerate(curve)
         ]
 
-    result["by_channel"] = _channel_breakdown(
+    result["by_source"] = _source_breakdown(
         rows, ly_rows, as_of_dates, days_out, year, month, units,
         available, ly_available, compare_last_year,
     )
     if not branch_id:
         result["branches"] = _branch_breakdown(
             rows, ly_rows, as_of_dates, days_out, year, month, branches,
-            dim, channel, compare_last_year,
+            dim, wanted, compare_last_year,
         )
     return result
 
 
 # ── breakdowns ───────────────────────────────────────────────────────────────
 
-def _channel_breakdown(
+def _source_breakdown(
     rows, ly_rows, as_of_dates, days_out, year, month, units,
     available, ly_available, compare_last_year,
 ) -> list[dict]:
-    """Per-source pace, so "which channel is filling December" has an answer.
+    """Per-source pace, so "which source is filling December" has an answer.
 
-    Built from the unfiltered month either way — selecting one channel above
-    narrows the headline, not this table.
+    One row per raw source — website, walk-in, Agoda, each on its own. The mix
+    pages roll every direct source into a single "Direct" row because the
+    question there is how much we booked ourselves; here the question is which
+    individual channel to push, and a rolled-up row cannot answer it. The rows
+    partition the month, so their room-nights sum back to the whole.
+
+    Built from the unfiltered month either way — the selection above narrows the
+    headline, not this table.
     """
     ly_dates = _ly_dates(year, month, days_out) if compare_last_year else []
 
     grouped: dict[str, list] = {}
     categories: dict[str, str] = {}
     for r in rows:
-        key = _channel_key(r.source_category, r.source)
+        key = _source_key(r)
         grouped.setdefault(key, []).append(r)
         categories.setdefault(key, r.source_category or "OTA")
 
     ly_grouped: dict[str, list] = {}
     for r in ly_rows:
-        key = _channel_key(r.source_category, r.source)
+        key = _source_key(r)
         ly_grouped.setdefault(key, []).append(r)
         categories.setdefault(key, r.source_category or "OTA")
 
@@ -480,7 +491,7 @@ def _channel_breakdown(
         _, summary = build_curve(grouped.get(key, []), as_of_dates)
         summary = summary or _blank_summary()
         row = {
-            "channel": key,
+            "source": key,
             "category": categories.get(key, "OTA"),
             **_decorate(summary, available),
         }
@@ -497,7 +508,7 @@ def _channel_breakdown(
 
 def _branch_breakdown(
     rows, ly_rows, as_of_dates, days_out, year, month, branches,
-    dim, channel, compare_last_year,
+    dim, wanted, compare_last_year,
 ) -> list[dict]:
     """Per-branch pace when the group is in scope.
 
@@ -512,7 +523,7 @@ def _branch_breakdown(
     for bid, info in branches.items():
         avail = info["units"] * dim
         ly_avail = info["units"] * ly_dim
-        scoped = [r for r in rows if str(r.branch_id) == bid and _matches_channel(r, channel)]
+        scoped = [r for r in rows if str(r.branch_id) == bid and _matches_sources(r, wanted)]
         _, summary = build_curve(scoped, as_of_dates)
         summary = summary or _blank_summary()
         row = {
@@ -525,7 +536,7 @@ def _branch_breakdown(
         if compare_last_year:
             ly_scoped = [
                 r for r in ly_rows
-                if str(r.branch_id) == bid and _matches_channel(r, channel)
+                if str(r.branch_id) == bid and _matches_sources(r, wanted)
             ]
             _, ly_summary = build_curve(ly_scoped, ly_dates)
             ly_summary = ly_summary or _blank_summary()
@@ -561,17 +572,24 @@ def _blank_summary() -> dict:
     }
 
 
-def _matches_channel(row, channel: Optional[str]) -> bool:
-    """Channel filter, matching how the mix pages name channels.
+def _source_key(row) -> str:
+    """The raw source a booking came through, which is what the table keys on.
+    Cloudbeds leaves it empty on a few rows; those collect under one label
+    rather than disappearing from a table whose rows must sum to the month."""
+    return row.source or "Unknown"
 
-    Direct and Local travel agency are categories that roll every raw source
-    under them into one row; anything else is an OTA under its own name.
+
+def _matches_sources(row, wanted: Optional[set]) -> bool:
+    """Whether a booking falls inside the selected set of sources.
+
+    An empty selection means every source. A value matches the raw source, or
+    the category as a shorthand for everything under it — so "Direct" still
+    selects website, walk-in, phone, email and the rest in one go, without the
+    table needing an overlapping row for it.
     """
-    if not channel:
+    if not wanted:
         return True
-    if channel in _AGGREGATED_CATEGORIES:
-        return (row.source_category or "") == channel
-    return _channel_key(row.source_category, row.source) == channel
+    return _source_key(row) in wanted or (row.source_category or "") in wanted
 
 
 def _normalise_room_category(value: Optional[str]) -> Optional[str]:

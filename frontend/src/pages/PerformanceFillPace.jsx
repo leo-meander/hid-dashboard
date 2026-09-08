@@ -30,6 +30,41 @@ const THIS_YEAR = "#4f46e5";   // indigo-600
 const LAST_YEAR = "#f59e0b";   // amber-500
 
 const WINDOWS = [30, 60, 90, 180];
+// Mirrors MAX_WINDOW_DAYS on the endpoint. A custom range longer than this is
+// clamped server-side, so the page says so rather than showing a range it is
+// not actually reading.
+const MAX_WINDOW_DAYS = 365;
+
+// ── dates ────────────────────────────────────────────────────────────────────
+// All arithmetic goes through UTC midnight so a range never drifts by a day for
+// a user sitting in a timezone behind or ahead of the server.
+const isoOf = (d) => d.toISOString().slice(0, 10);
+
+function todayISO() {
+  const n = new Date();
+  return isoOf(new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate())));
+}
+
+function shiftISO(iso, n) {
+  const [y, m, d] = iso.split("-").map(Number);
+  return isoOf(new Date(Date.UTC(y, m - 1, d + n)));
+}
+
+function daysBetweenISO(from, to) {
+  const at = (s) => {
+    const [y, m, d] = s.split("-").map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  return Math.round((at(to) - at(from)) / 86400000);
+}
+
+function longDate(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-GB", {
+    day: "2-digit", month: "short", year: "numeric",
+  });
+}
 
 // ── formatting ───────────────────────────────────────────────────────────────
 const nf = new Intl.NumberFormat("en-US");
@@ -170,12 +205,18 @@ function Stat({ label, value, sub, subTone = "text-gray-500", hint }) {
   );
 }
 
+/**
+ * A labelled control. Deliberately a <div> and not a <label>: the source picker
+ * below is a popover whose click-away layer covers the viewport, and inside a
+ * label a click on that layer gets forwarded to the first checkbox in the
+ * popover instead of closing it — the menu became impossible to dismiss.
+ */
 function Field({ label, children }) {
   return (
-    <label className="flex flex-col gap-1">
+    <div className="flex flex-col gap-1">
       <span className="text-xs font-medium text-gray-500">{label}</span>
       {children}
-    </label>
+    </div>
   );
 }
 
@@ -183,7 +224,83 @@ const SELECT_CLS =
   "px-3 py-1.5 rounded-lg text-sm border border-gray-200 bg-white text-gray-700 " +
   "focus:outline-none focus:ring-2 focus:ring-indigo-200";
 
-/** Shared columns for the channel and branch tables — both answer "who is
+/**
+ * Multi-select over every booking source the month saw.
+ *
+ * A plain <select> could only hold one, and the sources that matter most are
+ * the ones the mix pages bundle away: "our own website" is a different question
+ * from "everything we booked directly". So each raw source is its own checkbox,
+ * with a category header that ticks all of its sources at once.
+ */
+function SourcePicker({ groups, selected, onToggle, onToggleGroup, onClear }) {
+  const [open, setOpen] = useState(false);
+
+  const label =
+    selected.length === 0 ? "All sources"
+      : selected.length === 1 ? selected[0]
+      : `${selected.length} sources`;
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`${SELECT_CLS} min-w-[13rem] flex items-center justify-between gap-2 text-left`}
+      >
+        <span className={selected.length ? "text-gray-800" : "text-gray-500"}>{label}</span>
+        <span className="text-gray-400 text-xs">▾</span>
+      </button>
+
+      {open && (
+        <>
+          {/* Click-away layer, so the popover closes like a native select. */}
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute z-20 mt-1 w-72 max-h-80 overflow-y-auto bg-white border
+                          border-gray-200 rounded-lg shadow-lg py-1">
+            <button
+              onClick={onClear}
+              className={`w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 ${
+                selected.length === 0 ? "text-indigo-600 font-medium" : "text-gray-600"
+              }`}
+            >
+              All sources
+            </button>
+
+            {groups.map(({ category, names }) => {
+              const allOn = names.every((n) => selected.includes(n));
+              return (
+                <div key={category} className="border-t border-gray-100 mt-1 pt-1">
+                  <button
+                    onClick={() => onToggleGroup(names)}
+                    className="w-full flex items-center justify-between px-3 py-1
+                               text-xs font-semibold uppercase tracking-wide
+                               text-gray-400 hover:text-indigo-600"
+                  >
+                    <span>{category}</span>
+                    <span className="normal-case tracking-normal font-medium">
+                      {allOn ? "clear" : "all"}
+                    </span>
+                  </button>
+                  {names.map((name) => (
+                    <label key={name}
+                      className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700
+                                 hover:bg-gray-50 cursor-pointer">
+                      <input type="checkbox" className="accent-indigo-600"
+                             checked={selected.includes(name)}
+                             onChange={() => onToggle(name)} />
+                      <span className="truncate">{name}</span>
+                    </label>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Shared columns for the source and branch tables — both answer "who is
  *  pacing ahead", so they read identically. */
 function PaceTable({ title, subtitle, rows, nameKey, nameLabel, currency, compare }) {
   if (!rows?.length) return null;
@@ -221,7 +338,7 @@ function PaceTable({ title, subtitle, rows, nameKey, nameLabel, currency, compar
                 <tr key={r[nameKey]} className="hover:bg-gray-50">
                   <td className="px-4 py-2 text-gray-800">
                     {r[nameKey]}
-                    {r.category && r.category !== r.channel && (
+                    {r.category && r.category !== r[nameKey] && (
                       <span className="ml-2 text-xs text-gray-400">{r.category}</span>
                     )}
                   </td>
@@ -272,19 +389,34 @@ export default function PerformanceFillPace() {
   const { selected, isAll } = useBranch();
   const [stayMonth, setStayMonth] = useState(defaultMonth);
   const [days, setDays] = useState(60);
-  const [channel, setChannel] = useState("");
+  // null while a preset is active; {from, to} once a custom range is picked.
+  const [range, setRange] = useState(null);
+  const [sources, setSources] = useState([]);
   const [roomCategory, setRoomCategory] = useState("");
+
+  // A custom range is expressed to the API in the same terms as a preset —
+  // a day count ending at an as-of date — so both go down one code path.
+  // Backwards ranges are read the way they were obviously meant.
+  const asOf = range ? (range.to < range.from ? range.from : range.to) : null;
+  const rangeStart = range ? (range.to < range.from ? range.to : range.from) : null;
+  const rawDays = range ? daysBetweenISO(rangeStart, asOf) + 1 : days;
+  const effectiveDays = Math.min(Math.max(rawDays, 1), MAX_WINDOW_DAYS);
+  const cappedFrom = rawDays > MAX_WINDOW_DAYS ? shiftISO(asOf, -(MAX_WINDOW_DAYS - 1)) : null;
 
   const params = new URLSearchParams({
     stay_month: stayMonth,
-    days: String(days),
+    days: String(effectiveDays),
   });
+  // Only sent for a custom range: on a preset the server's own "today" is the
+  // authority, which keeps the window right for a user in another timezone.
+  if (asOf) params.set("as_of", asOf);
   if (!isAll && selected) params.set("branch_id", selected);
-  if (channel) params.set("channel", channel);
+  sources.forEach((s) => params.append("source", s));
   if (roomCategory) params.set("room_category", roomCategory);
 
   const { data, isPending, isError, error, isPlaceholderData } = useQuery({
-    queryKey: ["fill-pace", stayMonth, days, channel, roomCategory, selected, isAll],
+    queryKey: ["fill-pace", stayMonth, effectiveDays, asOf, sources.join("|"),
+               roomCategory, selected, isAll],
     queryFn: () => axios.get(`/api/metrics/fill-pace?${params}`).then((r) => r.data.data),
     placeholderData: keepPreviousData,
   });
@@ -309,12 +441,36 @@ export default function PerformanceFillPace() {
     }));
   }, [data, compare]);
 
-  const channelOptions = useMemo(() => {
-    const list = (data?.by_channel || []).map((c) => c.channel);
-    // Keep a hand-picked channel visible even if it booked nothing this month.
-    if (channel && !list.includes(channel)) list.push(channel);
-    return list;
-  }, [data, channel]);
+  // Every source the month actually saw, grouped by category so the picker can
+  // offer "all of Direct" in one click without needing a rolled-up row.
+  const sourceGroups = useMemo(() => {
+    const seen = new Map();
+    for (const s of data?.by_source || []) {
+      seen.set(s.source, s.category || "OTA");
+    }
+    // A hand-picked source stays visible even if it booked nothing this month,
+    // otherwise the filter would silently drop itself out of its own list.
+    for (const s of sources) if (!seen.has(s)) seen.set(s, "Other");
+
+    const groups = new Map();
+    for (const [name, category] of seen) {
+      if (!groups.has(category)) groups.set(category, []);
+      groups.get(category).push(name);
+    }
+    // Direct first — it is the one the team argues about — then the rest by size.
+    return [...groups.entries()]
+      .sort((a, b) => (a[0] === "Direct" ? -1 : b[0] === "Direct" ? 1 : b[1].length - a[1].length))
+      .map(([category, names]) => ({ category, names }));
+  }, [data, sources]);
+
+  const toggleSource = (name) =>
+    setSources((cur) => (cur.includes(name) ? cur.filter((s) => s !== name) : [...cur, name]));
+
+  const toggleGroup = (names) =>
+    setSources((cur) => {
+      const all = names.every((n) => cur.includes(n));
+      return all ? cur.filter((s) => !names.includes(s)) : [...new Set([...cur, ...names])];
+    });
 
   const monthStartLabel = monthLabel(data?.stay_month || stayMonth);
 
@@ -347,26 +503,55 @@ export default function PerformanceFillPace() {
         <Field label="Booking window">
           <div className="flex items-center gap-1.5">
             {WINDOWS.map((d) => (
-              <button key={d} onClick={() => setDays(d)}
+              <button key={d} onClick={() => { setRange(null); setDays(d); }}
                 className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                  days === d
+                  !range && days === d
                     ? "bg-indigo-600 text-white shadow-sm"
                     : "bg-white border border-gray-200 text-gray-600 hover:border-indigo-300"
                 }`}>
                 {d}d
               </button>
             ))}
+            <button
+              onClick={() =>
+                setRange(range
+                  ? null
+                  : { from: shiftISO(todayISO(), -(days - 1)), to: todayISO() })}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                range
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "bg-white border border-gray-200 text-gray-600 hover:border-indigo-300"
+              }`}>
+              Custom
+            </button>
           </div>
         </Field>
 
+        {range && (
+          <Field label="Booked between">
+            <div className="flex items-center gap-2">
+              <input type="date" className={SELECT_CLS} value={range.from} max={todayISO()}
+                     onChange={(e) => setRange({ ...range, from: e.target.value })} />
+              <span className="text-gray-400 text-sm">→</span>
+              <input type="date" className={SELECT_CLS} value={range.to} max={todayISO()}
+                     onChange={(e) => setRange({ ...range, to: e.target.value })} />
+            </div>
+            {cappedFrom && (
+              <span className="text-xs text-amber-700">
+                Capped at {MAX_WINDOW_DAYS} days — reading from {longDate(cappedFrom)}.
+              </span>
+            )}
+          </Field>
+        )}
+
         <Field label="Source">
-          <select className={SELECT_CLS} value={channel}
-                  onChange={(e) => setChannel(e.target.value)}>
-            <option value="">All sources</option>
-            {channelOptions.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
+          <SourcePicker
+            groups={sourceGroups}
+            selected={sources}
+            onToggle={toggleSource}
+            onToggleGroup={toggleGroup}
+            onClear={() => setSources([])}
+          />
         </Field>
 
         <Field label="Room type">
@@ -380,7 +565,7 @@ export default function PerformanceFillPace() {
 
         {data && (
           <div className="text-xs text-gray-500 ml-auto leading-relaxed">
-            Booked {shortDate(data.window.from)}–{shortDate(data.window.to)} ·{" "}
+            Booked {shortDate(data.window.from)}–{shortDate(data.window.to)} ({data.days}d) ·{" "}
             {data.days_out.to} days before {monthStartLabel.split(" ")[0]} 1
             {compare && (
               <>
@@ -539,9 +724,9 @@ export default function PerformanceFillPace() {
           {/* Which source is pacing ahead */}
           <PaceTable
             title="By source"
-            subtitle={`Always the full month, whatever the Source filter above is set to — otherwise this table could not answer which channel is carrying ${monthStartLabel.split(" ")[0]}.`}
-            rows={data.by_channel}
-            nameKey="channel"
+            subtitle={`One row per source, always the full month whatever the Source filter is set to — otherwise this table could not answer which channel is carrying ${monthStartLabel.split(" ")[0]}. The rows sum back to the whole month.`}
+            rows={data.by_source}
+            nameKey="source"
             nameLabel="Source"
             currency={currency}
             compare={compare}
