@@ -411,6 +411,7 @@ def get_fill_pace(
     sources: Optional[list[str]] = None,
     room_category: Optional[str] = None,
     compare_last_year: bool = True,
+    today: Optional[date] = None,
 ) -> dict:
     """Fill pace for one or more stay months, optionally narrowed to a set of
     sources.
@@ -433,7 +434,11 @@ def get_fill_pace(
     is always built from the full month, so it stays usable as the answer to
     "which source is pacing ahead" rather than collapsing to what is selected.
     """
-    as_of = as_of or date.today()
+    # Which day it actually is, kept apart from `as_of`: a custom booking
+    # window can end months ago, but whether last year's month has run its
+    # course is a question about the calendar, not about the window.
+    real_today = today or date.today()
+    as_of = as_of or real_today
     days = max(1, min(int(days), MAX_WINDOW_DAYS))
     window_from = as_of - timedelta(days=days - 1)
     as_of_dates = [window_from + timedelta(days=i) for i in range(days)]
@@ -517,6 +522,8 @@ def get_fill_pace(
 
             month_row["last_year"] = {
                 "stay_month": f"{year - 1:04d}-{month:02d}",
+                # Only a month that has ended has a final number to report.
+                "status": _month_status(year - 1, month, real_today),
                 "as_of": ly_dates[-1].isoformat(),
                 "window": {"from": ly_dates[0].isoformat(), "to": ly_dates[-1].isoformat()},
                 **_decorate(ly_summary, ly_avail, include_final=True),
@@ -559,9 +566,20 @@ def get_fill_pace(
     if compare_last_year:
         ly_total = _sum_summaries(ly_summaries)
         ly_curve = _sum_curves(ly_curves)
+        ly_status = [m["last_year"]["status"] for m in month_rows]
         result["last_year"] = {
             "stay_months": [f"{y - 1:04d}-{m:02d}" for (y, m) in months],
             "stay_days": ly_stay_days,
+            # "finished" only when every year-ago month has actually ended.
+            # Anything else and the totals below are a snapshot, not an outcome,
+            # and the page has to stop calling them one.
+            "status": ("finished" if all(s == "finished" for s in ly_status)
+                       else "future" if all(s == "future" for s in ly_status)
+                       else "partial"),
+            "unfinished_stay_months": [
+                m["last_year"]["stay_month"] for m in month_rows
+                if m["last_year"]["status"] != "finished"
+            ],
             **_decorate(ly_total, ly_available, include_final=True),
         }
         if single:
@@ -640,6 +658,23 @@ def _assemble(
 
 
 # ── internals ────────────────────────────────────────────────────────────────
+
+def _month_status(year: int, month: int, today: date) -> str:
+    """Whether a stay month has run its course yet.
+
+    The year-ago figures are only a verdict once last year's month is over.
+    Pick a stay month far enough ahead and "last year" is ALSO still in the
+    future — its "final" occupancy is then just today's on-the-books number
+    wearing the word final, which is how a page can report that last December
+    finished at 14.6% when December has not happened yet.
+    """
+    start, end_excl, _ = month_bounds(year, month)
+    if end_excl <= today:
+        return "finished"
+    if start <= today:
+        return "in_progress"
+    return "future"
+
 
 def _next_month(today: date) -> tuple[int, int]:
     """The default stay month: the first whole one still ahead of us."""
