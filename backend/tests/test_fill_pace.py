@@ -198,7 +198,7 @@ def test_last_year_is_read_at_the_same_distance_from_the_month(branches, stub_ro
     compare two different distances from check-in and quietly bias the answer."""
     stub_rows({})
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2025, month=3,
+        FakeDB(branches), branch_id=None, months=[(2025, 3)],
         days=46, as_of=date(2025, 1, 15),
     )
 
@@ -215,7 +215,7 @@ def test_february_denominators_use_each_year_own_length(branches, stub_rows):
     without that would hand last year a 3.5% head start on occupancy."""
     stub_rows({})
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2025, month=2,
+        FakeDB(branches), branch_id=None, months=[(2025, 2)],
         days=30, as_of=date(2025, 1, 1),
     )
     units = 20 + 30
@@ -229,7 +229,7 @@ def test_pace_index_and_gaps_answer_faster_or_slower(branches, stub_rows):
         (2025, 12): [Row("b-saigon", date(2025, 8, 1), 60)],
     })
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8),
     )
 
@@ -245,7 +245,7 @@ def test_no_year_ago_bookings_leaves_the_comparison_blank(branches, stub_rows):
     instead of printing an infinity."""
     stub_rows({(2026, 12): [Row("b-taipei", date(2026, 8, 1), 40)], (2025, 12): []})
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8),
     )
 
@@ -268,7 +268,7 @@ def test_last_year_shows_what_it_ended_at_and_what_was_still_to_come(branches, s
         ],
     })
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8),
     )
 
@@ -294,7 +294,7 @@ def test_group_rollup_sums_room_nights_rather_than_averaging_branches(branches, 
         (2025, 12): [],
     })
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8),
     )
 
@@ -313,7 +313,7 @@ def test_room_filter_moves_the_denominator_to_match(branches, stub_rows):
     calls = []
     stub_rows({}, record=calls)
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=30, as_of=date(2026, 9, 8), room_category="room",
     )
 
@@ -327,10 +327,10 @@ def test_room_filter_moves_the_denominator_to_match(branches, stub_rows):
 def test_mixed_currency_scope_gets_no_currency_label(branches, stub_rows):
     """Saigon books VND and Taipei TWD. One symbol over the sum would lie."""
     stub_rows({})
-    group = get_fill_pace(FakeDB(branches), None, 2026, 12, 30, date(2026, 9, 8))
+    group = get_fill_pace(FakeDB(branches), None, [(2026, 12)], 30, date(2026, 9, 8))
     assert group["scope"]["currency"] is None
 
-    one = get_fill_pace(FakeDB(branches), "b-taipei", 2026, 12, 30, date(2026, 9, 8))
+    one = get_fill_pace(FakeDB(branches), "b-taipei", [(2026, 12)], 30, date(2026, 9, 8))
     assert one["scope"]["currency"] == "TWD"
     assert one["scope"]["units_in_scope"] == 30
     assert "branches" not in one
@@ -352,7 +352,7 @@ def test_selection_narrows_the_headline_but_not_the_breakdown(branches, stub_row
         (2025, 12): [Row("b-saigon", date(2025, 8, 1), 50, source="Agoda")],
     })
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8), sources=["Agoda"],
     )
 
@@ -382,7 +382,7 @@ def test_every_direct_source_gets_its_own_row(branches, stub_rows):
         (2025, 12): [],
     })
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8),
     )
 
@@ -412,7 +412,7 @@ def test_the_website_alone_can_be_selected(branches, stub_rows):
         ],
     })
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8), sources=["Website/Booking Engine"],
     )
     assert result["current"]["otb_room_nights"] == 30
@@ -430,7 +430,7 @@ def test_several_sources_can_be_selected_at_once(branches, stub_rows):
         (2025, 12): [],
     })
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8),
         sources=["Website/Booking Engine", "Agoda"],
     )
@@ -451,7 +451,7 @@ def test_a_category_still_selects_everything_under_it(branches, stub_rows):
         (2025, 12): [],
     })
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8), sources=["Direct"],
     )
     assert result["current"]["otb_room_nights"] == 42
@@ -469,7 +469,7 @@ def test_overlapping_selections_do_not_double_count(branches, stub_rows):
         (2025, 12): [],
     })
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8),
         sources=["Direct", "Website/Booking Engine"],
     )
@@ -484,7 +484,7 @@ def test_a_booking_with_no_source_still_lands_in_the_table(branches, stub_rows):
         (2025, 12): [],
     })
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8),
     )
     assert result["by_source"][0]["source"] == "Unknown"
@@ -495,7 +495,7 @@ def test_unknown_source_returns_an_empty_line_not_the_whole_month(branches, stub
     stub_rows({(2026, 12): [Row("b-saigon", date(2026, 8, 1), 99, source="Agoda")],
                (2025, 12): []})
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8), sources=["Expedia"],
     )
     assert result["current"]["otb_room_nights"] == 0
@@ -506,7 +506,7 @@ def test_an_empty_selection_means_every_source(branches, stub_rows):
     stub_rows({(2026, 12): [Row("b-saigon", date(2026, 8, 1), 99, source="Agoda")],
                (2025, 12): []})
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8), sources=[],
     )
     assert result["current"]["otb_room_nights"] == 99
@@ -518,7 +518,7 @@ def test_an_empty_selection_means_every_source(branches, stub_rows):
 def test_window_is_inclusive_of_both_ends(branches, stub_rows):
     stub_rows({})
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=60, as_of=date(2026, 9, 8),
     )
     assert result["window"] == {"from": "2026-07-11", "to": "2026-09-08"}
@@ -528,17 +528,17 @@ def test_window_is_inclusive_of_both_ends(branches, stub_rows):
 
 def test_window_is_clamped_to_something_queryable(branches, stub_rows):
     stub_rows({})
-    tiny = get_fill_pace(FakeDB(branches), None, 2026, 12, 0, date(2026, 9, 8))
+    tiny = get_fill_pace(FakeDB(branches), None, [(2026, 12)], 0, date(2026, 9, 8))
     assert tiny["days"] == 1 and len(tiny["curve"]) == 1
 
-    huge = get_fill_pace(FakeDB(branches), None, 2026, 12, 5000, date(2026, 9, 8))
+    huge = get_fill_pace(FakeDB(branches), None, [(2026, 12)], 5000, date(2026, 9, 8))
     assert huge["days"] == fill_pace.MAX_WINDOW_DAYS
 
 
 def test_comparison_can_be_switched_off(branches, stub_rows):
     stub_rows({(2026, 12): [Row("b-saigon", date(2026, 8, 1), 10)]})
     result = get_fill_pace(
-        FakeDB(branches), branch_id=None, year=2026, month=12,
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
         days=30, as_of=date(2026, 9, 8), compare_last_year=False,
     )
     assert "last_year" not in result
@@ -704,8 +704,222 @@ def test_the_window_defaults_and_bounds_are_enforced(client):
 
 
 def test_a_bad_stay_month_is_refused_rather_than_guessed(client):
+    """Named in the error, so a typo in one of several months is findable."""
     http, _ = client
-    assert http.get("/api/metrics/fill-pace",
-                    params={"stay_month": "2026-13"}).json()["success"] is False
-    assert http.get("/api/metrics/fill-pace",
-                    params={"stay_month": "December"}).status_code == 422
+    for bad in ("2026-13", "December", "2026-1", "2026"):
+        body = http.get("/api/metrics/fill-pace", params={"stay_month": bad}).json()
+        assert body["success"] is False
+        assert bad in body["error"]
+
+
+def test_months_reach_the_service_as_year_month_pairs(client):
+    http, captured = client
+
+    http.get("/api/metrics/fill-pace?stay_month=2026-10&stay_month=2026-12")
+    assert captured["months"] == [(2026, 10), (2026, 12)]
+
+    http.get("/api/metrics/fill-pace")
+    assert len(captured["months"]) == 1
+
+
+def test_too_many_months_is_refused_rather_than_silently_trimmed(client):
+    """Every month costs two grouped queries. Quietly dropping the ones past
+    the cap would answer a different question than the one asked."""
+    http, _ = client
+    many = "&".join(f"stay_month=2026-{m:02d}" for m in range(1, 13))
+    assert http.get(f"/api/metrics/fill-pace?{many}").json()["success"] is True
+
+    too_many = many + "&stay_month=2027-01"
+    body = http.get(f"/api/metrics/fill-pace?{too_many}").json()
+    assert body["success"] is False
+    assert "13 given" in body["error"]
+
+
+# ── several stay months at once ──────────────────────────────────────────────
+
+def test_months_are_summed_not_averaged(branches, stub_rows):
+    """A quarter's fill is total room-nights over total inventory-nights. A
+    31-night month and a 30-night one do not carry equal weight, so a mean of
+    three monthly percentages is the wrong number."""
+    stub_rows({
+        (2026, 10): [Row("b-saigon", date(2026, 8, 1), 155)],
+        (2026, 11): [Row("b-saigon", date(2026, 8, 1), 300)],
+        (2026, 12): [Row("b-saigon", date(2026, 8, 1), 100)],
+        (2025, 10): [], (2025, 11): [], (2025, 12): [],
+    })
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None,
+        months=[(2026, 10), (2026, 11), (2026, 12)],
+        days=60, as_of=date(2026, 9, 8),
+    )
+
+    units = 20 + 30
+    assert result["stay_days"] == 31 + 30 + 31
+    assert result["scope"]["available_room_nights"] == units * 92
+    assert result["current"]["otb_room_nights"] == 555
+    # 555 / 4600, not the mean of 10.0%, 20.0% and 6.45%.
+    assert result["current"]["otb_occ_pct"] == 12.07
+
+
+def test_each_month_keeps_its_own_countdown(branches, stub_rows):
+    """The heart of reading several months together. On 8 Sep, October is 23
+    days out and December is 84. October must be compared with the point last
+    year that was 23 days from October — not with 8 Sep 2025 flat, and above all
+    not with December's 84-day mark."""
+    stub_rows({})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None,
+        months=[(2026, 10), (2026, 12)],
+        days=60, as_of=date(2026, 9, 8),
+    )
+
+    by_month = {m["stay_month"]: m for m in result["months"]}
+    assert by_month["2026-10"]["days_out"]["to"] == 23
+    assert by_month["2026-12"]["days_out"]["to"] == 84
+    # Each lands on its own year-ago date, both 23 and 84 days out respectively.
+    assert by_month["2026-10"]["last_year"]["as_of"] == "2025-09-08"
+    assert by_month["2026-12"]["last_year"]["as_of"] == "2025-09-08"
+    assert by_month["2026-10"]["last_year"]["stay_month"] == "2025-10"
+
+
+def test_a_leap_year_moves_the_months_apart(branches, stub_rows):
+    """The two year-ago dates coincide only because 365 days separate the two
+    Octobers. Put a 29 February in the way and they do not — which is exactly
+    why each month carries its own countdown instead of one shared offset."""
+    stub_rows({})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None,
+        months=[(2025, 2), (2025, 3)],
+        days=30, as_of=date(2025, 1, 15),
+    )
+
+    by_month = {m["stay_month"]: m for m in result["months"]}
+    # 17 days before 1 Feb 2025 is 15 Jan; 17 days before 1 Feb 2024 is 15 Jan.
+    assert by_month["2025-02"]["last_year"]["as_of"] == "2024-01-15"
+    # 45 days before 1 Mar 2025 is 15 Jan; before 1 Mar 2024 it is 16 Jan.
+    assert by_month["2025-03"]["last_year"]["as_of"] == "2024-01-16"
+    # Denominators follow each year's own calendar: Feb 2024 had 29 days.
+    assert result["stay_days"] == 28 + 31
+    assert result["last_year"]["stay_days"] == 29 + 31
+
+
+def test_the_total_can_be_on_pace_while_a_month_inside_it_is_not(branches, stub_rows):
+    """The reason the per-month rows exist at all."""
+    stub_rows({
+        (2026, 11): [Row("b-saigon", date(2026, 8, 1), 200)],
+        (2026, 12): [Row("b-saigon", date(2026, 8, 1), 20)],
+        (2025, 11): [Row("b-saigon", date(2025, 8, 1), 100)],
+        (2025, 12): [Row("b-saigon", date(2025, 8, 1), 120)],
+    })
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None,
+        months=[(2026, 11), (2026, 12)],
+        days=60, as_of=date(2026, 9, 8),
+    )
+
+    assert result["vs_last_year"]["pace_index"] == 1.0        # 220 vs 220
+    by_month = {m["stay_month"]: m for m in result["months"]}
+    assert by_month["2026-11"]["vs_last_year"]["pace_index"] == 2.0
+    assert by_month["2026-12"]["vs_last_year"]["pace_index"] == round(20 / 120, 3)
+
+
+def test_the_curve_adds_the_months_point_by_point(branches, stub_rows):
+    stub_rows({
+        (2026, 11): [Row("b-saigon", date(2026, 9, 1), 30)],
+        (2026, 12): [Row("b-saigon", date(2026, 9, 1), 12)],
+        (2025, 11): [], (2025, 12): [],
+    })
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None,
+        months=[(2026, 11), (2026, 12)],
+        days=10, as_of=date(2026, 9, 8),
+    )
+
+    curve = result["curve"]
+    assert len(curve) == 10
+    assert curve[0]["otb_room_nights"] == 0       # before 1 Sep, nothing booked
+    assert curve[-1]["otb_room_nights"] == 42     # both months, together
+    # No single countdown to plot against, so the axis is the booking date.
+    assert "days_out" not in curve[0]
+    assert "days_out" not in result
+
+
+def test_one_month_still_reads_as_a_countdown(branches, stub_rows):
+    """The single-month view must not change shape now that many are allowed."""
+    stub_rows({(2026, 12): [], (2025, 12): []})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
+        days=60, as_of=date(2026, 9, 8),
+    )
+
+    assert result["stay_months"] == ["2026-12"]
+    assert result["days_out"] == {"from": 143, "to": 84}
+    assert result["curve"][0]["days_out"] == 143
+    assert result["curve"][-1]["days_out"] == 84
+    assert result["curve"][-1]["ly_date"] == "2025-09-08"
+    assert result["last_year"]["as_of"] == "2025-09-08"
+
+
+def test_sources_and_branches_sum_across_the_months(branches, stub_rows):
+    stub_rows({
+        (2026, 11): [
+            Row("b-saigon", date(2026, 8, 1), 30, source="Agoda"),
+            Row("b-taipei", date(2026, 8, 1), 10, source="Website/Booking Engine",
+                source_category="Direct"),
+        ],
+        (2026, 12): [
+            Row("b-saigon", date(2026, 8, 1), 12, source="Agoda"),
+            Row("b-taipei", date(2026, 8, 1), 5, source="Website/Booking Engine",
+                source_category="Direct"),
+        ],
+        (2025, 11): [], (2025, 12): [],
+    })
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None,
+        months=[(2026, 11), (2026, 12)],
+        days=60, as_of=date(2026, 9, 8),
+    )
+
+    by_source = {c["source"]: c for c in result["by_source"]}
+    assert by_source["Agoda"]["otb_room_nights"] == 42
+    assert by_source["Website/Booking Engine"]["otb_room_nights"] == 15
+
+    by_branch = {b["branch_name"]: b for b in result["branches"]}
+    assert by_branch["Saigon"]["otb_room_nights"] == 42
+    # Each branch against its own inventory across the whole span.
+    assert by_branch["Saigon"]["available_room_nights"] == 20 * 61
+    assert by_branch["Taipei"]["available_room_nights"] == 30 * 61
+
+
+def test_repeated_months_are_read_once(branches, stub_rows):
+    """Asking for December twice must not sell December twice."""
+    stub_rows({(2026, 12): [Row("b-saigon", date(2026, 8, 1), 50)], (2025, 12): []})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None,
+        months=[(2026, 12), (2026, 12)],
+        days=60, as_of=date(2026, 9, 8),
+    )
+    assert result["stay_months"] == ["2026-12"]
+    assert result["current"]["otb_room_nights"] == 50
+
+
+def test_months_come_back_in_calendar_order(branches, stub_rows):
+    stub_rows({})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None,
+        months=[(2027, 1), (2026, 11), (2026, 12)],
+        days=30, as_of=date(2026, 9, 8),
+    )
+    assert result["stay_months"] == ["2026-11", "2026-12", "2027-01"]
+
+
+def test_the_month_count_is_capped_in_the_service_too(branches, stub_rows):
+    """The endpoint refuses an over-long list; the service is also called from
+    tests and any future caller, so it holds its own bound."""
+    stub_rows({})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None,
+        months=[(2026, m) for m in range(1, 13)] + [(2027, 1)],
+        days=30, as_of=date(2026, 9, 8),
+    )
+    assert len(result["stay_months"]) == fill_pace.MAX_STAY_MONTHS

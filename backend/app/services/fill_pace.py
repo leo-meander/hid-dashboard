@@ -54,6 +54,9 @@ logger = logging.getLogger(__name__)
 _INVENTORY_ATTR = {"Room": "total_room_count", "Dorm": "total_dorm_count"}
 
 MAX_WINDOW_DAYS = 365
+# Each stay month costs two grouped queries (this year and last). A dozen keeps
+# a whole year of months readable without turning one page load into fifty.
+MAX_STAY_MONTHS = 12
 
 
 # ── small helpers ────────────────────────────────────────────────────────────
@@ -308,25 +311,101 @@ def _compare(cur: dict, ly: dict, avail: float, ly_avail: float) -> dict:
     }
 
 
+# ── combining months ─────────────────────────────────────────────────────────
+#
+# Several stay months can be read at once — "how is Q4 filling" is one question,
+# not three. Each month is still measured against its OWN countdown: on 8 Sep,
+# October is 23 days out and December is 84, and each is compared with the point
+# last year that sat the same distance from its own month. Only then are they
+# added up. Lining all three against one calendar offset instead would compare
+# December with a point last year that was seven weeks closer to check-in.
+#
+# The per-month rows come back alongside the total, because "Q4 is on pace"
+# routinely hides one month carrying two others.
+
+# Every field in a summary is an additive count, so months combine by summing.
+_SUM_KEYS = (
+    "opening_room_nights", "otb_room_nights", "otb_bookings",
+    "otb_revenue_native", "otb_revenue_vnd",
+    "pickup_room_nights", "pickup_bookings", "pickup_revenue_native",
+    "final_room_nights", "final_bookings",
+    "undated_room_nights", "undated_bookings",
+)
+
+_CURVE_SUM_KEYS = (
+    "otb_room_nights", "otb_bookings", "otb_revenue_native",
+    "day_room_nights", "day_bookings",
+)
+
+
+def _sum_summaries(summaries: list[dict]) -> dict:
+    out = {k: 0.0 for k in _SUM_KEYS}
+    for s in summaries:
+        for k in _SUM_KEYS:
+            out[k] += s.get(k, 0) or 0
+    for k in ("otb_bookings", "pickup_bookings", "final_bookings", "undated_bookings"):
+        out[k] = int(out[k])
+    for k in set(_SUM_KEYS) - {"otb_bookings", "pickup_bookings",
+                               "final_bookings", "undated_bookings"}:
+        out[k] = round(out[k], 2)
+    return out
+
+
+def _sum_curves(curves: list[list[dict]]) -> list[dict]:
+    """Add several months' curves point by point.
+
+    Point i is the same booking date in every month's curve — the window is one
+    stretch of calendar time whichever month is being filled — so the sum is
+    "everything on the books for any of these months, as of that date".
+    """
+    if not curves:
+        return []
+    out = []
+    for i in range(len(curves[0])):
+        point = {"date": curves[0][i]["date"]}
+        for k in _CURVE_SUM_KEYS:
+            total = sum(c[i].get(k, 0) or 0 for c in curves)
+            point[k] = int(total) if k.endswith("bookings") else round(total, 2)
+        out.append(point)
+    return out
+
+
+def _group_summaries(rows, as_of_dates: list[date], key_of) -> dict[str, dict]:
+    """Split rows by some key and summarise each group over the same window."""
+    grouped: dict[str, list] = {}
+    for r in rows:
+        grouped.setdefault(key_of(r), []).append(r)
+    return {k: build_curve(v, as_of_dates)[1] for k, v in grouped.items()}
+
+
+def _accumulate(store: dict[str, list[dict]], summaries: dict[str, dict]) -> None:
+    for key, summary in summaries.items():
+        store.setdefault(key, []).append(summary)
+
+
 # ── main entry point ─────────────────────────────────────────────────────────
 
 def get_fill_pace(
     db: Session,
     branch_id: Optional[UUID],
-    year: int,
-    month: int,
+    months: list[tuple[int, int]],
     days: int = 60,
     as_of: Optional[date] = None,
     sources: Optional[list[str]] = None,
     room_category: Optional[str] = None,
     compare_last_year: bool = True,
 ) -> dict:
-    """Fill pace for one stay month, optionally narrowed to a set of sources.
+    """Fill pace for one or more stay months, optionally narrowed to a set of
+    sources.
 
     `days` is the booking window ending at `as_of` (default today). The year-ago
-    comparison reads the same countdown to the same month one year back — never
-    the same calendar dates — so both curves sit at the same distance from
-    check-in at every point.
+    comparison reads the same countdown to each month one year back — never the
+    same calendar dates — so both curves sit at the same distance from check-in
+    at every point, month by month.
+
+    `months` is a list of (year, month). Several are read as one question — "how
+    is Q4 filling" — with the total on top and a row per month underneath,
+    because a healthy quarter routinely hides one month carrying the others.
 
     `sources` is a set, not one name: "how fast is our own website filling
     December" and "how fast are the OTAs filling it" are both one selection.
@@ -342,12 +421,10 @@ def get_fill_pace(
     window_from = as_of - timedelta(days=days - 1)
     as_of_dates = [window_from + timedelta(days=i) for i in range(days)]
 
-    month_start, _, dim = month_bounds(year, month)
-    # Distance from the month, which is what the two years are aligned on.
-    days_out = [(month_start - d).days for d in as_of_dates]
-
+    months = sorted(set(months))[:MAX_STAY_MONTHS] or [_next_month(as_of)]
     room_category = _normalise_room_category(room_category)
     inv_attr = _INVENTORY_ATTR.get(room_category, "total_rooms")
+    wanted = set(sources) if sources else None
 
     branches = {
         str(b.id): {
@@ -362,24 +439,87 @@ def get_fill_pace(
         branches = {k: v for k, v in branches.items() if k == str(branch_id)}
 
     units = sum(b["units"] for b in branches.values())
-    available = units * dim
 
-    wanted = set(sources) if sources else None
+    # Per-month accumulators. Each month contributes its own countdown, and the
+    # totals are summed only after each has been measured against it.
+    stay_days = ly_stay_days = 0
+    cur_summaries: list[dict] = []
+    ly_summaries: list[dict] = []
+    cur_curves: list[list[dict]] = []
+    ly_curves: list[list[dict]] = []
+    month_rows: list[dict] = []
+    src_cur: dict[str, list[dict]] = {}
+    src_ly: dict[str, list[dict]] = {}
+    src_category: dict[str, str] = {}
+    br_cur: dict[str, list[dict]] = {}
+    br_ly: dict[str, list[dict]] = {}
 
-    rows = fetch_month_rows(db, branch_id, year, month, room_category)
-    rows = [r for r in rows if str(r.branch_id) in branches]
+    for (year, month) in months:
+        month_start, _, dim = month_bounds(year, month)
+        days_out = [(month_start - d).days for d in as_of_dates]
+        avail = units * dim
+        stay_days += dim
 
-    scoped = [r for r in rows if _matches_sources(r, wanted)]
-    curve, summary = build_curve(scoped, as_of_dates)
-    current = _decorate(summary, available)
+        rows = [r for r in fetch_month_rows(db, branch_id, year, month, room_category)
+                if str(r.branch_id) in branches]
+        scoped = [r for r in rows if _matches_sources(r, wanted)]
+        curve, summary = build_curve(scoped, as_of_dates)
+
+        cur_summaries.append(summary)
+        cur_curves.append(curve)
+        _accumulate(src_cur, _group_summaries(rows, as_of_dates, _source_key))
+        _accumulate(br_cur, _group_summaries(scoped, as_of_dates, _branch_key))
+        for r in rows:
+            src_category.setdefault(_source_key(r), r.source_category or "OTA")
+
+        month_row = {
+            "stay_month": f"{year:04d}-{month:02d}",
+            "days_in_month": dim,
+            "days_out": {"from": days_out[0], "to": days_out[-1]},
+            **_decorate(summary, avail),
+        }
+
+        if compare_last_year:
+            ly_start, _, ly_dim = month_bounds(year - 1, month)
+            # Aligned by distance from the month, not by calendar date.
+            ly_dates = [ly_start - timedelta(days=do) for do in days_out]
+            ly_avail = units * ly_dim
+            ly_stay_days += ly_dim
+
+            ly_all = [r for r in fetch_month_rows(db, branch_id, year - 1, month, room_category)
+                      if str(r.branch_id) in branches]
+            ly_scoped = [r for r in ly_all if _matches_sources(r, wanted)]
+            ly_curve, ly_summary = build_curve(ly_scoped, ly_dates)
+
+            ly_summaries.append(ly_summary)
+            ly_curves.append(ly_curve)
+            _accumulate(src_ly, _group_summaries(ly_all, ly_dates, _source_key))
+            _accumulate(br_ly, _group_summaries(ly_scoped, ly_dates, _branch_key))
+            for r in ly_all:
+                src_category.setdefault(_source_key(r), r.source_category or "OTA")
+
+            month_row["last_year"] = {
+                "stay_month": f"{year - 1:04d}-{month:02d}",
+                "as_of": ly_dates[-1].isoformat(),
+                "window": {"from": ly_dates[0].isoformat(), "to": ly_dates[-1].isoformat()},
+                **_decorate(ly_summary, ly_avail, include_final=True),
+            }
+            month_row["vs_last_year"] = _compare(summary, ly_summary, avail, ly_avail)
+
+        month_rows.append(month_row)
+
+    available = units * stay_days
+    ly_available = units * ly_stay_days
+    total = _sum_summaries(cur_summaries)
+    curve = _sum_curves(cur_curves)
+    single = months[0] if len(months) == 1 else None
 
     result: dict = {
-        "stay_month": f"{year:04d}-{month:02d}",
-        "days_in_month": dim,
+        "stay_months": [f"{y:04d}-{m:02d}" for (y, m) in months],
+        "stay_days": stay_days,
         "as_of": as_of.isoformat(),
         "days": days,
         "window": {"from": window_from.isoformat(), "to": as_of.isoformat()},
-        "days_out": {"from": days_out[0], "to": days_out[-1]},
         "sources": sorted(wanted) if wanted else [],
         "room_category": room_category,
         "scope": {
@@ -390,156 +530,90 @@ def get_fill_pace(
             "available_room_nights": available,
             "currency": _single_currency(branches),
         },
-        "current": current,
+        "current": _decorate(total, available),
+        "months": month_rows,
     }
+    # A countdown only names a point in time when there is one month to count
+    # down to. Across several it is omitted, and the curve is read by booking
+    # date instead — which is the same date in every month's curve anyway.
+    if single:
+        result["days_out"] = month_rows[0]["days_out"]
 
-    ly_rows: list = []
-    ly_available = 0.0
     if compare_last_year:
-        ly_year, ly_month = year - 1, month
-        ly_month_start, _, ly_dim = month_bounds(ly_year, ly_month)
-        # Aligned by distance from the month, not by calendar date.
-        ly_dates = [ly_month_start - timedelta(days=do) for do in days_out]
-        ly_available = units * ly_dim
-
-        ly_rows = fetch_month_rows(db, branch_id, ly_year, ly_month, room_category)
-        ly_rows = [r for r in ly_rows if str(r.branch_id) in branches]
-        ly_scoped = [r for r in ly_rows if _matches_sources(r, wanted)]
-        ly_curve, ly_summary = build_curve(ly_scoped, ly_dates)
-        last_year = _decorate(ly_summary, ly_available, include_final=True)
-
+        ly_total = _sum_summaries(ly_summaries)
+        ly_curve = _sum_curves(ly_curves)
         result["last_year"] = {
-            "stay_month": f"{ly_year:04d}-{ly_month:02d}",
-            "days_in_month": ly_dim,
-            "as_of": ly_dates[-1].isoformat(),
-            "window": {"from": ly_dates[0].isoformat(), "to": ly_dates[-1].isoformat()},
-            **last_year,
+            "stay_months": [f"{y - 1:04d}-{m:02d}" for (y, m) in months],
+            "stay_days": ly_stay_days,
+            **_decorate(ly_total, ly_available, include_final=True),
         }
-        result["vs_last_year"] = _compare(summary, ly_summary, available, ly_available)
+        if single:
+            result["last_year"]["as_of"] = month_rows[0]["last_year"]["as_of"]
+            result["last_year"]["window"] = month_rows[0]["last_year"]["window"]
+        result["vs_last_year"] = _compare(total, ly_total, available, ly_available)
 
-        # One row per point so the chart can plot both lines against days_out.
-        ly_by_date = {p["date"]: p for p in ly_curve}
-        merged = []
         for i, point in enumerate(curve):
-            ly_point = ly_by_date.get(ly_dates[i].isoformat(), {})
-            merged.append({
-                "days_out": days_out[i],
-                **point,
-                "otb_occ_pct": pct(point["otb_room_nights"], available),
-                "ly_date": ly_dates[i].isoformat(),
-                "ly_otb_room_nights": ly_point.get("otb_room_nights", 0.0),
-                "ly_otb_occ_pct": pct(ly_point.get("otb_room_nights", 0.0), ly_available),
-                "ly_day_room_nights": ly_point.get("day_room_nights", 0.0),
-            })
-        result["curve"] = merged
+            point["otb_occ_pct"] = pct(point["otb_room_nights"], available)
+            point["ly_otb_room_nights"] = ly_curve[i]["otb_room_nights"]
+            point["ly_otb_occ_pct"] = pct(ly_curve[i]["otb_room_nights"], ly_available)
+            point["ly_day_room_nights"] = ly_curve[i]["day_room_nights"]
+            if single:
+                point["days_out"] = month_rows[0]["days_out"]["from"] - i
+                point["ly_date"] = ly_curves[0][i]["date"]
     else:
-        result["curve"] = [
-            {
-                "days_out": days_out[i],
-                **point,
-                "otb_occ_pct": pct(point["otb_room_nights"], available),
-            }
-            for i, point in enumerate(curve)
-        ]
+        for i, point in enumerate(curve):
+            point["otb_occ_pct"] = pct(point["otb_room_nights"], available)
+            if single:
+                point["days_out"] = month_rows[0]["days_out"]["from"] - i
 
-    result["by_source"] = _source_breakdown(
-        rows, ly_rows, as_of_dates, days_out, year, month, units,
-        available, ly_available, compare_last_year,
+    result["curve"] = curve
+    result["by_source"] = _assemble(
+        src_cur, src_ly, available, ly_available, compare_last_year,
+        name_key="source", extra=lambda k: {"category": src_category.get(k, "OTA")},
     )
     if not branch_id:
-        result["branches"] = _branch_breakdown(
-            rows, ly_rows, as_of_dates, days_out, year, month, branches,
-            dim, wanted, compare_last_year,
+        result["branches"] = _assemble(
+            br_cur, br_ly, available, ly_available, compare_last_year,
+            name_key="branch_id",
+            extra=lambda k: {
+                "branch_name": branches[k]["name"],
+                "currency": branches[k]["currency"],
+                "units_in_scope": branches[k]["units"],
+            },
+            # Each branch is measured against its own inventory: a 12-room
+            # property and a 60-room one are not comparable on room-nights, and
+            # a group percentage must never be the mean of two branch ones.
+            avail_of=lambda k: branches[k]["units"] * stay_days,
+            ly_avail_of=lambda k: branches[k]["units"] * ly_stay_days,
         )
     return result
 
 
-# ── breakdowns ───────────────────────────────────────────────────────────────
-
-def _source_breakdown(
-    rows, ly_rows, as_of_dates, days_out, year, month, units,
-    available, ly_available, compare_last_year,
+def _assemble(
+    cur: dict[str, list[dict]],
+    ly: dict[str, list[dict]],
+    available: float,
+    ly_available: float,
+    compare_last_year: bool,
+    name_key: str,
+    extra,
+    avail_of=None,
+    ly_avail_of=None,
 ) -> list[dict]:
-    """Per-source pace, so "which source is filling December" has an answer.
+    """Turn per-month accumulations into one row per source or branch.
 
-    One row per raw source — website, walk-in, Agoda, each on its own. The mix
-    pages roll every direct source into a single "Direct" row because the
-    question there is how much we booked ourselves; here the question is which
-    individual channel to push, and a rolled-up row cannot answer it. The rows
-    partition the month, so their room-nights sum back to the whole.
-
-    Built from the unfiltered month either way — the selection above narrows the
-    headline, not this table.
+    Months are summed first and the rates computed once from the totals, never
+    averaged across months — a 31-night month and a 28-night one do not carry
+    equal weight in a quarter's occupancy.
     """
-    ly_dates = _ly_dates(year, month, days_out) if compare_last_year else []
-
-    grouped: dict[str, list] = {}
-    categories: dict[str, str] = {}
-    for r in rows:
-        key = _source_key(r)
-        grouped.setdefault(key, []).append(r)
-        categories.setdefault(key, r.source_category or "OTA")
-
-    ly_grouped: dict[str, list] = {}
-    for r in ly_rows:
-        key = _source_key(r)
-        ly_grouped.setdefault(key, []).append(r)
-        categories.setdefault(key, r.source_category or "OTA")
-
     out = []
-    for key in set(grouped) | set(ly_grouped):
-        _, summary = build_curve(grouped.get(key, []), as_of_dates)
-        summary = summary or _blank_summary()
-        row = {
-            "source": key,
-            "category": categories.get(key, "OTA"),
-            **_decorate(summary, available),
-        }
+    for key in set(cur) | set(ly):
+        avail = avail_of(key) if avail_of else available
+        ly_avail = ly_avail_of(key) if ly_avail_of else ly_available
+        summary = _sum_summaries(cur.get(key, []))
+        row = {name_key: key, **extra(key), **_decorate(summary, avail)}
         if compare_last_year:
-            _, ly_summary = build_curve(ly_grouped.get(key, []), ly_dates)
-            ly_summary = ly_summary or _blank_summary()
-            row["last_year"] = _decorate(ly_summary, ly_available, include_final=True)
-            row["vs_last_year"] = _compare(summary, ly_summary, available, ly_available)
-        out.append(row)
-
-    out.sort(key=lambda r: -r["otb_room_nights"])
-    return out
-
-
-def _branch_breakdown(
-    rows, ly_rows, as_of_dates, days_out, year, month, branches,
-    dim, wanted, compare_last_year,
-) -> list[dict]:
-    """Per-branch pace when the group is in scope.
-
-    Room-nights are summed, never averaged across branches — a 12-room property
-    and a 60-room one do not contribute equally to a group occupancy figure,
-    and averaging their percentages would say they do.
-    """
-    ly_dates = _ly_dates(year, month, days_out) if compare_last_year else []
-    ly_dim = calendar.monthrange(year - 1, month)[1]
-
-    out = []
-    for bid, info in branches.items():
-        avail = info["units"] * dim
-        ly_avail = info["units"] * ly_dim
-        scoped = [r for r in rows if str(r.branch_id) == bid and _matches_sources(r, wanted)]
-        _, summary = build_curve(scoped, as_of_dates)
-        summary = summary or _blank_summary()
-        row = {
-            "branch_id": bid,
-            "branch_name": info["name"],
-            "currency": info["currency"],
-            "units_in_scope": info["units"],
-            **_decorate(summary, avail),
-        }
-        if compare_last_year:
-            ly_scoped = [
-                r for r in ly_rows
-                if str(r.branch_id) == bid and _matches_sources(r, wanted)
-            ]
-            _, ly_summary = build_curve(ly_scoped, ly_dates)
-            ly_summary = ly_summary or _blank_summary()
+            ly_summary = _sum_summaries(ly.get(key, []))
             row["last_year"] = _decorate(ly_summary, ly_avail, include_final=True)
             row["vs_last_year"] = _compare(summary, ly_summary, avail, ly_avail)
         out.append(row)
@@ -550,26 +624,9 @@ def _branch_breakdown(
 
 # ── internals ────────────────────────────────────────────────────────────────
 
-def _ly_dates(year: int, month: int, days_out: list[int]) -> list[date]:
-    ly_month_start = month_bounds(year - 1, month)[0]
-    return [ly_month_start - timedelta(days=do) for do in days_out]
-
-
-def _blank_summary() -> dict:
-    return {
-        "opening_room_nights": 0.0,
-        "otb_room_nights": 0.0,
-        "otb_bookings": 0,
-        "otb_revenue_native": 0.0,
-        "otb_revenue_vnd": 0.0,
-        "pickup_room_nights": 0.0,
-        "pickup_bookings": 0,
-        "pickup_revenue_native": 0.0,
-        "final_room_nights": 0.0,
-        "final_bookings": 0,
-        "undated_room_nights": 0.0,
-        "undated_bookings": 0,
-    }
+def _next_month(today: date) -> tuple[int, int]:
+    """The default stay month: the first whole one still ahead of us."""
+    return (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
 
 
 def _source_key(row) -> str:
@@ -577,6 +634,10 @@ def _source_key(row) -> str:
     Cloudbeds leaves it empty on a few rows; those collect under one label
     rather than disappearing from a table whose rows must sum to the month."""
     return row.source or "Unknown"
+
+
+def _branch_key(row) -> str:
+    return str(row.branch_id)
 
 
 def _matches_sources(row, wanted: Optional[set]) -> bool:
