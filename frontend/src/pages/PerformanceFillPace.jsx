@@ -267,6 +267,59 @@ function verdict(d) {
   };
 }
 
+/**
+ * The same question asked of the window before this one instead of last year.
+ *
+ * The raw ratio is never the verdict on its own: a window beats its predecessor
+ * whatever anyone does, because bookings crowd towards check-in. Where last
+ * year says what that stretch normally runs, the verdict is the raw figure
+ * divided by it. Where it does not, the page says the number is unchecked
+ * rather than dressing it as a win.
+ */
+function previousPeriodVerdict(d) {
+  const vs = d?.vs_previous_period;
+  if (!vs) return null;
+  const picked = d.current?.pickup_room_nights || 0;
+  const before = d.previous_period?.pickup_room_nights || 0;
+  const both = `${nights(picked)} room-nights this window against ${nights(before)} in the ${d.days} days before it`;
+
+  if (!vs.acceleration) {
+    return {
+      tone: "neutral",
+      headline: "Nothing booked in the previous window",
+      detail: `${both}. With nothing before it there is no rate to have sped up from.`,
+    };
+  }
+  if (!vs.natural_acceleration) {
+    return {
+      tone: "neutral",
+      headline: `${vs.acceleration.toFixed(2)}× the previous window — unchecked`,
+      detail: `${both}. Some of that is simply check-in getting closer, and with no year-ago volume for this month there is nothing to say how much. Treat it as a direction, not a result.`,
+    };
+  }
+  const excess = vs.excess_acceleration;
+  const norm = `The same stretch ran ${vs.natural_acceleration.toFixed(2)}× last year, so the part that is not just the calendar is ${excess.toFixed(2)}×.`;
+  if (excess >= 1.05) {
+    return {
+      tone: "up",
+      headline: `Ahead of the seasonal norm — ${excess.toFixed(2)}× after allowing for it`,
+      detail: `${both}, a raw ${vs.acceleration.toFixed(2)}×. ${norm}`,
+    };
+  }
+  if (excess <= 0.95) {
+    return {
+      tone: "down",
+      headline: `Behind the seasonal norm despite a raw ${vs.acceleration.toFixed(2)}×`,
+      detail: `${both}. ${norm}`,
+    };
+  }
+  return {
+    tone: "flat",
+    headline: "Moving with the seasonal norm, not against it",
+    detail: `${both}, a raw ${vs.acceleration.toFixed(2)}×. ${norm}`,
+  };
+}
+
 const VERDICT_STYLE = {
   up:      "bg-emerald-50 border-emerald-200 text-emerald-900",
   down:    "bg-red-50 border-red-200 text-red-900",
@@ -485,6 +538,10 @@ export default function PerformanceFillPace() {
   const [range, setRange] = useState(null);
   const [sources, setSources] = useState([]);
   const [roomCategory, setRoomCategory] = useState("");
+  // "last_year" compares the same countdown a year back, which controls for the
+  // seasonal shape by construction. "previous" compares the window before this
+  // one, which does not — see the note the page carries in that mode.
+  const [basis, setBasis] = useState("last_year");
 
   // A custom range is expressed to the API in the same terms as a preset —
   // a day count ending at an as-of date — so both go down one code path.
@@ -512,6 +569,9 @@ export default function PerformanceFillPace() {
   });
 
   const compare = Boolean(data?.last_year);
+  const onPrev = basis === "previous";
+  const prev = data?.previous_period;
+  const vsPrev = data?.vs_previous_period;
   // "Finished at" is only true of a month that has ended. Pick a stay month far
   // enough ahead and its "last year" is also in the future, and the card would
   // otherwise report today's on-the-books number as an outcome.
@@ -519,7 +579,10 @@ export default function PerformanceFillPace() {
   const lySettled = lyStatus === "finished";
   const unfinishedLabel = monthsLabel(data?.last_year?.unfinished_stay_months || []);
   const currency = data?.scope?.currency;
-  const v = useMemo(() => (data ? verdict(data) : null), [data]);
+  const v = useMemo(
+    () => (data ? (onPrev ? previousPeriodVerdict(data) : verdict(data)) : null),
+    [data, onPrev],
+  );
 
   // Daily pickup is spiky enough that raw bars hide the trend. A 7-day trailing
   // mean is what makes "speeding up / slowing down" visible at all.
@@ -539,6 +602,7 @@ export default function PerformanceFillPace() {
       ...p,
       day_avg: roll(data.curve, "day_room_nights", i),
       ly_day_avg: compare ? roll(data.curve, "ly_day_room_nights", i) : undefined,
+      prev_day_avg: roll(data.curve, "prev_day_room_nights", i),
     }));
   }, [data, compare]);
 
@@ -700,6 +764,22 @@ export default function PerformanceFillPace() {
           />
         </Field>
 
+        <Field label="Compare with">
+          <div className="flex items-center gap-1.5">
+            {[["last_year", "Last year"], ["previous", `Previous ${data?.days ?? ""}d`]].map(
+              ([k, label]) => (
+                <button key={k} onClick={() => setBasis(k)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                    basis === k
+                      ? "bg-indigo-600 text-white shadow-sm"
+                      : "bg-white border border-gray-200 text-gray-600 hover:border-indigo-300"
+                  }`}>
+                  {label}
+                </button>
+              ))}
+          </div>
+        </Field>
+
         <Field label="Room type">
           <select className={SELECT_CLS} value={roomCategory}
                   onChange={(e) => setRoomCategory(e.target.value)}>
@@ -770,6 +850,29 @@ export default function PerformanceFillPace() {
             </div>
           )}
 
+          {/* Period-over-period does not control for the shape of the booking
+              curve, and the shape is steep: measured across settled months this
+              group picks up 1.5x to 4.6x more in each window than the one
+              before, having done nothing. So the caveat is not a footnote here,
+              it sits above the numbers it applies to. */}
+          {onPrev && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900">
+              <div className="font-semibold">Read this against the calendar, not as a score</div>
+              <div className="mt-1 opacity-90">
+                Bookings arrive faster the closer check-in gets, so a window beats the one before
+                it whether or not anything was done — across settled months this group runs 1.5×
+                to 4.6× window over window on its own.
+                {vsPrev?.natural_acceleration
+                  ? ` Last year this same stretch ran ${vsPrev.natural_acceleration.toFixed(2)}×, which is the number to beat.`
+                  : " There is no year-ago volume here to say what the norm was, so the figure below is unchecked against anything."}
+                {compare && data.last_year.share_of_final_pct != null && (
+                  <> And it is early: by this point last year only{" "}
+                    {occ(data.last_year.share_of_final_pct)} of the month had sold.</>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Headline numbers */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Stat
@@ -787,6 +890,29 @@ export default function PerformanceFillPace() {
               subTone={compare ? toneFor(data.vs_last_year.pickup_room_nights_pct, 2) : "text-gray-500"}
               hint="Room-nights added inside the window — this is the speed"
             />
+            {onPrev ? (
+            <Stat
+              label={`vs previous ${data.days} days`}
+              value={vsPrev?.acceleration ? (
+                <span className="whitespace-nowrap">
+                  {nights(data.current.pickup_room_nights)}
+                  <span className="text-base font-normal text-gray-400 mx-1.5">vs</span>
+                  <span className="text-gray-500">{nights(prev?.pickup_room_nights)}</span>
+                </span>
+              ) : "—"}
+              sub={vsPrev?.acceleration
+                ? `${vsPrev.acceleration.toFixed(2)}× the window before${
+                    vsPrev.excess_acceleration
+                      ? ` · ${vsPrev.excess_acceleration.toFixed(2)}× once the season is allowed for`
+                      : " · no norm to check it against"
+                  }`
+                : "nothing booked in the window before"}
+              subTone={vsPrev?.excess_acceleration
+                ? toneFor(vsPrev.excess_acceleration - 1, 0.05)
+                : "text-amber-700"}
+              hint={`Room-nights booked in this window against the ${data.days} days before it, same stay month. The raw multiple is mostly the calendar — bookings crowd towards check-in — so the second figure is the one to read.`}
+            />
+            ) : (
             <Stat
               label="vs last year, same point"
               // Both sides shown rather than the gap alone: two percentages side
@@ -810,6 +936,7 @@ export default function PerformanceFillPace() {
                 ? `Both read ${data.days_out?.to} days before the month starts — the same distance from check-in, not the same calendar date. Stated as a gap in fill, not as a percentage change: ${occ(data.last_year.otb_occ_pct)} → ${occ(data.current.otb_occ_pct)} is +${Math.round((data.current.otb_occ_pct / data.last_year.otb_occ_pct - 1) * 100)}% relative, which is true and useless on a base this small.`
                 : "Both read at the same distance from the month, not the same calendar date"}
             />
+            )}
             <Stat
               label={lySettled ? "Last year ended at" : "Last year, so far"}
               value={compare ? occ(data.last_year.final_occ_pct) : "—"}
@@ -916,7 +1043,11 @@ export default function PerformanceFillPace() {
                 <Legend iconSize={10} wrapperStyle={{ fontSize: 12 }} />
                 <Line type="monotone" dataKey="day_avg" name="This year"
                       stroke={THIS_YEAR} strokeWidth={2.5} dot={false} />
-                {compare && (
+                {onPrev ? (
+                  <Line type="monotone" dataKey="prev_day_avg"
+                        name={`Previous ${data.days} days`}
+                        stroke={LAST_YEAR} strokeWidth={2} strokeDasharray="5 4" dot={false} />
+                ) : compare && (
                   <Line type="monotone" dataKey="ly_day_avg" name="Last year, same countdown"
                         stroke={LAST_YEAR} strokeWidth={2} strokeDasharray="5 4" dot={false} />
                 )}

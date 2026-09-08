@@ -1020,3 +1020,124 @@ def test_finality_follows_the_calendar_not_a_backdated_as_of(branches, stub_rows
     )
     # December 2025 is over whatever as_of the caller passed.
     assert result["last_year"]["status"] == "finished"
+
+
+# ── the window before this one ───────────────────────────────────────────────
+# Period-over-period is the only comparison available where there is no year-ago
+# base at all. It is also the one most easily misread: bookings arrive faster as
+# check-in approaches, so a window beats the one before it whether or not
+# anything was done — measured across settled months this group runs 1.5x to
+# 4.6x window over window, never below 1. So the raw ratio never travels alone.
+
+def _two_windows(branches, stub_rows, now, before, ly_now=None, ly_before=None):
+    """Bookings placed inside this window and the one before it, same month."""
+    rows = [Row("b-saigon", date(2026, 8, 20), now)]       # inside 10/08-08/09
+    rows += [Row("b-saigon", date(2026, 7, 20), before)]   # inside 11/07-09/08
+    ly = []
+    if ly_now:
+        ly.append(Row("b-saigon", date(2025, 8, 20), ly_now))
+    if ly_before:
+        ly.append(Row("b-saigon", date(2025, 7, 20), ly_before))
+    stub_rows({(2026, 12): rows, (2025, 12): ly})
+    return get_fill_pace(
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
+        days=30, as_of=date(2026, 9, 8), today=date(2026, 9, 8),
+    )
+
+
+def test_the_previous_window_sits_immediately_before_this_one(branches, stub_rows):
+    r = _two_windows(branches, stub_rows, now=90, before=30)
+    assert r["window"] == {"from": "2026-08-10", "to": "2026-09-08"}
+    assert r["previous_period"]["window"] == {"from": "2026-07-11", "to": "2026-08-09"}
+    assert r["previous_period"]["days"] == 30
+
+
+def test_acceleration_is_this_window_over_the_one_before(branches, stub_rows):
+    r = _two_windows(branches, stub_rows, now=90, before=30)
+    assert r["current"]["pickup_room_nights"] == 90
+    assert r["previous_period"]["pickup_room_nights"] == 30
+    assert r["vs_previous_period"]["acceleration"] == 3.0
+    assert r["vs_previous_period"]["pickup_room_nights_pct"] == 200.0
+
+
+def test_the_seasonal_norm_comes_from_last_year_over_the_same_pair(branches, stub_rows):
+    """3x means nothing until you know the stretch normally runs 4x. Last year
+    across the same two countdown positions is what says so."""
+    r = _two_windows(branches, stub_rows, now=90, before=30, ly_now=160, ly_before=40)
+    assert r["vs_previous_period"]["acceleration"] == 3.0
+    assert r["vs_previous_period"]["natural_acceleration"] == 4.0
+    # Tripling where the month normally quadruples is falling behind, however
+    # good a bare "3x" looks.
+    assert r["vs_previous_period"]["excess_acceleration"] == 0.75
+
+
+def test_beating_the_seasonal_norm_reads_above_one(branches, stub_rows):
+    r = _two_windows(branches, stub_rows, now=100, before=20, ly_now=120, ly_before=60)
+    assert r["vs_previous_period"]["acceleration"] == 5.0
+    assert r["vs_previous_period"]["natural_acceleration"] == 2.0
+    assert r["vs_previous_period"]["excess_acceleration"] == 2.5
+
+
+def test_no_year_ago_volume_leaves_the_norm_blank(branches, stub_rows):
+    """Oani and Taipei. The raw ratio is all there is, and the page has to say
+    that rather than let it stand as if it had been checked against anything."""
+    r = _two_windows(branches, stub_rows, now=617, before=215)
+    assert r["vs_previous_period"]["acceleration"] == round(617 / 215, 3)
+    assert r["vs_previous_period"]["natural_acceleration"] is None
+    assert r["vs_previous_period"]["excess_acceleration"] is None
+
+
+def test_an_empty_previous_window_has_no_ratio(branches, stub_rows):
+    r = _two_windows(branches, stub_rows, now=90, before=0)
+    assert r["previous_period"]["pickup_room_nights"] == 0
+    assert r["vs_previous_period"]["acceleration"] is None
+    assert r["vs_previous_period"]["pickup_room_nights_pct"] is None
+
+
+def test_the_previous_window_needs_no_extra_query(branches, stub_rows):
+    """Both windows read the same stay month, and the rows carry every booking
+    date already — so the earlier window is the same set walked again, not a
+    second trip to the database."""
+    calls = []
+    stub_rows({}, record=calls)
+    get_fill_pace(
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
+        days=30, as_of=date(2026, 9, 8), today=date(2026, 9, 8),
+    )
+    # One fetch for the stay month, one for its year-ago twin. Nothing more.
+    assert [(c[0], c[1]) for c in calls] == [(2026, 12), (2025, 12)]
+
+
+def test_how_early_this_is_being_read_is_reported(branches, stub_rows):
+    """At 84 days out this group has sold 3-5% of the month. That single figure
+    is what says how much weight any of these comparisons can carry."""
+    stub_rows({
+        (2026, 12): [Row("b-saigon", date(2026, 8, 20), 90)],
+        (2025, 12): [
+            Row("b-saigon", date(2025, 8, 20), 30),      # on the books by now
+            Row("b-saigon", date(2025, 11, 20), 970),    # the late rush
+        ],
+    })
+    r = get_fill_pace(
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
+        days=30, as_of=date(2026, 9, 8), today=date(2026, 9, 8),
+    )
+    # 30 of an eventual 1000 room-nights had been sold by this point last year.
+    assert r["last_year"]["share_of_final_pct"] == 3.0
+
+
+def test_a_norm_built_on_almost_nothing_is_not_offered(branches, stub_rows):
+    """1948's December ran 12 room-nights in one year-ago window and 14 in the
+    next. A norm of 1.17x from that would have turned a raw 3.25x into "2.8x
+    ahead of normal", while the group's own December over the same stretch ran
+    4.47x — the opposite verdict. Too thin a denominator gets no norm."""
+    r = _two_windows(branches, stub_rows, now=91, before=28, ly_now=14, ly_before=12)
+    assert r["vs_previous_period"]["acceleration"] == 3.25
+    assert r["vs_previous_period"]["natural_acceleration"] is None
+    assert r["vs_previous_period"]["excess_acceleration"] is None
+
+
+def test_a_base_worth_dividing_by_does_give_a_norm(branches, stub_rows):
+    r = _two_windows(branches, stub_rows, now=91, before=28, ly_now=134, ly_before=30)
+    assert r["vs_previous_period"]["natural_acceleration"] == round(134 / 30, 3)
+    assert r["vs_previous_period"]["excess_acceleration"] is not None
