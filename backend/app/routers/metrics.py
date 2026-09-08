@@ -29,6 +29,7 @@ from app.services.metrics_engine import (
     get_country_yoy,
     get_country_yoy_insights_local,
 )
+from app.services.fill_pace import MAX_WINDOW_DAYS, get_fill_pace
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +332,61 @@ def get_monthly(
         })
 
     result.sort(key=lambda x: (x.get("branch_id", ""), x.get("year", 0), x.get("month", 0)))
+    return _envelope(result)
+
+
+# ── Fill Pace ──────────────────────────────────────────────────────────────────
+
+@router.get("/fill-pace")
+def get_fill_pace_endpoint(
+    stay_month: Optional[str] = Query(
+        None, pattern=r"^\d{4}-\d{2}$",
+        description="Stay month to measure, YYYY-MM. Defaults to next month.",
+    ),
+    days: int = Query(60, ge=1, le=MAX_WINDOW_DAYS,
+                      description="Booking window ending at as_of."),
+    as_of: Optional[date] = Query(None, description="Snapshot date. Defaults to today."),
+    branch_id: Optional[UUID] = Query(None),
+    channel: Optional[str] = Query(
+        None,
+        description='Narrow to one source: "Direct", "Local travel agency", '
+                    'or an OTA name exactly as OTA Mix labels it.',
+    ),
+    room_category: Optional[str] = Query(None, pattern="^(?:[Rr]oom|[Dd]orm)$"),
+    compare_last_year: bool = Query(True),
+    db: Session = Depends(get_db),
+):
+    """How fast a stay month is filling, versus the same countdown last year.
+
+    Both years are read at the same distance from their month rather than the
+    same calendar dates, so 60 days before December 2026 is compared against
+    60 days before December 2025.
+    """
+    today = datetime.now(timezone.utc).date()
+    if stay_month:
+        year, month = int(stay_month[:4]), int(stay_month[5:7])
+        if not 1 <= month <= 12:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"stay_month has no month {month}",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+    else:
+        year, month = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+
+    result = get_fill_pace(
+        db,
+        branch_id=branch_id,
+        year=year,
+        month=month,
+        days=days,
+        as_of=as_of,
+        channel=channel,
+        room_category=room_category,
+        compare_last_year=compare_last_year,
+    )
+    result["data_synced_at"] = _last_reservations_synced_at(db, branch_id)
     return _envelope(result)
 
 

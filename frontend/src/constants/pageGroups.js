@@ -10,7 +10,7 @@
 // Groups an admin can assign to a user, in sidebar order.
 export const PAGE_GROUPS = [
   { key: "overview",    label: "Overview",    hint: "Home" },
-  { key: "performance", label: "Performance", hint: "Summary, Daily, Weekly, Monthly, OTA, Countries" },
+  { key: "performance", label: "Performance", hint: "Summary, Daily, Weekly, Monthly, OTA, Fill Pace, Countries" },
   { key: "strategy",    label: "Strategy",    hint: "KPI, Targets, Country Intel, Holiday Intel" },
   { key: "marketing",   label: "Marketing",   hint: "Marketing Activity, Budget Planner, Persona, Email" },
   { key: "reports",     label: "Reports",     hint: "Alerts, Rate Plan Quotas, Weekly Report, Bi-Weekly Report" },
