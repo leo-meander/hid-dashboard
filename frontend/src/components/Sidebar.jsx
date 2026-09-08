@@ -20,6 +20,7 @@ const NAV = [
       { to: "/performance/weekly",  label: "Weekly",   icon: "▥" },
       { to: "/performance/monthly", label: "Monthly",  icon: "▧" },
       { to: "/performance/ota",       label: "OTA Mix",    icon: "◈" },
+      { to: "/performance/fill-pace", label: "Fill Pace",  icon: "◐" },
       { to: "/performance/countries", label: "Countries",  icon: "◍" },
     ],
   },

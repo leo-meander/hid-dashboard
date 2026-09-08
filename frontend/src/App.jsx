@@ -20,6 +20,7 @@ import PerformanceDaily  from "./pages/PerformanceDaily";
 import PerformanceWeekly from "./pages/PerformanceWeekly";
 import PerformanceMonthly from "./pages/PerformanceMonthly";
 import PerformanceOTA    from "./pages/PerformanceOTA";
+import PerformanceFillPace from "./pages/PerformanceFillPace";
 import PerformanceCountry from "./pages/PerformanceCountry";
 import Countries         from "./pages/Countries";
 import CountryDetail     from "./pages/CountryDetail";
@@ -109,6 +110,7 @@ function AppRoutes() {
             <Route path="/performance/weekly"    element={<PerformanceWeekly />} />
             <Route path="/performance/monthly"   element={<PerformanceMonthly />} />
             <Route path="/performance/ota"       element={<PerformanceOTA />} />
+            <Route path="/performance/fill-pace" element={<PerformanceFillPace />} />
             <Route path="/performance/countries" element={<PerformanceCountry />} />
             <Route path="/countries"             element={<Countries />} />
             <Route path="/countries/:code"       element={<CountryDetail />} />
