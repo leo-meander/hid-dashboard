@@ -29,7 +29,7 @@ from app.services.metrics_engine import (
     get_country_yoy,
     get_country_yoy_insights_local,
 )
-from app.services.fill_pace import MAX_WINDOW_DAYS, get_fill_pace
+from app.services.fill_pace import MAX_STAY_MONTHS, MAX_WINDOW_DAYS, get_fill_pace
 
 logger = logging.getLogger(__name__)
 
@@ -337,11 +337,31 @@ def get_monthly(
 
 # ── Fill Pace ──────────────────────────────────────────────────────────────────
 
+def _parse_stay_month(raw: str) -> Optional[tuple[int, int]]:
+    """"YYYY-MM" into (year, month), or None if it is not one.
+
+    Validated here rather than by a route pattern so a bad value comes back as
+    the API's own error envelope naming the offending string, instead of a
+    422 that says only that some item in a list failed a regex.
+    """
+    parts = (raw or "").split("-")
+    if len(parts) != 2 or len(parts[0]) != 4 or len(parts[1]) != 2:
+        return None
+    try:
+        year, month = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    return (year, month) if 1 <= month <= 12 else None
+
+
 @router.get("/fill-pace")
 def get_fill_pace_endpoint(
-    stay_month: Optional[str] = Query(
-        None, pattern=r"^\d{4}-\d{2}$",
-        description="Stay month to measure, YYYY-MM. Defaults to next month.",
+    stay_month: Optional[list[str]] = Query(
+        None,
+        description="Stay months to measure, YYYY-MM; repeat the parameter for "
+                    f"each one (up to {MAX_STAY_MONTHS}). Several are read as "
+                    "one question — the total on top, a row per month "
+                    "underneath. Defaults to next month.",
     ),
     days: int = Query(60, ge=1, le=MAX_WINDOW_DAYS,
                       description="Booking window ending at as_of."),
@@ -359,30 +379,44 @@ def get_fill_pace_endpoint(
     compare_last_year: bool = Query(True),
     db: Session = Depends(get_db),
 ):
-    """How fast a stay month is filling, versus the same countdown last year.
+    """How fast one or more stay months are filling, versus the same countdown
+    last year.
 
-    Both years are read at the same distance from their month rather than the
-    same calendar dates, so 60 days before December 2026 is compared against
-    60 days before December 2025.
+    Every month is read at the same distance from ITS OWN month rather than at
+    the same calendar dates, so 60 days before December 2026 is compared against
+    60 days before December 2025 — and, when several months are asked for at
+    once, October is measured against last October's equivalent point even
+    though it sits seven weeks nearer to check-in than December does.
     """
     today = datetime.now(timezone.utc).date()
-    if stay_month:
-        year, month = int(stay_month[:4]), int(stay_month[5:7])
-        if not 1 <= month <= 12:
+    months: list[tuple[int, int]] = []
+    for raw in stay_month or []:
+        parsed = _parse_stay_month(raw)
+        if parsed is None:
             return {
                 "success": False,
                 "data": None,
-                "error": f"stay_month has no month {month}",
+                "error": f"stay_month {raw!r} is not a valid YYYY-MM",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
-    else:
-        year, month = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+        months.append(parsed)
+
+    if len(set(months)) > MAX_STAY_MONTHS:
+        return {
+            "success": False,
+            "data": None,
+            "error": f"at most {MAX_STAY_MONTHS} stay months at a time, "
+                     f"{len(set(months))} given",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    if not months:
+        months = [(today.year + 1, 1) if today.month == 12
+                  else (today.year, today.month + 1)]
 
     result = get_fill_pace(
         db,
         branch_id=branch_id,
-        year=year,
-        month=month,
+        months=months,
         days=days,
         as_of=as_of,
         sources=source,

@@ -34,6 +34,8 @@ const WINDOWS = [30, 60, 90, 180];
 // clamped server-side, so the page says so rather than showing a range it is
 // not actually reading.
 const MAX_WINDOW_DAYS = 365;
+// Mirrors MAX_STAY_MONTHS on the endpoint, which refuses a longer list.
+const MAX_STAY_MONTHS = 12;
 
 // ── dates ────────────────────────────────────────────────────────────────────
 // All arithmetic goes through UTC midnight so a range never drifts by a day for
@@ -58,9 +60,16 @@ function daysBetweenISO(from, to) {
   return Math.round((at(to) - at(from)) / 86400000);
 }
 
+function ymd(iso) {
+  if (typeof iso !== "string") return null;
+  const parts = iso.split("-").map(Number);
+  return parts.length === 3 && !parts.some(Number.isNaN) ? parts : null;
+}
+
 function longDate(iso) {
-  if (!iso) return "";
-  const [y, m, d] = iso.split("-").map(Number);
+  const parts = ymd(iso);
+  if (!parts) return "";
+  const [y, m, d] = parts;
   return new Date(y, m - 1, d).toLocaleDateString("en-GB", {
     day: "2-digit", month: "short", year: "numeric",
   });
@@ -113,22 +122,38 @@ function monthLabel(ym) {
 }
 
 function shortDate(iso) {
-  if (!iso) return "";
+  const parts = ymd(iso);
+  if (!parts) return typeof iso === "number" ? String(iso) : "";
   const [, m, d] = iso.split("-");
   return `${d}/${m}`;
 }
 
-/** Stay months on offer: six back, fourteen forward. Past months are still
- *  worth opening — that is how you check whether a pace read came true. */
-function monthOptions() {
+function shortMonth(ym) {
+  if (!ym) return "";
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleString("en-GB", { month: "short" });
+}
+
+/** Stay months on offer, grouped by year: six back, fourteen forward. Past
+ *  months are still worth opening — that is how you check whether a pace read
+ *  came true. */
+function monthGroups() {
   const now = new Date();
-  const out = [];
+  const byYear = new Map();
   for (let i = -6; i <= 14; i++) {
     const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
-    const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    out.push({ value: ym, label: monthLabel(ym), offset: i });
+    const year = d.getFullYear();
+    const ym = `${year}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    if (!byYear.has(year)) byYear.set(year, []);
+    byYear.get(year).push({
+      value: ym,
+      label: monthLabel(ym) + (i < 0 ? " (past)" : ""),
+    });
   }
-  return out;
+  return [...byYear.entries()].map(([year, options]) => ({
+    group: String(year),
+    options,
+  }));
 }
 
 function defaultMonth() {
@@ -136,6 +161,35 @@ function defaultMonth() {
   const n = new Date(d.getFullYear(), d.getMonth() + 1, 1);
   return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}`;
 }
+
+/**
+ * What to call the stay period in prose. One month gets its name; a run of
+ * consecutive months gets a range; anything else gets a count, because
+ * "Feb, Jun and Nov 2027" in the middle of a sentence reads worse than "3
+ * stay months" and the picker already says which.
+ */
+function monthsLabel(list) {
+  if (!list?.length) return "";
+  if (list.length === 1) return monthLabel(list[0]);
+
+  const idx = (ym) => {
+    const [y, m] = ym.split("-").map(Number);
+    return y * 12 + m;
+  };
+  const consecutive = list.every((ym, i) => i === 0 || idx(ym) === idx(list[i - 1]) + 1);
+  if (!consecutive) return `${list.length} stay months`;
+
+  const first = list[0];
+  const last = list[list.length - 1];
+  const sameYear = first.slice(0, 4) === last.slice(0, 4);
+  return sameYear
+    ? `${shortMonth(first)}–${shortMonth(last)} ${first.slice(0, 4)}`
+    : `${shortMonth(first)} ${first.slice(0, 4)}–${shortMonth(last)} ${last.slice(0, 4)}`;
+}
+
+// Built once: the option list is fixed for the session, and a stable array
+// identity keeps the picker from re-rendering on every unrelated keystroke.
+const MONTH_GROUPS = monthGroups();
 
 // ── verdict ──────────────────────────────────────────────────────────────────
 /**
@@ -154,12 +208,12 @@ function verdict(d) {
       ? {
           tone: "neutral",
           headline: "No year-ago pace to compare with",
-          detail: `${nights(picked)} room-nights picked up this window. The same countdown to ${monthLabel(d.last_year?.stay_month)} booked nothing, so there is no speed to be faster than.`,
+          detail: `${nights(picked)} room-nights picked up this window. The same countdown to ${monthsLabel(d.last_year?.stay_months)} booked nothing, so there is no speed to be faster than.`,
         }
       : {
           tone: "neutral",
           headline: "Nothing picked up in this window",
-          detail: `Neither this year nor the same countdown to ${monthLabel(d.last_year?.stay_month)} booked anything for this month. Widen the window or check a different source.`,
+          detail: `Neither this year nor the same countdown to ${monthsLabel(d.last_year?.stay_months)} booked anything. Widen the window or check a different source.`,
         };
   }
 
@@ -225,26 +279,26 @@ const SELECT_CLS =
   "focus:outline-none focus:ring-2 focus:ring-indigo-200";
 
 /**
- * Multi-select over every booking source the month saw.
+ * Multi-select over grouped options, used for both stay months and sources.
  *
- * A plain <select> could only hold one, and the sources that matter most are
- * the ones the mix pages bundle away: "our own website" is a different question
- * from "everything we booked directly". So each raw source is its own checkbox,
- * with a category header that ticks all of its sources at once.
+ * A plain <select> could only hold one of each, and both filters need several:
+ * "how is Q4 filling" is one question about three months, and "our own website"
+ * is a different question from "everything we booked directly". So every option
+ * is its own checkbox, under a group header that ticks all of its options at
+ * once — a year, or a source category.
  */
-function SourcePicker({ groups, selected, onToggle, onToggleGroup, onClear }) {
+function MultiPicker({ groups, selected, emptyLabel, summarise,
+                       onToggle, onToggleGroup, onClear, width = "13rem" }) {
   const [open, setOpen] = useState(false);
 
-  const label =
-    selected.length === 0 ? "All sources"
-      : selected.length === 1 ? selected[0]
-      : `${selected.length} sources`;
+  const label = selected.length === 0 ? emptyLabel : summarise(selected);
 
   return (
     <div className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        className={`${SELECT_CLS} min-w-[13rem] flex items-center justify-between gap-2 text-left`}
+        className={`${SELECT_CLS} flex items-center justify-between gap-2 text-left`}
+        style={{ minWidth: width }}
       >
         <span className={selected.length ? "text-gray-800" : "text-gray-500"}>{label}</span>
         <span className="text-gray-400 text-xs">▾</span>
@@ -256,38 +310,41 @@ function SourcePicker({ groups, selected, onToggle, onToggleGroup, onClear }) {
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
           <div className="absolute z-20 mt-1 w-72 max-h-80 overflow-y-auto bg-white border
                           border-gray-200 rounded-lg shadow-lg py-1">
-            <button
-              onClick={onClear}
-              className={`w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 ${
-                selected.length === 0 ? "text-indigo-600 font-medium" : "text-gray-600"
-              }`}
-            >
-              All sources
-            </button>
+            {onClear && (
+              <button
+                onClick={onClear}
+                className={`w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 ${
+                  selected.length === 0 ? "text-indigo-600 font-medium" : "text-gray-600"
+                }`}
+              >
+                {emptyLabel}
+              </button>
+            )}
 
-            {groups.map(({ category, names }) => {
-              const allOn = names.every((n) => selected.includes(n));
+            {groups.map(({ group, options }) => {
+              const values = options.map((o) => o.value);
+              const allOn = values.every((v) => selected.includes(v));
               return (
-                <div key={category} className="border-t border-gray-100 mt-1 pt-1">
+                <div key={group} className="border-t border-gray-100 mt-1 pt-1">
                   <button
-                    onClick={() => onToggleGroup(names)}
+                    onClick={() => onToggleGroup(values)}
                     className="w-full flex items-center justify-between px-3 py-1
                                text-xs font-semibold uppercase tracking-wide
                                text-gray-400 hover:text-indigo-600"
                   >
-                    <span>{category}</span>
+                    <span>{group}</span>
                     <span className="normal-case tracking-normal font-medium">
                       {allOn ? "clear" : "all"}
                     </span>
                   </button>
-                  {names.map((name) => (
-                    <label key={name}
+                  {options.map((o) => (
+                    <label key={o.value}
                       className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700
                                  hover:bg-gray-50 cursor-pointer">
                       <input type="checkbox" className="accent-indigo-600"
-                             checked={selected.includes(name)}
-                             onChange={() => onToggle(name)} />
-                      <span className="truncate">{name}</span>
+                             checked={selected.includes(o.value)}
+                             onChange={() => onToggle(o.value)} />
+                      <span className="truncate">{o.label}</span>
                     </label>
                   ))}
                 </div>
@@ -387,7 +444,7 @@ function PaceTable({ title, subtitle, rows, nameKey, nameLabel, currency, compar
 
 export default function PerformanceFillPace() {
   const { selected, isAll } = useBranch();
-  const [stayMonth, setStayMonth] = useState(defaultMonth);
+  const [stayMonths, setStayMonths] = useState(() => [defaultMonth()]);
   const [days, setDays] = useState(60);
   // null while a preset is active; {from, to} once a custom range is picked.
   const [range, setRange] = useState(null);
@@ -403,10 +460,8 @@ export default function PerformanceFillPace() {
   const effectiveDays = Math.min(Math.max(rawDays, 1), MAX_WINDOW_DAYS);
   const cappedFrom = rawDays > MAX_WINDOW_DAYS ? shiftISO(asOf, -(MAX_WINDOW_DAYS - 1)) : null;
 
-  const params = new URLSearchParams({
-    stay_month: stayMonth,
-    days: String(effectiveDays),
-  });
+  const params = new URLSearchParams({ days: String(effectiveDays) });
+  stayMonths.forEach((m) => params.append("stay_month", m));
   // Only sent for a custom range: on a preset the server's own "today" is the
   // authority, which keeps the window right for a user in another timezone.
   if (asOf) params.set("as_of", asOf);
@@ -415,7 +470,7 @@ export default function PerformanceFillPace() {
   if (roomCategory) params.set("room_category", roomCategory);
 
   const { data, isPending, isError, error, isPlaceholderData } = useQuery({
-    queryKey: ["fill-pace", stayMonth, effectiveDays, asOf, sources.join("|"),
+    queryKey: ["fill-pace", stayMonths.join("|"), effectiveDays, asOf, sources.join("|"),
                roomCategory, selected, isAll],
     queryFn: () => axios.get(`/api/metrics/fill-pace?${params}`).then((r) => r.data.data),
     placeholderData: keepPreviousData,
@@ -460,7 +515,10 @@ export default function PerformanceFillPace() {
     // Direct first — it is the one the team argues about — then the rest by size.
     return [...groups.entries()]
       .sort((a, b) => (a[0] === "Direct" ? -1 : b[0] === "Direct" ? 1 : b[1].length - a[1].length))
-      .map(([category, names]) => ({ category, names }));
+      .map(([category, names]) => ({
+        group: category,
+        options: names.map((n) => ({ value: n, label: n })),
+      }));
   }, [data, sources]);
 
   const toggleSource = (name) =>
@@ -472,7 +530,35 @@ export default function PerformanceFillPace() {
       return all ? cur.filter((s) => !names.includes(s)) : [...new Set([...cur, ...names])];
     });
 
-  const monthStartLabel = monthLabel(data?.stay_month || stayMonth);
+  const shownMonths = data?.stay_months || stayMonths;
+  const monthStartLabel = monthsLabel(shownMonths);
+  // A countdown axis only names a point in time when there is one month to
+  // count down to. Across several, the curve is read by booking date instead.
+  const oneMonth = shownMonths.length === 1;
+
+  // Tooltip heading. One month counts down to its own start; several are read
+  // by booking date, which is the same date in every month's curve anyway.
+  const axisLabel = (d) => {
+    if (typeof d === "number") {
+      return `${d >= 0 ? d : -d} days ${d >= 0 ? "before" : "into"} the month`;
+    }
+    const asDate = longDate(d);
+    return asDate ? `Booked ${asDate}` : "";
+  };
+
+  const toggleMonth = (ym) =>
+    setStayMonths((cur) => {
+      const next = cur.includes(ym) ? cur.filter((m) => m !== ym) : [...cur, ym];
+      // Never leave the page with nothing to measure.
+      return (next.length ? next : [ym]).sort();
+    });
+
+  const toggleMonthGroup = (values) =>
+    setStayMonths((cur) => {
+      const all = values.every((v) => cur.includes(v));
+      const next = all ? cur.filter((m) => !values.includes(m)) : [...new Set([...cur, ...values])];
+      return (next.length ? next : values).slice(0, MAX_STAY_MONTHS).sort();
+    });
 
   return (
     <div className="space-y-5">
@@ -481,7 +567,8 @@ export default function PerformanceFillPace() {
         <div>
           <h1 className="text-xl font-bold text-gray-800">Fill Pace</h1>
           <p className="text-sm text-gray-500">
-            How fast {monthStartLabel} is filling up, against the same countdown one year earlier
+            How fast {monthStartLabel} {oneMonth ? "is" : "are"} filling up, against the same
+            countdown one year earlier
             <SyncBadge timestamp={data?.data_synced_at} />
           </p>
         </div>
@@ -489,15 +576,16 @@ export default function PerformanceFillPace() {
 
       {/* Controls */}
       <div className="bg-white border border-gray-200 rounded-xl p-4 flex flex-wrap items-end gap-4">
-        <Field label="Stay month">
-          <select className={SELECT_CLS} value={stayMonth}
-                  onChange={(e) => setStayMonth(e.target.value)}>
-            {monthOptions().map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}{o.offset < 0 ? " (past)" : ""}
-              </option>
-            ))}
-          </select>
+        <Field label={stayMonths.length > 1 ? "Stay months" : "Stay month"}>
+          <MultiPicker
+            groups={MONTH_GROUPS}
+            selected={stayMonths}
+            emptyLabel=""
+            summarise={monthsLabel}
+            onToggle={toggleMonth}
+            onToggleGroup={toggleMonthGroup}
+            width="11rem"
+          />
         </Field>
 
         <Field label="Booking window">
@@ -545,9 +633,11 @@ export default function PerformanceFillPace() {
         )}
 
         <Field label="Source">
-          <SourcePicker
+          <MultiPicker
             groups={sourceGroups}
             selected={sources}
+            emptyLabel="All sources"
+            summarise={(s) => (s.length === 1 ? s[0] : `${s.length} sources`)}
             onToggle={toggleSource}
             onToggleGroup={toggleGroup}
             onClear={() => setSources([])}
@@ -565,12 +655,18 @@ export default function PerformanceFillPace() {
 
         {data && (
           <div className="text-xs text-gray-500 ml-auto leading-relaxed">
-            Booked {shortDate(data.window.from)}–{shortDate(data.window.to)} ({data.days}d) ·{" "}
-            {data.days_out.to} days before {monthStartLabel.split(" ")[0]} 1
-            {compare && (
+            Booked {shortDate(data.window.from)}–{shortDate(data.window.to)} ({data.days}d)
+            {oneMonth && <> ·{" "}{data.days_out.to} days before {monthStartLabel.split(" ")[0]} 1</>}
+            {compare && oneMonth && (
               <>
                 <br />
                 Last year: {shortDate(data.last_year.window.from)}–{shortDate(data.last_year.window.to)}
+              </>
+            )}
+            {compare && !oneMonth && (
+              <>
+                <br />
+                Each month against its own countdown a year earlier
               </>
             )}
           </div>
@@ -603,7 +699,7 @@ export default function PerformanceFillPace() {
               label="On the books"
               value={occ(data.current.otb_occ_pct)}
               sub={`${nights(data.current.otb_room_nights)} of ${nights(data.scope.available_room_nights)} room-nights`}
-              hint={`${data.scope.units_in_scope} units × ${data.days_in_month} nights`}
+              hint={`${data.scope.units_in_scope} units × ${data.stay_days} nights`}
             />
             <Stat
               label={`Picked up (${data.days}d)`}
@@ -618,7 +714,9 @@ export default function PerformanceFillPace() {
               label="vs last year, same point"
               value={compare ? ptsLabel(data.vs_last_year.otb_occ_pts) : "—"}
               sub={compare
-                ? `LY was ${occ(data.last_year.otb_occ_pct)} at ${data.days_out.to} days out`
+                ? `LY was ${occ(data.last_year.otb_occ_pct)}${
+                    oneMonth ? ` at ${data.days_out.to} days out` : " at the same point"
+                  }`
                 : "comparison off"}
               subTone="text-gray-500"
               hint="Difference in fill %, both read at the same distance from the month"
@@ -640,19 +738,20 @@ export default function PerformanceFillPace() {
               How full the month was, day by day
             </h2>
             <p className="text-xs text-gray-500 mt-0.5 mb-3">
-              Cumulative fill %, counting down to {monthStartLabel.split(" ")[0]} 1. Both years
-              read at the same distance from the month, so the lines are directly comparable.
+              {oneMonth
+                ? `Cumulative fill %, counting down to ${monthStartLabel.split(" ")[0]} 1. Both years read at the same distance from the month, so the lines are directly comparable.`
+                : "Cumulative fill % across every selected month, by booking date. Each month is still measured against its own countdown a year earlier before they are added up."}
             </p>
             <ResponsiveContainer width="100%" height={280}>
               <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                 <XAxis
-                  dataKey="days_out"
-                  reversed={false}
+                  dataKey={oneMonth ? "days_out" : "date"}
                   tick={{ fontSize: 11, fill: "#9ca3af" }}
-                  tickFormatter={(d) => (d >= 0 ? `${d}d` : `+${-d}d`)}
+                  tickFormatter={(d) =>
+                    oneMonth ? (d >= 0 ? `${d}d` : `+${-d}d`) : shortDate(d)}
                   label={{
-                    value: "days before the month starts",
+                    value: oneMonth ? "days before the month starts" : "booking date",
                     position: "insideBottom",
                     offset: -2,
                     style: { fontSize: 11, fill: "#9ca3af" },
@@ -665,9 +764,9 @@ export default function PerformanceFillPace() {
                 />
                 <Tooltip
                   contentStyle={{ fontSize: 12, borderRadius: 8 }}
-                  labelFormatter={(d) => `${d >= 0 ? d : -d} days ${d >= 0 ? "before" : "into"} the month`}
-                  formatter={(val, name, item) => [
-                    `${val === null || val === undefined ? "—" : `${Number(val).toFixed(1)}%`}`,
+                  labelFormatter={axisLabel}
+                  formatter={(val, name) => [
+                    val === null || val === undefined ? "—" : `${Number(val).toFixed(1)}%`,
                     name,
                   ]}
                 />
@@ -676,7 +775,7 @@ export default function PerformanceFillPace() {
                       stroke={THIS_YEAR} strokeWidth={2.5} dot={false} />
                 {compare && (
                   <Line type="monotone" dataKey="ly_otb_occ_pct"
-                        name={`${monthLabel(data.last_year.stay_month)} (same countdown)`}
+                        name={`${monthsLabel(data.last_year.stay_months)} (same countdown)`}
                         stroke={LAST_YEAR} strokeWidth={2} strokeDasharray="5 4" dot={false} />
                 )}
               </LineChart>
@@ -696,14 +795,15 @@ export default function PerformanceFillPace() {
               <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                 <XAxis
-                  dataKey="days_out"
+                  dataKey={oneMonth ? "days_out" : "date"}
                   tick={{ fontSize: 11, fill: "#9ca3af" }}
-                  tickFormatter={(d) => (d >= 0 ? `${d}d` : `+${-d}d`)}
+                  tickFormatter={(d) =>
+                    oneMonth ? (d >= 0 ? `${d}d` : `+${-d}d`) : shortDate(d)}
                 />
                 <YAxis tick={{ fontSize: 11, fill: "#9ca3af" }} width={44} />
                 <Tooltip
                   contentStyle={{ fontSize: 12, borderRadius: 8 }}
-                  labelFormatter={(d) => `${d >= 0 ? d : -d} days ${d >= 0 ? "before" : "into"} the month`}
+                  labelFormatter={axisLabel}
                   formatter={(val, name) => [
                     val === null || val === undefined ? "—" : Number(val).toFixed(1),
                     name,
@@ -720,6 +820,19 @@ export default function PerformanceFillPace() {
               </ComposedChart>
             </ResponsiveContainer>
           </div>
+
+          {/* Which month is pacing ahead — a healthy quarter can hide a bad month */}
+          {data.months?.length > 1 && (
+            <PaceTable
+              title="By month"
+              subtitle="Each month read against its own countdown a year earlier, so October is compared with last October at the same distance from check-in — not with December's."
+              rows={data.months.map((m) => ({ ...m, month_label: monthLabel(m.stay_month) }))}
+              nameKey="month_label"
+              nameLabel="Stay month"
+              currency={currency}
+              compare={compare}
+            />
+          )}
 
           {/* Which source is pacing ahead */}
           <PaceTable
@@ -756,8 +869,8 @@ export default function PerformanceFillPace() {
               without booking any faster.
             </p>
             <p>
-              Nights are clipped to the stay month, so a stay crossing the month boundary counts
-              only its nights inside it. Revenue is prorated the same way and excludes the
+              Nights are clipped to each stay month, so a stay crossing a month boundary counts
+              only its nights inside that month. Revenue is prorated the same way and excludes the
               non-paying sources (blogger, KOL, house use), which still occupy a bed and so still
               count toward fill. Cancelled and no-show bookings are out of both.
             </p>
@@ -765,9 +878,10 @@ export default function PerformanceFillPace() {
               <span className="font-semibold text-gray-700">The one caveat worth knowing:</span>{" "}
               this curve is rebuilt from today's reservation data, so a booking made and since
               cancelled is missing from every point on the line, not just the points after it was
-              cancelled. Last year's month has settled all of its cancellations; {monthStartLabel}
-              {" "}has not had them yet. The current line is the more generous of the two by
-              construction — a lead of a few points is not proof of a real one.
+              cancelled. Last year has settled all of its cancellations; {monthStartLabel}
+              {" "}{oneMonth ? "has" : "have"} not had them yet. The current line is the more
+              generous of the two by construction — a lead of a few points is not proof of a
+              real one.
             </p>
             {data.current.undated_room_nights > 0 && (
               <p>
