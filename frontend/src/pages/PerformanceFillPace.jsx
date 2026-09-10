@@ -593,17 +593,26 @@ export default function PerformanceFillPace() {
     // second a pair, and so on — so every window opened with a low, rising
     // stretch that was the arithmetic warming up rather than bookings speeding
     // up, and it read as an acceleration wherever the window happened to start.
+    //
+    // Refusing to draw those points left the other half of the problem: the
+    // axis still spanned the whole window, so the line began six days into it
+    // and the gap read as missing data. The curve now arrives with those six
+    // days of run-up in front of it, marked `lead_in` — they feed the average
+    // and are dropped before plotting, so the first point drawn is the window's
+    // own first day and it is a full week's mean like every other.
     const roll = (arr, key, i, n = SMOOTHING_DAYS) => {
       if (i < n - 1) return null;
       const slice = arr.slice(i - n + 1, i + 1);
       return slice.reduce((s, p) => s + (p[key] || 0), 0) / n;
     };
-    return data.curve.map((p, i) => ({
-      ...p,
-      day_avg: roll(data.curve, "day_room_nights", i),
-      ly_day_avg: compare ? roll(data.curve, "ly_day_room_nights", i) : undefined,
-      prev_day_avg: roll(data.curve, "prev_day_room_nights", i),
-    }));
+    return data.curve
+      .map((p, i) => ({
+        ...p,
+        day_avg: roll(data.curve, "day_room_nights", i),
+        ly_day_avg: compare ? roll(data.curve, "ly_day_room_nights", i) : undefined,
+        prev_day_avg: roll(data.curve, "prev_day_room_nights", i),
+      }))
+      .filter((p) => !p.lead_in);
   }, [data, compare]);
 
   // Today is a day still in progress: its bookings are a few hours old, not a
@@ -975,8 +984,9 @@ export default function PerformanceFillPace() {
             <p className="text-xs text-gray-500 mt-0.5 mb-3">
               Room-nights sold per booking day, smoothed over {SMOOTHING_DAYS} days. Above the
               other line means selling faster than {onPrev ? `the ${data.days} days before` : "the same run-up last year"}.
-              The line starts on day {SMOOTHING_DAYS} — before that there is not a full week to
-              average{endsToday ? " — and today is left off, being a day still in progress." : "."}
+              Each point is the week ending on it, and the week before the window opens is
+              read too, so the line covers the window end to end{endsToday
+                ? " — bar today, a day still in progress." : "."}
             </p>
             <ResponsiveContainer width="100%" height={240}>
               <LineChart data={speedData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
