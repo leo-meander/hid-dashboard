@@ -181,6 +181,24 @@ def test_undated_bookings_join_the_opening_balance_and_are_reported():
     assert summary["pickup_room_nights"] == 3
 
 
+def test_the_run_up_is_on_the_curve_but_never_in_the_pickup():
+    """A smoothed line needs days in front of its first point to average over.
+    Those days are returned as points and marked, but the window still opens
+    where it says it does: what arrived in the run-up is opening balance."""
+    dates = _window(date(2026, 7, 5), 8)   # 5-6 Jul the run-up, 7-12 Jul the window
+    rows = [
+        Row("b", date(2026, 7, 1), 100),   # before the curve starts at all
+        Row("b", date(2026, 7, 6), 4),     # inside the run-up
+        Row("b", date(2026, 7, 8), 9),     # inside the window
+    ]
+    curve, summary = build_curve(rows, dates, lead_in=2)
+
+    assert [p.get("lead_in") for p in curve[:3]] == [True, True, None]
+    assert curve[1]["day_room_nights"] == 4       # plottable, like any other day
+    assert summary["opening_room_nights"] == 104  # and behind the window, not in it
+    assert summary["pickup_room_nights"] == 9
+
+
 def test_empty_month_still_returns_a_flat_line():
     dates = _window(date(2026, 7, 11), 4)
     curve, summary = build_curve([], dates)
@@ -522,14 +540,46 @@ def test_window_is_inclusive_of_both_ends(branches, stub_rows):
         days=60, as_of=date(2026, 9, 8),
     )
     assert result["window"] == {"from": "2026-07-11", "to": "2026-09-08"}
-    assert len(result["curve"]) == 60
     assert result["days_out"] == {"from": 143, "to": 84}
+    window = [p for p in result["curve"] if not p.get("lead_in")]
+    assert len(window) == 60
+    assert window[0]["date"] == "2026-07-11"
+    # Plus the run-up in front of it, which is not part of the window.
+    assert len(result["curve"]) == 60 + fill_pace.LEAD_IN_DAYS
+
+
+def test_the_curve_carries_a_run_up_the_smoothed_line_can_average(branches, stub_rows):
+    """The page draws pace as a seven-day trailing mean, which has no first
+    point until seven days exist. Without a run-up the line could only start six
+    days into the window while the axis spanned the whole of it, and the gap
+    read as missing data rather than as arithmetic."""
+    stub_rows({(2026, 12): [
+        Row("b-saigon", date(2026, 8, 30), 5),    # inside the run-up
+        Row("b-saigon", date(2026, 9, 1), 20),    # inside the window
+    ], (2025, 12): []})
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, months=[(2026, 12)],
+        days=5, as_of=date(2026, 9, 5),
+    )
+
+    lead = [p for p in result["curve"] if p.get("lead_in")]
+    window = [p for p in result["curve"] if not p.get("lead_in")]
+    assert len(lead) == fill_pace.LEAD_IN_DAYS
+    assert lead[-1]["date"] == "2026-08-31"
+    assert window[0]["date"] == "2026-09-01" == result["window"]["from"]
+    # Days, not padding: the run-up carries the figures the mean averages.
+    assert sum(p["day_room_nights"] for p in lead) == 5
+    # And none of it moves a number the cards read.
+    assert result["current"]["opening_room_nights"] == 5
+    assert result["current"]["pickup_room_nights"] == 20
+    assert result["current"]["otb_room_nights"] == 25
 
 
 def test_window_is_clamped_to_something_queryable(branches, stub_rows):
     stub_rows({})
     tiny = get_fill_pace(FakeDB(branches), None, [(2026, 12)], 0, date(2026, 9, 8))
-    assert tiny["days"] == 1 and len(tiny["curve"]) == 1
+    assert tiny["days"] == 1
+    assert len([p for p in tiny["curve"] if not p.get("lead_in")]) == 1
 
     huge = get_fill_pace(FakeDB(branches), None, [(2026, 12)], 5000, date(2026, 9, 8))
     assert huge["days"] == fill_pace.MAX_WINDOW_DAYS
@@ -835,7 +885,7 @@ def test_the_curve_adds_the_months_point_by_point(branches, stub_rows):
         days=10, as_of=date(2026, 9, 8),
     )
 
-    curve = result["curve"]
+    curve = [p for p in result["curve"] if not p.get("lead_in")]
     assert len(curve) == 10
     assert curve[0]["otb_room_nights"] == 0       # before 1 Sep, nothing booked
     assert curve[-1]["otb_room_nights"] == 42     # both months, together
@@ -854,8 +904,11 @@ def test_one_month_still_reads_as_a_countdown(branches, stub_rows):
 
     assert result["stay_months"] == ["2026-12"]
     assert result["days_out"] == {"from": 143, "to": 84}
-    assert result["curve"][0]["days_out"] == 143
+    window = [p for p in result["curve"] if not p.get("lead_in")]
+    assert window[0]["days_out"] == 143
     assert result["curve"][-1]["days_out"] == 84
+    # The run-up counts down from further out, continuous with the window.
+    assert result["curve"][0]["days_out"] == 143 + fill_pace.LEAD_IN_DAYS
     assert result["curve"][-1]["ly_date"] == "2025-09-08"
     assert result["last_year"]["as_of"] == "2025-09-08"
 

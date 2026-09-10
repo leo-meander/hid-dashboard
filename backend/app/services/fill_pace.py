@@ -58,6 +58,19 @@ MAX_WINDOW_DAYS = 365
 # a whole year of months readable without turning one page load into fifty.
 MAX_STAY_MONTHS = 12
 
+# Days of run-up returned before the window opens, marked `lead_in` and there
+# for one reason: the page draws pace as a seven-day trailing mean, and a mean
+# needs six earlier days before its first point exists. Without them the speed
+# line could only start six days into every window, leaving a gap against an
+# axis that spanned the whole of it. Mirrors SMOOTHING_DAYS - 1 on the page;
+# the two move together or the gap comes back.
+#
+# They cost no query — the month's rows already carry every booking date, and
+# these dates were being folded into the opening balance rather than reported.
+# Nothing else reads them: the window, the cards and every summary below stay
+# anchored to the real first day, so `pickup` counts what it always counted.
+LEAD_IN_DAYS = 6
+
 # How far before a stay month a reservation may have started and still overlap
 # it. Interval overlap cannot use an index without a bound like this: written as
 # `check_in_date < month_end` alone the predicate is open-ended and matches every
@@ -211,7 +224,7 @@ def fetch_month_rows(
 
 # ── curve building ───────────────────────────────────────────────────────────
 
-def build_curve(rows, as_of_dates: list[date]) -> tuple[list[dict], dict]:
+def build_curve(rows, as_of_dates: list[date], lead_in: int = 0) -> tuple[list[dict], dict]:
     """Walk booking-date buckets into a cumulative on-the-books curve.
 
     `as_of_dates` are the snapshot dates to report, ascending and contiguous.
@@ -221,6 +234,13 @@ def build_curve(rows, as_of_dates: list[date]) -> tuple[list[dict], dict]:
     curve — that is what makes `final` readable as "where the month ended up"
     for a month already in the past.
 
+    `lead_in` is how many of those dates sit before the window proper. They are
+    returned as points marked `lead_in` — a smoothed line needs a run-up to
+    average over — but the summary ignores them entirely: the opening balance,
+    and therefore `pickup`, is still read at `as_of_dates[lead_in]`. That split
+    is the whole point of the argument. Fold the run-up into pickup and the
+    headline number would grow by six days of bookings the window never claimed.
+
     Rows with no reservation_date are on the books but cannot be placed in
     time. They join the opening balance and are reported separately, so a
     figure that cannot be dated is visible rather than silently invented.
@@ -228,6 +248,7 @@ def build_curve(rows, as_of_dates: list[date]) -> tuple[list[dict], dict]:
     if not as_of_dates:
         return [], {}
 
+    lead_in = max(0, min(lead_in, len(as_of_dates) - 1))
     start = as_of_dates[0]
     opening = _empty_totals()
     undated = {"room_nights": 0.0, "bookings": 0}
@@ -261,8 +282,14 @@ def build_curve(rows, as_of_dates: list[date]) -> tuple[list[dict], dict]:
             bucket[k] += vals[k]
 
     running = dict(opening)
+    # What was on the books when the window opened, which is not `opening` once
+    # there is a run-up in front of it: `opening` stops at the first date of the
+    # curve, this one stops at the first date of the window.
+    window_opening = dict(opening)
     curve = []
-    for d in as_of_dates:
+    for i, d in enumerate(as_of_dates):
+        if i == lead_in:
+            window_opening = dict(running)
         day = by_date.get(d)
         if day:
             for k in running:
@@ -274,17 +301,19 @@ def build_curve(rows, as_of_dates: list[date]) -> tuple[list[dict], dict]:
             "otb_revenue_native": round(running["revenue_native"], 2),
             "day_room_nights": round(day["room_nights"], 2) if day else 0.0,
             "day_bookings": day["bookings"] if day else 0,
+            **({"lead_in": True} if i < lead_in else {}),
         })
 
     summary = {
-        "opening_room_nights": round(opening["room_nights"], 2),
+        "opening_room_nights": round(window_opening["room_nights"], 2),
         "otb_room_nights": round(running["room_nights"], 2),
         "otb_bookings": running["bookings"],
         "otb_revenue_native": round(running["revenue_native"], 2),
         "otb_revenue_vnd": round(running["revenue_vnd"], 2),
-        "pickup_room_nights": round(running["room_nights"] - opening["room_nights"], 2),
-        "pickup_bookings": running["bookings"] - opening["bookings"],
-        "pickup_revenue_native": round(running["revenue_native"] - opening["revenue_native"], 2),
+        "pickup_room_nights": round(running["room_nights"] - window_opening["room_nights"], 2),
+        "pickup_bookings": running["bookings"] - window_opening["bookings"],
+        "pickup_revenue_native": round(
+            running["revenue_native"] - window_opening["revenue_native"], 2),
         "final_room_nights": round(final["room_nights"], 2),
         "final_bookings": final["bookings"],
         "undated_room_nights": round(undated["room_nights"], 2),
@@ -391,6 +420,8 @@ def _sum_curves(curves: list[list[dict]]) -> list[dict]:
     out = []
     for i in range(len(curves[0])):
         point = {"date": curves[0][i]["date"]}
+        if curves[0][i].get("lead_in"):
+            point["lead_in"] = True
         for k in _CURVE_SUM_KEYS:
             total = sum(c[i].get(k, 0) or 0 for c in curves)
             point[k] = int(total) if k.endswith("bookings") else round(total, 2)
@@ -398,12 +429,13 @@ def _sum_curves(curves: list[list[dict]]) -> list[dict]:
     return out
 
 
-def _group_summaries(rows, as_of_dates: list[date], key_of) -> dict[str, dict]:
+def _group_summaries(rows, as_of_dates: list[date], key_of,
+                     lead_in: int = 0) -> dict[str, dict]:
     """Split rows by some key and summarise each group over the same window."""
     grouped: dict[str, list] = {}
     for r in rows:
         grouped.setdefault(key_of(r), []).append(r)
-    return {k: build_curve(v, as_of_dates)[1] for k, v in grouped.items()}
+    return {k: build_curve(v, as_of_dates, lead_in)[1] for k, v in grouped.items()}
 
 
 def _accumulate(store: dict[str, list[dict]], summaries: dict[str, dict]) -> None:
@@ -452,7 +484,11 @@ def get_fill_pace(
     as_of = as_of or real_today
     days = max(1, min(int(days), MAX_WINDOW_DAYS))
     window_from = as_of - timedelta(days=days - 1)
-    as_of_dates = [window_from + timedelta(days=i) for i in range(days)]
+    # The run-up sits in front of the window, so index `lead` is the window's
+    # own first day. Every figure reported below is read from there; only the
+    # curve carries the earlier points, and it marks them.
+    lead = LEAD_IN_DAYS
+    as_of_dates = [window_from + timedelta(days=i) for i in range(-lead, days)]
 
     months = sorted(set(months))[:MAX_STAY_MONTHS] or [_next_month(as_of)]
     room_category = _normalise_room_category(room_category)
@@ -492,37 +528,43 @@ def get_fill_pace(
     prev_summaries: list[dict] = []
     prev_curves: list[list[dict]] = []
     ly_prev_summaries: list[dict] = []
+    # The countdown behind the summed curve, run-up included. Taken from the
+    # first month because the curve is only plotted against a countdown when
+    # there is exactly one.
+    curve_days_out: list[int] = []
 
     for (year, month) in months:
         month_start, _, dim = month_bounds(year, month)
         days_out = [(month_start - d).days for d in as_of_dates]
+        if not curve_days_out:
+            curve_days_out = days_out
         avail = units * dim
         stay_days += dim
 
         rows = [r for r in fetch_month_rows(db, branch_id, year, month, room_category)
                 if str(r.branch_id) in branches]
         scoped = [r for r in rows if _matches_sources(r, wanted)]
-        curve, summary = build_curve(scoped, as_of_dates)
+        curve, summary = build_curve(scoped, as_of_dates, lead)
 
         # No second query: the rows for this stay month hold every booking date
         # already, so the previous window is the same set walked again over an
         # earlier list of as-of dates.
         prev_dates = [d - timedelta(days=days) for d in as_of_dates]
-        prev_curve, prev_summary = build_curve(scoped, prev_dates)
+        prev_curve, prev_summary = build_curve(scoped, prev_dates, lead)
 
         cur_summaries.append(summary)
         cur_curves.append(curve)
         prev_summaries.append(prev_summary)
         prev_curves.append(prev_curve)
-        _accumulate(src_cur, _group_summaries(rows, as_of_dates, _source_key))
-        _accumulate(br_cur, _group_summaries(scoped, as_of_dates, _branch_key))
+        _accumulate(src_cur, _group_summaries(rows, as_of_dates, _source_key, lead))
+        _accumulate(br_cur, _group_summaries(scoped, as_of_dates, _branch_key, lead))
         for r in rows:
             src_category.setdefault(_source_key(r), r.source_category or "OTA")
 
         month_row = {
             "stay_month": f"{year:04d}-{month:02d}",
             "days_in_month": dim,
-            "days_out": {"from": days_out[0], "to": days_out[-1]},
+            "days_out": {"from": days_out[lead], "to": days_out[-1]},
             **_decorate(summary, avail),
         }
 
@@ -536,24 +578,24 @@ def get_fill_pace(
             ly_all = [r for r in fetch_month_rows(db, branch_id, year - 1, month, room_category)
                       if str(r.branch_id) in branches]
             ly_scoped = [r for r in ly_all if _matches_sources(r, wanted)]
-            ly_curve, ly_summary = build_curve(ly_scoped, ly_dates)
+            ly_curve, ly_summary = build_curve(ly_scoped, ly_dates, lead)
 
             ly_summaries.append(ly_summary)
             ly_curves.append(ly_curve)
-            _accumulate(src_ly, _group_summaries(ly_all, ly_dates, _source_key))
-            _accumulate(br_ly, _group_summaries(ly_scoped, ly_dates, _branch_key))
+            _accumulate(src_ly, _group_summaries(ly_all, ly_dates, _source_key, lead))
+            _accumulate(br_ly, _group_summaries(ly_scoped, ly_dates, _branch_key, lead))
             for r in ly_all:
                 src_category.setdefault(_source_key(r), r.source_category or "OTA")
 
             ly_prev_dates = [d - timedelta(days=days) for d in ly_dates]
-            ly_prev_summaries.append(build_curve(ly_scoped, ly_prev_dates)[1])
+            ly_prev_summaries.append(build_curve(ly_scoped, ly_prev_dates, lead)[1])
 
             month_row["last_year"] = {
                 "stay_month": f"{year - 1:04d}-{month:02d}",
                 # Only a month that has ended has a final number to report.
                 "status": _month_status(year - 1, month, real_today),
                 "as_of": ly_dates[-1].isoformat(),
-                "window": {"from": ly_dates[0].isoformat(), "to": ly_dates[-1].isoformat()},
+                "window": {"from": ly_dates[lead].isoformat(), "to": ly_dates[-1].isoformat()},
                 **_decorate(ly_summary, ly_avail, include_final=True),
             }
             month_row["vs_last_year"] = _compare(summary, ly_summary, avail, ly_avail)
@@ -627,13 +669,13 @@ def get_fill_pace(
             point["ly_otb_occ_pct"] = pct(ly_curve[i]["otb_room_nights"], ly_available)
             point["ly_day_room_nights"] = ly_curve[i]["day_room_nights"]
             if single:
-                point["days_out"] = month_rows[0]["days_out"]["from"] - i
+                point["days_out"] = curve_days_out[i]
                 point["ly_date"] = ly_curves[0][i]["date"]
     else:
         for i, point in enumerate(curve):
             point["otb_occ_pct"] = pct(point["otb_room_nights"], available)
             if single:
-                point["days_out"] = month_rows[0]["days_out"]["from"] - i
+                point["days_out"] = curve_days_out[i]
 
     prev_curve = _sum_curves(prev_curves)
     for i, point in enumerate(curve):
