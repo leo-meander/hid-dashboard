@@ -1,5 +1,5 @@
 import logging
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -24,6 +24,38 @@ _FALLBACK_RATES: dict[tuple[str, str], float] = {
 
 EXCHANGE_RATE_BASE_URL = "https://v6.exchangerate-api.com/v6"
 
+# Don't pay for an answer upstream cannot give.
+#
+# EXCHANGE_RATE_API_KEY has never been set in production, so every call here
+# opened a fresh HTTPS connection to .../placeholder_key/latest/TWD, waited
+# out the handshake and the rejection, and then returned the hardcoded rate
+# it could have returned immediately. Callers that convert row by row pay
+# that per row: Seasonal Campaign resolves one rate per ad per money field,
+# which turned ~50 ads into a 17-second page load, all of it spent being
+# told no.
+#
+# Two guards, both returning exactly what the failure path already returned:
+#
+#   _api_configured()  no usable key, no call
+#   _failed_until      after a real failure, stop asking for a few minutes
+#
+# So the numbers do not move — they just arrive. And the day a real key is
+# set, the live rate is picked up on the next call with no code change.
+_PLACEHOLDER_KEYS = {"", "placeholder_key", "your_api_key", "changeme"}
+
+_FAIL_COOLDOWN = timedelta(minutes=10)
+_failed_until: dict[tuple[str, str], datetime] = {}
+
+# One line per currency pair per process, not one per conversion: a fallback
+# is worth knowing about, and a hundred identical warnings per request buries
+# everything else in the log.
+_fallback_warned: set[tuple[str, str]] = set()
+
+
+def _api_configured() -> bool:
+    return (settings.EXCHANGE_RATE_API_KEY or "").strip().lower() \
+        not in _PLACEHOLDER_KEYS
+
 
 async def fetch_rate(from_currency: str, to_currency: str = "VND") -> Optional[float]:
     """
@@ -46,6 +78,13 @@ async def fetch_rate(from_currency: str, to_currency: str = "VND") -> Optional[f
         if cached_date == today:
             return cached_rate
 
+    if not _api_configured():
+        return _get_fallback_rate(cache_key)
+
+    blocked_until = _failed_until.get(cache_key)
+    if blocked_until and datetime.now(timezone.utc) < blocked_until:
+        return _get_fallback_rate(cache_key)
+
     try:
         url = f"{EXCHANGE_RATE_BASE_URL}/{settings.EXCHANGE_RATE_API_KEY}/latest/{from_currency}"
         async with httpx.AsyncClient(timeout=10) as client:
@@ -58,14 +97,17 @@ async def fetch_rate(from_currency: str, to_currency: str = "VND") -> Optional[f
 
         if rate is None:
             logger.warning("Rate not found for %s → %s in API response", from_currency, to_currency)
+            _failed_until[cache_key] = datetime.now(timezone.utc) + _FAIL_COOLDOWN
             return _get_fallback_rate(cache_key)
 
         _rate_cache[cache_key] = (rate, today)
+        _failed_until.pop(cache_key, None)
         logger.info("Fetched exchange rate %s → %s = %s", from_currency, to_currency, rate)
         return rate
 
     except Exception as exc:
         logger.warning("Currency API error (%s → %s): %s — using fallback", from_currency, to_currency, exc)
+        _failed_until[cache_key] = datetime.now(timezone.utc) + _FAIL_COOLDOWN
         return _get_fallback_rate(cache_key)
 
 
@@ -76,7 +118,8 @@ def _get_fallback_rate(cache_key: tuple[str, str]) -> Optional[float]:
         logger.warning("Using stale cached rate from %s", cached_date)
         return rate
     fallback = _FALLBACK_RATES.get(cache_key)
-    if fallback is not None:
+    if fallback is not None and cache_key not in _fallback_warned:
+        _fallback_warned.add(cache_key)
         logger.warning("Using hardcoded fallback rate %s → %s = %s",
                        cache_key[0], cache_key[1], fallback)
     return fallback
