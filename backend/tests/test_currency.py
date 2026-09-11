@@ -15,8 +15,12 @@ from app.services.currency import (
 def clear_cache():
     """Reset the in-memory rate cache between tests."""
     _rate_cache.clear()
+    currency_module._failed_until.clear()
+    currency_module._fallback_warned.clear()
     yield
     _rate_cache.clear()
+    currency_module._failed_until.clear()
+    currency_module._fallback_warned.clear()
 
 
 class TestGetCachedRate:
@@ -86,6 +90,57 @@ class TestFetchRateCaching:
     async def test_same_currency_returns_one(self):
         result = await currency_module.fetch_rate("VND", "VND")
         assert result == 1.0
+
+
+class TestFetchRateSkipsDoomedCalls:
+    """The FX API key has never been set in production.
+
+    Every conversion used to open an HTTPS connection to prove that again
+    before returning the hardcoded rate — and Seasonal Campaign converts
+    once per ad per money field, so the proof cost more than the page.
+    """
+
+    @pytest.mark.asyncio
+    async def test_placeholder_key_never_calls_the_api(self, monkeypatch):
+        monkeypatch.setattr(currency_module.settings,
+                            "EXCHANGE_RATE_API_KEY", "placeholder_key")
+        with patch("app.services.currency.httpx.AsyncClient") as mock_client:
+            result = await currency_module.fetch_rate("TWD", "VND")
+        assert result == 830.0
+        mock_client.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_real_key_still_calls_the_api(self, monkeypatch):
+        monkeypatch.setattr(currency_module.settings,
+                            "EXCHANGE_RATE_API_KEY", "real_key")
+        response = MagicMock()
+        response.json.return_value = {"conversion_rates": {"VND": 812.5}}
+        response.raise_for_status = MagicMock()
+        with patch("app.services.currency.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__ = AsyncMock(
+                return_value=MagicMock(get=AsyncMock(return_value=response))
+            )
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await currency_module.fetch_rate("TWD", "VND")
+        assert result == 812.5
+        assert _rate_cache[("TWD", "VND")][0] == 812.5
+
+    @pytest.mark.asyncio
+    async def test_failure_puts_the_pair_on_cooldown(self, monkeypatch):
+        """One failure is information; a hundred is a slow page."""
+        monkeypatch.setattr(currency_module.settings,
+                            "EXCHANGE_RATE_API_KEY", "real_key")
+        with patch("app.services.currency.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__ = AsyncMock(
+                side_effect=Exception("network error")
+            )
+            first = await currency_module.fetch_rate("TWD", "VND")
+            calls_after_first = mock_client.call_count
+            second = await currency_module.fetch_rate("TWD", "VND")
+            assert mock_client.call_count == calls_after_first
+
+        assert first == 830.0
+        assert second == 830.0
 
 
 class TestIntrospectionHelpers:

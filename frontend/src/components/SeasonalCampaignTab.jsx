@@ -10,7 +10,7 @@
  * Set-up is two lists of names the team types once (ad campaign, rate plan)
  * plus the campaign's cost %, which is charged against ACTUAL revenue.
  */
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useBranch } from "../context/BranchContext";
 import {
@@ -26,6 +26,86 @@ import ComparisonMatrix from "./ComparisonMatrix";
 function fmtNum(val) {
   if (val == null) return "—";
   return new Intl.NumberFormat("en").format(Math.round(val));
+}
+
+/* ── Month on month ──────────────────────────────────────────────────
+ * "Is this campaign doing better than last month?" is the question the table
+ * could not answer: it showed one month at a time and left the reader to
+ * remember September while looking at October.
+ *
+ * The previous month comes from the SAME endpoint under a different month,
+ * as its own query — so the table paints on the current month's data and the
+ * deltas arrive after, instead of every page load waiting on two Ads
+ * Platform round trips. For the same reason the comparison is off until
+ * asked for, and the choice is remembered.
+ */
+const CMP_KEY = "hid.seasonal.compareMoM";
+
+const prevMonthOf = (m) => {
+  const [y, mo] = String(m || "").split("-").map(Number);
+  if (!y || !mo) return null;
+  const d = new Date(y, mo - 2, 1); // mo-1 is this month, one less is before it
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+
+const monthLabel = (m) =>
+  new Date(m + "-01").toLocaleDateString("en", { month: "short", year: "numeric" });
+
+/* The change, printed under the number rather than beside it: eleven columns
+ * already fight for width, and "▲ 12.4%" in its own column would push ROAS
+ * off the right edge.
+ *
+ * Cost columns are grey on purpose. Spend up 40% is not the good news that
+ * revenue up 40% is, and a green arrow would claim it was.
+ *
+ * ROAS moves in points, not percent: 1.05x → 1.33x is "+0.28x". A percentage
+ * change of a ratio is a number nobody can act on.
+ */
+function Delta({ current, previous, prevLabel, ratio = false, cost = false }) {
+  if (current == null || previous == null) return null;
+
+  const grey = "text-gray-400";
+  const good = cost ? "text-gray-500" : "text-green-600";
+  const bad = cost ? "text-gray-500" : "text-red-600";
+
+  let text;
+  let cls;
+  if (ratio) {
+    const diff = current - previous;
+    if (Math.abs(diff) < 0.005) {
+      text = "—";
+      cls = grey;
+    } else {
+      text = `${diff > 0 ? "▲" : "▼"}${Math.abs(diff).toFixed(2)}x`;
+      cls = diff > 0 ? good : bad;
+    }
+  } else if (!previous) {
+    // No base to divide by. A campaign that sold nothing last month and
+    // something this month is "new", not up by infinity.
+    if (!current) return null;
+    text = "new";
+    cls = cost ? "text-gray-500" : "text-green-600";
+  } else {
+    const pct = ((current - previous) / previous) * 100;
+    if (Math.abs(pct) < 0.05) {
+      text = "—";
+      cls = grey;
+    } else {
+      const abs = Math.abs(pct);
+      text = `${pct > 0 ? "▲" : "▼"}${abs >= 100 ? abs.toFixed(0) : abs.toFixed(1)}%`;
+      cls = pct > 0 ? good : bad;
+    }
+  }
+
+  const was = ratio ? `${previous.toFixed(2)}x` : fmtNum(previous);
+  return (
+    <span
+      title={`${was} in ${prevLabel}`}
+      className={"block text-[11px] leading-tight font-medium tabular-nums cursor-help " + cls}
+    >
+      {text}
+    </span>
+  );
 }
 
 /* ── Tooltips ─────────────────────────────────────────────────────────────
@@ -599,6 +679,23 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
   const [savingPct, setSavingPct] = useState(null);
   const [view, setView] = useState("campaign"); // "campaign" | "compare"
   const [search, setSearch] = useState("");
+  // Remembered: somebody who works month-on-month does it every visit, and
+  // re-ticking the box each time is the kind of small tax that gets a
+  // feature written off as not worth using.
+  const [compare, setCompare] = useState(() => {
+    try {
+      return localStorage.getItem(CMP_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(CMP_KEY, compare ? "1" : "0");
+    } catch {
+      /* private mode — the toggle still works, it just won't be remembered */
+    }
+  }, [compare]);
 
   const params = {};
   if (branchId) params.branch_id = branchId;
@@ -612,6 +709,28 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
   const { data, isPending, isPlaceholderData } = useQuery({
     queryKey: ["seasonal-campaign-performance", branchId || "all", month, ytd?.date_from, ytd?.date_to],
     queryFn: () => getSeasonalCampaignPerformance(params),
+    placeholderData: keepPreviousData,
+  });
+
+  /* Last month, off the same endpoint. YTD has no "previous month" — the
+   * honest comparison there would be the year before, and outside
+   * daily_metrics there are no 2025 rows to compare against — so the toggle
+   * is not offered in that mode.
+   *
+   * The key is shaped exactly like the main query's, so this is the very
+   * cache entry the page already holds (or will hold) when the month picker
+   * is moved back one — flipping between two months costs one fetch, not
+   * four. */
+  const prevMonth = ytd ? null : prevMonthOf(month);
+  const prevLabel = prevMonth ? monthLabel(prevMonth) : "";
+  const { data: prevData, isFetching: prevFetching } = useQuery({
+    queryKey: ["seasonal-campaign-performance", branchId || "all", prevMonth, undefined, undefined],
+    queryFn: () =>
+      getSeasonalCampaignPerformance({
+        ...(branchId ? { branch_id: branchId } : {}),
+        month: prevMonth,
+      }),
+    enabled: Boolean(compare && prevMonth && view === "campaign"),
     placeholderData: keepPreviousData,
   });
 
@@ -655,6 +774,13 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
       setError(e?.response?.data?.detail || e?.message || "Could not delete");
     }
   };
+
+  const prevById = useMemo(() => {
+    const m = new Map();
+    for (const r of prevData?.rows || []) m.set(r.id, r);
+    return m;
+  }, [prevData]);
+  const showDeltas = compare && Boolean(prevMonth) && Boolean(prevData);
 
   const allRows = data?.rows || [];
   const rows = allRows.filter((r) => matchesSearch(r, search));
@@ -718,10 +844,38 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
           Both sides cover {periodLabel}, filtered by Date Booked. Hover any column
           heading for where its number comes from, or a calculated cell for the sum
           on this row. Cost % is the only figure you type.
+          {compare && prevMonth && (
+            <>
+              {" "}
+              The small figure under each number is the change against{" "}
+              {prevLabel} — hover it for what that month read. Spend and cost
+              changes are grey, not green or red: spending more is neither on its
+              own.
+            </>
+          )}
         </span>
       </p>
       <div className="flex items-center gap-2 flex-wrap">
         {searchBox(rows.length, allRows.length)}
+        {prevMonth && (
+          <button
+            onClick={() => setCompare((v) => !v)}
+            title={
+              compare
+                ? `Hide the change against ${prevLabel}.`
+                : `Show every number's change against ${prevLabel}. That month is ` +
+                  `fetched separately, so the table below stays up while it loads.`
+            }
+            className={
+              "px-3 py-1.5 text-sm rounded-lg border whitespace-nowrap transition-colors " +
+              (compare
+                ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                : "border-gray-200 text-gray-600 hover:bg-gray-50")
+            }
+          >
+            {compare ? "✓ " : ""}vs {prevLabel}
+          </button>
+        )}
         <button
           onClick={() => setDialog({})}
           className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 whitespace-nowrap"
@@ -750,6 +904,12 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
       {error && (
         <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
           {error}
+        </p>
+      )}
+
+      {compare && prevMonth && prevFetching && !prevData && (
+        <p className="text-xs text-gray-400 animate-pulse">
+          Reading {prevLabel} to compare against…
         </p>
       )}
 
@@ -804,7 +964,20 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
               </tr>
             </thead>
             <tbody className="divide-y">
-              {rows.map((r) => (
+              {rows.map((r) => {
+                const prev = showDeltas ? prevById.get(r.id) : null;
+                // Bound once per row so the eight call sites below read as one
+                // word sitting next to the number they belong to.
+                const d = (key, opts = {}) =>
+                  prev ? (
+                    <Delta
+                      current={r[key]}
+                      previous={prev[key]}
+                      prevLabel={prevLabel}
+                      {...opts}
+                    />
+                  ) : null;
+                return (
                 <tr key={r.id} className={"hover:bg-gray-50 " + (r.is_active ? "" : "opacity-50")}>
                   <td className="px-4 py-3">
                     <p className="font-medium text-gray-900">{r.name}</p>
@@ -823,16 +996,32 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
                       {r.is_active ? "" : " · inactive"}
                     </p>
                   </td>
-                  <td className="px-3 py-3 text-right">{fmtNum(r.spend)}</td>
-                  <td className="px-3 py-3 text-right">{fmtNum(r.ads_bookings)}</td>
-                  <td className="px-3 py-3 text-right">{fmtNum(r.ads_revenue)}</td>
+                  <td className="px-3 py-3 text-right">
+                    {fmtNum(r.spend)}
+                    {d("spend", { cost: true })}
+                  </td>
+                  <td className="px-3 py-3 text-right">
+                    {fmtNum(r.ads_bookings)}
+                    {d("ads_bookings")}
+                  </td>
+                  <td className="px-3 py-3 text-right">
+                    {fmtNum(r.ads_revenue)}
+                    {d("ads_revenue")}
+                  </td>
                   <td className="px-3 py-3 text-right">
                     <Tip text={workedOut(r).roasAds} className="cursor-help">
                       <RoasBadge value={r.roas_ads} />
                     </Tip>
+                    {d("roas_ads", { ratio: true })}
                   </td>
-                  <td className="px-3 py-3 text-right border-l font-medium">{fmtNum(r.actual_bookings)}</td>
-                  <td className="px-3 py-3 text-right font-medium">{fmtNum(r.actual_revenue)}</td>
+                  <td className="px-3 py-3 text-right border-l font-medium">
+                    {fmtNum(r.actual_bookings)}
+                    {d("actual_bookings")}
+                  </td>
+                  <td className="px-3 py-3 text-right font-medium">
+                    {fmtNum(r.actual_revenue)}
+                    {d("actual_revenue")}
+                  </td>
                   <td className="px-1 py-2">
                     <CostPctCell
                       value={r.cost_pct}
@@ -844,16 +1033,21 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
                     <Tip text={workedOut(r).campaignCost} className="cursor-help border-b border-dotted border-gray-300">
                       {fmtNum(r.campaign_cost)}
                     </Tip>
+                    {/* No delta here: cost % is one stored setting, not a
+                        monthly figure, so this column could only repeat the
+                        change already printed under Revenue actual. */}
                   </td>
                   <td className="px-3 py-3 text-right">
                     <Tip text={workedOut(r).totalCost} className="cursor-help border-b border-dotted border-gray-300">
                       {fmtNum(r.total_cost)}
                     </Tip>
+                    {d("total_cost", { cost: true })}
                   </td>
                   <td className="px-3 py-3 text-right">
                     <Tip text={workedOut(r).roasActual} className="cursor-help">
                       <RoasBadge value={r.roas_actual} />
                     </Tip>
+                    {d("roas_actual", { ratio: true })}
                   </td>
                   <td className="px-3 py-3 text-right whitespace-nowrap">
                     <button
@@ -874,7 +1068,8 @@ export default function SeasonalCampaignTab({ branchId, month, ytd, cur, periodL
                     </button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
