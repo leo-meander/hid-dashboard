@@ -68,8 +68,15 @@ def record(
     meta: Optional[dict] = None,
     google_ads: Optional[dict] = None,
     tiktok: Optional[dict] = None,
+    reservation_created_at: Optional[datetime] = None,
 ) -> None:
-    """Persist one reservation processing result."""
+    """Persist one reservation processing result.
+
+    `reservation_created_at` is Cloudbeds' own dateCreated, converted to UTC.
+    Storing it is what makes the lag answerable: until it was here, "is this
+    branch slow?" could only be argued from how thin its rows looked, and the
+    row timestamp alone cannot tell a quiet branch from a late one.
+    """
     results = {"ghl": ghl, "meta": meta, "google_ads": google_ads, "tiktok": tiktok}
     db = SessionLocal()
     try:
@@ -80,6 +87,7 @@ def record(
                 guest_email=guest_email,
                 source=source,
                 has_failure=any(_is_failure(r) for r in results.values()),
+                reservation_created_at=reservation_created_at,
                 **results,
             )
         )
@@ -144,6 +152,19 @@ def mark_seen(reservation_id: str) -> None:
     _remember(reservation_id)
 
 
+def _lag_seconds(row) -> Optional[int]:
+    """Seconds between Cloudbeds creating the reservation and us fanning it out.
+
+    None for rows written before the column existed, or for a reservation whose
+    dateCreated could not be parsed. A negative value is not clamped away — it
+    would mean a branch's configured tz offset is wrong, which is worth seeing
+    rather than hiding behind a zero.
+    """
+    if not row.created_at or not row.reservation_created_at:
+        return None
+    return int((row.created_at - row.reservation_created_at).total_seconds())
+
+
 def get_events(
     branch: Optional[str] = None,
     limit: int = 100,
@@ -170,6 +191,10 @@ def get_events(
                 "branch": r.branch,
                 "guest_email": r.guest_email,
                 "source": r.source,
+                "reservation_created_at": (
+                    r.reservation_created_at.isoformat() if r.reservation_created_at else None
+                ),
+                "lag_seconds": _lag_seconds(r),
                 "ghl": r.ghl,
                 "meta": r.meta,
                 "google_ads": r.google_ads,

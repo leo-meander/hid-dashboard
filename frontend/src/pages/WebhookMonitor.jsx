@@ -19,6 +19,73 @@ function StatusBadge({ svc }) {
   );
 }
 
+// Cloudbeds created the reservation → we finished fanning it out. Blank for
+// rows written before the backend started recording dateCreated, and for a
+// reservation Cloudbeds sent without one.
+function LagCell({ seconds }) {
+  if (seconds === null || seconds === undefined)
+    return <td className="py-2 px-3 text-gray-300">—</td>;
+
+  const abs = Math.abs(seconds);
+  const label =
+    abs < 60 ? `${abs}s`
+      : abs < 3600 ? `${Math.floor(abs / 60)}m`
+        : abs < 86400 ? `${Math.floor(abs / 3600)}h ${Math.floor((abs % 3600) / 60)}m`
+          : `${Math.floor(abs / 86400)}d`;
+
+  // A negative lag means we recorded the fan-out before Cloudbeds says the
+  // reservation existed — that is a wrong tz offset for the branch, not a fast
+  // pipeline, so it gets its own colour rather than blending in with the good rows.
+  const tone =
+    seconds < 0 ? "text-purple-600"
+      : seconds <= 15 * 60 ? "text-gray-500"
+        : seconds <= 60 * 60 ? "text-amber-600"
+          : "text-red-600 font-medium";
+
+  return (
+    <td className={`py-2 px-3 whitespace-nowrap text-xs ${tone}`} title={`${seconds}s from Cloudbeds dateCreated to fan-out`}>
+      {seconds < 0 ? `-${label}` : label}
+    </td>
+  );
+}
+
+// Per-branch lag at a glance. The row-by-row column answers "was this booking
+// late"; this answers the question that actually gets asked — "is that branch
+// slower than the others" — which no amount of staring at timestamps does,
+// because a branch with a quarter of the volume looks late either way.
+function LagSummary({ events }) {
+  const byBranch = {};
+  for (const ev of events) {
+    if (ev.lag_seconds === null || ev.lag_seconds === undefined) continue;
+    (byBranch[ev.branch] ||= []).push(ev.lag_seconds);
+  }
+  const rows = Object.entries(byBranch)
+    .map(([branch, lags]) => {
+      const sorted = [...lags].sort((a, b) => a - b);
+      const at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))];
+      return { branch, n: sorted.length, median: at(0.5), p90: at(0.9) };
+    })
+    .sort((a, b) => b.median - a.median);
+
+  if (!rows.length) return null;
+  const fmt = (s) => (s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`);
+
+  return (
+    <div className="mb-4 flex flex-wrap gap-2">
+      {rows.map(r => (
+        <div key={r.branch} className="px-3 py-2 bg-white border rounded-lg text-xs">
+          <div className="font-semibold text-gray-700 uppercase">{r.branch}</div>
+          <div className="text-gray-500 mt-0.5">
+            median <span className="font-medium text-gray-700">{fmt(r.median)}</span>
+            {" · "}p90 <span className="font-medium text-gray-700">{fmt(r.p90)}</span>
+            {" · "}<span className="text-gray-400">{r.n} rows</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function EventRow({ ev }) {
   const [open, setOpen] = useState(false);
   const ts = new Date(ev.timestamp).toLocaleString("en-GB", { hour12: false });
@@ -31,6 +98,7 @@ function EventRow({ ev }) {
         className={`cursor-pointer border-b hover:bg-gray-50 text-sm ${anyFail ? "bg-red-50/40" : ""}`}
       >
         <td className="py-2 px-3 text-gray-500 whitespace-nowrap">{ts}</td>
+        <LagCell seconds={ev.lag_seconds} />
         <td className="py-2 px-3">
           <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700 uppercase">
             {ev.branch}
@@ -47,9 +115,13 @@ function EventRow({ ev }) {
       </tr>
       {open && (
         <tr className="bg-gray-50 border-b">
-          <td colSpan={5 + SERVICES.length} className="px-4 py-3">
+          <td colSpan={6 + SERVICES.length} className="px-4 py-3">
             <pre className="text-xs text-gray-600 overflow-auto whitespace-pre-wrap">
-              {JSON.stringify({ ghl: ev.ghl, meta: ev.meta, google_ads: ev.google_ads, tiktok: ev.tiktok }, null, 2)}
+              {JSON.stringify({
+                reservation_created_at: ev.reservation_created_at,
+                lag_seconds: ev.lag_seconds,
+                ghl: ev.ghl, meta: ev.meta, google_ads: ev.google_ads, tiktok: ev.tiktok,
+              }, null, 2)}
             </pre>
           </td>
         </tr>
@@ -249,6 +321,8 @@ export default function WebhookMonitor() {
         </div>
       )}
 
+      <LagSummary events={events} />
+
       {events.length === 0 ? (
         <div className="text-center py-20 text-gray-400">
           {loading
@@ -263,6 +337,7 @@ export default function WebhookMonitor() {
             <thead className="bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-wide border-b">
               <tr>
                 <th className="py-2 px-3">Time</th>
+                <th className="py-2 px-3" title="Cloudbeds dateCreated → fan-out">Lag</th>
                 <th className="py-2 px-3">Branch</th>
                 <th className="py-2 px-3">Reservation</th>
                 <th className="py-2 px-3">Email</th>

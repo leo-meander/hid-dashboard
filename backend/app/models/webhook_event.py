@@ -37,6 +37,12 @@ class WebhookEvent(Base):
     guest_email = Column(String(255), nullable=True)
     source = Column(String(128), nullable=True)
 
+    # Cloudbeds' own dateCreated, converted from property-local time to UTC.
+    # `created_at` minus this is the lag the Webhook Monitor shows. Nullable
+    # because rows written before the column existed have no answer, and so
+    # does a reservation whose dateCreated Cloudbeds did not fill in.
+    reservation_created_at = Column(DateTime(timezone=True), nullable=True)
+
     ghl = Column(JSONB, nullable=True)
     meta = Column(JSONB, nullable=True)
     google_ads = Column(JSONB, nullable=True)

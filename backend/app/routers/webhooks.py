@@ -17,6 +17,13 @@ Trigger modes (per branch, chosen by settings.WEBHOOK_REALTIME_BRANCHES):
 
 Either way a reservation is marked seen only after its fan-out has run, so a
 Cloudbeds fetch that fails is retried by the next pass rather than lost.
+
+The poll window is enforced on our side, not Cloudbeds'. Verified 2026-09-11:
+`dateCreatedFrom`/`dateCreatedTo` are not honoured — a 1-minute window and a
+3-hour window return byte-identical pages for every property. The params are
+still sent (correctly, in property-local time, so honouring them later is an
+improvement rather than a break), but what actually bounds the work is the
+client-side age check plus pagination that stops at the window's edge.
 """
 import hashlib
 import hmac
@@ -45,6 +52,9 @@ CLOUDBEDS_API_BASE = "https://hotels.cloudbeds.com/api/v1.2"
 WEBSITE_SOURCES = {"website", "booking engine"}
 RESERVATION_LIST_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 RESERVATION_LIST_RETRY_DELAYS = (2, 5)
+# Cloudbeds' list page size. A full page means "there is more behind this one".
+PAGE_SIZE = 50
+CLOUDBEDS_DT_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def _poll_branches() -> list[tuple[str, str, str]]:
@@ -56,6 +66,46 @@ def _poll_branches() -> list[tuple[str, str, str]]:
         ("oani", settings.CB_PROPERTY_ID_OANI, settings.CB_API_KEY_OANI),
         ("osaka", settings.CB_PROPERTY_ID_OSAKA, settings.CB_API_KEY_OSAKA),
     ]
+
+
+# ── Cloudbeds timestamps ─────────────────────────────────────────────────────
+# Every date Cloudbeds hands back — `dateCreated` included — is in the
+# property's local time, with no offset attached. The branch offset lives in
+# config (`tz_offset_hours`), which is also what the Meta/Google/TikTok
+# services add to build their event timestamps.
+
+def _branch_tz_offset(branch: str) -> int:
+    return int(settings.get_webhook_config_for_branch(branch)["tz_offset_hours"])
+
+
+def _parse_local_dt(value) -> datetime | None:
+    """Parse a Cloudbeds timestamp into a naive datetime in property-local time."""
+    if not value:
+        return None
+    text = str(value)
+    for fmt, length in ((CLOUDBEDS_DT_FORMAT, 19), ("%Y-%m-%d %H:%M", 16)):
+        try:
+            return datetime.strptime(text[:length], fmt)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _reservation_created_utc(reservation: dict, branch: str) -> datetime | None:
+    """When Cloudbeds created this reservation, as a UTC instant.
+
+    Straight tz conversion — deliberately without the `event_time_extra_offset`
+    the ad-platform services apply. That extra hour is a Make-era fudge for
+    attribution windows; putting it in here would bend the measured lag.
+    """
+    local = _parse_local_dt(reservation.get("dateCreated"))
+    if local is None:
+        return None
+    try:
+        offset = _branch_tz_offset(branch)
+    except Exception:
+        return None
+    return (local - timedelta(hours=offset)).replace(tzinfo=timezone.utc)
 
 
 # ── Core fan-out (shared by polling + webhook paths) ─────────────────────────
@@ -74,6 +124,9 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
         return
 
     cfg = settings.get_webhook_config_for_branch(branch)
+    # Captured before the four uploads run, so the logged lag measures Cloudbeds
+    # → fan-out and not how long Meta happened to take on this row.
+    reservation_created_at = _reservation_created_utc(reservation, branch)
     source = (reservation.get("source") or "").lower()
     is_website_source = any(kw in source for kw in WEBSITE_SOURCES)
     guest_email = (reservation.get("guestEmail") or "").strip().lower()
@@ -219,6 +272,7 @@ def _fan_out(property_id: str, reservation_id: str, reservation: dict) -> None:
         branch=branch,
         guest_email=guest_email,
         source=source,
+        reservation_created_at=reservation_created_at,
         ghl=ghl_log,
         meta=meta_log,
         google_ads=gads_log,
@@ -298,7 +352,7 @@ def _get_reservation_list(
                         "dateCreatedFrom": date_from,
                         "dateCreatedTo": date_to,
                         "pageNumber": page_number,
-                        "pageSize": 50,
+                        "pageSize": PAGE_SIZE,
                     },
                 )
             response.raise_for_status()
@@ -331,15 +385,19 @@ def _iter_reservation_pages(property_id: str, api_key: str, date_from: str, date
         if isinstance(reservations, dict):
             reservations = list(reservations.values())
         yield reservations
-        if len(reservations) < 50:
+        if len(reservations) < PAGE_SIZE:
             return
         page_number += 1
 
 
 # ── Polling jobs (called by APScheduler) ────────────────────────────────────
 
-POLL_WINDOW_MINUTES = 15
+POLL_WINDOW_MINUTES = 60
 SAFETY_NET_WINDOW_MINUTES = 90
+# Pages walked per branch per pass before giving up. At PAGE_SIZE=50 that is
+# 500 reservations inside one window — orders of magnitude more than any branch
+# takes in an hour, so hitting the cap means something is wrong and says so.
+MAX_POLL_PAGES = 10
 
 
 def _branches_by_mode(realtime: bool) -> list[tuple[str, str, str]]:
@@ -352,6 +410,88 @@ def _branches_by_mode(realtime: bool) -> list[tuple[str, str, str]]:
     return [row for row in _poll_branches() if (row[0] in live) == realtime]
 
 
+def _poll_branch(
+    branch: str,
+    property_id: str,
+    api_key: str,
+    now_utc: datetime,
+    minutes: int,
+) -> int:
+    """Fan out this branch's unseen reservations created in the last `minutes`.
+
+    Walks pages until the window runs out. Before pagination this read page 1
+    and stopped, which was silently lossy in exactly the case that matters: a
+    burst of more than PAGE_SIZE reservations between two ticks pushed the
+    oldest of them off the page, and since the next tick's page is newer still
+    they were never fanned out at all — not delayed, dropped.
+
+    Returns the number of reservations fanned out.
+    """
+    offset = _branch_tz_offset(branch)
+    # Naive on purpose: these are compared against Cloudbeds' dateCreated, which
+    # carries no offset and is already the property's local clock.
+    now_local = now_utc.replace(tzinfo=None) + timedelta(hours=offset)
+    cutoff_local = now_local - timedelta(minutes=minutes)
+    date_from = cutoff_local.strftime(CLOUDBEDS_DT_FORMAT)
+    # A few minutes of headroom on the upper bound: if Cloudbeds ever starts
+    # honouring these params, a clock a little ahead of ours must not clip the
+    # newest reservation — the one this whole job exists to catch.
+    date_to = (now_local + timedelta(minutes=5)).strftime(CLOUDBEDS_DT_FORMAT)
+
+    new_count = 0
+    for page_number in range(1, MAX_POLL_PAGES + 1):
+        _, body, _ = _get_reservation_list(
+            property_id, api_key, date_from, date_to, page_number=page_number
+        )
+        if not body.get("success"):
+            logger.warning(
+                "getReservations failed property=%s page=%d: %s",
+                property_id, page_number, body.get("message"),
+            )
+            return new_count
+
+        reservations = body.get("data") or []
+        if isinstance(reservations, dict):
+            reservations = list(reservations.values())
+
+        in_window = 0
+        for res in reservations:
+            created_local = _parse_local_dt(res.get("dateCreated"))
+            # Age first, dedup second: an out-of-window row must not cost a
+            # `has_seen` round-trip, and there are a lot of them behind a full
+            # page. A row with an unreadable dateCreated is treated as in
+            # window — dropping a real booking is the expensive mistake.
+            if created_local is not None and created_local < cutoff_local:
+                continue
+            in_window += 1
+
+            rid = str(res.get("reservationID", ""))
+            if not rid or webhook_log.has_seen(rid):
+                continue
+            full = _fetch_full_reservation(property_id, rid)
+            if not full:
+                # Deliberately left unmarked — the next pass tries again.
+                logger.warning("Poll: could not fetch reservation=%s branch=%s", rid, branch)
+                continue
+            new_count += 1
+            logger.info("Poll: new reservation=%s branch=%s", rid, branch)
+            _fan_out(property_id, rid, full)
+            webhook_log.mark_seen(rid)
+
+        # The list comes back newest-created first, so once a whole page falls
+        # outside the window every page behind it does too.
+        if in_window == 0 or len(reservations) < PAGE_SIZE:
+            break
+    else:
+        logger.warning(
+            "Poll branch=%s: hit the %d-page cap with the window still open — "
+            "reservations older than that were not reached this pass",
+            branch, MAX_POLL_PAGES,
+        )
+
+    return new_count
+
+
 def poll_new_reservations(
     minutes: int = POLL_WINDOW_MINUTES,
     realtime_branches: bool = False,
@@ -360,43 +500,21 @@ def poll_new_reservations(
 
     The default arguments are the every-10-minutes job over the polled
     branches; `realtime_branches=True` runs it over the push-driven ones.
+
+    The window is six ticks wide on purpose. A reservation whose Cloudbeds
+    fetch fails is left unmarked for a later pass, and a window only as wide as
+    the tick gave that retry a single chance before the reservation aged out of
+    it for good.
     """
     now_utc = datetime.now(timezone.utc)
-    from_dt = now_utc - timedelta(minutes=minutes)
-    date_from = from_dt.strftime("%Y-%m-%d %H:%M:%S")
-    date_to = now_utc.strftime("%Y-%m-%d %H:%M:%S")
 
     for branch, property_id, api_key in _branches_by_mode(realtime_branches):
         if not property_id or not api_key:
             continue
         try:
-            _, body, _ = _get_reservation_list(property_id, api_key, date_from, date_to)
-            if not body.get("success"):
-                logger.warning("getReservations failed property=%s: %s", property_id, body.get("message"))
-                continue
-
-            reservations = body.get("data") or []
-            if isinstance(reservations, dict):
-                reservations = list(reservations.values())
-
-            new_count = 0
-            for res in reservations:
-                rid = str(res.get("reservationID", ""))
-                if not rid or webhook_log.has_seen(rid):
-                    continue
-                full = _fetch_full_reservation(property_id, rid)
-                if not full:
-                    # Deliberately left unmarked — the next pass tries again.
-                    logger.warning("Poll: could not fetch reservation=%s branch=%s", rid, branch)
-                    continue
-                new_count += 1
-                logger.info("Poll: new reservation=%s branch=%s", rid, branch)
-                _fan_out(property_id, rid, full)
-                webhook_log.mark_seen(rid)
-
+            new_count = _poll_branch(branch, property_id, api_key, now_utc, minutes)
             if new_count:
                 logger.info("Poll branch=%s: processed %d new reservations", branch, new_count)
-
         except Exception as e:
             logger.error("Poll error branch=%s: %s", branch, e)
 
@@ -555,9 +673,6 @@ async def poll_diagnostic(
     from app.scheduler import scheduler
 
     now_utc = datetime.now(timezone.utc)
-    from_dt = now_utc - timedelta(minutes=minutes)
-    date_from = from_dt.strftime("%Y-%m-%d %H:%M:%S")
-    date_to = now_utc.strftime("%Y-%m-%d %H:%M:%S")
 
     # Is APScheduler even alive? If the job is missing or has no next run, the
     # poll has not been firing at all and no per-branch result below matters.
@@ -600,7 +715,16 @@ async def poll_diagnostic(
             branches.append(entry)
             continue
 
-        # Diagnose exactly the same Cloudbeds v1.2 request the poller uses.
+        # Diagnose exactly the same Cloudbeds v1.2 request the poller uses —
+        # including its per-branch, property-local window.
+        offset = _branch_tz_offset(branch)
+        now_local = now_utc.replace(tzinfo=None) + timedelta(hours=offset)
+        cutoff_local = now_local - timedelta(minutes=minutes)
+        date_from = cutoff_local.strftime(CLOUDBEDS_DT_FORMAT)
+        date_to = (now_local + timedelta(minutes=5)).strftime(CLOUDBEDS_DT_FORMAT)
+        entry["tz_offset_hours"] = offset
+        entry["window_local"] = {"from": date_from, "to": date_to}
+
         entry["versions"] = {}
         for version in ("v1.2",):
             try:
@@ -610,12 +734,22 @@ async def poll_diagnostic(
                     reservations = list(reservations.values())
                 rids = [str(r.get("reservationID", "")) for r in reservations]
                 rids = [r for r in rids if r]
+                created = [_parse_local_dt(r.get("dateCreated")) for r in reservations]
+                in_window = sum(1 for c in created if c is None or c >= cutoff_local)
                 entry["versions"][version] = {
                     "status_code": resp.status_code,
                     "api_success": body.get("success"),
                     "message": body.get("message"),
                     "attempts": attempts,
                     "returned": len(rids),
+                    # Cloudbeds does not honour dateCreatedFrom/To (verified
+                    # 2026-09-11: a 1-minute and a 3-hour window come back
+                    # identical). `returned` is therefore whatever page 1 holds;
+                    # `in_window` is what the poller would actually act on, and
+                    # the gap between the two is that bug, visible.
+                    "in_window": in_window,
+                    "server_side_filter_honoured": len(rids) < PAGE_SIZE and in_window == len(rids),
+                    "page_full": len(rids) >= PAGE_SIZE,
                     # A window full of already-processed reservations produces no
                     # new rows either — same blank monitor, different cause.
                     "already_seen": sum(1 for r in rids if webhook_log.has_seen(r)),
@@ -629,7 +763,9 @@ async def poll_diagnostic(
     return {
         "success": True,
         "data": {
-            "window": {"from": date_from, "to": date_to, "minutes": minutes},
+            # Per-branch windows differ by tz offset — each branch carries its
+            # own under `window_local`.
+            "window": {"minutes": minutes, "now_utc": now_utc.strftime(CLOUDBEDS_DT_FORMAT)},
             "scheduler": scheduler_state,
             "branches": branches,
         },
