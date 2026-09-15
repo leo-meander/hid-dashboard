@@ -8,6 +8,7 @@ import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
 import {
   getMarketingActivitySummary,
   getCRMBranchComparison,
+  getCRMRatePlanDetail,
   getRatePlanCampaigns,
   saveRatePlanCampaign,
 } from "../api/marketingActivity";
@@ -114,20 +115,24 @@ export default function MarketingActivity() {
   const [month, setMonth] = useState(currentMonthStr);
   const [ytdYear, setYtdYear] = useState(today.getFullYear());
 
+  // Built once and shared: the CRM drill-down must query the exact window and
+  // branch the table row was aggregated over, or its numbers won't reconcile.
+  const queryParams = useMemo(() => {
+    const params = {};
+    if (!isAll && selected) params.branch_id = selected;
+    if (viewMode === "ytd") {
+      const { date_from, date_to } = ytdBounds(ytdYear);
+      params.date_from = date_from;
+      params.date_to = date_to;
+    } else {
+      params.month = month;
+    }
+    return params;
+  }, [isAll, selected, viewMode, ytdYear, month]);
+
   const { data, isPending, isPlaceholderData } = useQuery({
     queryKey: ["marketing-activity", selected, isAll, month, ytdYear, viewMode],
-    queryFn: () => {
-      const params = {};
-      if (!isAll && selected) params.branch_id = selected;
-      if (viewMode === "ytd") {
-        const { date_from, date_to } = ytdBounds(ytdYear);
-        params.date_from = date_from;
-        params.date_to = date_to;
-      } else {
-        params.month = month;
-      }
-      return getMarketingActivitySummary(params);
-    },
+    queryFn: () => getMarketingActivitySummary(queryParams),
     placeholderData: keepPreviousData,
   });
 
@@ -223,7 +228,7 @@ export default function MarketingActivity() {
       ) : (
         <div className={"transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
           {tab === "overview" && <OverviewTab overview={overview} prevOverview={prevOverview} prevLabel={prevLabel} cur={cur} isYtd={viewMode === "ytd"} ytdYear={ytdYear} />}
-          {tab === "crm-rate-plans" && <CRMRatePlansTab rows={crmRatePlans} cur={cur} month={viewMode === "ytd" ? currentMonthStr : month} />}
+          {tab === "crm-rate-plans" && <CRMRatePlansTab rows={crmRatePlans} cur={cur} month={viewMode === "ytd" ? currentMonthStr : month} queryParams={queryParams} />}
         </div>
       )}
     </div>
@@ -358,8 +363,9 @@ function CampaignCell({ value, onSave, saving }) {
 }
 
 /* ── CRM Reservations Tab — grouped by Rate Plan Name ────────────────────── */
-function CRMRatePlansTab({ rows, cur, month }) {
+function CRMRatePlansTab({ rows, cur, month, queryParams }) {
   const [view, setView] = useState("rate-plan");
+  const [openPlan, setOpenPlan] = useState(null);
   const queryClient = useQueryClient();
 
   // Campaign labels are global (a rate plan tag means the same campaign on
@@ -446,6 +452,7 @@ function CRMRatePlansTab({ rows, cur, month }) {
         Excludes cancelled bookings and non-paying sources (Blogger / House Use / Special Case).
         <br />
         <span className="text-gray-400">
+          Click a Rate Plan Name to see who booked it — status, countries, demographics.
           Campaign is filled in by hand — click a cell to name the campaign a rate plan belongs to.
           It applies to that rate plan on every branch.
         </span>
@@ -480,7 +487,15 @@ function CRMRatePlansTab({ rows, cur, month }) {
               const isZeroRev = (r.bookings || 0) > 0 && (r.revenue || 0) === 0;
               return (
                 <tr key={i} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-900">{r.rate_plan_name}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => setOpenPlan(r.rate_plan_name)}
+                      title="See who booked this rate plan"
+                      className="font-medium text-gray-900 text-left hover:text-blue-600 hover:underline"
+                    >
+                      {r.rate_plan_name}
+                    </button>
+                  </td>
                   <td className="px-2 py-2">
                     <CampaignCell
                       value={campaigns?.[r.rate_plan_name] || ""}
@@ -513,6 +528,256 @@ function CRMRatePlansTab({ rows, cur, month }) {
             </tr>
           </tbody>
         </table>
+      </div>
+      {openPlan && (
+        <RatePlanDetailModal
+          ratePlan={openPlan}
+          cur={cur}
+          queryParams={queryParams}
+          onClose={() => setOpenPlan(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ── Rate Plan drill-down — who actually booked this plan ────────────────── */
+
+function DistBar({ label, sublabel, value, max, total, right }) {
+  const pct = max > 0 ? Math.max(1.5, (value / max) * 100) : 0;
+  const share = total > 0 ? (value / total) * 100 : 0;
+  return (
+    <div className="py-1">
+      <div className="flex items-baseline justify-between gap-2 mb-1">
+        <span className="text-sm text-gray-700 truncate" title={label}>
+          {label}
+          {sublabel && <span className="text-gray-400 text-xs ml-1.5">{sublabel}</span>}
+        </span>
+        <span className="text-xs text-gray-500 whitespace-nowrap">
+          {right ?? <>{fmtNum(value)} <span className="text-gray-400">· {share.toFixed(0)}%</span></>}
+        </span>
+      </div>
+      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+        <div className="h-full rounded-full bg-blue-500" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function MiniStat({ label, stats, suffix }) {
+  return (
+    <div className="border border-gray-200 rounded p-2 text-center">
+      <p className="text-[11px] text-gray-500">{label}</p>
+      <p className="text-lg font-semibold text-gray-900">
+        {stats?.count > 0 ? fmtNum(stats.avg) : "—"}
+        {stats?.count > 0 && suffix ? <span className="text-xs font-normal text-gray-400 ml-0.5">{suffix}</span> : null}
+      </p>
+      <p className="text-[10px] text-gray-400">
+        {stats?.count > 0 ? `med ${fmtNum(stats.median)} · n=${stats.count}` : "no data"}
+      </p>
+    </div>
+  );
+}
+
+function RatePlanDetailModal({ ratePlan, cur, queryParams, onClose }) {
+  const { data, isPending, error } = useQuery({
+    queryKey: ["crm-rate-plan-detail", ratePlan, queryParams],
+    queryFn: () => getCRMRatePlanDetail({ ...queryParams, rate_plan: ratePlan }),
+  });
+
+  const h = data?.headline;
+  const ex = data?.excluded;
+  const cov = data?.coverage;
+  const bookings = h?.bookings || 0;
+
+  const sumOf = (rows) => (rows || []).reduce((a, r) => a + (r.bookings || 0), 0);
+  const maxOf = (rows) => Math.max(1, ...(rows || []).map((r) => r.bookings || 0));
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 flex items-start justify-center z-50 p-4 overflow-y-auto"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg shadow-xl w-full max-w-3xl my-4 max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="sticky top-0 bg-white border-b px-5 py-3 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h3 className="font-semibold text-gray-900 truncate" title={ratePlan}>{ratePlan}</h3>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {data
+                ? `Booked ${data.period.from} → ${data.period.to}`
+                : "Loading…"}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-xl leading-none shrink-0">
+            ×
+          </button>
+        </div>
+
+        {isPending ? (
+          <p className="text-center text-gray-400 py-16 text-sm animate-pulse">Loading…</p>
+        ) : error || !data ? (
+          <p className="text-center text-red-600 py-16 text-sm">
+            Could not load this rate plan: {error?.message || "unknown error"}
+          </p>
+        ) : (
+          <div className="p-5 space-y-5">
+            {/* Headline — same rows the table row counted */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="border border-gray-200 rounded-lg p-3">
+                <p className="text-xs text-gray-500">Bookings</p>
+                <p className="text-xl font-bold text-gray-900 mt-0.5">{fmtNum(bookings)}</p>
+                <p className="text-[11px] text-gray-400 mt-0.5">{fmtNum(h.guests)} guests</p>
+              </div>
+              <div className="border border-gray-200 rounded-lg p-3">
+                <p className="text-xs text-gray-500">Nights</p>
+                <p className="text-xl font-bold text-gray-900 mt-0.5">{fmtNum(h.nights)}</p>
+                <p className="text-[11px] text-gray-400 mt-0.5">
+                  {bookings > 0 ? `${(h.nights / bookings).toFixed(1)} per booking` : "—"}
+                </p>
+              </div>
+              <div className="border border-gray-200 rounded-lg p-3">
+                <p className="text-xs text-gray-500">Revenue ({cur})</p>
+                <p className="text-xl font-bold text-gray-900 mt-0.5">{fmtNum(h.revenue)}</p>
+                <p className="text-[11px] text-gray-400 mt-0.5">ADR {fmtNum(h.adr)}</p>
+              </div>
+              <div className="border border-gray-200 rounded-lg p-3">
+                <p className="text-xs text-gray-500">Cancelled</p>
+                <p className="text-xl font-bold text-gray-900 mt-0.5">{ex.cancel_rate}%</p>
+                <p className="text-[11px] text-gray-400 mt-0.5">
+                  {fmtNum(ex.cancelled)} of {fmtNum(ex.total_rows)} ever booked
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-400">
+              The four numbers above count the same bookings as the table row
+              {ex.cancelled > 0 || ex.non_paying_source > 0 ? (
+                <> — {fmtNum(ex.cancelled)} cancelled
+                  {ex.non_paying_source > 0 && <> and {fmtNum(ex.non_paying_source)} non-paying (Blogger / House Use / Special Case / Work Exchange)</>}
+                  {" "}excluded. The status list below counts every booking, including those.</>
+              ) : "."}
+            </p>
+
+            {/* Status */}
+            <div>
+              <p className="text-xs font-semibold text-gray-600 mb-2">Status</p>
+              <div className="flex flex-wrap gap-1.5">
+                {data.by_status.map((s) => (
+                  <span
+                    key={s.status}
+                    className={`inline-block px-2 py-0.5 rounded text-xs ${
+                      s.cancelled ? "bg-red-100 text-red-800" : "bg-emerald-100 text-emerald-800"
+                    }`}
+                  >
+                    {s.status} · {fmtNum(s.bookings)}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Country */}
+              <div>
+                <p className="text-xs font-semibold text-gray-600 mb-2">Guest country</p>
+                {data.by_country.length === 0 ? (
+                  <p className="text-xs text-gray-400">No bookings to break down.</p>
+                ) : (
+                  data.by_country.map((c) => (
+                    <DistBar
+                      key={c.country}
+                      label={c.country}
+                      sublabel={c.country_code || undefined}
+                      value={c.bookings}
+                      max={maxOf(data.by_country)}
+                      total={bookings}
+                    />
+                  ))
+                )}
+              </div>
+
+              {/* Demographics */}
+              <div className="space-y-4">
+                <div>
+                  <div className="flex items-baseline justify-between mb-2">
+                    <p className="text-xs font-semibold text-gray-600">Gender</p>
+                    <span className="text-[11px] text-gray-400">
+                      {fmtNum(cov.gender_known)} of {fmtNum(bookings)} on file
+                    </span>
+                  </div>
+                  {data.by_gender.map((g) => (
+                    <DistBar key={g.gender} label={g.gender} value={g.bookings}
+                      max={maxOf(data.by_gender)} total={sumOf(data.by_gender)} />
+                  ))}
+                </div>
+                <div>
+                  <div className="flex items-baseline justify-between mb-2">
+                    <p className="text-xs font-semibold text-gray-600">Age at check-in</p>
+                    <span className="text-[11px] text-gray-400">
+                      {fmtNum(cov.age_known)} of {fmtNum(bookings)} on file
+                    </span>
+                  </div>
+                  {data.by_age.map((a) => (
+                    <DistBar key={a.bucket} label={a.bucket} value={a.bookings}
+                      max={maxOf(data.by_age)} total={sumOf(data.by_age)} />
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {(cov.gender_known === 0 || cov.age_known === 0) && bookings > 0 && (
+              <p className="text-xs text-gray-500 italic">
+                <span className="font-semibold not-italic">Note:</span> gender and birthdate are
+                backfilled per guest from Cloudbeds and are missing on most reservations. Read the
+                &quot;on file&quot; counts before treating either split as representative.
+              </p>
+            )}
+
+            {/* Stay shape */}
+            <div>
+              <p className="text-xs font-semibold text-gray-600 mb-2">Stay shape</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <MiniStat label="Nights" stats={data.nights_stats} />
+                <MiniStat label="Adults" stats={data.adults_stats} />
+                <MiniStat label="Lead time" stats={data.lead_time_stats} suffix="d" />
+                <MiniStat label={`ADR (${cur})`} stats={data.adr_stats} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Source */}
+              <div>
+                <p className="text-xs font-semibold text-gray-600 mb-2">Booking source</p>
+                {data.by_source.map((s) => (
+                  <DistBar key={s.source} label={s.source} sublabel={s.category || undefined}
+                    value={s.bookings} max={maxOf(data.by_source)} total={bookings} />
+                ))}
+              </div>
+              {/* Rooms + branch */}
+              <div className="space-y-4">
+                <div>
+                  <p className="text-xs font-semibold text-gray-600 mb-2">Room type</p>
+                  {data.by_room_type.map((r) => (
+                    <DistBar key={r.room_type} label={r.room_type} sublabel={r.category || undefined}
+                      value={r.bookings} max={maxOf(data.by_room_type)} total={bookings} />
+                  ))}
+                </div>
+                <div>
+                  <p className="text-xs font-semibold text-gray-600 mb-2">Branch</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {data.by_branch.map((b) => (
+                      <span key={b.branch} className="inline-block px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700">
+                        {b.branch} · {fmtNum(b.bookings)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

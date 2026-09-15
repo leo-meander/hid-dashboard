@@ -57,6 +57,23 @@ def rate_plan_pattern_filter(patterns):
     return or_(*clauses) if clauses else None
 
 
+def crm_rate_plan_value_expr():
+    """The rate-plan expression itself, without the ``.label()``.
+
+    Same value ``crm_rate_plan_label_expr`` groups by — kept separate because a
+    labelled expression cannot be reused in a WHERE clause. Drilling into one
+    rate plan has to filter on exactly what the grouping produced, or the
+    drill-down would select a different set of rows than the row it opened.
+    """
+    crm_tag = literal_column(r"substring(reservations.room_type from E'\\(([^)]+)\\)')")
+    return func.coalesce(
+        func.nullif(func.trim(Reservation.rate_plan_name), ""),
+        func.nullif(func.trim(crm_tag), ""),
+        func.nullif(func.trim(Reservation.room_type), ""),
+        "(unknown)",
+    )
+
+
 def crm_rate_plan_label_expr():
     """SQL expression that labels/groups a CRM reservation by its rate plan.
 
@@ -73,10 +90,4 @@ def crm_rate_plan_label_expr():
     literal_column because SQLAlchemy's func.substring emits the positional
     (int) form instead of the FROM form.
     """
-    crm_tag = literal_column(r"substring(reservations.room_type from E'\\(([^)]+)\\)')")
-    return func.coalesce(
-        func.nullif(func.trim(Reservation.rate_plan_name), ""),
-        func.nullif(func.trim(crm_tag), ""),
-        func.nullif(func.trim(Reservation.room_type), ""),
-        "(unknown)",
-    ).label("rate_plan")
+    return crm_rate_plan_value_expr().label("rate_plan")
