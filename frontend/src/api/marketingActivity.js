@@ -4,6 +4,12 @@ const BASE = "/api/marketing-activity";
 export const getMarketingActivitySummary = (params = {}) =>
   axios.get(`${BASE}/summary`, { params }).then(r => r.data.data);
 
+// One ROAS point per month, Jan → today, for the YTD trend chart. Each point
+// is built by the same monthly builder /summary uses, so the line and the
+// Monthly view agree for any month you click into.
+export const getMarketingRoasTrend = (params = {}) =>
+  axios.get(`${BASE}/roas-trend`, { params }).then(r => r.data.data);
+
 export const getCRMBranchComparison = (params = {}) =>
   axios.get(`${BASE}/crm-branch-comparison`, { params }).then(r => r.data.data);
 

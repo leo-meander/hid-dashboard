@@ -299,6 +299,74 @@ def get_marketing_activity_summary(
     })
 
 
+# ── ROAS trend: one point per month, for the YTD chart ───────────────────────
+
+
+@router.get("/roas-trend")
+def get_roas_trend(
+    branch_id: Optional[UUID] = Query(None),
+    year: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """ROAS per month, January → today, for the YTD view's trend chart.
+
+    Every point is built by the same overview builder ``/summary`` uses for a
+    single month, so a month on this line reads exactly what the Monthly view
+    shows when you pick that month — no second, differently-shaped ledger.
+
+    A month whose upstream call fails comes back with ``unavailable: true`` and
+    no numbers, so the chart draws a gap instead of a fabricated zero.
+    """
+    today = date.today()
+    yr = year or today.year
+    if yr > today.year:
+        return _envelope({"year": yr, "currency": "VND", "months": []})
+    last_month = today.month if yr == today.year else 12
+
+    use_native = branch_id is not None
+
+    def _build_month(mo: int):
+        session = SessionLocal()
+        try:
+            d_from, d_to = _month_range(f"{yr}-{mo:02d}")
+            cached = _cache_read(session, branch_id, d_from, d_to)
+            if cached is not None:
+                return _build_overview_from_cache(
+                    session, branch_id, d_from, d_to, use_native, cached,
+                )
+            return _build_overview(session, branch_id, d_from, d_to, use_native)
+        finally:
+            session.close()
+
+    overviews: dict[int, dict] = {}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {ex.submit(_build_month, mo): mo for mo in range(1, last_month + 1)}
+        for future in as_completed(futures):
+            mo = futures[future]
+            try:
+                overviews[mo] = future.result()
+            except Exception as exc:
+                log.warning("roas-trend: %s-%02d failed: %s", yr, mo, exc)
+
+    currency = "VND"
+    if use_native and branch_id is not None:
+        b = db.query(Branch).filter(Branch.id == branch_id).first()
+        if b and b.currency:
+            currency = b.currency
+
+    months = []
+    for mo in range(1, last_month + 1):
+        point = {"month": f"{yr}-{mo:02d}", "label": calendar.month_abbr[mo]}
+        overview = overviews.get(mo)
+        if overview is None:
+            point["unavailable"] = True
+        else:
+            point.update(overview)
+        months.append(point)
+
+    return _envelope({"year": yr, "currency": currency, "months": months})
+
+
 # ── KOL totals: KOL Engine API → Cloudbeds fallback ──────────────────────────
 
 
