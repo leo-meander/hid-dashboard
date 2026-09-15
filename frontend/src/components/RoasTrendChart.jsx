@@ -47,7 +47,7 @@ function fmtMoney(v) {
   return new Intl.NumberFormat("en").format(Math.round(v));
 }
 
-function TrendTooltip({ active, payload, label, cur }) {
+function TrendTooltip({ active, payload, label, cur, series = SERIES }) {
   if (!active || !payload?.length) return null;
   const point = payload[0]?.payload;
   if (!point) return null;
@@ -59,7 +59,7 @@ function TrendTooltip({ active, payload, label, cur }) {
       ) : (
         <table>
           <tbody>
-            {SERIES.map(({ key, name, color }) => {
+            {series.map(({ key, name, color }) => {
               const d = point[key];
               if (!d) return null;
               return (
@@ -83,10 +83,21 @@ function TrendTooltip({ active, payload, label, cur }) {
 }
 
 export default function RoasTrendChart({ months = [], cur = "VND", year, isPending }) {
-  // Click a legend entry to drop that line — KOL's scale in particular is
-  // easier to read once the rest are out of the way, and vice versa.
+  // Pick one channel to read it on its own — alone it gets the left axis and
+  // the whole vertical range, which is the only way KOL's hundreds and CRM's
+  // single digits are both legible.
+  const [view, setView] = useState("all");
+  // Within "All channels", a legend click still drops a line. Cleared on every
+  // switch so the picker never inherits a hidden series from the last view.
   const [hidden, setHidden] = useState({});
   const toggle = (key) => setHidden((h) => ({ ...h, [key]: !h[key] }));
+  const pick = (key) => {
+    setView(key);
+    setHidden({});
+  };
+
+  const shown = view === "all" ? SERIES : SERIES.filter((s) => s.key === view);
+  const isHidden = (key) => (view === "all" ? !!hidden[key] : key !== view);
 
   const data = months.map((m) => ({
     ...m,
@@ -96,13 +107,29 @@ export default function RoasTrendChart({ months = [], cur = "VND", year, isPendi
     kol_roas: roasOf(m, "kol"),
   }));
 
-  const hasKol = data.some((d) => d.kol_roas != null) && !hidden.kol;
+  // KOL only needs the second axis while it shares the chart with the others.
+  const hasKol =
+    view === "all" && data.some((d) => d.kol_roas != null) && !hidden.kol;
+  const axisOf = (series) => (view === "all" ? series.axis : "left");
 
   return (
     <div className="bg-white rounded-lg border p-4">
-      <div className="flex items-baseline justify-between mb-1">
+      <div className="flex items-baseline justify-between flex-wrap gap-2 mb-2">
         <p className="text-sm font-semibold text-gray-700">ROAS Trend — {year}</p>
-        <p className="text-xs text-gray-400">Jan → today · click a channel to hide it</p>
+        <p className="text-xs text-gray-400">Jan → today</p>
+      </div>
+      <div className="flex gap-0.5 bg-gray-100 rounded-lg p-1 w-fit mb-2">
+        {[{ key: "all", name: "All channels" }, ...SERIES].map(({ key, name }) => (
+          <button
+            key={key}
+            onClick={() => pick(key)}
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+              view === key ? "bg-white text-gray-800 shadow-sm" : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            {name}
+          </button>
+        ))}
       </div>
       {hasKol && (
         <p className="text-xs text-gray-400 mb-2">
@@ -136,24 +163,27 @@ export default function RoasTrendChart({ months = [], cur = "VND", year, isPendi
               axisLine={false}
               width={52}
             />
-            <Tooltip content={<TrendTooltip cur={cur} />} />
+            <Tooltip content={<TrendTooltip cur={cur} series={shown} />} />
             <Legend
               iconSize={10}
-              wrapperStyle={{ fontSize: 12, cursor: "pointer" }}
+              wrapperStyle={{ fontSize: 12, cursor: view === "all" ? "pointer" : "default" }}
               onClick={(entry) => {
+                if (view !== "all") return;
                 const key = seriesKeyOf(entry);
                 if (key) toggle(key);
               }}
               formatter={(value, entry) => (
-                <span style={{ color: hidden[seriesKeyOf(entry)] ? "#d1d5db" : "#4b5563" }}>
+                <span style={{ color: isHidden(seriesKeyOf(entry)) ? "#d1d5db" : "#4b5563" }}>
                   {value}
                 </span>
               )}
             />
-            {SERIES.map(({ key, name, color, axis, width, dashed }) => (
+            {SERIES.map((series) => {
+              const { key, name, color, width, dashed } = series;
+              return (
               <Line
                 key={key}
-                yAxisId={axis}
+                yAxisId={axisOf(series)}
                 type="monotone"
                 dataKey={key + "_roas"}
                 name={name}
@@ -163,9 +193,10 @@ export default function RoasTrendChart({ months = [], cur = "VND", year, isPendi
                 dot={{ r: 2.5, strokeWidth: 0, fill: color }}
                 activeDot={{ r: 4 }}
                 connectNulls={false}
-                hide={!!hidden[key]}
+                hide={isHidden(key)}
               />
-            ))}
+              );
+            })}
           </ComposedChart>
         </ResponsiveContainer>
       )}
