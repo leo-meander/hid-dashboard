@@ -64,8 +64,26 @@ def crm_rate_plan_value_expr():
     labelled expression cannot be reused in a WHERE clause. Drilling into one
     rate plan has to filter on exactly what the grouping produced, or the
     drill-down would select a different set of rows than the row it opened.
+
+    The tag pattern tolerates ONE level of nesting inside the group, because
+    the plan names carry their own parenthesised qualifier:
+
+        "8 Beds Mixed Dorm Shared Bathroom (Extension Promotion (>2 night))"
+                                            ^--------- rate plan ---------^
+
+    The body is "anything but a bracket, OR a complete bracketed group", so the
+    match runs past the inner ``)`` to the real closer. The previous
+    ``\\(([^)]+)\\)`` forbade brackets in the body so it could find a closer,
+    and therefore stopped at the INNER one — labelling that row
+    "Extension Promotion (>2 night", a name with no closing bracket that reads
+    like real data. Every non-nested shape resolves identically to before: a
+    plain tag, a tag with trailing text after it, and a multi-room room_type
+    (where the first group still wins) are all unchanged. Two levels of nesting
+    would still truncate; no such room_type exists.
     """
-    crm_tag = literal_column(r"substring(reservations.room_type from E'\\(([^)]+)\\)')")
+    crm_tag = literal_column(
+        r"substring(reservations.room_type from E'\\(((?:[^()]|\\([^()]*\\))+)\\)')"
+    )
     return func.coalesce(
         func.nullif(func.trim(Reservation.rate_plan_name), ""),
         func.nullif(func.trim(crm_tag), ""),
@@ -82,7 +100,7 @@ def crm_rate_plan_label_expr():
     blank, so we extract just the parenthesised tag — otherwise each base
     room type would get its own row instead of collapsing under one rate
     plan. Fallback order:
-        rate_plan_name → first (…) substring in room_type → room_type → '(unknown)'
+        rate_plan_name → first (…) group in room_type → room_type → '(unknown)'
 
     Shared by Marketing Activity and the Weekly Report so the two surfaces
     group CRM reservations identically. PostgreSQL-specific: SUBSTRING(col
