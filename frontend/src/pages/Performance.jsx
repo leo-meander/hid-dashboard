@@ -325,8 +325,15 @@ function hitBg(pct) {
 export default function Performance() {
   const { isAll, selected, currentBranch } = useBranch();
   const currentYear = new Date().getFullYear();
-  const [year, setYear] = useState(currentYear);
+  // Years the Revenue KPI table shows. One year keeps the branch-by-branch
+  // layout; two or more turn the table sideways — years become the column
+  // groups — so the same Target/Actual/Hit% reads across seasons.
+  const [years, setYears] = useState([currentYear]);
+  const [basis, setBasis] = useState("ytd");
   const queryClient = useQueryClient();
+
+  const compare = years.length > 1;
+  const year = years[years.length - 1];
 
   const { data: grid, isPending, isPlaceholderData } = useQuery({
     queryKey: ["kpi-yearly-grid", year, selected, isAll],
@@ -335,6 +342,18 @@ export default function Performance() {
       if (!isAll && selected) params.branch_id = selected;
       return axios.get("/api/kpi/yearly-grid", { params }).then(r => r.data.data);
     },
+    enabled: !compare,
+    placeholderData: keepPreviousData,
+  });
+
+  const { data: multi, isPending: multiPending, isPlaceholderData: multiStale } = useQuery({
+    queryKey: ["kpi-multi-year", years.join(","), basis, selected, isAll],
+    queryFn: () => {
+      const params = { years: years.join(","), basis };
+      if (!isAll && selected) params.branch_id = selected;
+      return axios.get("/api/kpi/multi-year", { params }).then(r => r.data.data);
+    },
+    enabled: compare,
     placeholderData: keepPreviousData,
   });
 
@@ -373,20 +392,34 @@ export default function Performance() {
 
       {/* KPI Target vs Actual Grid */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <h2 className="text-lg font-bold text-gray-800">Revenue KPI</h2>
-            <p className="text-xs text-gray-400">Click on Actual cells to edit (accounting override)</p>
+            <p className="text-xs text-gray-400">
+              {compare
+                ? `${multi?.scope?.branch_name || (isAll ? "All branches" : "")}${
+                    multi?.scope?.mode === "group" ? " · summed in VND" : ""
+                  } · ${basisNote(multi)} · pick one year to edit actuals`
+                : "Click on Actual cells to edit (accounting override) · pick a second year to compare"}
+            </p>
           </div>
-          <select value={year} onChange={(e) => setYear(Number(e.target.value))}
-            className="border rounded px-3 py-1.5 text-sm font-medium">
-            {[currentYear, currentYear - 1, currentYear - 2].map((y) => (
-              <option key={y} value={y}>{y}</option>
-            ))}
-          </select>
+          <div className="flex items-center gap-3 flex-wrap justify-end">
+            {compare && <BasisToggle value={basis} onChange={setBasis} data={multi} />}
+            <YearPicker years={years} onChange={setYears} currentYear={currentYear} />
+          </div>
         </div>
 
-        {isPending && !grid ? (
+        {compare ? (
+          multiPending && !multi ? (
+            <div className="text-center text-gray-400 py-12 text-sm animate-pulse">Loading...</div>
+          ) : !multi ? (
+            <div className="text-center text-gray-400 py-12 text-sm">
+              No KPI data for {years.join(", ")}.
+            </div>
+          ) : (
+            <MultiYearTable data={multi} stale={multiStale} />
+          )
+        ) : isPending && !grid ? (
           <div className="text-center text-gray-400 py-12 text-sm animate-pulse">Loading...</div>
         ) : !grid || branches.length === 0 ? (
           <div className="text-center text-gray-400 py-12 text-sm">No KPI data available for {year}.</div>
@@ -506,6 +539,198 @@ function BranchCells({ data, currency, isTotal, month, onSave }) {
           <span className="text-gray-300">{"—"}</span>
         )}
       </td>
+    </>
+  );
+}
+
+
+// ── Year comparison ─────────────────────────────────────────────────────────
+
+//: Four columns is what still fits on a laptop screen; the API allows more.
+const MAX_YEARS = 4;
+
+/** Toggle chips. The current year cannot be the one that gets switched off
+ *  into an empty selection — there is always at least one year on. */
+function YearPicker({ years, onChange, currentYear }) {
+  const options = [3, 2, 1, 0].map((back) => currentYear - back);
+  const toggle = (y) => {
+    if (years.includes(y)) {
+      if (years.length === 1) return;
+      onChange(years.filter((v) => v !== y));
+    } else {
+      if (years.length >= MAX_YEARS) return;
+      onChange([...years, y].sort((a, b) => a - b));
+    }
+  };
+  return (
+    <div className="flex items-center gap-1">
+      {options.map((y) => {
+        const on = years.includes(y);
+        const full = !on && years.length >= MAX_YEARS;
+        return (
+          <button
+            key={y}
+            onClick={() => toggle(y)}
+            disabled={full}
+            title={full ? `Up to ${MAX_YEARS} years at a time` : on ? "Click to remove" : "Click to compare"}
+            className={`px-3 py-1.5 text-sm font-medium rounded border transition-colors ${
+              on
+                ? "bg-gray-900 text-white border-gray-900"
+                : full
+                ? "bg-white text-gray-300 border-gray-200 cursor-not-allowed"
+                : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+            }`}
+          >
+            {y}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A year still running holds forward bookings, so its December is a fraction
+ *  of target simply because those nights have not happened. YTD clips every
+ *  compared year to the same closed months. */
+function BasisToggle({ value, onChange, data }) {
+  return (
+    <div className="flex rounded border border-gray-200 overflow-hidden">
+      {[
+        ["ytd", `Jan–${MONTHS[data?.cutoff_month || 12]}`, "Same closed months in every year — like for like"],
+        ["full", "Full year", "All 12 months, including months not yet stayed in a running year"],
+      ].map(([key, label, hint]) => (
+        <button
+          key={key}
+          onClick={() => onChange(key)}
+          title={hint}
+          className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+            value === key ? "bg-gray-900 text-white" : "bg-white text-gray-500 hover:bg-gray-50"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function basisNote(data) {
+  if (!data) return "";
+  if (data.basis === "ytd") return `Jan–${MONTHS[data.cutoff_month]} in every year`;
+  return data.requested_basis === "ytd"
+    ? "full year — no month has closed yet this year"
+    : "full year";
+}
+
+function deltaClass(pct) {
+  if (pct == null) return "text-gray-300";
+  if (pct > 0) return "text-green-600";
+  if (pct < 0) return "text-red-500";
+  return "text-gray-400";
+}
+
+function MultiYearTable({ data, stale }) {
+  const { years, months, totals, scope, cutoff_month: cutoff } = data;
+  const sym = CURRENCY_SYMBOLS[scope.currency] || "";
+  const rows = months.filter((r) => r.years[String(years[0])].in_basis);
+  const totalLabel = cutoff < 12 ? `Total (Jan–${MONTHS[cutoff]})` : "Total";
+
+  return (
+    <div className={"bg-white rounded-lg border overflow-x-auto transition-opacity duration-150 " + (stale ? "opacity-40 pointer-events-none" : "")}>
+      <table className="w-full text-sm border-collapse">
+        <thead>
+          <tr className="bg-gray-900 text-white">
+            <th className="px-4 py-2.5 text-left font-semibold sticky left-0 bg-gray-900 z-10">
+              {scope.branch_name}
+            </th>
+            {years.map((y, i) => (
+              <th key={y} colSpan={i === 0 ? 3 : 4}
+                  className="px-2 py-2.5 text-center font-semibold border-l border-gray-700">
+                {y}
+              </th>
+            ))}
+          </tr>
+          <tr className="bg-gray-100">
+            <th className="px-4 py-2 text-left text-xs text-gray-500 font-medium sticky left-0 bg-gray-100 z-10">Month</th>
+            {years.map((y, i) => [
+              <th key={y + "-t"} className="px-2 py-2 text-right text-xs text-gray-500 font-medium border-l border-gray-200">Target</th>,
+              <th key={y + "-a"} className="px-2 py-2 text-right text-xs text-gray-500 font-medium">Actual</th>,
+              <th key={y + "-h"} className="px-2 py-2 text-center text-xs text-gray-500 font-medium">Hit %</th>,
+              i > 0 ? (
+                <th key={y + "-d"} className="px-2 py-2 text-right text-xs text-gray-500 font-medium"
+                    title={`Actual ${y} vs actual ${years[i - 1]}`}>
+                  vs {years[i - 1]}
+                </th>
+              ) : null,
+            ])}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.month} className="border-t border-gray-100 hover:bg-gray-50/50">
+              <td className="px-4 py-2 font-medium text-gray-700 sticky left-0 bg-white z-10">
+                {MONTHS[row.month]}
+              </td>
+              {years.map((y, i) => (
+                <YearCells key={y} cell={row.years[String(y)]} sym={sym} showDelta={i > 0} />
+              ))}
+            </tr>
+          ))}
+          <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold">
+            <td className="px-4 py-2.5 font-bold text-gray-900 sticky left-0 bg-gray-50 z-10">{totalLabel}</td>
+            {years.map((y, i) => (
+              <YearCells key={y} cell={totals[String(y)]} sym={sym} showDelta={i > 0} isTotal />
+            ))}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function YearCells({ cell, sym, showDelta, isTotal }) {
+  const bg = isTotal ? "" : hitBg(cell.hit_pct);
+  // No target and no typed actual means nobody was tracking that period —
+  // whatever Cloudbeds holds is shown, but greyed, and it never anchors a %.
+  const untracked = !cell.has_kpi;
+  return (
+    <>
+      <td className={`px-2 py-2 text-right tabular-nums border-l border-gray-100 ${bg}`}>
+        {cell.target > 0 ? sym + fmtNum(cell.target) : <span className="text-gray-300">{"—"}</span>}
+      </td>
+      <td className={`px-2 py-2 text-right tabular-nums ${bg}`}
+          title={untracked ? "No KPI was set for this period — figure is the raw Cloudbeds total"
+                           : cell.is_override ? "Includes a manual accounting override" : undefined}>
+        {cell.actual > 0 ? (
+          <span className={
+            (cell.is_override ? "border-b border-dashed border-indigo-400 " : "") +
+            (untracked ? "text-gray-400 italic" : "")
+          }>
+            {sym + fmtNum(cell.actual)}
+          </span>
+        ) : (
+          <span className="text-gray-300">{"—"}</span>
+        )}
+      </td>
+      <td className={`px-2 py-2 text-center tabular-nums ${bg}`}>
+        {cell.hit_pct != null ? (
+          <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${hitColor(cell.hit_pct)}`}>
+            {cell.hit_pct.toFixed(1)}%
+          </span>
+        ) : (
+          <span className="text-gray-300">{"—"}</span>
+        )}
+      </td>
+      {showDelta && (
+        <td className={`px-2 py-2 text-right tabular-nums text-xs font-semibold ${bg} ${deltaClass(cell.vs_prev_pct)}`}
+            title={cell.vs_prev_pct == null && cell.vs_prev_year
+              ? `No comparable ${cell.vs_prev_year} baseline`
+              : undefined}>
+          {cell.vs_prev_pct != null
+            ? `${cell.vs_prev_pct > 0 ? "+" : ""}${cell.vs_prev_pct.toFixed(1)}%`
+            : "—"}
+        </td>
+      )}
     </>
   );
 }
