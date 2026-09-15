@@ -354,3 +354,19 @@ def test_a_month_with_no_year_ago_rate_is_left_unpriced(nights_only):
 
 def test_settled_months_walks_backwards_across_the_year_boundary():
     assert _settled_months(date(2026, 2, 10), 3) == [(2026, 1), (2025, 12), (2025, 11)]
+
+
+def test_a_branch_with_no_year_ago_rate_is_priced_off_its_own_settled_months(monkeypatch):
+    """Not off its forward book. Oani's December reads 7,955 a night at ten per
+    cent sold — whatever its first few holiday bookings happened to pay —
+    against the 3,753 it has actually averaged all year."""
+    occ = dm("b-oani", 2026, 0.700, rooms=92, revenue_per_night=3_753.0)
+    occ[("b-oani", 2026, 12)] = {"revenue": 2_418_373.0, "nights": 304,
+                                 "adr": 7_955.0}
+    out = _run(monkeypatch,
+               [cell("b-oani", month=12, capacity=2852, otb=304,
+                     ly_otb=0, ly_final=0, days_out=77)],
+               occ=occ)
+    row = out["branches"][0]
+    remaining = row["room_nights"] - 304
+    assert row["revenue_native"] == pytest.approx(2_418_373 + remaining * 3_753, rel=1e-3)

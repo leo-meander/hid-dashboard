@@ -290,6 +290,25 @@ def _adr_yoy(adr_map: dict, branch_id: str, ref_months: list[tuple[int, int]]) -
     return (rev_now / nights_now) / (rev_ly / nights_ly)
 
 
+def _own_adr(adr_map: dict, branch_id: str, ref_months: list[tuple[int, int]]) -> Optional[float]:
+    """What this branch has actually been charging, over settled months.
+
+    The fallback for a branch with no year-ago month to take a rate from. It is
+    pooled over settled months on purpose: the alternative — the rate on the
+    thin forward book — is whatever the first few bookings for a holiday month
+    happened to pay. Oani's December book reads 7,955 a night at ten per cent
+    sold, against the 3,753 it has actually averaged all year.
+    """
+    revenue = nights = 0.0
+    for (y, m) in ref_months:
+        row = adr_map.get((branch_id, y, m))
+        if not row or not row["nights"]:
+            continue
+        revenue += row["revenue"]
+        nights += row["nights"]
+    return revenue / nights if nights else None
+
+
 def _targets(db: Session, branch_ids: list, months: list[tuple[int, int]]) -> dict:
     """Revenue targets per (branch, year, month), native and VND."""
     if not branch_ids or not months:
@@ -372,9 +391,17 @@ def build_forecast(
         ly_adr = (adr_map.get((bid, y - 1, m)) or {}).get("adr")
         book = adr_map.get((bid, y, m)) or {}
         # Nights already sold are already priced — they are in the book at
-        # whatever they were sold for. Only what is still to come needs an ADR.
-        adr_remaining = ly_adr * clipped if (ly_adr and clipped) else (
-            ly_adr or book.get("adr")
+        # whatever they were sold for. Only what is still to come needs an ADR,
+        # and it is looked for in descending order of how much it knows about
+        # this month: last year's rate for it moved by this year's trend, then
+        # last year's rate flat, then what this branch has actually been
+        # charging over settled months, and only failing all three the rate on
+        # a forward book that may be ten per cent sold.
+        adr_remaining = (
+            (ly_adr * clipped if (ly_adr and clipped) else None)
+            or ly_adr
+            or _own_adr(adr_map, bid, ref_months)
+            or book.get("adr")
         )
 
         revenue = low = high = None
@@ -408,6 +435,34 @@ def build_forecast(
         "total": _roll_up(priced, branch_meta, capacity_basis=not scoped_sources),
         "months": _by_month(priced, branch_meta, capacity_basis=not scoped_sources),
         "branches": _by_branch(priced, branch_meta, capacity_basis=not scoped_sources),
+        "cells": [_cell_row(c, branch_meta) for c in priced],
+    }
+
+
+def _cell_row(c: dict, branch_meta: dict) -> dict:
+    """One (branch, stay month) row, flat enough to hand to another service.
+
+    The full-year projection is built from these — settled months as they
+    happened, plus one of these for every month still to come — and rebuilding
+    them there would mean running the whole reservations query a second time.
+    """
+    return {
+        "branch_id": c["branch_id"],
+        "branch_name": branch_meta.get(c["branch_id"], {}).get("name"),
+        "currency": branch_meta.get(c["branch_id"], {}).get("currency"),
+        "year": c["year"],
+        "month": c["month"],
+        "stay_month": f"{c['year']:04d}-{c['month']:02d}",
+        "days_out": c["days_out"],
+        "basis": c["basis"],
+        "room_nights": c["nights"],
+        "room_nights_low": c["low"],
+        "room_nights_high": c["high"],
+        "capacity_capped": c["capacity_capped"],
+        "revenue_native": c["revenue_native"],
+        "revenue_low_native": c["revenue_low_native"],
+        "revenue_high_native": c["revenue_high_native"],
+        "target_native": c["target_native"],
     }
 
 
@@ -510,6 +565,10 @@ def _block(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict:
         "achievement_low_pct": hit(_sum(priced, "revenue_low_native"), target_native),
         "achievement_high_pct": hit(_sum(priced, "revenue_high_native"), target_native),
         "achievement_vnd_pct": hit(revenue_vnd, target_vnd),
+        "achievement_low_vnd_pct": hit(
+            _vnd(priced, "revenue_low_native", branch_meta), target_vnd),
+        "achievement_high_vnd_pct": hit(
+            _vnd(priced, "revenue_high_native", branch_meta), target_vnd),
         "basis": sorted({c["basis"] for c in cells}),
         "capacity_capped": any(c["capacity_capped"] for c in counted),
         "months_counted": len(counted),

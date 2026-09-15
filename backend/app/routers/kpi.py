@@ -20,6 +20,7 @@ from app.services.kpi_engine import (
 )
 from app.services.currency import get_cached_rate
 from app.services.report_common import ict_today
+from app.services.year_forecast import forecast_year
 
 router = APIRouter()
 
@@ -325,6 +326,36 @@ def kpi_summary_branch(
         raise HTTPException(status_code=404, detail="Branch not found")
 
     return _envelope(_branch_summary(db, branch, year, month))
+
+
+# ── Pace forecast (will the year's target be hit) ───────────────────────────
+
+@router.get("/pace-forecast")
+def kpi_pace_forecast(
+    year: int = Query(None, description="Defaults to the current year."),
+    branch_id: Optional[UUID] = Query(None),
+    days: int = Query(60, ge=1, le=365,
+                      description="Booking window the pace is read over."),
+    db: Session = Depends(get_db),
+):
+    """Where the year's revenue lands against its target, on current pace.
+
+    The yearly grid answers "how much has been earned" — in September that is
+    79% of a twelve-month target, because four of the months are still zero.
+    This answers the question that was meant: months that have finished
+    counted as they happened, every month still open projected from booking
+    pace, and the two halves reported separately so neither can be mistaken
+    for the other.
+
+    `q4_*` is the same arithmetic over October to December alone.
+    """
+    return _envelope(forecast_year(
+        db,
+        branch_id=branch_id,
+        year=year or ict_today().year,
+        as_of=ict_today(),
+        days=days,
+    ))
 
 
 # ── Yearly Grid (Target vs Actual vs Hit Rate) ──────────────────────────────
