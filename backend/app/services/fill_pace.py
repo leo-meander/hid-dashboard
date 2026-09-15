@@ -45,6 +45,7 @@ from app.services.metrics_engine import (
     EXCLUDED_SOURCES_OCC,
     EXCLUDED_SOURCES_REVENUE,
 )
+from app.services.pace_forecast import build_forecast
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +456,7 @@ def get_fill_pace(
     room_category: Optional[str] = None,
     compare_last_year: bool = True,
     today: Optional[date] = None,
+    include_forecast: bool = False,
 ) -> dict:
     """Fill pace for one or more stay months, optionally narrowed to a set of
     sources.
@@ -467,6 +469,11 @@ def get_fill_pace(
     `months` is a list of (year, month). Several are read as one question — "how
     is Q4 filling" — with the total on top and a row per month underneath,
     because a healthy quarter routinely hides one month carrying the others.
+
+    `include_forecast` adds a projection of where each stay month lands and
+    what that is against target — see pace_forecast.build_forecast. It is off
+    by default because it is the only part of this function that reads tables
+    other than `reservations`.
 
     `sources` is a set, not one name: "how fast is our own website filling
     December" and "how fast are the OTAs filling it" are both one selection.
@@ -499,6 +506,7 @@ def get_fill_pace(
         str(b.id): {
             "name": b.name,
             "currency": b.currency,
+            "city": b.city,
             "total_rooms": b.total_rooms or 0,
             "units": getattr(b, inv_attr, None) or 0,
         }
@@ -522,6 +530,8 @@ def get_fill_pace(
     src_category: dict[str, str] = {}
     br_cur: dict[str, list[dict]] = {}
     br_ly: dict[str, list[dict]] = {}
+    # (branch, stay month) rows feeding the forecast — see build_forecast.
+    cells: list[dict] = []
     # The window immediately before this one, same stay month — and what last
     # year did across that same pair, which is the only way to tell a real
     # acceleration from the natural one. See _compare_windows.
@@ -557,7 +567,8 @@ def get_fill_pace(
         prev_summaries.append(prev_summary)
         prev_curves.append(prev_curve)
         _accumulate(src_cur, _group_summaries(rows, as_of_dates, _source_key, lead))
-        _accumulate(br_cur, _group_summaries(scoped, as_of_dates, _branch_key, lead))
+        br_month = _group_summaries(scoped, as_of_dates, _branch_key, lead)
+        _accumulate(br_cur, br_month)
         for r in rows:
             src_category.setdefault(_source_key(r), r.source_category or "OTA")
 
@@ -583,7 +594,29 @@ def get_fill_pace(
             ly_summaries.append(ly_summary)
             ly_curves.append(ly_curve)
             _accumulate(src_ly, _group_summaries(ly_all, ly_dates, _source_key, lead))
-            _accumulate(br_ly, _group_summaries(ly_scoped, ly_dates, _branch_key, lead))
+            ly_br_month = _group_summaries(ly_scoped, ly_dates, _branch_key, lead)
+            _accumulate(br_ly, ly_br_month)
+            # One row per branch for this stay month, kept aside for the
+            # forecast. It is built here and not from the assembled tables
+            # below because a forecast needs the month and the branch
+            # together: the year-ago base is usable for Taipei in November
+            # and unusable in October, and a table summed over the quarter
+            # can no longer tell those apart.
+            for bid, meta in branches.items():
+                cur_s = br_month.get(bid) or {}
+                ly_s = ly_br_month.get(bid) or {}
+                cells.append({
+                    "branch_id": bid,
+                    "city": meta["city"],
+                    "year": year,
+                    "month": month,
+                    "days_out": days_out[-1],
+                    "status": _month_status(year, month, real_today),
+                    "capacity": meta["units"] * dim,
+                    "otb_nights": float(cur_s.get("otb_room_nights") or 0),
+                    "ly_otb_nights": float(ly_s.get("otb_room_nights") or 0),
+                    "ly_final_nights": float(ly_s.get("final_room_nights") or 0),
+                })
             for r in ly_all:
                 src_category.setdefault(_source_key(r), r.source_category or "OTA")
 
@@ -715,6 +748,14 @@ def get_fill_pace(
             # a group percentage must never be the mean of two branch ones.
             avail_of=lambda k: branches[k]["units"] * stay_days,
             ly_avail_of=lambda k: branches[k]["units"] * ly_stay_days,
+        )
+
+    # A forecast needs somewhere to have finished before, so it rides on the
+    # year-ago comparison and is absent without it.
+    if include_forecast and compare_last_year:
+        result["forecast"] = build_forecast(
+            db, cells, as_of=as_of, branch_meta=branches,
+            scoped_sources=bool(wanted),
         )
     return result
 

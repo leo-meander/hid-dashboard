@@ -528,6 +528,223 @@ function PaceTable({ title, subtitle, rows, nameKey, nameLabel, currency, compar
   );
 }
 
+// ── forecast ─────────────────────────────────────────────────────────────────
+
+const BASIS_LABEL = {
+  ly_pickup: "its own month last year",
+  proxy: "the same city",
+  proxy_other_market: "another market",
+  proxy_level: "the market it is opening into",
+  proxy_other_market_level: "another market",
+  actual: "the month itself, already over",
+  no_base: "nothing to read it from",
+};
+
+/**
+ * Where the selected months land if they keep filling the way they are, and
+ * what that is against the target.
+ *
+ * The arithmetic is one line — what is on the books, plus what last year still
+ * had to come from this same distance out — and it is stated on the card
+ * rather than left in the service, because a projection nobody can reconstruct
+ * is a projection nobody should act on. Everything that weakens it is on the
+ * card too: months borrowed from a neighbour, months pinned to the ceiling,
+ * and the measured error the range comes from.
+ */
+function ForecastCard({ data, oneMonth }) {
+  const f = data.forecast;
+  if (!f?.available) return null;
+  const t = f.total;
+
+  const proxied = t.proxy_months || [];
+  const missing = t.unforecastable || [];
+  const money_ = (v) => (t.currency ? money(v, t.currency) : money(v, "VND"));
+  const revenue = t.currency ? t.revenue_native : t.revenue_vnd;
+  const target = t.currency ? t.target_native : t.target_vnd;
+  const hit = t.currency ? t.achievement_pct : t.achievement_vnd_pct;
+
+  if (t.room_nights === null) {
+    return (
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900">
+        <div className="font-semibold">No pace forecast for this selection</div>
+        <div className="mt-1 opacity-90">
+          {missing.length
+            ? `${missing.map((m) => `${m.branch_name} ${monthLabel(m.stay_month)}`).join(", ")} ${
+                missing.length === 1 ? "has" : "have"
+              } no year-ago month to read a finish from, and nothing comparable in
+               the selection to borrow one from. Adding a branch that was trading a
+               year ago gives the projection something to stand on.`
+            : "Nothing in this selection has a year-ago month to read a finish from."}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold text-gray-800">
+          Where {oneMonth ? "it lands" : "they land"}
+        </h2>
+        <span className="text-xs text-gray-400">
+          on the books + what last year still had to come from here
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-3">
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            Finishes at
+          </div>
+          <div className="text-2xl font-bold text-gray-900 mt-1 tabular-nums">
+            {t.occ_pct === null ? nights(t.room_nights) : occ(t.occ_pct)}
+          </div>
+          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
+            {t.occ_pct === null
+              ? `${nights(t.room_nights_low)}–${nights(t.room_nights_high)} room-nights`
+              : `${occ(t.occ_pct_low)}–${occ(t.occ_pct_high)} · ${nights(t.room_nights)} room-nights`}
+          </div>
+          <div className="text-xs text-gray-400 mt-1 leading-snug">
+            {nights(t.otb_room_nights)} sold so far. The range is the measured error of this
+            method, not a guess at one: {f.band.low_pct.toFixed(0)}% to +{f.band.high_pct.toFixed(0)}%
+            across the settled months it was tested on.
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            Against last year
+          </div>
+          <div className="text-2xl font-bold text-gray-900 mt-1 tabular-nums">
+            {t.ly_final_occ_pct === null ? nights(t.ly_final_room_nights) : occ(t.ly_final_occ_pct)}
+          </div>
+          <div className={`text-sm mt-0.5 tabular-nums ${toneFor(t.occ_pts_vs_ly, 0.5)}`}>
+            {gapLabel(t.occ_pts_vs_ly)}
+          </div>
+          <div className="text-xs text-gray-400 mt-1 leading-snug">
+            Where {oneMonth ? "the month" : "these months"} actually finished a year ago,
+            against today's inventory.
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            Against target
+          </div>
+          <div className="text-2xl font-bold text-gray-900 mt-1 tabular-nums">
+            {hit === null || hit === undefined ? "—" : `${hit.toFixed(0)}%`}
+          </div>
+          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
+            {revenue === null || revenue === undefined
+              ? "no revenue to price this on"
+              : `${money_(revenue)} of ${money_(target) || "no target"}`}
+          </div>
+          <div className="text-xs text-gray-400 mt-1 leading-snug">
+            {revenue === null || revenue === undefined
+              ? "A month with no year-ago rate to price the nights still to come is left unpriced rather than guessed at."
+              : `Nights still to come are priced at last year's rate for the same month, moved by this year's own rate trend. Nights already sold keep what they sold for.`}
+          </div>
+        </div>
+      </div>
+
+      {/* Per month, because a quarter that clears its target routinely hides a
+          month that does not. */}
+      {f.months.length > 1 && (
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-gray-500 border-b border-gray-200">
+                <th className="text-left font-medium py-1.5">Month</th>
+                <th className="text-right font-medium">On the books</th>
+                <th className="text-right font-medium">Finishes at</th>
+                <th className="text-right font-medium">Last year</th>
+                <th className="text-right font-medium">vs target</th>
+              </tr>
+            </thead>
+            <tbody>
+              {f.months.map((m) => {
+                const mHit = m.currency ? m.achievement_pct : m.achievement_vnd_pct;
+                return (
+                  <tr key={m.stay_month} className="border-b border-gray-100 last:border-0">
+                    <td className="py-1.5 text-gray-700">
+                      {monthLabel(m.stay_month)}
+                      <span className="text-xs text-gray-400 ml-1.5">{m.days_out}d out</span>
+                    </td>
+                    <td className="text-right tabular-nums text-gray-500">
+                      {m.occ_pct === null ? nights(m.otb_room_nights) : occ(
+                        m.available_room_nights
+                          ? (m.otb_room_nights / m.available_room_nights) * 100
+                          : null)}
+                    </td>
+                    <td className="text-right tabular-nums font-medium text-gray-900">
+                      {m.occ_pct === null ? nights(m.room_nights) : occ(m.occ_pct)}
+                    </td>
+                    <td className="text-right tabular-nums text-gray-500">
+                      {m.ly_final_occ_pct === null
+                        ? nights(m.ly_final_room_nights)
+                        : occ(m.ly_final_occ_pct)}
+                    </td>
+                    <td className={`text-right tabular-nums ${toneFor(
+                      mHit === null || mHit === undefined ? null : mHit - 100, 2)}`}>
+                      {mHit === null || mHit === undefined ? "—" : `${mHit.toFixed(0)}%`}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Everything that makes the number above weaker than it looks. Kept on
+          the card rather than in a tooltip: a projection reads as fact, and
+          the reasons it might not be are what stop it doing so. */}
+      <ul className="mt-3 space-y-1 text-xs text-gray-500 leading-snug">
+        {proxied.length > 0 && (
+          <li>
+            <span className="font-medium text-amber-700">Borrowed: </span>
+            {proxied
+              .map((p) => `${p.branch_name} ${monthLabel(p.stay_month)}`)
+              .join(", ")}{" "}
+            {proxied.length === 1 ? "has" : "have"} no year-ago month worth reading — a branch
+            that had not opened, or one whose year-ago month never traded normally. Those keep
+            their own occupancy this year and borrow only the seasonal shape from{" "}
+            {BASIS_LABEL[proxied[0].basis] || "elsewhere"}
+            {proxied.some((p) => p.index_clipped)
+              ? ", and the shape they borrowed was capped where a donor's own year-ago run was disrupted enough to distort it."
+              : "."}
+          </li>
+        )}
+        {t.capacity_capped && (
+          <li>
+            <span className="font-medium text-amber-700">At the ceiling: </span>
+            the projection ran past what the house holds and was pinned to 95% occupancy. Read
+            those months as "sells out or close to it", not as a number.
+          </li>
+        )}
+        {missing.length > 0 && (
+          <li>
+            <span className="font-medium text-amber-700">Not counted: </span>
+            {missing.map((m) => `${m.branch_name} ${monthLabel(m.stay_month)}`).join(", ")} could
+            not be projected at all, so the totals above leave {missing.length === 1 ? "it" : "them"} out.
+          </li>
+        )}
+        {t.available_room_nights === null && (
+          <li>
+            A source filter is on, so this projects that source alone. Occupancy is left blank:
+            the rest of the house is being filled by everyone else.
+          </li>
+        )}
+        <li>
+          Cancellations are the known lean in this: today's book is gross of the ones still to
+          come, last year's finish is net of the ones that already did, so the projection sits a
+          little high by construction.
+        </li>
+      </ul>
+    </div>
+  );
+}
+
 // ── main component ───────────────────────────────────────────────────────────
 
 export default function PerformanceFillPace() {
@@ -973,6 +1190,8 @@ export default function PerformanceFillPace() {
             on the books is everything sold so far, and the year-ago figures are the same date
             counted back from each stay month.
           </p>
+
+          {compare && <ForecastCard data={data} oneMonth={oneMonth} />}
 
           {/* The speed. The cumulative curve that used to sit above this was
               dropped: a line that only ever rises said less about pace than

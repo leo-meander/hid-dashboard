@@ -377,6 +377,13 @@ def get_fill_pace_endpoint(
     ),
     room_category: Optional[str] = Query(None, pattern="^(?:[Rr]oom|[Dd]orm)$"),
     compare_last_year: bool = Query(True),
+    forecast: bool = Query(
+        True,
+        description="Project where each stay month lands from the pace so far, "
+                    "and what that is against the KPI target. Needs the "
+                    "year-ago comparison, so it is ignored when "
+                    "compare_last_year is off.",
+    ),
     db: Session = Depends(get_db),
 ):
     """How fast one or more stay months are filling, versus the same countdown
@@ -422,6 +429,7 @@ def get_fill_pace_endpoint(
         sources=source,
         room_category=room_category,
         compare_last_year=compare_last_year,
+        include_forecast=forecast,
     )
     result["data_synced_at"] = _last_reservations_synced_at(db, branch_id)
     return _envelope(result)

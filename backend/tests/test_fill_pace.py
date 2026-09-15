@@ -56,9 +56,13 @@ class Row:
 
 
 class FakeBranch:
-    def __init__(self, bid, name, rooms, currency="TWD", room_count=None, dorm_count=None):
+    def __init__(self, bid, name, rooms, currency="TWD", room_count=None,
+                 dorm_count=None, city="Taipei"):
         self.id, self.name, self.total_rooms, self.currency = bid, name, rooms, currency
         self.total_room_count, self.total_dorm_count = room_count, dorm_count
+        # The forecast borrows a pickup curve from properties in the same
+        # market when a branch has no year-ago base of its own.
+        self.city = city
 
 
 class FakeBranchQuery:
@@ -84,8 +88,10 @@ class FakeDB:
 @pytest.fixture
 def branches():
     return [
-        FakeBranch("b-saigon", "Saigon", 20, "VND", room_count=12, dorm_count=8),
-        FakeBranch("b-taipei", "Taipei", 30, "TWD", room_count=30, dorm_count=0),
+        FakeBranch("b-saigon", "Saigon", 20, "VND", room_count=12, dorm_count=8,
+                   city="Ho Chi Minh City"),
+        FakeBranch("b-taipei", "Taipei", 30, "TWD", room_count=30, dorm_count=0,
+                   city="Taipei"),
     ]
 
 
