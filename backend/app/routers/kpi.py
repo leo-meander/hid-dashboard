@@ -19,6 +19,7 @@ from app.services.kpi_engine import (
     period_achievement_row,
 )
 from app.services.currency import get_cached_rate
+from app.services.report_common import ict_today
 
 router = APIRouter()
 
@@ -439,6 +440,219 @@ def kpi_yearly_grid(
         "branches": branch_list,
         "months": months,
         "totals": total_row,
+    })
+
+
+# ── Multi-Year Comparison (same Target/Actual/Hit% logic, N years side by side) ──
+
+#: More than this many year columns stops being readable on one screen.
+MAX_COMPARE_YEARS = 6
+
+
+def _parse_years(raw: str) -> list[int]:
+    """'2026,2025' -> [2025, 2026]. Always ascending, deduped, sanity-bounded."""
+    out = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            y = int(part)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Not a year: {part!r}")
+        if not 2000 <= y <= 2100:
+            raise HTTPException(status_code=400, detail=f"Year out of range: {y}")
+        out.add(y)
+    if not out:
+        raise HTTPException(status_code=400, detail="No years given")
+    if len(out) > MAX_COMPARE_YEARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"At most {MAX_COMPARE_YEARS} years can be compared at once",
+        )
+    return sorted(out)
+
+
+def _cutoff_month(years: list[int]) -> int:
+    """Last month that is fully in the past, across the compared years.
+
+    A year still running carries forward bookings in `daily_metrics` — Oct-Dec
+    2026 read as a fraction of target back in September because those nights
+    simply had not happened yet. Comparing such a year's full-year total
+    against a closed year measures the calendar, not the business, so
+    ``basis=ytd`` clips every year to the same completed months.
+
+    In January nothing has closed yet in the running year, so there is no
+    honest YTD window: the full year is returned and the response reports the
+    basis it actually got.
+    """
+    today = ict_today()
+    if today.year not in years:
+        return 12
+    return today.month - 1 if today.month > 1 else 12
+
+
+def chain_year_deltas(year_list: list[int], by_year: dict) -> dict:
+    """Attach each year's move against the previous year *in the selection*.
+
+    Chaining against the selection rather than against `year - 1` means
+    dropping 2025 from a 2024/2025/2026 compare re-bases 2026 onto 2024
+    instead of leaving a gap.
+
+    A year the branch was not on KPI for is not a baseline: `daily_metrics`
+    holds rows for periods nobody was tracking (a branch still fitting out,
+    or seeded placeholder figures), and dividing by those manufactures a
+    triple-digit move out of nothing. Such a pair gets no percentage.
+    """
+    prev_year = None
+    for y in year_list:
+        cur = by_year[y]
+        prev = by_year[prev_year] if prev_year is not None else None
+        delta = None
+        if prev and prev["has_kpi"] and prev["actual"] > 0 and cur["has_kpi"]:
+            delta = round((cur["actual"] - prev["actual"]) / prev["actual"] * 100, 1)
+        cur["vs_prev_pct"] = delta
+        cur["vs_prev_year"] = prev_year
+        prev_year = y
+    return {str(y): by_year[y] for y in year_list}
+
+
+@router.get("/multi-year")
+def kpi_multi_year(
+    years: str = Query(..., description="Comma-separated, e.g. '2025,2026'"),
+    branch_id: Optional[UUID] = Query(None),
+    basis: str = Query("ytd", pattern="^(ytd|full)$"),
+    db: Session = Depends(get_db),
+):
+    """Target / Actual / Hit% per month for several years at once.
+
+    Same per-month rule as the single-year grid — `month_actual_and_target`
+    decides override-vs-Cloudbeds for both — so a month reads identically
+    whichever table you open it in.
+
+    One branch reports in its own currency. Without `branch_id` the branches
+    are summed, which only works on a single currency, so the group view is
+    VND and says so via `scope.currency`.
+    """
+    year_list = _parse_years(years)
+
+    q = db.query(Branch).filter_by(is_active=True)
+    if branch_id:
+        q = q.filter(Branch.id == branch_id)
+    branches = q.order_by(Branch.name).all()
+    if not branches:
+        raise HTTPException(status_code=404, detail="No active branch matched")
+
+    single = branches[0] if branch_id else None
+    currency = single.currency if single else "VND"
+
+    # FX per branch, only needed to fold several currencies into a group total.
+    fx = {
+        str(b.id): 1.0 if single else (get_cached_rate(b.currency, "VND") or 1.0)
+        for b in branches
+    }
+    branch_ids = [b.id for b in branches]
+
+    # Targets + overrides for every compared year, one query.
+    targets = db.query(KPITarget).filter(
+        KPITarget.year.in_(year_list),
+        KPITarget.branch_id.in_(branch_ids),
+    ).all()
+    target_map = {
+        (str(t.branch_id), t.year, t.month): (
+            float(t.target_revenue_native or 0),
+            float(t.actual_revenue_override) if t.actual_revenue_override is not None else None,
+        )
+        for t in targets
+    }
+
+    # Cloudbeds actuals for every compared year, one query.
+    rows = db.query(
+        DailyMetrics.branch_id,
+        extract("year", DailyMetrics.date).label("yr"),
+        extract("month", DailyMetrics.date).label("mo"),
+        func.coalesce(func.sum(DailyMetrics.revenue_native), 0).label("revenue"),
+    ).filter(
+        extract("year", DailyMetrics.date).in_(year_list),
+        DailyMetrics.branch_id.in_(branch_ids),
+    ).group_by(DailyMetrics.branch_id, "yr", "mo").all()
+    actual_map = {
+        (str(r.branch_id), int(r.yr), int(r.mo)): float(r.revenue) for r in rows
+    }
+
+    cutoff = _cutoff_month(year_list) if basis == "ytd" else 12
+    effective_basis = "full" if cutoff == 12 else basis
+
+    def cell(year: int, month: int) -> dict:
+        target = actual = 0.0
+        has_kpi = is_override = False
+        for b in branches:
+            bid = str(b.id)
+            t, override = target_map.get((bid, year, month), (0.0, None))
+            res = month_actual_and_target(
+                b, t, override, actual_map.get((bid, year, month), 0.0)
+            )
+            rate = fx[bid]
+            target += res["target_revenue"] * rate
+            actual += res["actual_revenue"] * rate
+            # A branch counts as "on KPI" for a month only once someone set a
+            # target or typed an actual. Without either, the figure is whatever
+            # Cloudbeds happens to hold for a period nobody was tracking — real
+            # enough to show, not solid enough to move a year-on-year % off.
+            if t > 0 or res["is_override"]:
+                has_kpi = True
+            if res["is_override"]:
+                is_override = True
+        return {
+            "target": target,
+            "actual": actual,
+            "hit_pct": round(actual / target * 100, 1) if target > 0 else None,
+            "is_override": is_override,
+            "has_kpi": has_kpi,
+            "in_basis": month <= cutoff,
+        }
+
+    def with_deltas(by_year: dict) -> dict:
+        return chain_year_deltas(year_list, by_year)
+
+    months = []
+    totals_acc = {
+        y: {"target": 0.0, "actual": 0.0, "has_kpi": False,
+            "is_override": False, "in_basis": True}
+        for y in year_list
+    }
+    for mo in range(1, 13):
+        by_year = {y: cell(y, mo) for y in year_list}
+        for y in year_list:
+            c = by_year[y]
+            if not c["in_basis"]:
+                continue
+            acc = totals_acc[y]
+            acc["target"] += c["target"]
+            acc["actual"] += c["actual"]
+            acc["has_kpi"] = acc["has_kpi"] or c["has_kpi"]
+            acc["is_override"] = acc["is_override"] or c["is_override"]
+        months.append({"month": mo, "years": with_deltas(by_year)})
+
+    for y in year_list:
+        acc = totals_acc[y]
+        acc["hit_pct"] = (
+            round(acc["actual"] / acc["target"] * 100, 1) if acc["target"] > 0 else None
+        )
+
+    return _envelope({
+        "years": year_list,
+        "basis": effective_basis,
+        "requested_basis": basis,
+        "cutoff_month": cutoff,
+        "scope": {
+            "mode": "branch" if single else "group",
+            "branch_id": str(single.id) if single else None,
+            "branch_name": single.name if single else "All branches",
+            "currency": currency,
+        },
+        "months": months,
+        "totals": with_deltas(totals_acc),
     })
 
 
