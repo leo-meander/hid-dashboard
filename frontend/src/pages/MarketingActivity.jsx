@@ -11,10 +11,12 @@ import {
   getCRMRatePlanDetail,
   getRatePlanCampaigns,
   saveRatePlanCampaign,
+  getMarketingRoasTrend,
 } from "../api/marketingActivity";
 import { getEmailSummary, getEmailByCampaign } from "../api/emailMarketing";
 import SeasonalCampaignTab from "../components/SeasonalCampaignTab";
 import ComparisonMatrix from "../components/ComparisonMatrix";
+import RoasTrendChart from "../components/RoasTrendChart";
 
 // Map HiD branch name to GHL location name (5 branches × different naming)
 function branchToGHL(branchName) {
@@ -136,6 +138,19 @@ export default function MarketingActivity() {
     placeholderData: keepPreviousData,
   });
 
+  // Month-by-month ROAS behind the YTD totals. Only the YTD view asks for it,
+  // so the Monthly view never pays for a request it wouldn't draw.
+  const trendEnabled = viewMode === "ytd";
+  const { data: trend, isPending: trendPending } = useQuery({
+    queryKey: ["marketing-roas-trend", selected, isAll, ytdYear],
+    queryFn: () => getMarketingRoasTrend({
+      ...(isAll || !selected ? {} : { branch_id: selected }),
+      year: ytdYear,
+    }),
+    enabled: trendEnabled,
+    placeholderData: keepPreviousData,
+  });
+
   const cur = isAll ? "VND" : (data?.currency || branchCurrency || "VND");
   const overview = data?.overview;
   const prevOverview = data?.prev_overview;
@@ -227,7 +242,13 @@ export default function MarketingActivity() {
         <div className="text-center text-gray-400 py-16 text-sm">No data available</div>
       ) : (
         <div className={"transition-opacity duration-150 " + (isPlaceholderData ? "opacity-40 pointer-events-none" : "")}>
-          {tab === "overview" && <OverviewTab overview={overview} prevOverview={prevOverview} prevLabel={prevLabel} cur={cur} isYtd={viewMode === "ytd"} ytdYear={ytdYear} />}
+          {tab === "overview" && (
+            <OverviewTab
+              overview={overview} prevOverview={prevOverview} prevLabel={prevLabel} cur={cur}
+              isYtd={viewMode === "ytd"} ytdYear={ytdYear}
+              trend={trend} trendPending={trendEnabled && trendPending}
+            />
+          )}
           {tab === "crm-rate-plans" && <CRMRatePlansTab rows={crmRatePlans} cur={cur} month={viewMode === "ytd" ? currentMonthStr : month} queryParams={queryParams} />}
         </div>
       )}
@@ -236,7 +257,7 @@ export default function MarketingActivity() {
 }
 
 /* ── Overview Tab ──────────────────────────────────────────────────────────── */
-function OverviewTab({ overview, prevOverview, prevLabel, cur, isYtd, ytdYear }) {
+function OverviewTab({ overview, prevOverview, prevLabel, cur, isYtd, ytdYear, trend, trendPending }) {
   if (!overview) return null;
   const { paid_ads, kol, crm, total } = overview;
   const prev = prevOverview?.total;
@@ -254,6 +275,15 @@ function OverviewTab({ overview, prevOverview, prevLabel, cur, isYtd, ytdYear })
         <KPICard label={`Total Cost (${cur})`} value={fmtNum(total.cost)} prev={prev?.cost} prevLabel={prevLabel} />
         <KPICard label="Blended ROAS" value={total.roas ? total.roas.toFixed(2) + "x" : "—"} />
       </div>
+
+      {isYtd && (
+        <RoasTrendChart
+          months={trend?.months || []}
+          cur={trend?.currency || cur}
+          year={ytdYear}
+          isPending={trendPending}
+        />
+      )}
 
       <div className="bg-white rounded-lg border overflow-hidden">
         <table className="w-full text-sm">
