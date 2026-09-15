@@ -36,7 +36,11 @@ from app.models.reservation import Reservation
 from app.models.seasonal_campaign import SeasonalCampaign
 from app.routers.marketing_budget import ActualsCache, _get_rate_to_vnd, _vnd_to_native
 from app.services.ads_platform import branch_slug_for, get_client as _get_ads_client
-from app.services.crm_filters import crm_rate_plan_label_expr, crm_reservation_filter
+from app.services.crm_filters import (
+    crm_rate_plan_label_expr,
+    crm_rate_plan_value_expr,
+    crm_reservation_filter,
+)
 from app.services.kol_engine import fetch_kol_revenue, resolve_hotel_id_from_branch_name
 from app.services.rate_plan_campaigns import campaign_map, label_rows
 from app.services.seasonal_campaigns import (
@@ -644,6 +648,279 @@ def _build_crm_by_rate_plan(db: Session, branch_id: Optional[UUID], d_from: date
 
     result.sort(key=lambda x: -x["revenue"])
     return result
+
+
+# ── CRM rate plan drill-down ─────────────────────────────────────────────────
+#
+# Opens one row of the CRM-by-rate-plan table. The headline numbers are built
+# from exactly the rows that table counted (same window, same status and source
+# exclusions) so the two never disagree; the status mix is deliberately built
+# from the UNfiltered set, because "how many of these cancelled" is the whole
+# reason to look at status and the table row can never show it.
+
+_AGE_BUCKETS = ("<25", "25-34", "35-44", "45-54", "55+")
+
+
+def _crm_row_exclusion(status: Optional[str], source: Optional[str]) -> Optional[str]:
+    """Why the table would drop this row, or None when it counts it.
+
+    The Python twin of ``_status_filter()`` and ``_revenue_source_filter()``,
+    reading the same two constant sets. It exists so the drill-down can report
+    the dropped rows instead of merely not selecting them — and so a change to
+    either exclusion rule cannot move the table without moving this too.
+    """
+    if (status or "").strip().lower() in _EXCLUDED_STATUSES:
+        return "cancelled"
+    if (source or "").strip().lower() in _EXCLUDED_SOURCES:
+        return "non_paying_source"
+    return None
+
+
+def _age_on(dob: Optional[date], on_date: Optional[date]) -> Optional[int]:
+    """Age in whole years at `on_date` (check-in), or None when unknowable."""
+    if not dob or not on_date:
+        return None
+    years = on_date.year - dob.year - ((on_date.month, on_date.day) < (dob.month, dob.day))
+    # Cloudbeds carries placeholder birthdates (year 1900, or a date after the
+    # stay). Treat an implausible age as missing rather than charting it.
+    if years < 0 or years > 120:
+        return None
+    return years
+
+
+def _age_bucket(age: Optional[int]) -> Optional[str]:
+    if age is None:
+        return None
+    if age < 25:
+        return "<25"
+    if age < 35:
+        return "25-34"
+    if age < 45:
+        return "35-44"
+    if age < 55:
+        return "45-54"
+    return "55+"
+
+
+def _num_stats(vals: list) -> dict:
+    if not vals:
+        return {"count": 0, "avg": 0, "median": 0, "min": 0, "max": 0}
+    ordered = sorted(vals)
+    n = len(ordered)
+    mid = n // 2
+    median = ordered[mid] if n % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+    return {
+        "count": n,
+        "avg": round(sum(ordered) / n, 2),
+        "median": round(median, 2),
+        "min": ordered[0],
+        "max": ordered[-1],
+    }
+
+
+def _counter_rows(counter: dict, key_name: str, top: Optional[int] = None) -> list:
+    rows = sorted(counter.values(), key=lambda x: (-x["bookings"], -x["revenue"]))
+    if top:
+        rows = rows[:top]
+    return rows
+
+
+def _bump_counter(counter: dict, key, key_name: str, revenue: float, **extra) -> dict:
+    row = counter.get(key)
+    if row is None:
+        row = {key_name: key, "bookings": 0, "revenue": 0.0, **extra}
+        counter[key] = row
+    row["bookings"] += 1
+    row["revenue"] += revenue
+    return row
+
+
+@router.get("/crm-rate-plan-detail")
+def crm_rate_plan_detail(
+    rate_plan: str = Query(..., min_length=1, description="Exact rate plan label from the table"),
+    branch_id: Optional[UUID] = Query(None),
+    month: Optional[str] = Query(None, description="YYYY-MM; ignored when date_from/date_to given"),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Who books one CRM rate plan: status, country, demographics, stay shape."""
+    try:
+        if date_from and date_to:
+            d_from = datetime.fromisoformat(date_from).date()
+            d_to = datetime.fromisoformat(date_to).date()
+        else:
+            d_from, d_to = _month_range(month or f"{date.today().year}-{date.today().month:02d}")
+
+        use_native = branch_id is not None
+        rev_col = Reservation.grand_total_native if use_native else Reservation.grand_total_vnd
+
+        q = (
+            db.query(
+                Reservation.status,
+                Reservation.source,
+                Reservation.source_category,
+                Reservation.guest_country,
+                Reservation.guest_country_code,
+                Reservation.gender,
+                Reservation.date_of_birth,
+                Reservation.room_type,
+                Reservation.room_type_category,
+                Reservation.nights,
+                Reservation.adults,
+                Reservation.check_in_date,
+                Reservation.reservation_date,
+                rev_col.label("revenue"),
+                Branch.name.label("branch_name"),
+            )
+            .outerjoin(Branch, Branch.id == Reservation.branch_id)
+            .filter(
+                crm_reservation_filter(),
+                crm_rate_plan_value_expr() == rate_plan,
+                Reservation.reservation_date >= d_from,
+                Reservation.reservation_date <= d_to,
+            )
+        )
+        if branch_id:
+            q = q.filter(Reservation.branch_id == branch_id)
+
+        rows = q.all()
+
+        status_counter: dict = {}
+        country: dict = {}
+        gender: dict = {}
+        age: dict = {}
+        source: dict = {}
+        branch: dict = {}
+        room: dict = {}
+        nights_vals: list = []
+        adults_vals: list = []
+        lead_vals: list = []
+        adr_vals: list = []
+
+        bookings = 0
+        revenue_total = 0.0
+        nights_total = 0
+        guests_total = 0
+        excluded_cancelled = 0
+        excluded_source = 0
+        gender_known = 0
+        age_known = 0
+        first_stay = last_stay = None
+
+        for r in rows:
+            rev = float(r.revenue or 0)
+            dropped = _crm_row_exclusion(r.status, r.source)
+            is_cancelled = dropped == "cancelled"
+            is_nonpaying = dropped == "non_paying_source"
+
+            # Status mix covers every row, including the ones the table drops —
+            # that is the only place the cancellations are visible at all.
+            _bump_counter(status_counter, (r.status or "Unknown").strip() or "Unknown",
+                          "status", rev, cancelled=is_cancelled)
+
+            if is_cancelled:
+                excluded_cancelled += 1
+                continue
+            if is_nonpaying:
+                excluded_source += 1
+                continue
+
+            bookings += 1
+            revenue_total += rev
+            n = int(r.nights or 0)
+            nights_total += n
+            guests_total += int(r.adults or 0)
+
+            if r.check_in_date:
+                if first_stay is None or r.check_in_date < first_stay:
+                    first_stay = r.check_in_date
+                if last_stay is None or r.check_in_date > last_stay:
+                    last_stay = r.check_in_date
+
+            country_name = (r.guest_country or "").strip() or "Unknown"
+            crow = _bump_counter(country, country_name, "country", rev, country_code=None)
+            if not crow.get("country_code") and r.guest_country_code:
+                crow["country_code"] = r.guest_country_code
+
+            g = (r.gender or "").strip().upper()
+            if g in ("M", "F"):
+                gender_known += 1
+                label = "Male" if g == "M" else "Female"
+            else:
+                label = "Unknown"
+            _bump_counter(gender, label, "gender", rev)
+
+            bucket = _age_bucket(_age_on(r.date_of_birth, r.check_in_date))
+            if bucket:
+                age_known += 1
+            _bump_counter(age, bucket or "Unknown", "bucket", rev)
+
+            _bump_counter(source, (r.source or "Unknown").strip() or "Unknown", "source", rev,
+                          category=r.source_category)
+            _bump_counter(branch, r.branch_name or "Unknown", "branch", rev)
+            _bump_counter(room, (r.room_type or "Unknown").strip() or "Unknown", "room_type", rev,
+                          category=r.room_type_category)
+
+            if n > 0:
+                nights_vals.append(n)
+                if rev > 0:
+                    adr_vals.append(rev / n)
+            if r.adults:
+                adults_vals.append(int(r.adults))
+            if r.reservation_date and r.check_in_date:
+                delta = (r.check_in_date - r.reservation_date).days
+                if delta >= 0:
+                    lead_vals.append(delta)
+
+        total_rows = len(rows)
+        return _envelope({
+            "rate_plan_name": rate_plan,
+            "currency": "VND" if not use_native else None,
+            "period": {"from": d_from.isoformat(), "to": d_to.isoformat()},
+            # Reconciles with the table row it opened.
+            "headline": {
+                "bookings": bookings,
+                "nights": nights_total,
+                "revenue": revenue_total,
+                "adr": round(revenue_total / nights_total, 2) if nights_total else 0,
+                "guests": guests_total,
+            },
+            "excluded": {
+                "cancelled": excluded_cancelled,
+                "non_paying_source": excluded_source,
+                "total_rows": total_rows,
+                # Of every booking ever made on this plan in the window.
+                "cancel_rate": round(excluded_cancelled / total_rows * 100, 1) if total_rows else 0,
+            },
+            "by_status": sorted(status_counter.values(), key=lambda x: -x["bookings"]),
+            "by_country": _counter_rows(country, "country", top=15),
+            "by_gender": _counter_rows(gender, "gender"),
+            "by_age": sorted(
+                age.values(),
+                key=lambda x: _AGE_BUCKETS.index(x["bucket"]) if x["bucket"] in _AGE_BUCKETS else len(_AGE_BUCKETS),
+            ),
+            "by_source": _counter_rows(source, "source", top=12),
+            "by_branch": _counter_rows(branch, "branch"),
+            "by_room_type": _counter_rows(room, "room_type", top=12),
+            # Demographics are backfilled per guest and are far from complete,
+            # so the UI must be able to say how much of the split is real.
+            "coverage": {
+                "gender_known": gender_known,
+                "age_known": age_known,
+                "of_bookings": bookings,
+            },
+            "nights_stats": _num_stats(nights_vals),
+            "adults_stats": _num_stats(adults_vals),
+            "lead_time_stats": _num_stats(lead_vals),
+            "adr_stats": _num_stats(adr_vals),
+            "first_stay": first_stay.isoformat() if first_stay else None,
+            "last_stay": last_stay.isoformat() if last_stay else None,
+        })
+    except Exception as e:
+        log.exception("crm_rate_plan_detail failed")
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 # ── Rate plan → campaign labels (hand-typed) ─────────────────────────────────

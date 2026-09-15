@@ -7,6 +7,12 @@ export const getMarketingActivitySummary = (params = {}) =>
 export const getCRMBranchComparison = (params = {}) =>
   axios.get(`${BASE}/crm-branch-comparison`, { params }).then(r => r.data.data);
 
+// One rate plan's guests — status mix, countries, demographics, stay shape.
+// Takes the same window/branch params as the summary so the drill-down and the
+// row it opened describe the same reservations.
+export const getCRMRatePlanDetail = (params = {}) =>
+  axios.get(`${BASE}/crm-rate-plan-detail`, { params }).then(r => r.data.data);
+
 // Hand-typed rate plan → campaign labels, shown next to Rate Plan Name on the
 // CRM Reservations tab. Returns a flat { [rate_plan_name]: campaign_name } map.
 export const getRatePlanCampaigns = () =>
