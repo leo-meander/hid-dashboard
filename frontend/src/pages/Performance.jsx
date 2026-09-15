@@ -549,10 +549,18 @@ function BranchCells({ data, currency, isTotal, month, onSave }) {
 //: Four columns is what still fits on a laptop screen; the API allows more.
 const MAX_YEARS = 4;
 
+//: Earliest year the KPI table will offer. 2025 is the first year with
+//  targets and signed-off actuals; before it `daily_metrics` holds rows for
+//  branches that had not opened — Oani reads an identical 0.56M TWD every
+//  month of 2024 — so those years are history to nobody and are not offered.
+const FIRST_KPI_YEAR = 2025;
+
 /** Toggle chips. The current year cannot be the one that gets switched off
  *  into an empty selection — there is always at least one year on. */
 function YearPicker({ years, onChange, currentYear }) {
-  const options = [3, 2, 1, 0].map((back) => currentYear - back);
+  // Grows by one chip a year on its own; no list to come back and extend.
+  const options = [];
+  for (let y = Math.min(FIRST_KPI_YEAR, currentYear); y <= currentYear; y++) options.push(y);
   const toggle = (y) => {
     if (years.includes(y)) {
       if (years.length === 1) return;
