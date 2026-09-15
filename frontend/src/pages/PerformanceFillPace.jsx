@@ -124,6 +124,28 @@ function money(v, currency) {
   return `${currency} ${nf.format(n)}`;
 }
 
+/**
+ * Money at a glance. 77,814,114,009₫ is unreadable in a headline and the
+ * digits past the second one are noise at this scale, so the card rounds to a
+ * suffix and keeps the exact figure for the line underneath it.
+ */
+function shortMoney(v, currency) {
+  if (v === null || v === undefined) return "—";
+  const n = Math.abs(v);
+  const sign = v < 0 ? "-" : "";
+  const unit = currency === "VND" ? "₫" : currency ? `${currency} ` : "";
+  const body = (value, suffix) => {
+    const shown = value >= 100 ? Math.round(value) : value.toFixed(1).replace(/\.0$/, "");
+    return `${shown}${suffix}`;
+  };
+  let out;
+  if (n >= 1e9) out = body(n / 1e9, "B");
+  else if (n >= 1e6) out = body(n / 1e6, "M");
+  else if (n >= 1e3) out = body(n / 1e3, "K");
+  else out = String(Math.round(n));
+  return currency === "VND" ? `${sign}${out}${unit}` : `${sign}${unit}${out}`;
+}
+
 function toneFor(v, deadband = 0) {
   if (v === null || v === undefined) return "text-gray-400";
   if (v > deadband) return "text-emerald-600";
@@ -524,6 +546,434 @@ function PaceTable({ title, subtitle, rows, nameKey, nameLabel, currency, compar
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+// ── forecast ─────────────────────────────────────────────────────────────────
+
+/**
+ * Where the selected months land if they keep filling the way they are, and
+ * what that is against the target.
+ *
+ * The arithmetic is one line — what is on the books, plus what last year still
+ * had to come from this same distance out — and it is stated on the card
+ * rather than left in the service, because a projection nobody can reconstruct
+ * is a projection nobody should act on. Everything that weakens it is on the
+ * card too: months borrowed from a neighbour, months pinned to the ceiling,
+ * and the measured error the range comes from.
+ */
+function ForecastCard({ data, oneMonth }) {
+  const f = data.forecast;
+  if (!f?.available) return null;
+  const t = f.total;
+
+  const runRate = t.run_rate_months || [];
+  const missing = t.unforecastable || [];
+  const unpriced = t.unpriced || [];
+  const nameMonth = (m) => `${m.branch_name} ${monthLabel(m.stay_month)}`;
+  const moneyCurrency = t.currency || "VND";
+  const lowHit = t.currency ? t.achievement_low_pct : t.achievement_low_vnd_pct;
+  const highHit = t.currency ? t.achievement_high_pct : t.achievement_high_vnd_pct;
+  const money_ = (v) => money(v, moneyCurrency);
+  const revenue = t.currency ? t.revenue_native : t.revenue_vnd;
+  const target = t.currency ? t.target_native : t.target_vnd;
+  const hit = t.currency ? t.achievement_pct : t.achievement_vnd_pct;
+  const gap = revenue === null || revenue === undefined || !target
+    ? null : revenue - target;
+
+  if (t.room_nights === null) {
+    return (
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900">
+        <div className="font-semibold">No pace forecast for this selection</div>
+        <div className="mt-1 opacity-90">
+          {missing.length
+            ? `${missing.map(nameMonth).join(", ")} ${missing.length === 1 ? "has" : "have"} no
+               year-ago month to read a finish from and no settled months of ${
+                 missing.length === 1 ? "its" : "their"
+               } own to hold a rate from. Nothing is borrowed from another branch to fill
+               that in — a 69-room hostel's October says nothing reliable about a 92-room
+               hotel's.`
+            : "Nothing in this selection has a month to read a finish from."}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold text-gray-800">
+          Where {oneMonth ? "it lands" : "they land"}
+        </h2>
+        <span className="text-xs text-gray-400">
+          on the books + what last year still had to come from here
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-3">
+        {/* The question this card is asked. Occupancy is how it gets there. */}
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            Revenue vs target
+          </div>
+          <div className={`text-3xl font-bold mt-1 tabular-nums ${
+            hit === null || hit === undefined ? "text-gray-900"
+              : hit >= 100 ? "text-emerald-600" : "text-red-600"}`}>
+            {hit === null || hit === undefined ? "—" : `${hit.toFixed(0)}%`}
+          </div>
+          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
+            {lowHit === null || lowHit === undefined
+              ? "of target"
+              : `${lowHit.toFixed(0)}–${highHit.toFixed(0)}% of target`}
+          </div>
+          <div className="text-xs text-gray-400 mt-1 leading-snug">
+            {revenue === null || revenue === undefined
+              ? "No year-ago rate to price the nights still to come, so this is left unpriced rather than guessed at."
+              : "Nights still to come priced at last year's rate for the same month, moved by this year's own rate trend. Nights already sold keep what they sold for."}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            {gap === null ? "Revenue projected" : gap >= 0 ? "Ahead by" : "Short by"}
+          </div>
+          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
+            {gap === null ? shortMoney(revenue, moneyCurrency) : shortMoney(Math.abs(gap), moneyCurrency)}
+          </div>
+          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
+            {revenue === null || revenue === undefined
+              ? "nothing to price"
+              : `${shortMoney(revenue, moneyCurrency)} of ${shortMoney(target, moneyCurrency)} target`}
+          </div>
+          <div className="text-xs text-gray-400 mt-1 leading-snug">
+            {money_(revenue)}
+            {target ? ` against ${money_(target)}` : ""}
+            {t.months_counted < t.months_in_scope
+              && `. Covers ${t.months_counted} of ${t.months_in_scope} branch-months in scope.`}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            Finishes at
+          </div>
+          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
+            {t.occ_pct === null ? nights(t.room_nights) : occ(t.occ_pct)}
+          </div>
+          <div className={`text-sm mt-0.5 tabular-nums ${toneFor(t.occ_pts_vs_ly, 0.5)}`}>
+            {gapLabel(t.occ_pts_vs_ly)}
+          </div>
+          <div className="text-xs text-gray-400 mt-1 leading-snug">
+            {t.occ_pct === null
+              ? `${nights(t.room_nights_low)}–${nights(t.room_nights_high)} room-nights. `
+              : `${occ(t.occ_pct_low)}–${occ(t.occ_pct_high)}, from ${nights(t.otb_room_nights)} sold so far. `}
+            Last year finished at {occ(t.ly_final_occ_pct)}. The range is the measured error of
+            this method, not a guess at one: {f.band.low_pct.toFixed(0)}% to
+            +{f.band.high_pct.toFixed(0)}% across the settled months it was tested on.
+          </div>
+        </div>
+      </div>
+
+      {/* Per month, because a quarter that clears its target routinely hides a
+          month that does not. */}
+      {f.months.length > 1 && (
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-gray-500 border-b border-gray-200">
+                <th className="text-left font-medium py-1.5">Month</th>
+                <th className="text-right font-medium">On the books</th>
+                <th className="text-right font-medium">Finishes at</th>
+                <th className="text-right font-medium">Last year</th>
+                <th className="text-right font-medium">vs target</th>
+              </tr>
+            </thead>
+            <tbody>
+              {f.months.map((m) => {
+                const mHit = m.currency ? m.achievement_pct : m.achievement_vnd_pct;
+                return (
+                  <tr key={m.stay_month} className="border-b border-gray-100 last:border-0">
+                    <td className="py-1.5 text-gray-700">
+                      {monthLabel(m.stay_month)}
+                      <span className="text-xs text-gray-400 ml-1.5">{m.days_out}d out</span>
+                    </td>
+                    <td className="text-right tabular-nums text-gray-500">
+                      {m.occ_pct === null ? nights(m.otb_room_nights) : occ(
+                        m.available_room_nights
+                          ? (m.otb_room_nights / m.available_room_nights) * 100
+                          : null)}
+                    </td>
+                    <td className="text-right tabular-nums font-medium text-gray-900">
+                      {m.occ_pct === null ? nights(m.room_nights) : occ(m.occ_pct)}
+                    </td>
+                    <td className="text-right tabular-nums text-gray-500">
+                      {m.ly_final_occ_pct === null
+                        ? nights(m.ly_final_room_nights)
+                        : occ(m.ly_final_occ_pct)}
+                    </td>
+                    <td className={`text-right tabular-nums ${toneFor(
+                      mHit === null || mHit === undefined ? null : mHit - 100, 2)}`}>
+                      {mHit === null || mHit === undefined ? "—" : `${mHit.toFixed(0)}%`}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Everything that makes the number above weaker than it looks. Kept on
+          the card rather than in a tooltip: a projection reads as fact, and
+          the reasons it might not be are what stop it doing so. */}
+      <ul className="mt-3 space-y-1 text-xs text-gray-500 leading-snug">
+        {runRate.length > 0 && (
+          <li>
+            <span className="font-medium text-amber-700">Held at this year's run rate: </span>
+            {runRate.map(nameMonth).join(", ")}{" "}
+            {runRate.length === 1 ? "has" : "have"} no year-ago month worth reading — a branch
+            that had not opened, or one whose year-ago month never traded normally. Nothing is
+            borrowed from another branch to fill that in; {runRate.length === 1 ? "it is" : "they are"}{" "}
+            projected at the occupancy {runRate.length === 1 ? "it has" : "they have"} actually
+            been running this year ({runRate.map((m) => occ(m.occ_pct)).join(", ")}), which
+            carries no seasonality at all — and Q4 is not August.
+          </li>
+        )}
+        {unpriced.length > 0 && (
+          <li>
+            <span className="font-medium text-amber-700">Not priced: </span>
+            {unpriced.map(nameMonth).join(", ")} had no year-ago rate to price the nights still
+            to come at. {unpriced.length === 1 ? "Its" : "Their"} nights are counted above;{" "}
+            {unpriced.length === 1 ? "its" : "their"} revenue is not, and neither is the target
+            it would have been read against.
+          </li>
+        )}
+        {t.capacity_capped && (
+          <li>
+            <span className="font-medium text-amber-700">At the ceiling: </span>
+            the projection ran past what the house holds and was pinned to 95% occupancy. Read
+            those months as "sells out or close to it", not as a number.
+          </li>
+        )}
+        {missing.length > 0 && (
+          <li>
+            <span className="font-medium text-amber-700">Not counted: </span>
+            {missing.map(nameMonth).join(", ")} could not be projected from anything of{" "}
+            {missing.length === 1 ? "its" : "their"} own, so the totals leave{" "}
+            {missing.length === 1 ? "it" : "them"} out — along with{" "}
+            {missing.length === 1 ? "its" : "their"} rooms and{" "}
+            {missing.length === 1 ? "its" : "their"} target, so the percentages above stay
+            like-for-like.
+          </li>
+        )}
+        {t.available_room_nights === null && (
+          <li>
+            A source filter is on, so this projects that source alone. Occupancy is left blank:
+            the rest of the house is being filled by everyone else.
+          </li>
+        )}
+        <li>
+          Cancellations are the known lean in this: today's book is gross of the ones still to
+          come, last year's finish is net of the ones that already did, so the projection sits a
+          little high by construction.
+        </li>
+      </ul>
+    </div>
+  );
+}
+
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function monthSpan(months) {
+  if (!months?.length) return "";
+  return months.length === 1
+    ? MONTH_ABBR[months[0] - 1]
+    : `${MONTH_ABBR[months[0] - 1]}–${MONTH_ABBR[months[months.length - 1] - 1]}`;
+}
+
+/**
+ * Does the YEAR clear its revenue target — the question the stay-month picker
+ * above cannot answer, because eight of the twelve months are behind us and
+ * none of them are in the selection.
+ *
+ * Deliberately not wired to the picker. Its scope is the calendar year and
+ * nothing else, so it says so in its own header rather than moving under
+ * someone who changed the stay month to December.
+ *
+ * The two halves are never merged into one number without being named: "we
+ * have earned 79% of the year's target" and "we are on course for 96% of it"
+ * are different claims, and only the second is a forecast.
+ */
+function YearOutlook({ branchId }) {
+  const { data, isPending, isError } = useQuery({
+    queryKey: ["kpi-pace-forecast", branchId || "all"],
+    queryFn: () => axios
+      .get(`/api/kpi/pace-forecast${branchId ? `?branch_id=${branchId}` : ""}`)
+      .then((r) => r.data.data),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  if (isPending) {
+    return (
+      <div className="bg-white border border-gray-200 rounded-xl p-4 text-sm text-gray-500 animate-pulse">
+        Working out where the year lands…
+      </div>
+    );
+  }
+  if (isError || !data?.available) return null;
+
+  const t = data.total;
+  const single = data.branches.length === 1 ? data.branches[0] : null;
+  const cur = single ? single.currency : "VND";
+  const val = (row, nativeKey, vndKey) => (single ? row[nativeKey] : t[vndKey]);
+  const projection = single ? single.projection_native : t.projection_vnd;
+  const target = single ? single.target_native : t.target_vnd;
+  const banked = single ? single.actual_to_date_native : t.actual_to_date_vnd;
+  const toCome = single ? single.forecast_remaining_native : t.forecast_remaining_vnd;
+  const hit = single ? single.achievement_pct : t.achievement_pct;
+  const low = single ? single.achievement_low_pct : t.achievement_low_pct;
+  const high = single ? single.achievement_high_pct : t.achievement_high_pct;
+  const gap = projection - target;
+  const q4Hit = single ? single.q4_achievement_pct : t.q4_achievement_pct;
+  const bankedPct = target ? (banked / target) * 100 : null;
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold text-gray-800">
+          Does {data.year} hit its revenue target?
+        </h2>
+        <span className="text-xs text-gray-400">
+          the whole year, whatever the stay month above is set to
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mt-3">
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            Full year on this pace
+          </div>
+          <div className={`text-3xl font-bold mt-1 tabular-nums ${
+            hit === null ? "text-gray-900" : hit >= 100 ? "text-emerald-600" : "text-red-600"}`}>
+            {hit === null ? "—" : `${hit.toFixed(0)}%`}
+          </div>
+          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
+            {low === null ? "of target" : `${low.toFixed(0)}–${high.toFixed(0)}% of target`}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            {gap >= 0 ? "Ahead by" : "Short by"}
+          </div>
+          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
+            {shortMoney(Math.abs(gap), cur)}
+          </div>
+          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
+            {shortMoney(projection, cur)} of {shortMoney(target, cur)}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            Banked · {monthSpan(data.settled_months)}
+          </div>
+          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
+            {shortMoney(banked, cur)}
+          </div>
+          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
+            {bankedPct === null ? "already earned" : `${bankedPct.toFixed(0)}% of the year's target, already earned`}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            Still to sell · {monthSpan(data.projected_months)}
+          </div>
+          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
+            {shortMoney(toCome, cur)}
+          </div>
+          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
+            {q4Hit === null || q4Hit === undefined
+              ? "Q4 not fully projected"
+              : `Q4 alone lands at ${q4Hit.toFixed(0)}% of its target`}
+          </div>
+        </div>
+      </div>
+
+      {!single && (
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-gray-500 border-b border-gray-200">
+                <th className="text-left font-medium py-1.5">Branch</th>
+                <th className="text-right font-medium">Banked</th>
+                <th className="text-right font-medium">Still to sell</th>
+                <th className="text-right font-medium">Full year</th>
+                <th className="text-right font-medium">Target</th>
+                <th className="text-right font-medium">Gap</th>
+                <th className="text-right font-medium">Year</th>
+                <th className="text-right font-medium">Q4</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.branches.map((b) => (
+                <tr key={b.branch_id} className="border-b border-gray-100 last:border-0">
+                  <td className="py-1.5 text-gray-700">
+                    {b.branch_name}
+                    <span className="text-xs text-gray-400 ml-1.5">{b.currency}</span>
+                  </td>
+                  <td className="text-right tabular-nums text-gray-500">
+                    {shortMoney(b.actual_to_date_native, b.currency)}
+                  </td>
+                  <td className="text-right tabular-nums text-gray-500">
+                    {shortMoney(b.forecast_remaining_native, b.currency)}
+                  </td>
+                  <td className="text-right tabular-nums font-medium text-gray-900">
+                    {shortMoney(b.projection_native, b.currency)}
+                  </td>
+                  <td className="text-right tabular-nums text-gray-500">
+                    {shortMoney(b.target_native, b.currency)}
+                  </td>
+                  <td className={`text-right tabular-nums ${toneFor(b.gap_native, 0)}`}>
+                    {b.gap_native >= 0 ? "+" : "−"}{shortMoney(Math.abs(b.gap_native), b.currency)}
+                  </td>
+                  <td className={`text-right tabular-nums font-medium ${
+                    b.achievement_pct === null ? "text-gray-400"
+                      : b.achievement_pct >= 100 ? "text-emerald-600" : "text-red-600"}`}>
+                    {b.achievement_pct === null ? "—" : `${b.achievement_pct.toFixed(0)}%`}
+                  </td>
+                  <td className={`text-right tabular-nums ${
+                    b.q4_achievement_pct === null ? "text-gray-400"
+                      : b.q4_achievement_pct >= 100 ? "text-emerald-600" : "text-red-600"}`}>
+                    {b.q4_achievement_pct === null ? "—" : `${b.q4_achievement_pct.toFixed(0)}%`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="text-xs text-gray-500 mt-3 leading-snug">
+        {monthSpan(data.settled_months)} counted as {data.settled_months.length === 1 ? "it" : "they"}{" "}
+        happened — the same figure the KPI grid shows, accounting overrides included.{" "}
+        {monthSpan(data.projected_months)} projected from booking pace, the month underway
+        included, because a month two weeks old still has most of its revenue ahead of it.
+        {data.branches.some((b) => b.months_not_projected.length > 0) && (
+          <>
+            {" "}
+            {data.branches
+              .filter((b) => b.months_not_projected.length > 0)
+              .map((b) => `${b.branch_name} (${b.months_not_projected.map((m) => MONTH_ABBR[m - 1]).join(", ")})`)
+              .join(", ")}{" "}
+            could not be projected, so those months are out of both the projection and the
+            target it is read against.
+          </>
+        )}
+      </p>
     </div>
   );
 }
@@ -973,6 +1423,10 @@ export default function PerformanceFillPace() {
             on the books is everything sold so far, and the year-ago figures are the same date
             counted back from each stay month.
           </p>
+
+          {compare && <ForecastCard data={data} oneMonth={oneMonth} />}
+
+          <YearOutlook branchId={!isAll && selected ? selected : null} />
 
           {/* The speed. The cumulative curve that used to sit above this was
               dropped: a line that only ever rises said less about pace than
