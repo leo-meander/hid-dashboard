@@ -530,16 +530,6 @@ function PaceTable({ title, subtitle, rows, nameKey, nameLabel, currency, compar
 
 // ── forecast ─────────────────────────────────────────────────────────────────
 
-const BASIS_LABEL = {
-  ly_pickup: "its own month last year",
-  proxy: "the same city",
-  proxy_other_market: "another market",
-  proxy_level: "the market it is opening into",
-  proxy_other_market_level: "another market",
-  actual: "the month itself, already over",
-  no_base: "nothing to read it from",
-};
-
 /**
  * Where the selected months land if they keep filling the way they are, and
  * what that is against the target.
@@ -556,8 +546,10 @@ function ForecastCard({ data, oneMonth }) {
   if (!f?.available) return null;
   const t = f.total;
 
-  const proxied = t.proxy_months || [];
+  const runRate = t.run_rate_months || [];
   const missing = t.unforecastable || [];
+  const unpriced = t.unpriced || [];
+  const nameMonth = (m) => `${m.branch_name} ${monthLabel(m.stay_month)}`;
   const money_ = (v) => (t.currency ? money(v, t.currency) : money(v, "VND"));
   const revenue = t.currency ? t.revenue_native : t.revenue_vnd;
   const target = t.currency ? t.target_native : t.target_vnd;
@@ -569,12 +561,13 @@ function ForecastCard({ data, oneMonth }) {
         <div className="font-semibold">No pace forecast for this selection</div>
         <div className="mt-1 opacity-90">
           {missing.length
-            ? `${missing.map((m) => `${m.branch_name} ${monthLabel(m.stay_month)}`).join(", ")} ${
-                missing.length === 1 ? "has" : "have"
-              } no year-ago month to read a finish from, and nothing comparable in
-               the selection to borrow one from. Adding a branch that was trading a
-               year ago gives the projection something to stand on.`
-            : "Nothing in this selection has a year-ago month to read a finish from."}
+            ? `${missing.map(nameMonth).join(", ")} ${missing.length === 1 ? "has" : "have"} no
+               year-ago month to read a finish from and no settled months of ${
+                 missing.length === 1 ? "its" : "their"
+               } own to hold a rate from. Nothing is borrowed from another branch to fill
+               that in — a 69-room hostel's October says nothing reliable about a 92-room
+               hotel's.`
+            : "Nothing in this selection has a month to read a finish from."}
         </div>
       </div>
     );
@@ -608,6 +601,8 @@ function ForecastCard({ data, oneMonth }) {
             {nights(t.otb_room_nights)} sold so far. The range is the measured error of this
             method, not a guess at one: {f.band.low_pct.toFixed(0)}% to +{f.band.high_pct.toFixed(0)}%
             across the settled months it was tested on.
+            {t.months_counted < t.months_in_scope
+              && ` Covers ${t.months_counted} of ${t.months_in_scope} branch-months in scope.`}
           </div>
         </div>
 
@@ -700,19 +695,25 @@ function ForecastCard({ data, oneMonth }) {
           the card rather than in a tooltip: a projection reads as fact, and
           the reasons it might not be are what stop it doing so. */}
       <ul className="mt-3 space-y-1 text-xs text-gray-500 leading-snug">
-        {proxied.length > 0 && (
+        {runRate.length > 0 && (
           <li>
-            <span className="font-medium text-amber-700">Borrowed: </span>
-            {proxied
-              .map((p) => `${p.branch_name} ${monthLabel(p.stay_month)}`)
-              .join(", ")}{" "}
-            {proxied.length === 1 ? "has" : "have"} no year-ago month worth reading — a branch
-            that had not opened, or one whose year-ago month never traded normally. Those keep
-            their own occupancy this year and borrow only the seasonal shape from{" "}
-            {BASIS_LABEL[proxied[0].basis] || "elsewhere"}
-            {proxied.some((p) => p.index_clipped)
-              ? ", and the shape they borrowed was capped where a donor's own year-ago run was disrupted enough to distort it."
-              : "."}
+            <span className="font-medium text-amber-700">Held at this year's run rate: </span>
+            {runRate.map(nameMonth).join(", ")}{" "}
+            {runRate.length === 1 ? "has" : "have"} no year-ago month worth reading — a branch
+            that had not opened, or one whose year-ago month never traded normally. Nothing is
+            borrowed from another branch to fill that in; {runRate.length === 1 ? "it is" : "they are"}{" "}
+            projected at the occupancy {runRate.length === 1 ? "it has" : "they have"} actually
+            been running this year ({runRate.map((m) => occ(m.occ_pct)).join(", ")}), which
+            carries no seasonality at all — and Q4 is not August.
+          </li>
+        )}
+        {unpriced.length > 0 && (
+          <li>
+            <span className="font-medium text-amber-700">Not priced: </span>
+            {unpriced.map(nameMonth).join(", ")} had no year-ago rate to price the nights still
+            to come at. {unpriced.length === 1 ? "Its" : "Their"} nights are counted above;{" "}
+            {unpriced.length === 1 ? "its" : "their"} revenue is not, and neither is the target
+            it would have been read against.
           </li>
         )}
         {t.capacity_capped && (
@@ -725,8 +726,12 @@ function ForecastCard({ data, oneMonth }) {
         {missing.length > 0 && (
           <li>
             <span className="font-medium text-amber-700">Not counted: </span>
-            {missing.map((m) => `${m.branch_name} ${monthLabel(m.stay_month)}`).join(", ")} could
-            not be projected at all, so the totals above leave {missing.length === 1 ? "it" : "them"} out.
+            {missing.map(nameMonth).join(", ")} could not be projected from anything of{" "}
+            {missing.length === 1 ? "its" : "their"} own, so the totals leave{" "}
+            {missing.length === 1 ? "it" : "them"} out — along with{" "}
+            {missing.length === 1 ? "its" : "their"} rooms and{" "}
+            {missing.length === 1 ? "its" : "their"} target, so the percentages above stay
+            like-for-like.
           </li>
         )}
         {t.available_room_nights === null && (

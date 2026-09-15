@@ -7,11 +7,12 @@ in the conditions around it, so that is what is asserted here.
     year-ago month that never traded normally, and the branch-month is not
     forecast from itself — Taipei opened mid-October 2025 and finished that
     month at 26%, which predicts an opening, not an October.
-  · Where the base fails, the neighbours answer instead, as points of
-    occupancy so a 92-room hotel can borrow from a 69-room one.
+  · Nothing is ever borrowed from another branch. A branch without a year-ago
+    month falls back to its own recent occupancy, or to no number at all.
   · Nothing sells more than the house holds.
   · A month already over is not forecast. It is reported.
-  · A total missing one branch is not a total.
+  · A branch that drops out takes its inventory and its target with it, or the
+    totals quietly report a partial forecast against a whole target.
 
 No database: the two lookups that need one are faked, and the arithmetic is
 the whole of what is checked.
@@ -78,30 +79,38 @@ def cell(bid="b-1948", *, year=2026, month=10, days_out=16, capacity=2139,
     }
 
 
-@pytest.fixture
-def no_money(monkeypatch):
-    """Nights only: no daily_metrics, no targets, no FX."""
-    monkeypatch.setattr(pace_forecast, "_monthly_adr", lambda *a, **k: {})
-    monkeypatch.setattr(pace_forecast, "_targets", lambda *a, **k: {})
-    monkeypatch.setattr(pace_forecast, "get_cached_rate", lambda *a, **k: 1.0)
+def _run(monkeypatch, cells, occ=None, targets=None, scoped_sources=False):
+    monkeypatch.setattr(pace_forecast, "_monthly_adr", lambda *a, **k: occ or {})
+    monkeypatch.setattr(pace_forecast, "_targets", lambda *a, **k: targets or {})
+    monkeypatch.setattr(pace_forecast, "get_cached_rate",
+                        lambda c, t="VND": {"TWD": 830.0, "JPY": 165.0}.get(c, 1.0))
+    return build_forecast(None, cells, as_of=date(2026, 9, 15),
+                          branch_meta=BRANCHES, scoped_sources=scoped_sources)
 
 
 @pytest.fixture
-def money(monkeypatch):
+def nights_only(monkeypatch):
+    """Nights only: no daily_metrics unless a test supplies some, no targets."""
+    def go(cells, **kw):
+        return _run(monkeypatch, cells, **kw)
+    return go
+
+
+@pytest.fixture
+def with_money(monkeypatch):
     """A branch that sold at 2,000 last October and is running 10% up on ADR."""
     adr = {
         ("b-1948", 2025, 10): {"revenue": 3_510_000.0, "nights": 1755, "adr": 2000.0},
         ("b-1948", 2026, 10): {"revenue": 1_324_000.0, "nights": 662, "adr": 2000.0},
-        # Settled reference months, this year against last, pooled 1.10x.
         ("b-1948", 2026, 8): {"revenue": 2_200_000.0, "nights": 1000, "adr": 2200.0},
         ("b-1948", 2025, 8): {"revenue": 2_000_000.0, "nights": 1000, "adr": 2000.0},
     }
-    monkeypatch.setattr(pace_forecast, "_monthly_adr", lambda *a, **k: adr)
-    monkeypatch.setattr(
-        pace_forecast, "_targets",
-        lambda *a, **k: {("b-1948", 2026, 10): {"native": 4_500_000.0, "vnd": 0.0}},
-    )
-    monkeypatch.setattr(pace_forecast, "get_cached_rate", lambda *a, **k: 830.0)
+    targets = {("b-1948", 2026, 10): {"native": 4_500_000.0, "vnd": 0.0}}
+
+    def go(cells, occ=None, **kw):
+        return _run(monkeypatch, cells, occ={**adr, **(occ or {})},
+                    targets=targets, **kw)
+    return go
 
 
 def only(result, key="total"):
@@ -130,12 +139,10 @@ def test_a_year_ago_month_that_never_traded_is_not_a_base():
 
 # ── the estimator ────────────────────────────────────────────────────────────
 
-def test_forecast_adds_last_years_remaining_pickup(no_money):
+def test_forecast_adds_last_years_remaining_pickup(nights_only):
     """The whole method: what is on the books now, plus what last year still
     had to come at this same distance from the month."""
-    out = build_forecast(None, [cell()], as_of=date(2026, 9, 15),
-                         branch_meta=BRANCHES, scoped_sources=False)
-    total = only(out)
+    total = only(nights_only([cell()]))
 
     assert total["room_nights"] == pytest.approx(662 + (1755 - 434))
     assert total["basis"] == ["ly_pickup"]
@@ -144,235 +151,132 @@ def test_forecast_adds_last_years_remaining_pickup(no_money):
     assert total["occ_pts_vs_ly"] == pytest.approx((1983 - 1755) / 2139 * 100, abs=0.1)
 
 
-def test_band_is_the_measured_error_and_never_dips_under_the_book(no_money):
+def test_band_is_the_measured_error_and_never_dips_under_the_book(nights_only):
     """p10/p90 of the backtest, applied to the forecast — except that the low
     end cannot fall below what is already sold. A book does not shrink."""
-    out = build_forecast(None, [cell()], as_of=date(2026, 9, 15),
-                         branch_meta=BRANCHES, scoped_sources=False)
-    total = only(out)
+    total = only(nights_only([cell()]))
     assert total["room_nights_low"] < total["room_nights"] < total["room_nights_high"]
     assert total["room_nights_low"] >= total["otb_room_nights"]
 
-    # A month barely sold: the low end clamps to the book rather than going under.
-    thin = build_forecast(None, [cell(otb=1700, ly_otb=434, ly_final=1755)],
-                          as_of=date(2026, 9, 15), branch_meta=BRANCHES,
-                          scoped_sources=False)
-    assert only(thin)["room_nights_low"] >= 1700
+    thin = only(nights_only([cell(otb=1700, ly_otb=434, ly_final=1755)]))
+    assert thin["room_nights_low"] >= 1700
 
 
-def test_a_month_further_out_than_the_backtest_gets_a_wider_band(no_money):
-    near = only(build_forecast(None, [cell(days_out=60)], as_of=date(2026, 9, 15),
-                               branch_meta=BRANCHES, scoped_sources=False))
-    far = only(build_forecast(None, [cell(days_out=107)], as_of=date(2026, 9, 15),
-                              branch_meta=BRANCHES, scoped_sources=False))
-    near_spread = near["room_nights_high"] - near["room_nights_low"]
-    far_spread = far["room_nights_high"] - far["room_nights_low"]
-    assert far_spread > near_spread
+def test_a_month_further_out_than_the_backtest_gets_a_wider_band(nights_only):
+    near = only(nights_only([cell(days_out=60)]))
+    far = only(nights_only([cell(days_out=107)]))
+    assert (far["room_nights_high"] - far["room_nights_low"]
+            > near["room_nights_high"] - near["room_nights_low"])
 
 
-def test_nothing_sells_more_than_the_house_holds(no_money):
+def test_nothing_sells_more_than_the_house_holds(nights_only):
     """The estimator has no idea inventory exists. Left alone it returns 104%
     occupancy; the ceiling stops it and the month says the ceiling bound."""
-    out = build_forecast(None, [cell(otb=1500, ly_otb=434, ly_final=1755)],
-                         as_of=date(2026, 9, 15), branch_meta=BRANCHES,
-                         scoped_sources=False)
-    total = only(out)
+    total = only(nights_only([cell(otb=1500, ly_otb=434, ly_final=1755)]))
     assert total["room_nights"] == pytest.approx(2139 * MAX_FORECAST_OCC, abs=0.1)
     assert total["capacity_capped"] is True
 
 
-def test_a_finished_month_is_reported_not_forecast(no_money):
-    out = build_forecast(None, [cell(status="finished", otb=1700)],
-                         as_of=date(2026, 9, 15), branch_meta=BRANCHES,
-                         scoped_sources=False)
-    total = only(out)
+def test_a_finished_month_is_reported_not_forecast(nights_only):
+    total = only(nights_only([cell(status="finished", otb=1700)]))
     assert total["basis"] == ["actual"]
     assert total["room_nights"] == total["room_nights_low"] == 1700
 
 
-# ── the fallback ─────────────────────────────────────────────────────────────
+# ── no year-ago month ────────────────────────────────────────────────────────
 
-def test_a_branch_with_no_year_ago_base_keeps_its_level_and_borrows_the_shape(monkeypatch):
-    """Oani had not opened a year ago, so its October cannot come from its own
-    history. What it does have is a present: it has run 70% every month this
-    year. 1948 — same city, same calendar — finished last October 6% above its
-    own summer, and that 6% is the only thing borrowed.
+def test_a_branch_without_a_year_ago_month_holds_its_own_run_rate(nights_only):
+    """Oani had not opened a year ago, so nothing about its October can be read
+    from its own history. What it does have is a present: it has run 70% every
+    month this year, and that is what its Q4 is projected at."""
+    out = nights_only([cell("b-oani", capacity=2852, otb=1159,
+                            ly_otb=0, ly_final=0)],
+                      occ=dm("b-oani", 2026, 0.700, rooms=92))
+    row = out["branches"][0]
 
-    The alternative, handing Oani 1948's remaining run-up in nights, sold Oani
-    out at 95% for three months running: Oani is 41% booked at sixteen days out
-    where 1948 is 31%, so its early bookings would have been counted twice.
-    """
-    occ = {}
-    occ.update(dm("b-1948", 2025, 0.772, rooms=69))     # donor, a year ago
-    occ.update(dm("b-oani", 2026, 0.700, rooms=92))     # recipient, this year
-    monkeypatch.setattr(pace_forecast, "_monthly_adr", lambda *a, **k: occ)
-    monkeypatch.setattr(pace_forecast, "_targets", lambda *a, **k: {})
-    monkeypatch.setattr(pace_forecast, "get_cached_rate", lambda *a, **k: 1.0)
-
-    sibling = cell("b-1948")                            # 1755 of 2139 = 82.0%
-    oani = cell("b-oani", capacity=2852, otb=1159, ly_otb=0, ly_final=0)
-    out = build_forecast(None, [sibling, oani], as_of=date(2026, 9, 15),
-                         branch_meta=BRANCHES, scoped_sources=False)
-
-    row = [b for b in out["branches"] if b["branch_id"] == "b-oani"][0]
-    index = (1755 / 2139) / 0.772
-    assert row["basis"] == ["proxy"]
-    assert row["room_nights"] == pytest.approx(0.70 * index * 2852, abs=15)
-    # Nowhere near the ceiling the old method pinned it to.
-    assert row["occ_pct"] < 80
-    assert row["proxy_donors"] == ["1948"]
-
-    # The workings ride on the month, because the index is a different number
-    # in October and in December.
-    used = out["total"]["proxy_months"][0]
-    assert used["branch_name"] == "Oani"
-    assert used["stay_month"] == "2026-10"
-    assert used["basis"] == "proxy"
-    assert used["donors"] == ["1948"]
-    assert used["level_occ_pct"] == pytest.approx(70.0, abs=0.2)
-    assert used["seasonal_index"] == pytest.approx(index, abs=0.01)
+    assert row["basis"] == ["own_run_rate"]
+    assert row["room_nights"] == pytest.approx(0.70 * 2852, abs=15)
+    used = out["total"]["run_rate_months"]
+    assert len(used) == 1
+    assert used[0]["branch_name"] == "Oani"
+    assert used[0]["stay_month"] == "2026-10"
+    assert used[0]["occ_pct"] == pytest.approx(70.0, abs=0.2)
 
 
-def test_with_nobody_to_borrow_from_no_number_is_published(no_money):
-    """Refusing is the honest answer, and it must not quietly become a total
-    that looks whole."""
-    alone = cell("b-taipei", capacity=2852, otb=1159, ly_otb=0, ly_final=0)
-    out = build_forecast(None, [alone], as_of=date(2026, 9, 15),
-                         branch_meta=BRANCHES, scoped_sources=False)
-    total = only(out)
-    assert total["room_nights"] is None
-    assert total["unforecastable"] == [
-        {"branch_id": "b-taipei", "branch_name": "Taipei", "stay_month": "2026-10"}
+def test_the_run_rate_never_reads_under_what_is_already_sold(nights_only):
+    """A month can be ahead of the run rate the moment it is read."""
+    out = nights_only([cell("b-oani", capacity=2852, otb=2400,
+                            ly_otb=0, ly_final=0)],
+                      occ=dm("b-oani", 2026, 0.700, rooms=92))
+    assert out["total"]["room_nights"] >= 2400
+
+
+def test_nothing_is_ever_borrowed_from_another_branch(nights_only):
+    """A sibling in the same city, trading normally, with a full year-ago
+    October — and it still lends nothing. 1948 is a 69-room hostel and Oani a
+    92-room hotel; they sell to different people on different booking curves,
+    and Oani is 41% booked where 1948 is 31%, so lending 1948's remaining
+    run-up would count Oani's early bookings twice."""
+    out = nights_only([
+        cell("b-1948"),
+        cell("b-oani", capacity=2852, otb=1159, ly_otb=0, ly_final=0),
+    ])   # no daily_metrics at all, so Oani has no run rate of its own either
+
+    oani = [b for b in out["branches"] if b["branch_id"] == "b-oani"][0]
+    assert oani["basis"] == ["no_base"]
+    assert oani["room_nights"] is None
+    assert out["total"]["unforecastable"] == [
+        {"branch_id": "b-oani", "branch_name": "Oani", "stay_month": "2026-10"}
     ]
 
 
-def test_borrowing_across_markets_says_so(monkeypatch):
-    """A Taipei shape lent to Osaka is a guess about Japan made from Taiwan. It
-    beats publishing nothing, and it must not look like the same thing as Oani
-    borrowing from 1948 down the road."""
-    occ = {}
-    occ.update(dm("b-1948", 2025, 0.772, rooms=69))
-    occ.update(dm("b-osaka", 2026, 0.817, rooms=71))
-    monkeypatch.setattr(pace_forecast, "_monthly_adr", lambda *a, **k: occ)
-    monkeypatch.setattr(pace_forecast, "_targets", lambda *a, **k: {})
-    monkeypatch.setattr(pace_forecast, "get_cached_rate", lambda *a, **k: 1.0)
+# ── what a branch that drops out takes with it ───────────────────────────────
 
-    out = build_forecast(
-        None,
-        [cell("b-1948"), cell("b-osaka", capacity=2201, otb=1259,
-                              ly_otb=0, ly_final=0, city="Osaka")],
-        as_of=date(2026, 9, 15), branch_meta=BRANCHES, scoped_sources=False,
-    )
-    osaka = [b for b in out["branches"] if b["branch_id"] == "b-osaka"][0]
-    assert osaka["basis"] == ["proxy_other_market"]
-    assert osaka["proxy_donors"] == ["1948"]
-    assert out["total"]["proxy_months"][0]["basis"] == "proxy_other_market"
+def test_an_unforecastable_branch_leaves_its_inventory_out_too(nights_only):
+    """Counting Oani's 2,852 room-nights of capacity while forecasting none of
+    them would report the group's occupancy short by exactly the share of the
+    house that was left out."""
+    out = nights_only([
+        cell("b-1948"),
+        cell("b-oani", capacity=2852, otb=1159, ly_otb=0, ly_final=0),
+    ])
+    total = out["total"]
+
+    assert total["room_nights"] == pytest.approx(1983)
+    assert total["available_room_nights"] == 2139          # 1948 only
+    assert total["occ_pct"] == pytest.approx(1983 / 2139 * 100, abs=0.1)
+    assert (total["months_counted"], total["months_in_scope"]) == (1, 2)
 
 
-def test_a_property_opening_inside_the_window_is_a_guess_and_says_so(monkeypatch):
-    """No year-ago month AND no months of its own. Nothing is left but to
-    assume it trades like the market it is opening into — which is a guess, and
-    is labelled one rather than dressed up as a forecast."""
-    occ = dm("b-1948", 2025, 0.772, rooms=69)
-    monkeypatch.setattr(pace_forecast, "_monthly_adr", lambda *a, **k: occ)
-    monkeypatch.setattr(pace_forecast, "_targets", lambda *a, **k: {})
-    monkeypatch.setattr(pace_forecast, "get_cached_rate", lambda *a, **k: 1.0)
+def test_the_target_comes_out_with_the_month_it_belongs_to(with_money):
+    """A forecast covering one branch against a target covering two is not an
+    achievement percentage, it is a smaller number wearing one."""
+    out = with_money([
+        cell("b-1948"),
+        cell("b-osaka", capacity=2201, otb=1259, ly_otb=1082, ly_final=1892,
+             city="Osaka"),
+    ])
+    total = out["total"]
 
-    out = build_forecast(
-        None,
-        [cell("b-1948"), cell("b-oani", capacity=2852, otb=100,
-                              ly_otb=0, ly_final=0)],
-        as_of=date(2026, 9, 15), branch_meta=BRANCHES, scoped_sources=False,
-    )
-    new_property = [b for b in out["branches"] if b["branch_id"] == "b-oani"][0]
-    assert new_property["basis"] == ["proxy_level"]
-    assert out["total"]["proxy_months"][0]["level_occ_pct"] == pytest.approx(
-        1755 / 2139 * 100, abs=0.1)
-
-
-def test_a_branch_that_cannot_be_priced_voids_the_money_not_the_nights(money):
-    """A quarter missing one branch's revenue is not a quarter of revenue — the
-    roll-up says so instead of quietly reporting the branches it happens to be
-    able to price. The nights it CAN count still come back."""
-    out = build_forecast(
-        None,
-        [cell("b-1948"), cell("b-osaka", capacity=2201, otb=1259,
-                              ly_otb=1082, ly_final=1892, city="Osaka")],
-        as_of=date(2026, 9, 15), branch_meta=BRANCHES, scoped_sources=False,
-    )
-    total = only(out)
-    # Osaka has no daily_metrics history in this fixture, so it has no ADR.
-    assert total["revenue_native"] is None
-    assert total["achievement_pct"] is None
+    # Osaka is forecast, but this fixture has no Osaka rate to price it at.
     assert total["room_nights"] is not None
-    priced = [b for b in out["branches"] if b["branch_id"] == "b-1948"][0]
-    assert priced["revenue_native"] is not None
+    assert total["unpriced"] == [
+        {"branch_id": "b-osaka", "branch_name": "Osaka", "stay_month": "2026-10"}
+    ]
+    # So the money is 1948's alone — and so is the target it is read against.
+    assert total["target_native"] == 4_500_000.0
+    assert total["achievement_pct"] == pytest.approx(
+        total["revenue_native"] / 4_500_000 * 100, abs=0.1)
 
 
 # ── several months, several branches ─────────────────────────────────────────
 
-def test_the_donor_lends_the_same_month_not_the_quarter(monkeypatch):
-    """A quarter is read three months at a time. Pooling the donors across them
-    lends December's shape to October and hands every month the same seasonal
-    index — which is exactly how you spot it."""
-    occ = {}
-    occ.update(dm("b-1948", 2025, 0.772, rooms=69))
-    occ.update(dm("b-oani", 2026, 0.700, rooms=92))
-    monkeypatch.setattr(pace_forecast, "_monthly_adr", lambda *a, **k: occ)
-    monkeypatch.setattr(pace_forecast, "_targets", lambda *a, **k: {})
-    monkeypatch.setattr(pace_forecast, "get_cached_rate", lambda *a, **k: 1.0)
-
-    # 1948 fills 82% of its October and 62% of its December; Oani has neither.
-    cells = [
-        cell("b-1948", month=10, capacity=2139, ly_otb=434, ly_final=1755),
-        cell("b-1948", month=12, capacity=2139, ly_otb=33, ly_final=1320),
-        cell("b-oani", month=10, capacity=2852, otb=1159, ly_otb=0, ly_final=0),
-        cell("b-oani", month=12, capacity=2852, otb=304, ly_otb=0, ly_final=0),
-    ]
-    out = build_forecast(None, cells, as_of=date(2026, 9, 15),
-                         branch_meta=BRANCHES, scoped_sources=False)
-
-    by_month = {p["stay_month"]: p for p in out["total"]["proxy_months"]}
-    assert by_month["2026-10"]["seasonal_index"] > by_month["2026-12"]["seasonal_index"]
-    assert by_month["2026-10"]["seasonal_index"] == pytest.approx(
-        (1755 / 2139) / 0.772, abs=0.01)
-    assert by_month["2026-12"]["seasonal_index"] == pytest.approx(
-        (1320 / 2139) / 0.772, abs=0.01)
-
-
-def test_a_wild_seasonal_index_is_clipped_and_flagged(monkeypatch):
-    """The donor's summer is the index's denominator, so a donor that spent it
-    closed for works reads as a season that never happened. Oani has never
-    cleared 73% in any month of its life; an unclipped 1.34 would have put its
-    November at 92%."""
-    occ = {}
-    occ.update(dm("b-1948", 2025, 0.52, rooms=69))      # a disrupted year-ago summer
-    occ.update(dm("b-oani", 2026, 0.700, rooms=92))
-    monkeypatch.setattr(pace_forecast, "_monthly_adr", lambda *a, **k: occ)
-    monkeypatch.setattr(pace_forecast, "_targets", lambda *a, **k: {})
-    monkeypatch.setattr(pace_forecast, "get_cached_rate", lambda *a, **k: 1.0)
-
-    out = build_forecast(
-        None,
-        [cell("b-1948"), cell("b-oani", capacity=2852, otb=1159,
-                              ly_otb=0, ly_final=0)],
-        as_of=date(2026, 9, 15), branch_meta=BRANCHES, scoped_sources=False,
-    )
-    used = out["total"]["proxy_months"][0]
-    assert (1755 / 2139) / 0.52 > pace_forecast.PROXY_INDEX_MAX   # raw is wilder
-    assert used["seasonal_index"] == pace_forecast.PROXY_INDEX_MAX
-    assert used["index_clipped"] is True
-    row = [b for b in out["branches"] if b["branch_id"] == "b-oani"][0]
-    assert row["occ_pct"] == pytest.approx(70 * pace_forecast.PROXY_INDEX_MAX, abs=0.5)
-
-
-def test_months_are_summed_and_the_rate_divided_once(no_money):
+def test_months_are_summed_and_the_rate_divided_once(nights_only):
     """A quarter's occupancy is not the mean of three months' percentages: a
     31-night month and a 30-night one do not carry equal weight."""
     oct_ = cell(month=10, capacity=2139, otb=662, ly_otb=434, ly_final=1755)
     nov = cell(month=11, capacity=2600, otb=308, ly_otb=101, ly_final=1811)
-    out = build_forecast(None, [oct_, nov], as_of=date(2026, 9, 15),
-                         branch_meta=BRANCHES, scoped_sources=False)
+    out = nights_only([oct_, nov])
 
     total = only(out)
     nights = (662 + 1755 - 434) + (308 + 1811 - 101)
@@ -381,41 +285,37 @@ def test_months_are_summed_and_the_rate_divided_once(no_money):
     assert [m["stay_month"] for m in out["months"]] == ["2026-10", "2026-11"]
 
 
-def test_a_source_filter_removes_the_house_from_the_answer(no_money):
+def test_a_source_filter_removes_the_house_from_the_answer(nights_only):
     """Forecasting "Agoda only" against 95% of the house is meaningless — the
     rest of the house is being filled by everyone else. Nights still forecast;
     occupancy does not."""
-    out = build_forecast(None, [cell()], as_of=date(2026, 9, 15),
-                         branch_meta=BRANCHES, scoped_sources=True)
-    total = only(out)
+    total = only(nights_only([cell()], scoped_sources=True))
     assert total["room_nights"] is not None
     assert total["occ_pct"] is None
     assert total["available_room_nights"] is None
 
 
-def test_mixed_currencies_lose_the_symbol_but_keep_the_vnd_total(money):
+def test_mixed_currencies_lose_the_symbol_but_keep_the_vnd_total(with_money):
     """The group runs TWD, JPY and VND. One symbol over the sum would pick one
     and be wrong about the other two."""
-    out = build_forecast(
-        None,
-        [cell("b-1948"), cell("b-osaka", capacity=2201, otb=1259,
-                              ly_otb=1082, ly_final=1892, city="Osaka")],
-        as_of=date(2026, 9, 15), branch_meta=BRANCHES, scoped_sources=False,
-    )
-    assert out["total"]["currency"] is None
-    single = build_forecast(None, [cell("b-1948")], as_of=date(2026, 9, 15),
-                            branch_meta=BRANCHES, scoped_sources=False)
+    mixed = with_money([
+        cell("b-1948"),
+        cell("b-osaka", capacity=2201, otb=1259, ly_otb=1082, ly_final=1892,
+             city="Osaka"),
+    ])
+    assert mixed["total"]["currency"] is None
+    single = with_money([cell("b-1948")])
     assert single["total"]["currency"] == "TWD"
+    assert single["total"]["revenue_vnd"] == pytest.approx(
+        single["total"]["revenue_native"] * 830)
 
 
 # ── money ────────────────────────────────────────────────────────────────────
 
-def test_only_the_nights_still_to_come_are_priced(money):
+def test_only_the_nights_still_to_come_are_priced(with_money):
     """Nights already sold are already priced, at whatever they were sold for.
     Applying a forecast ADR to the whole month would re-price the book."""
-    out = build_forecast(None, [cell()], as_of=date(2026, 9, 15),
-                         branch_meta=BRANCHES, scoped_sources=False)
-    total = only(out)
+    total = only(with_money([cell()]))
 
     remaining = 1983 - 662          # daily_metrics book is the same 662 nights
     assert total["revenue_native"] == pytest.approx(1_324_000 + remaining * 2000 * 1.1)
@@ -424,9 +324,8 @@ def test_only_the_nights_still_to_come_are_priced(money):
         total["revenue_native"] / 4_500_000 * 100, abs=0.1)
 
 
-def test_adr_is_last_years_month_moved_by_this_years_trend(money):
-    out = build_forecast(None, [cell()], as_of=date(2026, 9, 15),
-                         branch_meta=BRANCHES, scoped_sources=False)
+def test_adr_is_last_years_month_moved_by_this_years_trend(with_money):
+    out = with_money([cell()])
     assert out["branches"][0]["adr_yoy"] == pytest.approx(1.1)
 
 
@@ -446,10 +345,8 @@ def test_adr_trend_is_pooled_across_months_not_averaged():
     assert pooled > 1.5
 
 
-def test_a_branch_with_no_year_ago_money_is_not_priced(no_money):
-    out = build_forecast(None, [cell()], as_of=date(2026, 9, 15),
-                         branch_meta=BRANCHES, scoped_sources=False)
-    total = only(out)
+def test_a_month_with_no_year_ago_rate_is_left_unpriced(nights_only):
+    total = only(nights_only([cell()]))
     assert total["room_nights"] is not None
     assert total["revenue_native"] is None
     assert total["achievement_pct"] is None

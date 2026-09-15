@@ -40,11 +40,23 @@ Two conditions come with that number, and dropping either one breaks it:
    mid-month; Oani had not opened at all. Feeding either into `ly_final -
    ly_otb` forecasts the ramp, not the month.
 
-Where the gate fails the month is not skipped. The branch keeps its own LEVEL
-— the occupancy it has actually been running this year — and borrows only the
-SHAPE from the branches that DID trade in the same city: how much busier the
-market's October is than its summer. It is labelled `proxy` so the page can say
-so. Where there is no sibling either, no number is published.
+Where the gate fails, NOTHING IS BORROWED FROM ANOTHER BRANCH. A property is
+its own business: 1948 is a 69-room hostel, Oani a 92-room premium hotel, and
+one's October says nothing reliable about the other's — they sell to different
+people, at different prices, on different booking curves. An earlier version of
+this did lend a curve across branches and it was wrong twice over, once in
+principle and once in the numbers: Oani is 41% booked at sixteen days out where
+1948 is 31%, so adding 1948's remaining run-up double-counted everything Oani
+had already sold and put it at 95% for three straight months, against a branch
+that has never cleared 73% in any month of its life.
+
+What is left is the branch's own present. Oani has run 65-73% every month this
+year, so its Q4 is projected at the occupancy it has actually been holding —
+`own_run_rate`, carrying no seasonality, which the page says out loud because
+Q4 is not August. A branch with no year-ago month AND no months of its own is
+not projected at all: it drops out of the totals, and the card names it along
+with the target that came out with it, so a partial projection is never read
+against a whole quarter's target.
 
 WHAT THE BAND MEANS
 ───────────────────
@@ -108,17 +120,6 @@ BAND_HIGH = 0.14
 BAND_UNTESTED_DAYS = 90
 BAND_WIDEN = 1.6
 
-# How far the borrowed seasonal shape is allowed to move a branch's own level.
-#
-# The index divides a donor's year-ago target month by its year-ago summer, so
-# a donor whose summer was itself disrupted inflates it — Taipei ran 42-49%
-# through the 2025 works it reopened from, which alone pushed the November
-# index to 1.34 and would have put Oani, a property that has not cleared 73%
-# in any month of its life, at 92%. A market's month-against-summer swing
-# outside this range is a statement about the donor, not about the season, and
-# the month is flagged `proxy_index_clipped` when it lands here.
-PROXY_INDEX_MIN, PROXY_INDEX_MAX = 0.75, 1.25
-
 # A branch's ADR trend is measured over this many settled months. Three is
 # enough to survive one odd month and short enough to still be this year.
 ADR_TREND_MONTHS = 3
@@ -145,69 +146,18 @@ def _band_for(days_out: int) -> tuple[float, float]:
     return BAND_LOW, BAND_HIGH
 
 
-def _donor_pool(cells: list[dict], cell: dict) -> tuple[list[dict], str]:
-    """Branches whose year-ago months can stand in for one that has none.
-
-    THE SAME STAY MONTH, always. A quarter is read three months at a time, and
-    pooling across them borrows December's shape for October and hands back one
-    seasonal index for all three — which is the tell that it has happened.
-
-    Same city first — one market, one calendar, one set of holidays — and only
-    if the city has nobody to ask, anywhere in scope. The two are NOT
-    equivalent and do not share a label: Oani borrowing 1948's October is one
-    market's seasonality lent to another property in it, while a Taipei shape
-    lent to Osaka is a guess about Japan made from Taiwan, and comes back as
-    `proxy_other_market` so the page can say which of the two it is looking at.
-    """
-    month = [c for c in cells
-             if (c["year"], c["month"]) == (cell["year"], cell["month"])
-             and _usable_base(c)]
-    same_city = [c for c in month if c["city"] == cell["city"]]
-    if same_city:
-        return same_city, "proxy"
-    if month:
-        return month, "proxy_other_market"
-    return [], "no_base"
-
-
-def _seasonal_index(pool: list[dict], occ: dict, branch_meta: dict,
-                    ref_months: list[tuple[int, int]]) -> Optional[float]:
-    """How much busier the donors' target month is than their recent norm.
-
-    A year ago, pooled across the donor branches: occupancy in the month being
-    forecast, over occupancy in the same reference months this branch's own
-    level was measured from. 1.06 means the market's October runs six per cent
-    above its summer.
-
-    Pooled on nights and capacity, never averaged across branches — a 138-unit
-    property and a 69-unit one do not get one vote each.
-    """
-    month_sold = month_capacity = ref_sold = ref_capacity = 0.0
-    for c in pool:
-        rooms = branch_meta.get(c["branch_id"], {}).get("total_rooms") or 0
-        if not rooms:
-            continue
-        month_sold += c["ly_final_nights"]
-        month_capacity += rooms * _days_in_month(c["year"] - 1, c["month"])
-        for (y, m) in ref_months:
-            sold = (occ.get((c["branch_id"], y - 1, m)) or {}).get("nights")
-            if sold is None:
-                continue
-            ref_sold += sold
-            ref_capacity += rooms * _days_in_month(y - 1, m)
-    if not month_capacity or not ref_capacity or not ref_sold:
-        return None
-    return (month_sold / month_capacity) / (ref_sold / ref_capacity)
-
-
 def _own_level(cell: dict, occ: dict, branch_meta: dict,
                ref_months: list[tuple[int, int]]) -> Optional[float]:
     """The branch's own occupancy over the last settled months.
 
-    Where a branch has no year-ago month, it still has a present. Oani ran
-    65-73% every month this year; that is a far better starting point for its
-    October than anything borrowed, and all the neighbours are needed for is
-    the seasonal shape on top of it.
+    Where a branch has no year-ago month, it still has a present, and its own
+    present is the only honest thing to project it from. Oani ran 65-73% every
+    month this year.
+
+    Occupancy here is whole-house — daily_metrics counts every room and bed
+    sold — so under a room-type filter this level is the house's, not the
+    filtered inventory's. The months it reads are settled ones, so it is a
+    realised number rather than a book still filling.
     """
     rooms = branch_meta.get(cell["branch_id"], {}).get("total_rooms") or 0
     if not rooms:
@@ -222,68 +172,55 @@ def _own_level(cell: dict, occ: dict, branch_meta: dict,
     return sold / capacity if capacity else None
 
 
-def _forecast_cell(cell: dict, cells: list[dict], occ: dict, branch_meta: dict,
+def _forecast_cell(cell: dict, occ: dict, branch_meta: dict,
                    ref_months: list[tuple[int, int]]) -> dict:
     """One branch, one stay month: nights at the end of it.
 
-    A month already over is not forecast — what is on the books IS the month,
-    and the honest label for that is `actual`.
+    Three outcomes, in order, and nothing in any of them comes from another
+    branch:
 
-    Without a year-ago month of its own the branch is not forecast by handing
-    it a neighbour's numbers wholesale. It keeps its own LEVEL — the occupancy
-    it has actually been running this year — and borrows only the SHAPE, how
-    much busier the market's October is than its summer. Adding a neighbour's
-    remaining pickup instead double-counts every property that books earlier
-    than that neighbour does: Oani is 40% sold at sixteen days out where 1948
-    is 31%, and adding 1948's whole remaining run-up on top of that sold Oani
-    out at 95% three months running. Its own year has never once gone past 73%.
+      actual         the month is already over — what is on the books IS the
+                     month, and calling that a forecast would be a lie
+      ly_pickup      it has a year-ago month worth reading: on the books now,
+                     plus what last year still had to come from here
+      own_run_rate   it does not, so it holds the occupancy it has actually
+                     been running this year, with no seasonal adjustment at
+                     all — Q4 is not August, and the card says so
+
+    And where it has neither a year-ago month nor months of its own, no number:
+    `no_base` drops out of every total rather than being filled in from
+    somewhere it does not belong.
     """
     otb = cell["otb_nights"]
     capacity = cell["capacity"]
     ceiling = capacity * MAX_FORECAST_OCC
-    proxy = {}
+    extra = {}
 
     if cell["status"] == "finished":
         return {**cell, "basis": "actual", "nights": otb, "low": otb, "high": otb,
-                "capacity_capped": False, **proxy}
+                "capacity_capped": False}
 
     if _usable_base(cell):
         basis = "ly_pickup"
         raw = otb + (cell["ly_final_nights"] - cell["ly_otb_nights"])
     else:
-        pool, basis = _donor_pool(cells, cell)
-        index = _seasonal_index(pool, occ, branch_meta, ref_months) if pool else None
         level = _own_level(cell, occ, branch_meta, ref_months)
-        if not pool or index is None:
+        if level is None:
             return {**cell, "basis": "no_base", "nights": None, "low": None,
                     "high": None, "capacity_capped": False}
-        if level is None:
-            # A property with no trading history at all — opening inside the
-            # forecast window. All that is left is to assume it performs like
-            # the market it opened into, which is a guess and is labelled one.
-            level = sum(c["ly_final_nights"] for c in pool) / sum(
-                (branch_meta.get(c["branch_id"], {}).get("total_rooms") or 0)
-                * _days_in_month(c["year"] - 1, c["month"]) for c in pool)
-            basis = f"{basis}_level"
-        clipped = min(max(index, PROXY_INDEX_MIN), PROXY_INDEX_MAX)
-        proxy = {
-            "proxy_donors": sorted({branch_meta.get(c["branch_id"], {}).get("name")
-                                    for c in pool}),
-            "proxy_level_occ_pct": round(level * 100, 2),
-            "proxy_seasonal_index": round(clipped, 3),
-            "proxy_index_clipped": clipped != index,
-        }
-        index = clipped
-        # Never under what is already sold: the book does not shrink.
-        raw = max(otb, level * index * capacity)
+        basis = "own_run_rate"
+        extra = {"run_rate_occ_pct": round(level * 100, 2)}
+        # Never under what is already sold: a month can be ahead of the run
+        # rate the moment it is read, and the book does not shrink.
+        raw = max(otb, level * capacity)
 
-    # Never below what is already sold: the book does not shrink, and a band
-    # that dips under it would be describing cancellations this cannot see.
+    # The band, likewise floored at the book. A low end under it would be
+    # describing cancellations this cannot see.
     low_mult, high_mult = _band_for(cell["days_out"])
     nights = min(raw, ceiling)
     return {
         **cell,
-        **proxy,
+        **extra,
         "basis": basis,
         "nights": round(nights, 1),
         "low": round(max(otb, min(raw * (1 + low_mult), ceiling)), 1),
@@ -416,12 +353,12 @@ def build_forecast(
     adr_months = months + [(y - 1, m) for (y, m) in months]
     ref_months = _settled_months(as_of, ADR_TREND_MONTHS)
     # One pass over daily_metrics serves three readers: the ADR a night still
-    # to come is priced at, the trend that moves it, and the occupancy levels
-    # the proxy needs for a branch with no year-ago month.
+    # to come is priced at, the trend that moves it, and the branch's own
+    # recent occupancy where there is no year-ago month to read.
     adr_map = _monthly_adr(db, branch_ids, adr_months + ref_months
                            + [(y - 1, m) for (y, m) in ref_months])
     targets = _targets(db, branch_ids, months)
-    forecast_cells = [_forecast_cell(c, cells, adr_map, branch_meta, ref_months)
+    forecast_cells = [_forecast_cell(c, adr_map, branch_meta, ref_months)
                       for c in cells]
     adr_trend = {b: _adr_yoy(adr_map, b, ref_months) for b in branch_ids}
 
@@ -481,40 +418,62 @@ def build_forecast(
 # group's is not the mean of five branches'.
 
 def _sum(cells: list[dict], key: str) -> Optional[float]:
-    """Sum a field, or None when any cell in the set could not be forecast.
-
-    A partial total reads as a whole one, and a quarter missing Oani is not a
-    quarter. Where a branch-month has no number the total says so instead.
-    """
-    values = [c.get(key) for c in cells]
-    if any(v is None for v in values):
-        return None
-    return round(sum(values), 2)
+    """Sum a field over the cells that have one. None when none of them do."""
+    values = [c[key] for c in cells if c.get(key) is not None]
+    return round(sum(values), 2) if values else None
 
 
 def _vnd(cells: list[dict], key: str, branch_meta: dict) -> Optional[float]:
     """Native amounts converted and summed — the only way to add TWD to JPY."""
-    total = 0.0
+    total = None
     for c in cells:
         value = c.get(key)
         if value is None:
-            return None
+            continue
         currency = branch_meta.get(c["branch_id"], {}).get("currency") or "VND"
         rate = get_cached_rate(currency, "VND") or 1.0
-        total += value * rate
-    return round(total, 2)
+        total = (total or 0.0) + value * rate
+    return round(total, 2) if total is not None else None
+
+
+def _named(cells: list[dict], branch_meta: dict, **extra) -> list[dict]:
+    return [
+        {"branch_id": c["branch_id"],
+         "branch_name": branch_meta.get(c["branch_id"], {}).get("name"),
+         "stay_month": f"{c['year']:04d}-{c['month']:02d}",
+         **{k: c.get(v) for k, v in extra.items()}}
+        for c in cells
+    ]
 
 
 def _block(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict:
-    capacity = sum(c["capacity"] for c in cells)
-    nights = _sum(cells, "nights")
-    otb = round(sum(c["otb_nights"] for c in cells), 2)
-    ly_final = round(sum(c["ly_final_nights"] for c in cells), 2)
-    bases = {c["basis"] for c in cells}
-    target_native = _sum(cells, "target_native")
-    revenue_native = _sum(cells, "revenue_native")
-    target_vnd = _vnd(cells, "target_native", branch_meta)
-    revenue_vnd = _vnd(cells, "revenue_native", branch_meta)
+    """One set of branch-months, summed.
+
+    Two exclusions run through every figure here, and both are reported rather
+    than absorbed:
+
+      · a branch-month with no basis to project from contributes nothing — not
+        its nights, and not its inventory to the denominator either, or the
+        occupancy would read low by exactly the share of the house that was
+        left out.
+      · the money figures are built ONLY from branch-months that could be
+        priced, and each one's target comes out with it. A forecast covering
+        four branches against a target covering five is not an achievement
+        percentage, it is a smaller number wearing one.
+    """
+    counted = [c for c in cells if c["nights"] is not None]
+    no_base = [c for c in cells if c["nights"] is None]
+    priced = [c for c in counted if c["revenue_native"] is not None]
+    unpriced = [c for c in counted if c["revenue_native"] is None]
+
+    capacity = sum(c["capacity"] for c in counted)
+    nights = _sum(counted, "nights")
+    otb = round(sum(c["otb_nights"] for c in counted), 2)
+    ly_final = round(sum(c["ly_final_nights"] for c in counted), 2)
+    revenue_native = _sum(priced, "revenue_native")
+    target_native = _sum(priced, "target_native")
+    revenue_vnd = _vnd(priced, "revenue_native", branch_meta)
+    target_vnd = _vnd(priced, "target_native", branch_meta)
 
     def occ(value):
         if value is None or not capacity or not capacity_basis:
@@ -528,13 +487,13 @@ def _block(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict:
 
     return {
         "room_nights": nights,
-        "room_nights_low": _sum(cells, "low"),
-        "room_nights_high": _sum(cells, "high"),
+        "room_nights_low": _sum(counted, "low"),
+        "room_nights_high": _sum(counted, "high"),
         "otb_room_nights": otb,
         "available_room_nights": capacity if capacity_basis else None,
         "occ_pct": occ(nights),
-        "occ_pct_low": occ(_sum(cells, "low")),
-        "occ_pct_high": occ(_sum(cells, "high")),
+        "occ_pct_low": occ(_sum(counted, "low")),
+        "occ_pct_high": occ(_sum(counted, "high")),
         "ly_final_room_nights": ly_final,
         "ly_final_occ_pct": occ(ly_final),
         "occ_pts_vs_ly": (
@@ -542,34 +501,29 @@ def _block(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict:
             if nights is not None and capacity and capacity_basis else None
         ),
         "revenue_native": revenue_native,
-        "revenue_low_native": _sum(cells, "revenue_low_native"),
-        "revenue_high_native": _sum(cells, "revenue_high_native"),
+        "revenue_low_native": _sum(priced, "revenue_low_native"),
+        "revenue_high_native": _sum(priced, "revenue_high_native"),
         "revenue_vnd": revenue_vnd,
         "target_native": target_native,
         "target_vnd": target_vnd,
         "achievement_pct": hit(revenue_native, target_native),
-        "achievement_low_pct": hit(_sum(cells, "revenue_low_native"), target_native),
-        "achievement_high_pct": hit(_sum(cells, "revenue_high_native"), target_native),
+        "achievement_low_pct": hit(_sum(priced, "revenue_low_native"), target_native),
+        "achievement_high_pct": hit(_sum(priced, "revenue_high_native"), target_native),
         "achievement_vnd_pct": hit(revenue_vnd, target_vnd),
-        "basis": sorted(bases),
-        "capacity_capped": any(c["capacity_capped"] for c in cells),
-        "unforecastable": [
-            {"branch_id": c["branch_id"],
-             "branch_name": branch_meta.get(c["branch_id"], {}).get("name"),
-             "stay_month": f"{c['year']:04d}-{c['month']:02d}"}
-            for c in cells if c["basis"] == "no_base"
-        ],
-        "proxy_months": [
-            {"branch_id": c["branch_id"],
-             "branch_name": branch_meta.get(c["branch_id"], {}).get("name"),
-             "stay_month": f"{c['year']:04d}-{c['month']:02d}",
-             "basis": c["basis"],
-             "donors": c.get("proxy_donors"),
-             "level_occ_pct": c.get("proxy_level_occ_pct"),
-             "seasonal_index": c.get("proxy_seasonal_index"),
-             "index_clipped": bool(c.get("proxy_index_clipped"))}
-            for c in cells if c["basis"].startswith("proxy")
-        ],
+        "basis": sorted({c["basis"] for c in cells}),
+        "capacity_capped": any(c["capacity_capped"] for c in counted),
+        "months_counted": len(counted),
+        "months_in_scope": len(cells),
+        # No basis to project from: neither a year-ago month nor months of
+        # their own. Out of the nights, out of the inventory, out of the money.
+        "unforecastable": _named(no_base, branch_meta),
+        # Projected, but with no rate to price the nights still to come at, so
+        # out of the money figures and out of the target they are read against.
+        "unpriced": _named(unpriced, branch_meta),
+        # Projected from their own recent occupancy, carrying no seasonality.
+        "run_rate_months": _named(
+            [c for c in counted if c["basis"] == "own_run_rate"],
+            branch_meta, occ_pct="run_rate_occ_pct"),
     }
 
 
@@ -610,10 +564,6 @@ def _by_branch(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> li
             "branch_name": meta.get("name"),
             "currency": meta.get("currency"),
             "adr_yoy": rows[0].get("adr_yoy"),
-            # Who this branch borrowed from, when it had to. The same donors
-            # across every month, unlike the index they lend.
-            "proxy_donors": next((r["proxy_donors"] for r in rows
-                                  if r.get("proxy_donors")), None),
             **_block(rows, branch_meta, capacity_basis),
         })
     out.sort(key=lambda r: -(r["room_nights"] or 0))
