@@ -654,13 +654,22 @@ def build_forecast(
             or book.get("adr")
         )
 
+        # The year-ago estimator's money. Nothing on the page reads it any
+        # more — the card and the year projection are both run-rate — but it
+        # is still in the payload, so it carries the same two adjustments as
+        # everything else rather than sitting there on a second basis.
+        mult = 1 - branch_meta.get(bid, {}).get("deduction_pct", 0.0) / 100
+        other = branch_meta.get(bid, {}).get("other_revenue_native", 0.0)
         revenue = low = high = None
         if c["nights"] is not None and adr_remaining and book.get("nights") is not None:
             booked_nights = c["otb_units"]
             booked_revenue = book["revenue"]
-            revenue = booked_revenue + max(0.0, c["nights"] - booked_nights) * adr_remaining
-            low = booked_revenue + max(0.0, c["low"] - booked_nights) * adr_remaining
-            high = booked_revenue + max(0.0, c["high"] - booked_nights) * adr_remaining
+            priced_at = lambda n: (
+                (booked_revenue + max(0.0, n - booked_nights) * adr_remaining) * mult + other
+            )
+            revenue = priced_at(c["nights"])
+            low = priced_at(c["low"])
+            high = priced_at(c["high"])
 
         target = targets.get((bid, y, m), {})
         priced.append({

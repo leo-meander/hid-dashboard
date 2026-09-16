@@ -69,20 +69,6 @@ def _to_vnd(amount: Optional[float], currency: Optional[str]) -> Optional[float]
     return amount * (get_cached_rate(currency or "VND", "VND") or 1.0)
 
 
-def _adjust(raw: Optional[float], branch: Branch) -> Optional[float]:
-    """The forecast put on the same footing as a settled month's actual.
-
-    `month_actual_and_target` reads a Cloudbeds month as
-    `revenue × (1 − deduct%) + other_revenue`, and the target was set against
-    that. A forecast compared with the target un-adjusted would be measuring
-    two different things — visibly so on any branch that carries a deduction.
-    """
-    if raw is None:
-        return None
-    mult = 1 - float(branch.deduction_pct or 0) / 100
-    return raw * mult + float(branch.other_revenue_native or 0)
-
-
 def _settled_revenue(db: Session, branch_ids: list, year: int) -> dict:
     """Cloudbeds revenue per (branch, month) — the KPI grid's raw input."""
     rows = db.query(

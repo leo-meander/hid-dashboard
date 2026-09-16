@@ -685,3 +685,32 @@ def test_needed_undoes_the_adjustments_before_dividing(monkeypatch):
     raw_target = (3_000_000 - 100_000) / 0.94
     assert r["needed_room_nights"] == pytest.approx(
         500 + (raw_target - 1_000_000) / r["adr"], abs=1)
+
+
+def test_every_revenue_in_the_payload_is_on_one_basis(monkeypatch):
+    """Two estimators still price nights — the run-rate one the page reads, and
+    the year-ago one left in the payload. Both carry the branch's deduction and
+    other revenue, or a reader picking the wrong field gets a number off by the
+    deduction with nothing to say so."""
+    occ = {("b-osaka", 2026, 10): {"revenue": 1_000_000.0, "nights": 500, "adr": 2_000.0},
+           ("b-osaka", 2025, 10): {"revenue": 3_000_000.0, "nights": 1500, "adr": 2_000.0}}
+    meta = {**BRANCHES}
+    meta["b-osaka"] = {**meta["b-osaka"], "deduction_pct": 6.0,
+                       "other_revenue_native": 100_000.0}
+    monkeypatch.setattr(pace_forecast, "_monthly_adr", lambda *a, **k: occ)
+    monkeypatch.setattr(pace_forecast, "_targets", lambda *a, **k: {})
+    monkeypatch.setattr(pace_forecast, "get_cached_rate", lambda c, t="VND": 1.0)
+    out = build_forecast(
+        None,
+        [rr_cell("b-osaka", capacity=2201, otb=500, ly_otb=400, ly_final=1500,
+                 city="Osaka", pickup_nights=300.0, pickup_revenue=900_000.0)],
+        as_of=date(2026, 9, 15), branch_meta=meta, scoped_sources=False,
+    )
+    cell_row = out["cells"][0]
+    # The year-ago estimator: 1m booked + the nights it adds, then adjusted.
+    raw = 1_000_000.0 + max(0.0, cell_row["room_nights"] - 500) * cell_row["adr_remaining"]
+    assert cell_row["revenue_native"] == pytest.approx(raw * 0.94 + 100_000, rel=1e-3)
+    # And the run-rate one, which the page actually shows.
+    r = cell_row["run_rate"]
+    raw_rr = 1_000_000.0 + r["room_nights_added"] * r["adr"]
+    assert r["revenue_native"] == pytest.approx(raw_rr * 0.94 + 100_000, rel=1e-3)
