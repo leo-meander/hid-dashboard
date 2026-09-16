@@ -800,7 +800,7 @@ function ForecastCard({ data, oneMonth }) {
      shortBy == null
        ? "no target to price"
        : shortBy <= 0.05
-         ? "clear at this speed"
+         ? "already met at this speed"
          : `+${rr.needed_extra_per_day.toFixed(2)}/day to reach target`],
     ["revenue", "Revenue at this speed", shortMoney(revenue, currency),
      hit == null
