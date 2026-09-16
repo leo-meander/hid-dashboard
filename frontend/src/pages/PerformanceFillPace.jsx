@@ -733,6 +733,16 @@ function ForecastCard({ data, oneMonth }) {
               {" "}· {gap >= 0 ? "ahead by" : "short by"} {shortMoney(Math.abs(gap), currency)}
             </span>
           )}
+          {/* Name the rate. A revenue figure whose price nobody showed is a
+              figure nobody can check. */}
+          <div className="text-xs text-gray-500 mt-1">
+            {rr.adr
+              ? `Nights still to come priced at ${money(rr.adr, currency)} each — what the last
+                 ${rr.window_days} days actually sold at. Nights already booked keep what they
+                 sold for.`
+              : `Nights still to come priced at what each branch's last ${rr.window_days} days
+                 actually sold at. Nights already booked keep what they sold for.`}
+          </div>
         </div>
       )}
 

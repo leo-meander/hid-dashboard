@@ -817,6 +817,19 @@ def _block(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict:
     }
 
 
+def _blended_adr(cells: list[dict], branch_meta: dict) -> Optional[float]:
+    """One rate over a set of branch-months, or None where one cannot exist."""
+    currencies = {branch_meta.get(c["branch_id"], {}).get("currency") for c in cells}
+    if len(currencies) != 1:
+        return None
+    nights = sum(c["run_rate"]["room_nights_added"] for c in cells
+                 if c["run_rate"]["adr"])
+    if not nights:
+        return None
+    return round(sum(c["run_rate"]["room_nights_added"] * c["run_rate"]["adr"]
+                     for c in cells if c["run_rate"]["adr"]) / nights, 2)
+
+
 def _run_rate_block(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict:
     """The run-rate reading, summed. Nights add; percentages are divided out of
     the totals once at the end, never averaged across branch-months."""
@@ -876,6 +889,11 @@ def _run_rate_block(cells: list[dict], branch_meta: dict, capacity_basis: bool) 
                                 if revenue_vnd is not None and target_vnd else None),
         "capacity_capped": any(c["run_rate"]["capacity_capped"] for c in counted),
         "window_days": counted[0]["run_rate"]["window_days"] if counted else None,
+        # The rate the nights still to come are priced at, so the page can name
+        # it rather than leaving the reader to trust a revenue figure whose
+        # price nobody showed them. Weighted by the nights each cell adds, and
+        # only where one currency can carry it.
+        "adr": _blended_adr(counted, branch_meta),
         # Months whose target cannot be reached on rooms at today's rate. These
         # are not pace problems and must not be read as ones.
         "over_capacity": [
