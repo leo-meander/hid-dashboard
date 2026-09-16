@@ -1131,6 +1131,14 @@ function YearOutlook({ branchId, days }) {
   const gap = projection - target;
   const q4Hit = single ? single.q4_achievement_pct : t.q4_achievement_pct;
   const bankedPct = target ? (banked / target) * 100 : null;
+  // The ceiling: every room still unsold, sold, at the rate being taken now.
+  // It is the line between "fill faster" and "no amount of filling reaches
+  // this", and it is the whole reason the card can say what to do next.
+  const ceiling = single ? single.ceiling_native : t.ceiling_vnd;
+  const ceilingPct = single ? single.ceiling_achievement_pct : t.ceiling_achievement_pct;
+  const reachable = single ? single.reachable_on_rooms : t.reachable_on_rooms;
+  const perDay = single ? single.extra_per_day : t.extra_per_day;
+  const notReachable = t.not_reachable || [];
   const yearTip = single ? yearWorking(single, null) : yearGroupWorking(data);
   // One rate only where one currency can carry it; weighted by the nights
   // each projected month adds.
@@ -1234,27 +1242,32 @@ function YearOutlook({ branchId, days }) {
 
         <div>
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            {gap >= 0 ? "Ahead by" : "Short by"}<Tag kind="both" />
+            If every room sells<Tag kind="projected" />
           </div>
-          <HoverTooltip content={yearTip} width="w-96">
-            <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline">
-              {shortMoney(Math.abs(gap), cur)}
-            </div>
-          </HoverTooltip>
+          <div className={`text-3xl font-bold mt-1 tabular-nums ${
+            ceilingPct == null ? "text-gray-900"
+              : ceilingPct >= 100 ? "text-emerald-600" : "text-red-600"}`}>
+            {ceilingPct == null ? "—" : `${ceilingPct.toFixed(0)}%`}
+          </div>
           <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
-            {shortMoney(projection, cur)} of {shortMoney(target, cur)}
+            {shortMoney(ceiling, cur)} at today's rate
           </div>
         </div>
 
         <div>
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Banked · {monthSpan(data.settled_months)}<Tag kind="actual" />
+            To reach target<Tag kind="target" />
           </div>
-          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
-            {shortMoney(banked, cur)}
+          <div className={`text-3xl font-bold mt-1 tabular-nums ${
+            reachable === false ? "text-red-600" : "text-gray-900"}`}>
+            {gap >= 0 ? "met" : reachable === false ? "rate" : `+${(perDay || 0).toFixed(1)}/day`}
           </div>
           <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
-            {bankedPct === null ? "already earned" : `${bankedPct.toFixed(0)}% of the year's target, already earned`}
+            {gap >= 0
+              ? `ahead by ${shortMoney(gap, cur)}`
+              : reachable === false
+                ? "a full house still falls short"
+                : `more room-nights a day, ${monthSpan(data.projected_months)}`}
           </div>
         </div>
 
@@ -1272,6 +1285,27 @@ function YearOutlook({ branchId, days }) {
           </div>
         </div>
       </div>
+
+      {notReachable.length > 0 && (
+        <div className="mt-3 bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-900">
+          <div className="font-semibold">
+            {notReachable.length === 1 ? "One branch cannot" : `${notReachable.length} branches cannot`}
+            {" "}reach the year on rooms — selling out would still fall short
+          </div>
+          <ul className="mt-1 space-y-0.5">
+            {notReachable.map((b) => (
+              <li key={b.branch_id} className="tabular-nums">
+                {b.branch_name}: a full house at today's rate reaches{" "}
+                {b.ceiling_pct == null ? "—" : `${b.ceiling_pct.toFixed(0)}%`} of the year.
+                {b.adr_for_target
+                  ? ` Clearing it needs ${money(b.adr_for_target, b.currency)} a night.`
+                  : ""}
+              </li>
+            ))}
+          </ul>
+          <div className="mt-1 opacity-80">Rate, or a target that moves. Not pace.</div>
+        </div>
+      )}
 
       {!single && (
         <div className="mt-4 overflow-x-auto">

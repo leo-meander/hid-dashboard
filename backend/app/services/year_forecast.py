@@ -170,7 +170,9 @@ def forecast_year(
                 cloudbeds.get((bid, m), 0.0),
             )["actual_revenue"]
 
-        projected = low = high = 0.0
+        projected = low = high = ceiling = 0.0
+        rooms_to_sell = 0.0
+        extra_per_day = 0.0
         missing = []
         # One line per projected month, carrying what it was built from. The
         # page shows its working from this rather than asserting a total.
@@ -188,6 +190,10 @@ def forecast_year(
             projected += adjusted
             low += adjusted
             high += adjusted
+            # The ceiling: every room still unsold, sold, at today's rate.
+            ceiling += c["run_rate"].get("revenue_max_native") or adjusted
+            rooms_to_sell += c["run_rate"].get("room_nights_to_sell") or 0
+            extra_per_day += c["run_rate"].get("needed_extra_per_day") or 0
             detail.append({
                 "month": m,
                 "revenue_native": round(adjusted, 2),
@@ -223,6 +229,21 @@ def forecast_year(
         q4_complete = not [m for m in Q4 if m in missing]
 
         projection = actual + projected
+        # What it would take. Under the ceiling the target is a question of
+        # filling faster; above it, no amount of filling reaches it and the
+        # only lever left is the rate.
+        ceiling_total = actual + ceiling
+        reachable = ceiling_total >= target_covered if target_covered else None
+        adr_for_target = None
+        if target_covered and not reachable and rooms_to_sell:
+            booked = sum((by_cell.get((bid, m)) or {}).get("booked_revenue_native") or 0
+                         for m in open_months if m not in missing)
+            mult = 1 - float(branch.deduction_pct or 0) / 100
+            other = float(branch.other_revenue_native or 0) * len(
+                [m for m in open_months if m not in missing])
+            raw_needed = ((target_covered - actual) - other) / mult if mult else None
+            if raw_needed and raw_needed > booked:
+                adr_for_target = (raw_needed - booked) / rooms_to_sell
         rows.append({
             "branch_id": bid,
             "branch_name": branch.name,
@@ -241,6 +262,13 @@ def forecast_year(
                                     if target_covered else None),
             "achievement_high_pct": (round((actual + high) / target_covered * 100, 1)
                                      if target_covered else None),
+            "ceiling_native": round(ceiling_total, 2),
+            "ceiling_achievement_pct": (round(ceiling_total / target_covered * 100, 1)
+                                        if target_covered else None),
+            "reachable_on_rooms": reachable,
+            "room_nights_to_sell": round(rooms_to_sell, 1),
+            "extra_per_day": round(extra_per_day, 2),
+            "adr_for_target_native": round(adr_for_target, 2) if adr_for_target else None,
             "months_not_projected": missing,
             "projected_detail": detail,
             "settled_count": len(settled),
@@ -279,6 +307,7 @@ def _group_total(rows: list[dict]) -> dict:
         return round(total, 2)
 
     projection = vnd("projection_native")
+    ceiling = vnd("ceiling_native")
     target = vnd("target_native")
     q4_rows = [r for r in rows if r["q4_projection_native"] is not None]
     q4_projection = round(sum(_to_vnd(r["q4_projection_native"], r["currency"]) or 0
@@ -297,6 +326,17 @@ def _group_total(rows: list[dict]) -> dict:
         "target_full_year_vnd": vnd("target_full_year_native"),
         "gap_vnd": round(projection - target, 2),
         "achievement_pct": round(projection / target * 100, 1) if target else None,
+        "ceiling_vnd": ceiling,
+        "ceiling_achievement_pct": (round(ceiling / target * 100, 1) if target else None),
+        "reachable_on_rooms": (ceiling >= target) if target else None,
+        "extra_per_day": round(sum(r.get("extra_per_day") or 0 for r in rows), 2),
+        # Branches whose target cannot be reached by filling, whatever the pace.
+        "not_reachable": [
+            {"branch_id": r["branch_id"], "branch_name": r["branch_name"],
+             "currency": r["currency"], "ceiling_pct": r["ceiling_achievement_pct"],
+             "adr_for_target": r["adr_for_target_native"]}
+            for r in rows if r["reachable_on_rooms"] is False
+        ],
         "achievement_low_pct": (round(vnd("projection_low_native") / target * 100, 1)
                                 if target else None),
         "achievement_high_pct": (round(vnd("projection_high_native") / target * 100, 1)

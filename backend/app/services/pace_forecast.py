@@ -403,13 +403,28 @@ def _run_rate(cell: dict, book: dict, as_of: date,
         return round(nights / capacity * 100, 2) if capacity and nights is not None else None
 
     reach = min(otb + added, ceiling)
+    # The ceiling in money: every remaining room sold, at the rate the branch
+    # is currently getting. It is the line between "go faster" and "no amount
+    # of filling fixes this" — a target above it cannot be reached on rooms.
+    room_to_sell = max(0.0, ceiling - otb)
     # What the gap is worth as a change of speed, which is the form it can be
     # acted on in: "three more room-nights a day", not "4.7 points".
     extra = max(0.0, needed - reach) if needed is not None else None
     extra_per_day = (extra / days_left) if (extra is not None and days_left) else None
+    priceable = booked_revenue is not None and window_adr and factor
     revenue = (
         (booked_revenue + (reach - otb) / factor * window_adr) * mult + other_revenue
-        if booked_revenue is not None and window_adr and factor else None
+        if priceable else None
+    )
+    revenue_max = (
+        (booked_revenue + room_to_sell / factor * window_adr) * mult + other_revenue
+        if priceable else None
+    )
+    # And the rate that would clear the target with every room sold. Above the
+    # rate being taken now, the target needs a price rise, not a push.
+    adr_for_target = (
+        ((raw_target - booked_revenue) / (room_to_sell / factor))
+        if (raw_target and booked_revenue is not None and room_to_sell and factor) else None
     )
     return {
         "days_left": days_left,
@@ -433,6 +448,9 @@ def _run_rate(cell: dict, book: dict, as_of: date,
         "needed_over_capacity": bool(needed is not None and needed > ceiling),
         "adr_needed": round(adr_needed, 2) if adr_needed else None,
         "revenue_native": round(revenue, 2) if revenue is not None else None,
+        "revenue_max_native": round(revenue_max, 2) if revenue_max is not None else None,
+        "room_nights_to_sell": round(room_to_sell, 1),
+        "adr_for_target": round(adr_for_target, 2) if adr_for_target else None,
         "capacity_capped": otb + added > ceiling,
     }
 
@@ -884,6 +902,8 @@ def _run_rate_block(cells: list[dict], branch_meta: dict, capacity_basis: bool) 
     reach = nights(counted, "room_nights")
     needed = nights(needed_rows, "needed_room_nights")
     revenue = money(priced, "revenue_native")
+    revenue_max = money(priced, "revenue_max_native")
+    revenue_max_vnd = money(priced, "revenue_max_native", conv=True)
     target = money(priced, "target_native")
     revenue_vnd = money(priced, "revenue_native", conv=True)
     target_vnd = money(priced, "target_native", conv=True)
@@ -909,6 +929,12 @@ def _run_rate_block(cells: list[dict], branch_meta: dict, capacity_basis: bool) 
                             if revenue is not None and target else None),
         "achievement_vnd_pct": (round(revenue_vnd / target_vnd * 100, 1)
                                 if revenue_vnd is not None and target_vnd else None),
+        "revenue_max_native": revenue_max,
+        "revenue_max_vnd": revenue_max_vnd,
+        "achievement_max_pct": (round(revenue_max / target * 100, 1)
+                                if revenue_max is not None and target else None),
+        "achievement_max_vnd_pct": (round(revenue_max_vnd / target_vnd * 100, 1)
+                                    if revenue_max_vnd is not None and target_vnd else None),
         "capacity_capped": any(c["run_rate"]["capacity_capped"] for c in counted),
         "window_days": counted[0]["run_rate"]["window_days"] if counted else None,
         # The rate the nights still to come are priced at, so the page can name

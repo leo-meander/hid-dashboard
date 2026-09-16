@@ -88,6 +88,9 @@ def cell(bid, month, revenue, *, low=None, high=None, target=0.0):
             "room_nights_per_day": 10.0,
             "days_left": 46,
             "adr": 1000.0,
+            "revenue_max_native": (revenue * 1.5) if revenue is not None else None,
+            "room_nights_to_sell": 500.0,
+            "needed_extra_per_day": 0.0,
         },
     }
 
@@ -281,3 +284,46 @@ def test_the_projection_carries_no_error_band(scenario):
     row = out["branches"][0]
     assert row["projection_low_native"] == row["projection_native"]
     assert row["projection_high_native"] == row["projection_native"]
+
+
+# ── can it be reached at all ─────────────────────────────────────────────────
+
+def test_the_ceiling_says_whether_filling_can_reach_the_target(scenario):
+    """Selling every remaining room at today's rate is the most the year can
+    earn without touching price. A target above that line is not a pace
+    problem and no amount of filling faster gets there."""
+    out = scenario(
+        [FakeBranch("b1", "1948")],
+        targets=flat(1_000_000.0),
+        cloudbeds={("b1", m): 1_000_000.0 for m in range(1, 9)},
+        # 900k projected a month, 1.35m if every room sells (the double's 1.5x)
+        cells=[cell("b1", m, 900_000.0) for m in (9, 10, 11, 12)],
+    )
+    row = out["branches"][0]
+
+    assert row["projection_native"] == 8_000_000 + 3_600_000
+    assert row["ceiling_native"] == 8_000_000 + 4 * 1_350_000
+    assert row["ceiling_achievement_pct"] == pytest.approx(
+        row["ceiling_native"] / 12_000_000 * 100, abs=0.1)
+    # 13.4m against a 12m target: filling faster is enough.
+    assert row["reachable_on_rooms"] is True
+    assert row["adr_for_target_native"] is None
+
+
+def test_a_target_above_the_ceiling_names_the_rate_instead(scenario):
+    """Where a full house still falls short, the only lever left is the rate,
+    so the row carries what the rate would have to be rather than a speed."""
+    out = scenario(
+        [FakeBranch("b1", "1948")],
+        targets=flat(3_000_000.0),                       # 36m for the year
+        cloudbeds={("b1", m): 1_000_000.0 for m in range(1, 9)},
+        cells=[cell("b1", m, 900_000.0) for m in (9, 10, 11, 12)],
+    )
+    row = out["branches"][0]
+
+    assert row["reachable_on_rooms"] is False
+    # 36m target, 8m banked, 1.6m already booked over the four months,
+    # 2,000 room-nights left to sell.
+    assert row["adr_for_target_native"] == pytest.approx(
+        ((36_000_000 - 8_000_000) - 4 * 400_000) / 2_000, rel=1e-3)
+    assert [b["branch_name"] for b in out["total"]["not_reachable"]] == ["1948"]
