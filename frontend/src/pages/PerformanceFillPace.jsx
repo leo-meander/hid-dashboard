@@ -34,6 +34,12 @@ const LAST_YEAR = "#f59e0b";   // amber-500
 // useful ones. 90 and 180 reached so far back that the "speed now" they
 // reported was mostly last quarter's, and Custom still covers a long look.
 const WINDOWS = [7, 14, 30, 60];
+// The most of the house a month is taken to sell. It is an assumption, not a
+// measurement, and it is not the same number at every property — so it is on
+// the page rather than buried in the service, and the API takes it as a
+// parameter. Mirrors MIN_SETTABLE_OCC / MAX_SETTABLE_OCC on the endpoint.
+const DEFAULT_MAX_OCC = 95;
+const MIN_MAX_OCC = 50;
 // Mirrors MAX_WINDOW_DAYS on the endpoint. A custom range longer than this is
 // clamped server-side, so the page says so rather than showing a range it is
 // not actually reading.
@@ -1160,11 +1166,12 @@ function yearGroupWorking(data) {
  * have earned 79% of the year's target" and "we are on course for 96% of it"
  * are different claims, and only the second is a forecast.
  */
-function YearOutlook({ branchId, days }) {
+function YearOutlook({ branchId, days, maxOcc = DEFAULT_MAX_OCC }) {
   const { data, isPending, isError } = useQuery({
-    queryKey: ["kpi-pace-forecast", branchId || "all", days],
+    queryKey: ["kpi-pace-forecast", branchId || "all", days, maxOcc],
     queryFn: () => axios
-      .get(`/api/kpi/pace-forecast?days=${days}${branchId ? `&branch_id=${branchId}` : ""}`)
+      .get(`/api/kpi/pace-forecast?days=${days}${branchId ? `&branch_id=${branchId}` : ""}`
+           + (maxOcc !== DEFAULT_MAX_OCC ? `&max_occ=${maxOcc}` : ""))
       .then((r) => r.data.data),
     staleTime: 5 * 60 * 1000,
   });
@@ -1199,6 +1206,16 @@ function YearOutlook({ branchId, days }) {
   const perDay = single ? single.extra_per_day : t.extra_per_day;
   const notReachable = t.not_reachable || [];
   const yearTip = single ? yearWorking(single, null) : yearGroupWorking(data);
+  // Where the shortfall actually sits. A year at 79% with a Q4 at 37% is not a
+  // year that is slightly behind — it is two good quarters and a hole — and
+  // the per-day figure beside it cannot be aimed until the hole is named.
+  const weakest = (() => {
+    const rows = (single?.projected_detail || []).filter((d) => d.target_native > 0);
+    if (!rows.length) return null;
+    return rows
+      .map((d) => ({ month: d.month, pct: (d.revenue_native / d.target_native) * 100 }))
+      .sort((a, b) => a.pct - b.pct)[0];
+  })();
   // One rate only where one currency can carry it; weighted by the nights
   // each projected month adds.
   const yearAdr = (() => {
@@ -1412,43 +1429,51 @@ function YearOutlook({ branchId, days }) {
 
         <div>
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Still to sell · {monthSpan(data.projected_months)}<Tag kind="projected" />
+            Q4 at this speed<Tag kind="both" />
           </div>
           <HoverTooltip width="w-96" content={
             <>
               <div className="font-semibold text-white mb-1">
-                Money the open months are on course to add
+                Where Q4 lands against its own target
               </div>
               <div className="text-gray-300 mb-1.5">
-                the whole year at this speed − what is already banked
+                October, November and December — the part of the year still winnable
               </div>
               <div className="space-y-0.5">
-                <TipRow label={monthSpan(data.settled_months)}>
-                  {shortMoney(banked, cur)} banked
-                </TipRow>
-                <TipRow label={monthSpan(data.projected_months)} strong>
-                  {shortMoney(toCome, cur)} projected
-                </TipRow>
+                {(single?.projected_detail || [])
+                  .filter((d) => d.month >= 10 && d.target_native > 0)
+                  .map((d) => (
+                    <TipRow key={d.month} label={MONTH_ABBR[d.month - 1]}>
+                      {`${((d.revenue_native / d.target_native) * 100).toFixed(0)}% · `}
+                      {shortMoney(d.revenue_native, cur)} of {shortMoney(d.target_native, cur)}
+                    </TipRow>
+                  ))}
+                <TipRow label="Open months worth" strong>{shortMoney(toCome, cur)}</TipRow>
               </div>
               <div className="text-gray-500 mt-1.5">
-                What the months still open are worth if they keep filling at the speed they are
-                filling now — the part of the year still in play, including the nights already
-                on the books for those months.
+                The year above reads far better than this because most of it is already banked.
+                Q4 is the part still being sold, so it is the part a decision can change — and
+                the gap the tile beside this one prices is nearly all here.
               </div>
               <div className="text-gray-500 mt-1">
-                Months far out sit low here by construction: almost nothing is booked yet and
-                the speed is read off a thin window. Treat it as a floor.
+                December sits lowest by construction every time it is read in September: almost
+                nothing is booked that far out, and the speed is measured on a thin window.
+                Treat a far-out month as a floor, not a verdict.
               </div>
             </>
           }>
-            <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline">
-              {shortMoney(toCome, cur)}
+            <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
+              q4Hit == null ? "text-gray-900"
+                : q4Hit >= 100 ? "text-emerald-600" : "text-red-600"}`}>
+              {q4Hit == null ? "—" : `${q4Hit.toFixed(0)}%`}
             </div>
           </HoverTooltip>
           <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
-            {q4Hit === null || q4Hit === undefined
+            {q4Hit == null
               ? "Q4 not fully projected"
-              : `Q4 alone reaches ${q4Hit.toFixed(0)}% of its target`}
+              : weakest
+                ? `of target · weakest ${MONTH_ABBR[weakest.month - 1]} at ${weakest.pct.toFixed(0)}%`
+                : "of its own target"}
           </div>
         </div>
       </div>
@@ -1566,6 +1591,7 @@ export default function PerformanceFillPace() {
   const { selected, isAll } = useBranch();
   const [stayMonths, setStayMonths] = useState(() => [defaultMonth()]);
   const [days, setDays] = useState(60);
+  const [maxOcc, setMaxOcc] = useState(DEFAULT_MAX_OCC);
   // null while a preset is active; {from, to} once a custom range is picked.
   const [range, setRange] = useState(null);
   const [sources, setSources] = useState([]);
@@ -1592,10 +1618,11 @@ export default function PerformanceFillPace() {
   if (!isAll && selected) params.set("branch_id", selected);
   sources.forEach((s) => params.append("source", s));
   if (roomCategory) params.set("room_category", roomCategory);
+  if (maxOcc !== DEFAULT_MAX_OCC) params.set("max_occ", String(maxOcc));
 
   const { data, isPending, isError, error, isPlaceholderData } = useQuery({
     queryKey: ["fill-pace", stayMonths.join("|"), effectiveDays, asOf, sources.join("|"),
-               roomCategory, selected, isAll],
+               roomCategory, selected, isAll, maxOcc],
     queryFn: () => axios.get(`/api/metrics/fill-pace?${params}`).then((r) => r.data.data),
     placeholderData: keepPreviousData,
   });
@@ -1840,6 +1867,26 @@ export default function PerformanceFillPace() {
           </select>
         </Field>
 
+        <Field label="Sells at most">
+          <div className="flex items-center gap-1">
+            <input
+              type="number" min={MIN_MAX_OCC} max={100} step={1} value={maxOcc}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (Number.isFinite(n)) setMaxOcc(Math.min(100, Math.max(MIN_MAX_OCC, n)));
+              }}
+              className="w-16 px-2 py-1.5 text-sm border border-gray-300 rounded-lg tabular-nums"
+            />
+            <span className="text-sm text-gray-500">% OCC</span>
+            {maxOcc !== DEFAULT_MAX_OCC && (
+              <button onClick={() => setMaxOcc(DEFAULT_MAX_OCC)}
+                      className="text-xs text-gray-400 hover:text-gray-700 underline">
+                reset
+              </button>
+            )}
+          </div>
+        </Field>
+
         {data && (
           <div className="text-xs text-gray-500 ml-auto leading-relaxed">
             Booked {shortDate(data.window.from)}–{shortDate(data.window.to)} ({data.days}d)
@@ -2010,7 +2057,8 @@ export default function PerformanceFillPace() {
 
           {compare && <ForecastCard data={data} oneMonth={oneMonth} />}
 
-          <YearOutlook branchId={!isAll && selected ? selected : null} days={effectiveDays} />
+          <YearOutlook branchId={!isAll && selected ? selected : null} days={effectiveDays}
+                       maxOcc={maxOcc} />
 
           {/* The speed. The cumulative curve that used to sit above this was
               dropped: a line that only ever rises said less about pace than

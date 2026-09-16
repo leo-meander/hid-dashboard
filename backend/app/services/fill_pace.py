@@ -45,7 +45,7 @@ from app.services.metrics_engine import (
     EXCLUDED_SOURCES_OCC,
     EXCLUDED_SOURCES_REVENUE,
 )
-from app.services.pace_forecast import build_forecast
+from app.services.pace_forecast import MAX_FORECAST_OCC, build_forecast
 
 logger = logging.getLogger(__name__)
 
@@ -457,6 +457,7 @@ def get_fill_pace(
     compare_last_year: bool = True,
     today: Optional[date] = None,
     include_forecast: bool = False,
+    max_occ: float = MAX_FORECAST_OCC,
 ) -> dict:
     """Fill pace for one or more stay months, optionally narrowed to a set of
     sources.
@@ -767,6 +768,7 @@ def get_fill_pace(
         result["forecast"] = build_forecast(
             db, cells, as_of=as_of, branch_meta=branches,
             scoped_sources=bool(wanted), room_category=room_category,
+            max_occ=max_occ,
         )
         # "On the books" is the one figure on this page that is a statement
         # about occupancy rather than about pace, and the two are not counted

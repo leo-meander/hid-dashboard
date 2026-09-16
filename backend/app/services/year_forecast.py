@@ -103,6 +103,7 @@ def forecast_year(
     year: Optional[int] = None,
     as_of: Optional[date] = None,
     days: int = 60,
+    max_occ: float = MAX_FORECAST_OCC,
 ) -> dict:
     """Where the year lands against its revenue target, branch by branch.
 
@@ -142,6 +143,7 @@ def forecast_year(
             as_of=as_of,
             compare_last_year=True,
             include_forecast=True,
+            max_occ=max_occ,
         )
         cells = (pace.get("forecast") or {}).get("cells") or []
 
@@ -275,7 +277,7 @@ def forecast_year(
         # What "if every room sells" actually means. The ceiling stops here
         # rather than at a full house, and the page says which it is instead
         # of letting a reader assume 100%.
-        "max_occ_pct": round(MAX_FORECAST_OCC * 100, 1),
+        "max_occ_pct": round(max_occ * 100, 1),
         "branches": rows,
         "total": _group_total(rows),
     }

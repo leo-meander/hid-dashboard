@@ -30,6 +30,11 @@ from app.services.metrics_engine import (
     get_country_yoy_insights_local,
 )
 from app.services.fill_pace import MAX_STAY_MONTHS, MAX_WINDOW_DAYS, get_fill_pace
+from app.services.pace_forecast import (
+    MAX_FORECAST_OCC,
+    MAX_SETTABLE_OCC,
+    MIN_SETTABLE_OCC,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -377,6 +382,10 @@ def get_fill_pace_endpoint(
     ),
     room_category: Optional[str] = Query(None, pattern="^(?:[Rr]oom|[Dd]orm)$"),
     compare_last_year: bool = Query(True),
+    max_occ: float = Query(
+        MAX_FORECAST_OCC * 100, ge=MIN_SETTABLE_OCC * 100, le=MAX_SETTABLE_OCC * 100,
+        description="The most of the house a month is taken to sell, as a percentage. It caps both the sell-out ceiling and the run-rate projection, because a pace carried past what the branch can fill is not a forecast. Defaults to 95.",
+    ),
     forecast: bool = Query(
         True,
         description="Project where each stay month lands from the pace so far, "
@@ -430,6 +439,7 @@ def get_fill_pace_endpoint(
         room_category=room_category,
         compare_last_year=compare_last_year,
         include_forecast=forecast,
+        max_occ=max_occ / 100,
     )
     result["data_synced_at"] = _last_reservations_synced_at(db, branch_id)
     return _envelope(result)

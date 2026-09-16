@@ -132,6 +132,38 @@ def test_nothing_sells_more_than_the_house_holds(monkeypatch):
     assert r["capacity_capped"] is True
 
 
+def test_the_ceiling_is_the_readers_number_when_they_set_one(monkeypatch):
+    """95% is a default, not a fact. A house that never clears 90 can say so,
+    and both readings move together — the sell-out and the speed alike."""
+    occ = {("b-1948", 2026, 10): {"revenue": 1_324_000.0, "nights": 662, "adr": 2000.0}}
+    args = dict(occ=occ, targets={("b-1948", 2026, 10): {"native": 9_000_000.0, "vnd": 0.0}})
+
+    loose = run(monkeypatch, [cell(otb=1500, pickup_nights=3000.0)], **args)
+    tight = run(monkeypatch, [cell(otb=1500, pickup_nights=3000.0)], max_occ=0.90, **args)
+
+    assert loose["max_occ_pct"] == 95.0
+    assert tight["max_occ_pct"] == 90.0
+    # The speed projection is capped by it …
+    assert loose["cells"][0]["run_rate"]["room_nights"] == pytest.approx(2139 * 0.95, abs=1)
+    assert tight["cells"][0]["run_rate"]["room_nights"] == pytest.approx(2139 * 0.90, abs=1)
+    # … and so is the sell-out, which is the whole point of lowering it.
+    assert (tight["cells"][0]["run_rate"]["revenue_max_native"]
+            < loose["cells"][0]["run_rate"]["revenue_max_native"])
+    assert (tight["cells"][0]["run_rate"]["room_nights_to_sell"]
+            < loose["cells"][0]["run_rate"]["room_nights_to_sell"])
+
+
+def test_a_lower_ceiling_asks_a_higher_rate_of_a_full_house(monkeypatch):
+    """Fewer rooms to sell the same money over. The rate that would clear the
+    target at a full house has to rise when the house is taken to be smaller."""
+    occ = {("b-1948", 2026, 10): {"revenue": 1_324_000.0, "nights": 662, "adr": 2000.0}}
+    args = dict(occ=occ, targets={("b-1948", 2026, 10): {"native": 9_000_000.0, "vnd": 0.0}})
+
+    loose = run(monkeypatch, [cell()], **args)["cells"][0]["run_rate"]
+    tight = run(monkeypatch, [cell()], max_occ=0.85, **args)["cells"][0]["run_rate"]
+    assert tight["adr_for_target"] > loose["adr_for_target"]
+
+
 # ── counting a sold night the way the target counts it ──────────────────────
 
 def test_the_book_comes_from_the_table_the_target_is_set_against(monkeypatch):

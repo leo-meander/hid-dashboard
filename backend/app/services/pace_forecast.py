@@ -87,6 +87,11 @@ logger = logging.getLogger(__name__)
 # returns 104% occupancy. When the cap binds, the month is reported as
 # `capacity_capped` so nobody reads the ceiling as a prediction.
 MAX_FORECAST_OCC = 0.95
+# Nobody outside revenue management knows what a house can really sell, and it
+# is not the same number in Osaka as in Taipei. The default above is a safe
+# ceiling rather than a claim; the page lets a reader put their own in and see
+# the answer move, which is the only honest way to publish an assumption.
+MIN_SETTABLE_OCC, MAX_SETTABLE_OCC = 0.50, 1.00
 
 # The two counts of a sold night, and how far apart they are allowed to read.
 # The ratio is taken from the same bookings counted both ways, so it cannot
@@ -182,7 +187,8 @@ def _days_left(year: int, month: int, as_of: date) -> int:
 
 def _run_rate(cell: dict, book: dict, as_of: date,
               adr: Optional[float], target: Optional[float],
-              deduction_pct: float = 0.0, other_revenue: float = 0.0) -> dict:
+              deduction_pct: float = 0.0, other_revenue: float = 0.0,
+              max_occ: float = MAX_FORECAST_OCC) -> dict:
     """The month in points of occupancy: what is sold, what each source of
     nights adds on top, and what the target asks for.
 
@@ -239,7 +245,11 @@ def _run_rate(cell: dict, book: dict, as_of: date,
     window_adr = (cell["pickup_revenue"] / beds) if beds else None
     otb = cell["otb_units"]
     capacity = cell["capacity"]
-    ceiling = capacity * MAX_FORECAST_OCC
+    # One ceiling for both readings on purpose. It is the most this house is
+    # taken to sell, so it caps the speed projection for the same reason it
+    # caps the sell-out: a pace that extrapolates past what the branch can
+    # fill is not a faster branch, it is arithmetic with no brakes.
+    ceiling = capacity * max_occ
 
     added = per_day * days_left
     ly_added = max(0.0, cell["ly_final_nights"] - cell["ly_otb_nights"]) * factor
@@ -442,6 +452,7 @@ def build_forecast(
     branch_meta: dict,
     scoped_sources: bool,
     room_category: Optional[str] = None,
+    max_occ: float = MAX_FORECAST_OCC,
 ) -> dict:
     """Where the selected stay months land, and what that is against target.
 
@@ -532,6 +543,7 @@ def build_forecast(
                 c, book, as_of, adr_remaining, target.get("native"),
                 deduction_pct=branch_meta.get(bid, {}).get("deduction_pct", 0.0),
                 other_revenue=branch_meta.get(bid, {}).get("other_revenue_native", 0.0),
+                max_occ=max_occ,
             ),
             "adr_remaining": round(adr_remaining, 2) if adr_remaining else None,
             "adr_yoy": round(trend, 3) if trend is not None else None,
@@ -546,6 +558,9 @@ def build_forecast(
         "as_of": as_of.isoformat(),
         "capacity_basis": not scoped_sources,
         "method": "run_rate",
+        # Said out loud, because every occupancy on the card is capped by it
+        # and a reader cannot see an assumption that is only in the code.
+        "max_occ_pct": round(max_occ * 100, 1),
         "total": _roll_up(priced, branch_meta, capacity_basis=not scoped_sources),
         "months": _by_month(priced, branch_meta, capacity_basis=not scoped_sources),
         "branches": _by_branch(priced, branch_meta, capacity_basis=not scoped_sources),

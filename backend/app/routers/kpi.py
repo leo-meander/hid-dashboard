@@ -20,6 +20,11 @@ from app.services.kpi_engine import (
 )
 from app.services.currency import get_cached_rate
 from app.services.report_common import ict_today
+from app.services.pace_forecast import (
+    MAX_FORECAST_OCC,
+    MAX_SETTABLE_OCC,
+    MIN_SETTABLE_OCC,
+)
 from app.services.year_forecast import forecast_year
 
 router = APIRouter()
@@ -336,6 +341,12 @@ def kpi_pace_forecast(
     branch_id: Optional[UUID] = Query(None),
     days: int = Query(60, ge=1, le=365,
                       description="Booking window the pace is read over."),
+    max_occ: float = Query(
+        MAX_FORECAST_OCC * 100, ge=MIN_SETTABLE_OCC * 100, le=MAX_SETTABLE_OCC * 100,
+        description="The most of the house a month is taken to sell, as a "
+                    "percentage. Caps both the sell-out ceiling and the "
+                    "run-rate projection. Defaults to 95.",
+    ),
     db: Session = Depends(get_db),
 ):
     """Where the year's revenue lands against its target, on current pace.
@@ -355,6 +366,7 @@ def kpi_pace_forecast(
         year=year or ict_today().year,
         as_of=ict_today(),
         days=days,
+        max_occ=max_occ / 100,
     ))
 
 
