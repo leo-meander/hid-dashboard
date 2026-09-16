@@ -566,6 +566,12 @@ def _cell_row(c: dict, branch_meta: dict) -> dict:
         "adr_remaining": c["adr_remaining"],
         "adr_yoy": c["adr_yoy"],
         "booked_revenue_native": c["booked_revenue_native"],
+        # The two adjustments already inside every money figure above, so the
+        # page can name them rather than leave a reader to wonder whether the
+        # number is gross or net.
+        "deduction_pct": branch_meta.get(c["branch_id"], {}).get("deduction_pct", 0.0),
+        "other_revenue_native": branch_meta.get(c["branch_id"], {}).get(
+            "other_revenue_native", 0.0),
     }
 
 

@@ -643,8 +643,10 @@ function pointsWorking(cells, block, which) {
            evenly, so this is the floor if nothing speeds up.`}
         {which === "needed" &&
           `Target revenue minus what is already booked, divided by the same rate the nights
-           beside it are priced at — the ${block.window_days}-day window's own. Above 100% means
-           a full house would still be short, which is a rate problem, not a pace one.`}
+           beside it are priced at — the ${block.window_days}-day window's own. The branch's
+           deduction and other revenue are taken back off the target first, so both sides of
+           the comparison sit on one basis. Above 100% means a full house would still be short,
+           which is a rate problem, not a pace one.`}
       </div>
       <div className="text-gray-500 mt-1">
         Percentages are divided out of the totals once — never averaged across months or branches.
@@ -736,12 +738,52 @@ function revenueWorking(cells, block, currency) {
         Nights already booked keep the revenue they actually sold for; only the nights still to
         come are priced at the window's rate.
       </div>
+      <Adjustments cells={cells} />
     </>
   );
 }
 
+/**
+ * The branch's deduction and other revenue are inside every money figure on
+ * these cards, because the KPI target was set against a number that already
+ * has them. Said out loud wherever money is explained — a reader cannot tell
+ * gross from net by looking, and four of the five branches carry one or both.
+ */
+function Adjustments({ cells }) {
+  const carried = cells.filter(
+    (c) => (c.deduction_pct || 0) !== 0 || (c.other_revenue_native || 0) !== 0);
+  if (!carried.length) {
+    return (
+      <div className="text-gray-500 mt-1">
+        Net of the branch's deduction and including its other revenue, the same basis the KPI
+        target was set on. Neither applies here.
+      </div>
+    );
+  }
+  const seen = new Map();
+  carried.forEach((c) => seen.set(c.branch_id, c));
+  return (
+    <div className="text-gray-500 mt-1">
+      Net of the branch's deduction and including its other revenue — the same basis the KPI
+      target was set on:{" "}
+      {[...seen.values()].map((c, i) => (
+        <span key={c.branch_id}>
+          {i > 0 && ", "}
+          {c.branch_name.replace("MEANDER ", "")}{" "}
+          {c.deduction_pct ? `−${c.deduction_pct}%` : ""}
+          {c.deduction_pct && c.other_revenue_native ? " and " : ""}
+          {c.other_revenue_native
+            ? `+${money(c.other_revenue_native, c.currency)} a month`
+            : ""}
+        </span>
+      ))}
+      .
+    </div>
+  );
+}
+
 /** Everything the card used to say in paragraphs under itself. */
-function cardWorking(rr, revenue, target, currency, oneMonth) {
+function cardWorking(rr, revenue, target, currency, oneMonth, cells) {
   return (
     <>
       <div className="font-semibold text-white mb-1">
@@ -776,6 +818,7 @@ function cardWorking(rr, revenue, target, currency, oneMonth) {
           {rr.window_days} days actually sold at. Nights already booked keep what they sold for.
         </div>
       )}
+      <Adjustments cells={cells} />
     </>
   );
 }
@@ -867,7 +910,7 @@ function ForecastCard({ data, oneMonth }) {
     <div className="bg-white border border-gray-200 rounded-xl p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <HoverTooltip
-          content={cardWorking(rr, revenue, target, currency, oneMonth)}
+          content={cardWorking(rr, revenue, target, currency, oneMonth, cells)}
           width="w-96"
         >
           <h2 className="text-sm font-semibold text-gray-800 decoration-dotted underline-offset-4 hover:underline">
