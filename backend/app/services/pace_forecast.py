@@ -298,6 +298,71 @@ def _forecast_cell(cell: dict, occ: dict, branch_meta: dict,
     }
 
 
+# ── keeping today's speed ────────────────────────────────────────────────────
+#
+# A second reading of the same month, and a deliberately literal one: measure
+# how many room-nights a booking day is currently adding, and carry that number
+# forward, flat, to the end of the stay month.
+#
+#     nights   = on the books + (room-nights per booking day × days left to sell)
+#     revenue  = booked so far + those nights × the rate they are selling at now
+#
+# Both inputs come from the window the page is set to. Change it from 30 days to
+# 90 and the speed, the rate and the answer all change with it — that is the
+# point of the control.
+#
+# WHAT IT IS NOT: a prediction of where the month ends. Bookings do not arrive at
+# a constant rate; they crowd towards check-in, and measured across settled
+# months this group picks up 1.5x to 4.6x more in each window than in the one
+# before. A month read 107 days out therefore projects far below anything it has
+# ever finished at — December 2026 lands at 24% occupancy on today's speed
+# against the 67% December 2025 actually finished at. That is not the model
+# failing; it is the model answering the question it was asked, which is "if the
+# next hundred days look exactly like the last thirty, where do we get to". Read
+# it as the floor under a month, and as the size of the acceleration the target
+# is asking for.
+
+def _days_left(year: int, month: int, as_of: date) -> int:
+    """Booking days from `as_of` to the last night of the stay month."""
+    return max(0, (date(year, month, _days_in_month(year, month)) - as_of).days + 1)
+
+
+def _run_rate(cell: dict, book: dict, as_of: date) -> dict:
+    """Where this branch-month gets to if today's speed simply continues.
+
+    Nights are carried in the unit the target is set in (see `_bed_factors`);
+    money is not converted at all, because the rate is revenue per reservation
+    night divided back out over reservation nights — the two cancel, and
+    reaching for the factor would apply it twice.
+    """
+    window = cell.get("window_days") or 0
+    pickup = cell.get("pickup_nights") or 0.0
+    days_left = _days_left(cell["year"], cell["month"], as_of)
+    if not window or cell["status"] == "finished":
+        days_left = 0
+
+    per_day = pickup / window if window else 0.0
+    adr = (cell["pickup_revenue"] / pickup) if pickup else None
+    added = per_day * days_left
+    capacity = cell["capacity"]
+
+    nights = min(cell["otb_units"] + added * cell["bed_factor"],
+                 capacity * MAX_FORECAST_OCC)
+    booked_revenue = book.get("revenue")
+    revenue = (booked_revenue + added * adr) if (booked_revenue is not None and adr) else None
+    return {
+        "days_left": days_left,
+        "window_days": window,
+        "room_nights_per_day": round(per_day, 2),
+        "adr": round(adr, 2) if adr else None,
+        "room_nights_added": round(added * cell["bed_factor"], 1),
+        "room_nights": round(nights, 1),
+        "occ_pct": round(nights / capacity * 100, 2) if capacity else None,
+        "revenue_native": round(revenue, 2) if revenue is not None else None,
+        "capacity_capped": cell["otb_units"] + added * cell["bed_factor"] > capacity * MAX_FORECAST_OCC,
+    }
+
+
 # ── money ────────────────────────────────────────────────────────────────────
 
 def _days_in_month(year: int, month: int) -> int:
@@ -491,6 +556,7 @@ def build_forecast(
         target = targets.get((bid, y, m), {})
         priced.append({
             **c,
+            "run_rate": _run_rate(c, book, as_of),
             "adr_remaining": round(adr_remaining, 2) if adr_remaining else None,
             "adr_yoy": round(trend, 3) if trend is not None else None,
             "adr_yoy_clipped": trend is not None and clipped != trend,
@@ -539,6 +605,7 @@ def _cell_row(c: dict, branch_meta: dict) -> dict:
         "revenue_low_native": c["revenue_low_native"],
         "revenue_high_native": c["revenue_high_native"],
         "target_native": c["target_native"],
+        "run_rate": c["run_rate"],
         # Every input the arithmetic used, so the page can show its working
         # rather than assert a number. A projection nobody can reconstruct is
         # a projection nobody should act on.
@@ -677,6 +744,51 @@ def _block(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict:
     }
 
 
+def _run_rate_block(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict:
+    """The run-rate reading, summed. Same rules as everything else here: add the
+    nights and the money, divide once at the end, and pair the target with the
+    branch-months that actually contributed revenue."""
+    counted = [c for c in cells if c["run_rate"]["room_nights"] is not None]
+    priced = [c for c in counted if c["run_rate"]["revenue_native"] is not None]
+    capacity = sum(c["capacity"] for c in counted)
+    nights = round(sum(c["run_rate"]["room_nights"] for c in counted), 2) if counted else None
+    per_day = round(sum(c["run_rate"]["room_nights_per_day"] for c in counted), 2)
+
+    def money(rows, key, conv=False):
+        if not rows:
+            return None
+        total = 0.0
+        for c in rows:
+            v = c["run_rate"][key] if key in c["run_rate"] else c[key]
+            if v is None:
+                continue
+            rate = (get_cached_rate(branch_meta.get(c["branch_id"], {}).get("currency")
+                                    or "VND", "VND") or 1.0) if conv else 1.0
+            total += v * rate
+        return round(total, 2)
+
+    revenue = money(priced, "revenue_native")
+    target = money(priced, "target_native")
+    revenue_vnd = money(priced, "revenue_native", conv=True)
+    target_vnd = money(priced, "target_native", conv=True)
+    return {
+        "room_nights": nights,
+        "occ_pct": (round(nights / capacity * 100, 2)
+                    if nights is not None and capacity and capacity_basis else None),
+        "room_nights_per_day": per_day,
+        "revenue_native": revenue,
+        "revenue_vnd": revenue_vnd,
+        "target_native": target,
+        "target_vnd": target_vnd,
+        "achievement_pct": (round(revenue / target * 100, 1)
+                            if revenue is not None and target else None),
+        "achievement_vnd_pct": (round(revenue_vnd / target_vnd * 100, 1)
+                                if revenue_vnd is not None and target_vnd else None),
+        "capacity_capped": any(c["run_rate"]["capacity_capped"] for c in counted),
+        "window_days": counted[0]["run_rate"]["window_days"] if counted else None,
+    }
+
+
 def _roll_up(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict:
     """Everything in scope, as one number per measure.
 
@@ -689,6 +801,7 @@ def _roll_up(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict
     currencies.discard(None)
     block = _block(cells, branch_meta, capacity_basis)
     block["currency"] = currencies.pop() if len(currencies) == 1 else None
+    block["run_rate"] = _run_rate_block(cells, branch_meta, capacity_basis)
     return block
 
 
@@ -714,6 +827,7 @@ def _by_branch(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> li
             "branch_name": meta.get("name"),
             "currency": meta.get("currency"),
             "adr_yoy": rows[0].get("adr_yoy"),
+            "run_rate": _run_rate_block(rows, branch_meta, capacity_basis),
             **_block(rows, branch_meta, capacity_basis),
         })
     out.sort(key=lambda r: -(r["room_nights"] or 0))

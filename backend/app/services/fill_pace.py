@@ -616,6 +616,12 @@ def get_fill_pace(
                     "otb_nights": float(cur_s.get("otb_room_nights") or 0),
                     "ly_otb_nights": float(ly_s.get("otb_room_nights") or 0),
                     "ly_final_nights": float(ly_s.get("final_room_nights") or 0),
+                    # What the window itself added, which is the speed the
+                    # run-rate projection extrapolates, and the rate those
+                    # nights sold at.
+                    "pickup_nights": float(cur_s.get("pickup_room_nights") or 0),
+                    "pickup_revenue": float(cur_s.get("pickup_revenue_native") or 0),
+                    "window_days": days,
                 })
             for r in ly_all:
                 src_category.setdefault(_source_key(r), r.source_category or "OTA")

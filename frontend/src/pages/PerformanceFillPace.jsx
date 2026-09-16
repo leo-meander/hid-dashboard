@@ -673,6 +673,58 @@ function moneyWorking(cells, block, title) {
   );
 }
 
+/** How a set of branch-months reaches its run-rate figure. */
+function runRateWorking(cells, block, title, currency) {
+  return (
+    <>
+      <div className="font-semibold text-white mb-1">{title}</div>
+      <div className="text-gray-300 mb-1.5">
+        on the books + room-nights per booking day × days left to sell
+      </div>
+      <div className="space-y-1">
+        {cells.map((c) => {
+          const r = c.run_rate;
+          return (
+            <div key={`${c.branch_id}-${c.stay_month}`}>
+              <TipRow label={c.branch_name.replace("MEANDER ", "")}>
+                {nights(c.otb_room_nights)} + {r.room_nights_per_day.toFixed(1)}/d × {r.days_left}d
+                {" = "}{nights(r.room_nights)}{r.capacity_capped ? " ⌐" : ""}
+              </TipRow>
+              {r.revenue_native != null && (
+                <div className="text-gray-400 ml-2 font-mono text-[10px]">
+                  {money(r.revenue_native, c.currency)} — {nights(r.room_nights_added)} ×{" "}
+                  {money(r.adr, c.currency)} on top of what is booked
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="border-t border-gray-700 mt-1.5 pt-1.5 space-y-0.5">
+        <TipRow label="Speed now" strong>
+          {block.room_nights_per_day.toFixed(0)} room-nights a day
+        </TipRow>
+        <TipRow label="Gets to" strong>
+          {nights(block.room_nights)}
+          {block.occ_pct != null ? ` = ${occ(block.occ_pct)}` : ""}
+        </TipRow>
+        <TipRow label="Revenue">
+          {currency ? money(block.revenue_native, currency) : money(block.revenue_vnd, "VND")}
+        </TipRow>
+        <TipRow label="Target">
+          {currency ? money(block.target_native, currency) : money(block.target_vnd, "VND")}
+        </TipRow>
+      </div>
+      <div className="text-gray-500 mt-1.5">
+        Speed and rate both come from the {block.window_days}-day window set above — change it
+        and this changes. Bookings crowd towards check-in rather than arriving evenly, so a month
+        read months out lands low here by construction: this is the floor if nothing speeds up,
+        not a call on where the month ends.
+      </div>
+    </>
+  );
+}
+
 /** One line per stay month, for a selection that spans several. */
 function monthsWorking(months, block, title, kind) {
   return (
@@ -754,6 +806,12 @@ function ForecastCard({ data, oneMonth }) {
   const moneyTip = oneMonthOnly
     ? moneyWorking(cells, t, "Projected revenue")
     : monthsWorking(f.months, t, "Projected revenue", "money");
+  const rr = t.run_rate;
+  const rrHit = t.currency ? rr.achievement_pct : rr.achievement_vnd_pct;
+  const rrRevenue = t.currency ? rr.revenue_native : rr.revenue_vnd;
+  const rrTarget = t.currency ? rr.target_native : rr.target_vnd;
+  const rrGap = rrRevenue == null || !rrTarget ? null : rrRevenue - rrTarget;
+  const rrTip = runRateWorking(cells, rr, "At today's speed", t.currency);
   const moneyCurrency = t.currency || "VND";
   const lowHit = t.currency ? t.achievement_low_pct : t.achievement_low_vnd_pct;
   const highHit = t.currency ? t.achievement_high_pct : t.achievement_high_vnd_pct;
@@ -786,11 +844,87 @@ function ForecastCard({ data, oneMonth }) {
     <div className="bg-white border border-gray-200 rounded-xl p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-sm font-semibold text-gray-800">
-          Where {oneMonth ? "it lands" : "they land"}
+          At this speed, {oneMonth ? "does it" : "do they"} reach target?
         </h2>
         <span className="text-xs text-gray-400">
-          on the books + what last year still had to come from here
+          on the books + room-nights a day × days left to sell
         </span>
+      </div>
+
+      {/* The question the card is asked, answered with nothing but the speed
+          on the page and the days left to use it. */}
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mt-3">
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            Revenue vs target
+          </div>
+          <HoverTooltip content={rrTip} width="w-96">
+            <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
+              rrHit == null ? "text-gray-900" : rrHit >= 100 ? "text-emerald-600" : "text-red-600"}`}>
+              {rrHit == null ? "—" : `${rrHit.toFixed(0)}%`}
+            </div>
+          </HoverTooltip>
+          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
+            {rrGap == null ? "nothing to price"
+              : `${rrGap >= 0 ? "ahead by" : "short by"} ${shortMoney(Math.abs(rrGap), moneyCurrency)}`}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            Filling at
+          </div>
+          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
+            {rr.room_nights_per_day.toFixed(0)}
+          </div>
+          <div className="text-sm text-gray-500 mt-0.5">
+            room-nights a day, last {rr.window_days} days
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            Gets to
+          </div>
+          <HoverTooltip content={rrTip} width="w-96">
+            <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline">
+              {rr.occ_pct == null ? nights(rr.room_nights) : occ(rr.occ_pct)}
+            </div>
+          </HoverTooltip>
+          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
+            {nights(rr.room_nights)} room-nights
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            Revenue at this speed
+          </div>
+          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
+            {shortMoney(rrRevenue, moneyCurrency)}
+          </div>
+          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
+            of {shortMoney(rrTarget, moneyCurrency)} target
+          </div>
+        </div>
+      </div>
+
+      <p className="text-xs text-gray-500 mt-3 leading-snug">
+        Straight-line: today's speed and today's rate, carried to the end of each stay month.
+        Bookings crowd towards check-in rather than arriving evenly, so a month read months out
+        sits low here by construction — read it as the floor if nothing speeds up. What the same
+        months did a year ago is underneath.
+      </p>
+
+      <div className="border-t border-gray-200 mt-4 pt-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-gray-800">
+            Where {oneMonth ? "it landed" : "they landed"} last year, from here
+          </h3>
+          <span className="text-xs text-gray-400">
+            on the books + what last year still had to come from this point
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-3">
