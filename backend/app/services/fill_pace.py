@@ -512,8 +512,8 @@ def get_fill_pace(
             # The two standing adjustments between a Cloudbeds sum and the
             # number the KPI target was set against. The projection has to
             # carry them or it is compared with a target on another basis.
-            "deduction_pct": float(b.deduction_pct or 0),
-            "other_revenue_native": float(b.other_revenue_native or 0),
+            "deduction_pct": float(getattr(b, "deduction_pct", 0) or 0),
+            "other_revenue_native": float(getattr(b, "other_revenue_native", 0) or 0),
         }
         for b in db.query(Branch).filter_by(is_active=True).all()
     }

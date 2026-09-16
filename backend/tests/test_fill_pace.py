@@ -63,6 +63,9 @@ class FakeBranch:
         # The forecast borrows a pickup curve from properties in the same
         # market when a branch has no year-ago base of its own.
         self.city = city
+        # The two standing adjustments the projection has to carry.
+        self.deduction_pct = 0
+        self.other_revenue_native = 0
 
 
 class FakeBranchQuery:
