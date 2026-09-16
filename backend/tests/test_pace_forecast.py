@@ -159,6 +159,49 @@ def test_a_month_daily_metrics_has_nothing_for_is_converted_not_mixed(monkeypatc
     assert dec["otb_room_nights"] == pytest.approx(100 * dec["bed_factor"], abs=0.2)
 
 
+def test_needed_is_counted_in_the_same_nights_as_reached(monkeypatch):
+    """The two occupancies sit side by side on the card, so they have to be
+    the same kind of night.
+
+    Taipei fills 1.28 beds per booking. The nights the speed adds were
+    converted to beds and the nights the target asks for were not, so October
+    printed 91.7% reached against 90.6% needed and 99.0% of target on one
+    row — a month clearing the occupancy it is held to and still missing the
+    money, which is not a thing that can happen. Whichever way the money
+    lands, the occupancies have to agree with it.
+    """
+    occ = {("b-taipei", 2026, 10): {"revenue": 1_711_956.0, "nights": 936, "adr": 1_829.0}}
+    args = dict(occ=occ)
+    lands = run(monkeypatch, [cell("b-taipei", capacity=4278, otb=729)],
+                **args)["cells"][0]["run_rate"]["revenue_native"]
+
+    # One target the speed clears and one it does not, either side of where
+    # the month actually lands.
+    for target, short in ((lands * 1.05, True), (lands * 0.95, False)):
+        r = run(monkeypatch, [cell("b-taipei", capacity=4278, otb=729)],
+                targets={("b-taipei", 2026, 10): {"native": target, "vnd": 0.0}},
+                **args)["cells"][0]["run_rate"]
+        assert (r["needed_occ_pct"] > r["occ_pct"]) is short
+        assert (r["revenue_native"] < target) is short
+
+
+def test_the_rate_is_per_bed_night_like_the_nights_it_prices(monkeypatch):
+    """600,000 over 300 bookings is 2,000 a booking. Those bookings hold 385
+    beds, and it is beds the card counts, so the rate is 1,558."""
+    occ = {("b-taipei", 2026, 10): {"revenue": 1_711_956.0, "nights": 936, "adr": 1_829.0}}
+    c = run(monkeypatch, [cell("b-taipei", capacity=4278, otb=729)], occ=occ)["cells"][0]
+    r = c["run_rate"]
+    beds = 300 * c["bed_factor"]
+
+    assert c["bed_factor"] > 1.2
+    assert r["adr"] == pytest.approx(600_000 / beds, rel=1e-3)
+    assert r["room_nights_per_day"] == pytest.approx(beds / 30, rel=1e-3)
+    # and the speed the tooltip prints multiplies back out to the points the
+    # card adds, which it did not while the two were on different bases.
+    assert r["room_nights_added"] == pytest.approx(
+        r["room_nights_per_day"] * r["days_left"], rel=1e-3)
+
+
 def test_a_thin_book_is_not_enough_to_take_the_ratio_from(monkeypatch):
     """Twelve nights against fourteen is not a 1.17x branch, it is two
     bookings. Under the floor the two counts are treated as the same."""

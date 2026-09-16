@@ -194,9 +194,9 @@ def _run_rate(cell: dict, book: dict, as_of: date,
       last year         what the same stretch actually delivered a year ago
       needed            the occupancy the revenue target implies at today's rate
 
-    Nights are carried in the unit the target is set in; money is not
-    converted, because revenue per reservation-night multiplied back over
-    reservation-nights cancels the factor out.
+    Every night here is a bed-night and every rate is per bed-night, so the
+    four can be read against each other and against the house. The pickup and
+    its rate are converted from the reservations basis once, at the top.
 
     Money also carries the branch's two standing adjustments, because the
     target was set against a figure that already has them:
@@ -221,14 +221,27 @@ def _run_rate(cell: dict, book: dict, as_of: date,
     if not window or cell["status"] == "finished":
         days_left = 0
 
-    per_day = pickup / window if window else 0.0
-    window_adr = (cell["pickup_revenue"] / pickup) if pickup else None
     factor = cell["bed_factor"]
+    # From here down every night is a bed-night, which is what the book, the
+    # capacity and the target are all counted in. The pickup does not arrive
+    # that way: `reservations` counts one night per booking where
+    # daily_metrics counts the beds in it, so both the pace and the rate it
+    # was sold at are converted once, here, instead of in some of the lines
+    # that use them and not others.
+    #
+    # Converting in only some of them is exactly what went wrong. `added`
+    # carried the factor and `needed` did not, so October read 91.7% reached
+    # against 90.6% needed and 99.0% of target on the same row — a month that
+    # clears the bar it is held to and still misses the money, which is not a
+    # thing that can happen.
+    beds = pickup * factor
+    per_day = beds / window if window else 0.0
+    window_adr = (cell["pickup_revenue"] / beds) if beds else None
     otb = cell["otb_units"]
     capacity = cell["capacity"]
     ceiling = capacity * MAX_FORECAST_OCC
 
-    added = per_day * days_left * factor
+    added = per_day * days_left
     ly_added = max(0.0, cell["ly_final_nights"] - cell["ly_otb_nights"]) * factor
 
     booked_revenue = book.get("revenue")
@@ -264,20 +277,20 @@ def _run_rate(cell: dict, book: dict, as_of: date,
     # acted on in: "three more room-nights a day", not "4.7 points".
     extra = max(0.0, needed - reach) if needed is not None else None
     extra_per_day = (extra / days_left) if (extra is not None and days_left) else None
-    priceable = booked_revenue is not None and window_adr and factor
+    priceable = booked_revenue is not None and window_adr
     revenue = (
-        (booked_revenue + (reach - otb) / factor * window_adr) * mult + other_revenue
+        (booked_revenue + (reach - otb) * window_adr) * mult + other_revenue
         if priceable else None
     )
     revenue_max = (
-        (booked_revenue + room_to_sell / factor * window_adr) * mult + other_revenue
+        (booked_revenue + room_to_sell * window_adr) * mult + other_revenue
         if priceable else None
     )
     # And the rate that would clear the target with every room sold. Above the
     # rate being taken now, the target needs a price rise, not a push.
     adr_for_target = (
-        ((raw_target - booked_revenue) / (room_to_sell / factor))
-        if (raw_target and booked_revenue is not None and room_to_sell and factor) else None
+        ((raw_target - booked_revenue) / room_to_sell)
+        if (raw_target and booked_revenue is not None and room_to_sell) else None
     )
     return {
         "days_left": days_left,

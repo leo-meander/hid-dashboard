@@ -670,7 +670,7 @@ function adrWorking(cells, block, currency) {
         Rate for the nights still to come
       </div>
       <div className="text-gray-300 mb-1.5">
-        revenue booked in the window ÷ room-nights booked in it
+        revenue booked in the window ÷ the room-nights those bookings hold
       </div>
       <div className="space-y-0.5">
         {priced.map((c) => (
@@ -693,6 +693,10 @@ function adrWorking(cells, block, currency) {
         Nights already on the books keep the revenue they sold for and are never re-priced. A
         window that booked nothing has no rate of its own; those fall back to last year's rate
         for the same month, moved by the branch's own rate trend.
+      </div>
+      <div className="text-gray-500 mt-1">
+        A booking that holds three dorm beds is three room-nights here, not one — the same
+        count the house, the book and the target are all measured in.
       </div>
       <div className="text-gray-500 mt-1">
         Thin books make it jumpy: a handful of holiday bookings can set it well above what the
