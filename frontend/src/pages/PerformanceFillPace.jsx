@@ -597,7 +597,7 @@ function TipRow({ label, children, strong, note }) {
 
 const POINTS_TIP = {
   otb: ["OCC on the books", "room-nights sold ÷ room-nights the house has"],
-  speed: ["At this speed", "room-nights a day now × days left to sell"],
+  speed: ["OCC at this speed", "on the books + room-nights a day now × days left to sell"],
   needed: ["Needed for target", "the occupancy the revenue target implies at today's rate"],
 };
 
@@ -833,7 +833,7 @@ function ForecastCard({ data, oneMonth }) {
                       needed: "target", revenue: "both" };
   const tiles = [
     ["otb", "OCC on the books", occ(rr.otb_occ_pct), `${nights(t.otb_room_nights)} room-nights sold`],
-    ["speed", "Gets to at this speed", occ(rr.occ_pct),
+    ["speed", "OCC at this speed", occ(rr.occ_pct),
      `${occ(rr.otb_occ_pct)} + ${occ(rr.points_added)} · ${rr.room_nights_per_day.toFixed(2)}/day × ${runway}`],
     // The occupancy the target implies is a line to measure against, not a
     // headline — so the tile leads with what it would take to get there and
@@ -941,7 +941,7 @@ function ForecastCard({ data, oneMonth }) {
               <tr className="text-xs text-gray-500 border-b border-gray-200">
                 <th className="text-left font-medium py-1.5">Month</th>
                 <th className="text-right font-medium">OCC on the books</th>
-                <th className="text-right font-medium">Gets to</th>
+                <th className="text-right font-medium">OCC at this speed</th>
                 <th className="text-right font-medium">Needed</th>
                 <th className="text-right font-medium">vs target</th>
               </tr>
