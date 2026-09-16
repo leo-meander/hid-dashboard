@@ -1033,11 +1033,7 @@ function yearWorking(row, months) {
           </TipRow>
         )}
         {shown.map((d) => (
-          <TipRow
-            key={d.month}
-            label={MONTH_ABBR[d.month - 1]}
-            note={d.basis === "own_run_rate" ? "run rate" : null}
-          >
+          <TipRow key={d.month} label={MONTH_ABBR[d.month - 1]}>
             {money(d.revenue_native, cur)}
           </TipRow>
         ))}
@@ -1141,8 +1137,6 @@ function YearOutlook({ branchId, days }) {
   const banked = single ? single.actual_to_date_native : t.actual_to_date_vnd;
   const toCome = single ? single.forecast_remaining_native : t.forecast_remaining_vnd;
   const hit = single ? single.achievement_pct : t.achievement_pct;
-  const low = single ? single.achievement_low_pct : t.achievement_low_pct;
-  const high = single ? single.achievement_high_pct : t.achievement_high_pct;
   const gap = projection - target;
   const q4Hit = single ? single.q4_achievement_pct : t.q4_achievement_pct;
   const bankedPct = target ? (banked / target) * 100 : null;

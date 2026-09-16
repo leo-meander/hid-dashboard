@@ -1,62 +1,28 @@
-"""Pace forecast — where a stay month lands if it keeps filling the way it is.
+"""Pace projection — where a stay month gets to at the rate it is filling now.
 
 Fill Pace answers "are we ahead or behind". This answers the question that
-always follows it: "so where does the month finish, and does that clear the
-target". Same rows, same window, one more step.
+always follows it: on the speed we are running, does this month reach its
+revenue target, and if not, what would.
 
-THE METHOD, AND WHY IT IS THIS ONE
-──────────────────────────────────
-Three estimators can be built out of the three numbers Fill Pace already has —
-what is on the books now, what was on the books at the same countdown last
-year, and where last year actually finished:
+    nights  = on the books + room-nights a booking day is adding × days left
+    revenue = booked so far + those nights × the rate they are selling at
 
-    multiplicative   otb ÷ (ly_otb / ly_final)        "we are at 5% of final"
-    additive         otb + (ly_final - ly_otb)        "this much is still to come"
-    growth-scaled    otb + (ly_final - ly_otb) × g    g = otb / ly_otb
+It is arithmetic, not a prediction, and the page says so. Bookings crowd
+towards check-in rather than arriving evenly — measured across settled months
+this group picks up 1.5x to 4.6x more in each window than in the one before —
+so a month read months out lands far below anything it has ever finished at.
+Read as the floor if nothing accelerates, that is useful; read as a forecast it
+is wrong.
 
-They were backtested over five settled stay months (Apr–Aug 2026), each read at
-30, 60 and 90 days out, per branch, against what the month actually did:
-
-    additive          MAPE  7.1%   bias  +0.3%
-    growth × √g       MAPE 16.0%   bias  +5.8%
-    multiplicative    MAPE 23.4%   bias  +8.4%   (one case +93%)
-
-Additive wins, and it is not close. The reason is the denominator: at 60 days
-out a month is 3-6% sold, so `ly_otb` is a handful of nights and every
-estimator that divides by it multiplies that handful's noise into the answer.
-Adding last year's remaining pickup asks nothing of it.
-
-Two conditions come with that number, and dropping either one breaks it:
-
-1. FORECAST PER BRANCH, THEN SUM. Never forecast the group as one pool. Group
-   `ly_otb` includes branches that were not open a year ago, so the group's
-   apparent year-over-year speed is mostly new inventory — measured at 1.2x to
-   1.45x here, none of it pace.
-
-2. GATE THE YEAR-AGO BASE. A branch-month is only forecastable from its own
-   history when that history is real: at least MIN_LY_BASE_ROOM_NIGHTS on the
-   books at the same countdown, and a year-ago month that actually traded
-   (MIN_LY_FINAL_OCC). Taipei's October 2025 finished at 26% because it opened
-   mid-month; Oani had not opened at all. Feeding either into `ly_final -
-   ly_otb` forecasts the ramp, not the month.
-
-Where the gate fails, NOTHING IS BORROWED FROM ANOTHER BRANCH. A property is
-its own business: 1948 is a 69-room hostel, Oani a 92-room premium hotel, and
-one's October says nothing reliable about the other's — they sell to different
-people, at different prices, on different booking curves. An earlier version of
-this did lend a curve across branches and it was wrong twice over, once in
-principle and once in the numbers: Oani is 41% booked at sixteen days out where
-1948 is 31%, so adding 1948's remaining run-up double-counted everything Oani
-had already sold and put it at 95% for three straight months, against a branch
-that has never cleared 73% in any month of its life.
-
-What is left is the branch's own present. Oani has run 65-73% every month this
-year, so its Q4 is projected at the occupancy it has actually been holding —
-`own_run_rate`, carrying no seasonality, which the page says out loud because
-Q4 is not August. A branch with no year-ago month AND no months of its own is
-not projected at all: it drops out of the totals, and the card names it along
-with the target that came out with it, so a partial projection is never read
-against a whole quarter's target.
+WHAT WAS HERE BEFORE, AND WHY IT IS NOT
+───────────────────────────────────────
+An earlier version projected where a month lands by the shape of the year
+before: on the books now, plus what last year still had to come from the same
+countdown position. It backtested well (7.1% MAPE against 16% and 23% for the
+alternatives) — but a flat "this month lands where it landed last year" beat it
+at every lead time (3.9% on Q4), and the correlation between how far ahead of
+last year a month is today and how far ahead it finishes was +0.09. The pace
+signal was noise, and the page had stopped showing the number anyway.
 
 TWO WAYS OF COUNTING A SOLD NIGHT, AND THE ONE THE TARGET IS SET ON
 ──────────────────────────────────────────────────────────────────
@@ -67,37 +33,37 @@ every "actual" in this app are built on — counts the beds, and calls it six.
 
 Measured on October 2026's book, daily_metrics over reservations, per branch:
 1948 1.04, Oani 1.09, Osaka 1.09, Saigon 1.12, **Taipei 1.28** — Taipei being
-108 dorm beds to 30 rooms. So a forecast built purely out of `reservations`
-would be quoting occupancy a fifth low for Taipei, comparing it against a KPI
-page reading a fifth higher, and pricing a fifth too few nights.
+108 dorm beds to 30 rooms. So the book comes from daily_metrics where it has
+the month, and from the reservations count converted at the branch's own ratio
+where it does not (`_bed_factors`) — never half of one and half of the other.
 
-The booking CURVE only exists in `reservations` — daily_metrics has no booking
-date, so it cannot say what was on the books sixty days out. The shape
-therefore comes from there and is converted once: the pickup last year still
-had to come is multiplied by that branch's own ratio of the two counts, taken
-over the same stay months from the same bookings (`_bed_factors`). Everything
-downstream — the occupancy, the capacity ceiling, the nights that get priced —
-is then on the basis the target was set on.
+MONEY
+─────
+Priced from daily_metrics too. Summed per stay month, `reservations`'
+`grand_total_native` holds ~100% of the revenue daily_metrics reports for
+months still in the future and ~40% for months that have finished — the same
+decay in every branch in the same month, a sync artefact rather than five
+simultaneous rate collapses.
 
-WHAT THE BAND MEANS
-───────────────────
-The same backtest gives the spread, not just the average: p10 −7%, p90 +14% on
-a branch-month. That is the published band, widened past the range the backtest
-covers (see BAND_*). It is an honest interval from measured error, not a
-confidence interval from a model — there is no model.
+The rate for the nights still to come is the window's own: revenue picked up in
+it, over room-nights picked up in it. Where a window picked up nothing, a
+ladder stands in — last year's rate for the month moved by the branch's own
+rate trend, then what it has been charging over settled months — and a year-ago
+month that barely traded is not a rate at all (Oani's October 2025 ran 37
+room-nights of 2,852).
 
-MONEY IS PRICED FROM daily_metrics, NOT FROM THE RESERVATIONS ROWS
-──────────────────────────────────────────────────────────────────
-Forecast nights come from `reservations`. Forecast revenue does NOT reuse that
-table's money. Summed per stay month, `reservations.grand_total_native` holds
-~100% of the revenue daily_metrics reports for months still in the future and
-~40% for months that have finished — the same decay in every branch in the same
-month, which is a sync artefact rather than five simultaneous rate collapses.
-Room-nights are unaffected (they come from the dates). So nights are priced at
-the ADR daily_metrics reports for the same month a year earlier, moved by the
-branch's own realised ADR trend (`adr_yoy`), and the month-to-date money also
-comes from daily_metrics. That keeps the forecast on the same basis as the KPI
-page it will be compared against.
+And every figure carries the branch's deduction and other revenue, because the
+KPI target was set against a number that already has them:
+
+    revenue = (booked + nights still to come × rate) × (1 − deduct%)
+              + other revenue
+
+NOTHING IS RETURNED UNDER A FILTER
+──────────────────────────────────
+Pace narrows to one source or one room type; nothing it is measured against
+does. daily_metrics has no source column and no room split, and the target is
+the branch's. Every figure would be a slice divided by a whole — a wrong number
+that looks right — so the page is told the projection is unavailable instead.
 """
 from __future__ import annotations
 
@@ -115,31 +81,12 @@ from app.services.currency import get_cached_rate
 
 logger = logging.getLogger(__name__)
 
-# A year-ago countdown position with fewer nights than this on the books is not
-# a base, it is a rounding error — the same floor Fill Pace puts under its
-# seasonal norm, for the same reason.
-MIN_LY_BASE_ROOM_NIGHTS = 30
-
-# And a year-ago month that finished below this never traded normally: it was
-# opening, closed for works, or otherwise not the month it is being used to
-# predict. Taipei finished October 2025 at 26.4% having opened mid-month;
-# forecasting October 2026 from it would forecast the opening.
-MIN_LY_FINAL_OCC = 0.40
-
 # No forecast is allowed to sell more than this share of the house. The
 # estimator has no idea inventory exists — it adds last year's remaining pickup
 # to a book that may already be ahead — and without a ceiling it cheerfully
 # returns 104% occupancy. When the cap binds, the month is reported as
 # `capacity_capped` so nobody reads the ceiling as a prediction.
 MAX_FORECAST_OCC = 0.95
-
-# Measured p10 / p90 of the additive estimator's error over the backtest.
-BAND_LOW = -0.07
-BAND_HIGH = 0.14
-# Past the range the backtest covers (30-90 days out) the band is widened
-# rather than quietly extrapolated. December read in September is 107 days out.
-BAND_UNTESTED_DAYS = 90
-BAND_WIDEN = 1.6
 
 # The two counts of a sold night, and how far apart they are allowed to read.
 # The ratio is taken from the same bookings counted both ways, so it cannot
@@ -149,6 +96,12 @@ BAND_WIDEN = 1.6
 # nights there is not enough book to take a ratio from at all, in which case
 # the two counts are treated as the same.
 MIN_FACTOR_BASE_ROOM_NIGHTS = 30
+
+# A year-ago month has to have traded to be worth a rate, and "traded" is a
+# share of its own house rather than a count: Oani's October 2025 ran 37
+# room-nights of 2,852 — over the count floor that guards the bed factor, and
+# nowhere near a month. Whatever those few bookings paid is not October's rate.
+MIN_LY_RATE_OCC = 0.20
 BED_FACTOR_MIN, BED_FACTOR_MAX = 1.0, 2.0
 
 # A branch's ADR trend is measured over this many settled months. Three is
@@ -160,20 +113,6 @@ ADR_YOY_MIN, ADR_YOY_MAX = 0.6, 1.5
 
 
 # ── nights ───────────────────────────────────────────────────────────────────
-
-def _usable_base(cell: dict, factor: float = 1.0) -> bool:
-    """Whether a branch-month can be forecast from its own year-ago month.
-
-    The occupancy test converts first: `ly_final_nights` counts reservations
-    and `capacity` counts units, so on a dorm-heavy branch the raw ratio reads
-    a fifth low and a month that traded at 44% would be thrown out as a ramp.
-    """
-    if not cell["ly_final_nights"] or not cell["capacity"]:
-        return False
-    if cell["ly_otb_nights"] < MIN_LY_BASE_ROOM_NIGHTS:
-        return False
-    return cell["ly_final_nights"] * factor / cell["capacity"] >= MIN_LY_FINAL_OCC
-
 
 def _bed_factors(cells: list[dict], occ: dict) -> dict:
     """How many sold units one reservation-night actually represents, per branch.
@@ -198,104 +137,18 @@ def _bed_factors(cells: list[dict], occ: dict) -> dict:
     }
 
 
-def _band_for(days_out: int) -> tuple[float, float]:
-    """The measured error band, widened where the backtest did not reach."""
-    if days_out > BAND_UNTESTED_DAYS:
-        return BAND_LOW * BAND_WIDEN, BAND_HIGH * BAND_WIDEN
-    return BAND_LOW, BAND_HIGH
+def _prepare_cell(cell: dict, occ: dict, factors: dict) -> dict:
+    """The book, in the unit the target counts in.
 
-
-def _own_level(cell: dict, occ: dict, branch_meta: dict,
-               ref_months: list[tuple[int, int]]) -> Optional[float]:
-    """The branch's own occupancy over the last settled months.
-
-    Where a branch has no year-ago month, it still has a present, and its own
-    present is the only honest thing to project it from. Oani ran 65-73% every
-    month this year.
-
-    Occupancy here is whole-house — daily_metrics counts every room and bed
-    sold — so under a room-type filter this level is the house's, not the
-    filtered inventory's. The months it reads are settled ones, so it is a
-    realised number rather than a book still filling.
-    """
-    rooms = branch_meta.get(cell["branch_id"], {}).get("total_rooms") or 0
-    if not rooms:
-        return None
-    sold = capacity = 0.0
-    for (y, m) in ref_months:
-        nights = (occ.get((cell["branch_id"], y, m)) or {}).get("nights")
-        if nights is None:
-            continue
-        sold += nights
-        capacity += rooms * _days_in_month(y, m)
-    return sold / capacity if capacity else None
-
-
-def _forecast_cell(cell: dict, occ: dict, branch_meta: dict,
-                   ref_months: list[tuple[int, int]], factors: dict) -> dict:
-    """One branch, one stay month: units sold at the end of it.
-
-    Units, not reservations — see the module docstring. What is on the books
-    comes from daily_metrics, which counts every bed; the pickup still to come
-    comes from the reservations curve, which is the only place a booking date
-    exists, and is converted with the branch's own ratio between the two.
-
-    Three outcomes, in order, and nothing in any of them comes from another
-    branch:
-
-      actual         the month is already over — what is on the books IS the
-                     month, and calling that a forecast would be a lie
-      ly_pickup      it has a year-ago month worth reading: on the books now,
-                     plus what last year still had to come from here
-      own_run_rate   it does not, so it holds the occupancy it has actually
-                     been running this year, with no seasonal adjustment at
-                     all — Q4 is not August, and the card says so
-
-    And where it has neither a year-ago month nor months of its own, no number:
-    `no_base` drops out of every total rather than being filled in from
-    somewhere it does not belong.
+    `reservations` counts one row per booking; daily_metrics counts the beds.
+    The book comes from daily_metrics where it has the month, and from the
+    reservations count converted at this branch's own ratio where it does not —
+    never half of one and half of the other.
     """
     factor = factors.get(cell["branch_id"], 1.0)
     book = occ.get((cell["branch_id"], cell["year"], cell["month"])) or {}
-    # The book in units. Where daily_metrics has nothing for the month, the
-    # reservations count is converted instead rather than quietly changing
-    # basis half way through the sum.
     otb = book["nights"] if book.get("nights") is not None else cell["otb_nights"] * factor
-    capacity = cell["capacity"]
-    ceiling = capacity * MAX_FORECAST_OCC
-    extra = {"bed_factor": round(factor, 3), "otb_units": round(otb, 1)}
-
-    if cell["status"] == "finished":
-        return {**cell, **extra, "basis": "actual", "nights": otb, "low": otb,
-                "high": otb, "capacity_capped": False}
-
-    if _usable_base(cell, factor):
-        basis = "ly_pickup"
-        raw = otb + (cell["ly_final_nights"] - cell["ly_otb_nights"]) * factor
-    else:
-        level = _own_level(cell, occ, branch_meta, ref_months)
-        if level is None:
-            return {**cell, **extra, "basis": "no_base", "nights": None,
-                    "low": None, "high": None, "capacity_capped": False}
-        basis = "own_run_rate"
-        extra["run_rate_occ_pct"] = round(level * 100, 2)
-        # Never under what is already sold: a month can be ahead of the run
-        # rate the moment it is read, and the book does not shrink.
-        raw = max(otb, level * capacity)
-
-    # The band, likewise floored at the book. A low end under it would be
-    # describing cancellations this cannot see.
-    low_mult, high_mult = _band_for(cell["days_out"])
-    nights = min(raw, ceiling)
-    return {
-        **cell,
-        **extra,
-        "basis": basis,
-        "nights": round(nights, 1),
-        "low": round(max(otb, min(raw * (1 + low_mult), ceiling)), 1),
-        "high": round(max(otb, min(raw * (1 + high_mult), ceiling)), 1),
-        "capacity_capped": raw > ceiling,
-    }
+    return {**cell, "bed_factor": round(factor, 3), "otb_units": round(otb, 1)}
 
 
 # ── keeping today's speed ────────────────────────────────────────────────────
@@ -621,8 +474,7 @@ def build_forecast(
                            + [(y - 1, m) for (y, m) in ref_months])
     targets = _targets(db, branch_ids, months)
     factors = _bed_factors(cells, adr_map)
-    forecast_cells = [_forecast_cell(c, adr_map, branch_meta, ref_months, factors)
-                      for c in cells]
+    forecast_cells = [_prepare_cell(c, adr_map, factors) for c in cells]
     adr_trend = {b: _adr_yoy(adr_map, b, ref_months) for b in branch_ids}
 
     priced = []
@@ -637,9 +489,15 @@ def build_forecast(
         # bookings paid is not October's rate, and taking it would have priced
         # 789 nights at 6,562 against the 3,500 the branch actually averages.
         # Whatever the nights came from, the money follows the same judgement.
-        ly_adr = ((adr_map.get((bid, y - 1, m)) or {}).get("adr")
-                  if c["basis"] in ("ly_pickup", "actual") else None)
+        # A year-ago month is only a rate if it traded like one. Below this
+        # many room-nights it is a handful of bookings, and their rate is not
+        # the month's — Oani's October 2025 ran 37 and would have priced 789
+        # nights at nearly twice what the branch averages.
         book = adr_map.get((bid, y, m)) or {}
+        ly_book = adr_map.get((bid, y - 1, m)) or {}
+        ly_traded = (c["capacity"]
+                     and (ly_book.get("nights") or 0) / c["capacity"] >= MIN_LY_RATE_OCC)
+        ly_adr = ly_book.get("adr") if ly_traded else None
         # Nights already sold are already priced — they are in the book at
         # whatever they were sold for. Only what is still to come needs an ADR,
         # and it is looked for in descending order of how much it knows about
@@ -654,23 +512,6 @@ def build_forecast(
             or book.get("adr")
         )
 
-        # The year-ago estimator's money. Nothing on the page reads it any
-        # more — the card and the year projection are both run-rate — but it
-        # is still in the payload, so it carries the same two adjustments as
-        # everything else rather than sitting there on a second basis.
-        mult = 1 - branch_meta.get(bid, {}).get("deduction_pct", 0.0) / 100
-        other = branch_meta.get(bid, {}).get("other_revenue_native", 0.0)
-        revenue = low = high = None
-        if c["nights"] is not None and adr_remaining and book.get("nights") is not None:
-            booked_nights = c["otb_units"]
-            booked_revenue = book["revenue"]
-            priced_at = lambda n: (
-                (booked_revenue + max(0.0, n - booked_nights) * adr_remaining) * mult + other
-            )
-            revenue = priced_at(c["nights"])
-            low = priced_at(c["low"])
-            high = priced_at(c["high"])
-
         target = targets.get((bid, y, m), {})
         priced.append({
             **c,
@@ -684,9 +525,6 @@ def build_forecast(
             "adr_yoy_clipped": trend is not None and clipped != trend,
             "booked_revenue_native": round(book["revenue"], 2) if book else None,
             "booked_nights_metrics": book.get("nights"),
-            "revenue_native": round(revenue, 2) if revenue is not None else None,
-            "revenue_low_native": round(low, 2) if low is not None else None,
-            "revenue_high_native": round(high, 2) if high is not None else None,
             "target_native": target.get("native"),
         })
 
@@ -694,8 +532,7 @@ def build_forecast(
         "available": True,
         "as_of": as_of.isoformat(),
         "capacity_basis": not scoped_sources,
-        "method": "ly_pickup_additive",
-        "band": {"low_pct": BAND_LOW * 100, "high_pct": BAND_HIGH * 100},
+        "method": "run_rate",
         "total": _roll_up(priced, branch_meta, capacity_basis=not scoped_sources),
         "months": _by_month(priced, branch_meta, capacity_basis=not scoped_sources),
         "branches": _by_branch(priced, branch_meta, capacity_basis=not scoped_sources),
@@ -718,30 +555,17 @@ def _cell_row(c: dict, branch_meta: dict) -> dict:
         "month": c["month"],
         "stay_month": f"{c['year']:04d}-{c['month']:02d}",
         "days_out": c["days_out"],
-        "basis": c["basis"],
-        "room_nights": c["nights"],
-        "room_nights_low": c["low"],
-        "room_nights_high": c["high"],
-        "capacity_capped": c["capacity_capped"],
-        "revenue_native": c["revenue_native"],
-        "revenue_low_native": c["revenue_low_native"],
-        "revenue_high_native": c["revenue_high_native"],
         "target_native": c["target_native"],
         "run_rate": c["run_rate"],
         # Every input the arithmetic used, so the page can show its working
-        # rather than assert a number. A projection nobody can reconstruct is
-        # a projection nobody should act on.
+        # rather than assert a number.
         "otb_room_nights": c["otb_units"],
         "otb_reservation_nights": c["otb_nights"],
         "bed_factor": c["bed_factor"],
-        "ly_otb_room_nights": c["ly_otb_nights"],
-        "ly_final_room_nights": c["ly_final_nights"],
         "available_room_nights": c["capacity"],
-        "run_rate_occ_pct": c.get("run_rate_occ_pct"),
         "adr_remaining": c["adr_remaining"],
         "adr_yoy": c["adr_yoy"],
         "booked_revenue_native": c["booked_revenue_native"],
-        "booked_room_nights": c["booked_nights_metrics"],
     }
 
 
@@ -751,132 +575,41 @@ def _cell_row(c: dict, branch_meta: dict) -> dict:
 # quarter's occupancy is not the mean of three months' percentages, and the
 # group's is not the mean of five branches'.
 
-def _sum(cells: list[dict], key: str) -> Optional[float]:
-    """Sum a field over the cells that have one. None when none of them do."""
-    values = [c[key] for c in cells if c.get(key) is not None]
-    return round(sum(values), 2) if values else None
+def _blended_adr(cells: list[dict], branch_meta: dict) -> Optional[float]:
+    """One rate over a set of branch-months, or None where one cannot exist.
 
-
-def _vnd(cells: list[dict], key: str, branch_meta: dict) -> Optional[float]:
-    """Native amounts converted and summed — the only way to add TWD to JPY."""
-    total = None
-    for c in cells:
-        value = c.get(key)
-        if value is None:
-            continue
-        currency = branch_meta.get(c["branch_id"], {}).get("currency") or "VND"
-        rate = get_cached_rate(currency, "VND") or 1.0
-        total = (total or 0.0) + value * rate
-    return round(total, 2) if total is not None else None
-
-
-def _named(cells: list[dict], branch_meta: dict, **extra) -> list[dict]:
-    return [
-        {"branch_id": c["branch_id"],
-         "branch_name": branch_meta.get(c["branch_id"], {}).get("name"),
-         "stay_month": f"{c['year']:04d}-{c['month']:02d}",
-         **{k: c.get(v) for k, v in extra.items()}}
-        for c in cells
-    ]
+    Weighted by the nights each cell adds, and only where a single currency can
+    carry it — the group runs TWD, JPY and VND.
+    """
+    currencies = {branch_meta.get(c["branch_id"], {}).get("currency") for c in cells}
+    if len(currencies) != 1:
+        return None
+    nights = sum(c["run_rate"]["room_nights_added"] for c in cells if c["run_rate"]["adr"])
+    if not nights:
+        return None
+    return round(sum(c["run_rate"]["room_nights_added"] * c["run_rate"]["adr"]
+                     for c in cells if c["run_rate"]["adr"]) / nights, 2)
 
 
 def _block(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict:
     """One set of branch-months, summed.
 
-    Two exclusions run through every figure here, and both are reported rather
-    than absorbed:
-
-      · a branch-month with no basis to project from contributes nothing — not
-        its nights, and not its inventory to the denominator either, or the
-        occupancy would read low by exactly the share of the house that was
-        left out.
-      · the money figures are built ONLY from branch-months that could be
-        priced, and each one's target comes out with it. A forecast covering
-        four branches against a target covering five is not an achievement
-        percentage, it is a smaller number wearing one.
+    Everything the page reads is inside `run_rate`; what sits beside it here is
+    the book, which the Fill Pace tile above the card borrows so the two do not
+    print two different occupancies for the same month.
     """
-    counted = [c for c in cells if c["nights"] is not None]
-    no_base = [c for c in cells if c["nights"] is None]
-    priced = [c for c in counted if c["revenue_native"] is not None]
-    unpriced = [c for c in counted if c["revenue_native"] is None]
-
+    counted = [c for c in cells if c["run_rate"]["room_nights"] is not None]
     capacity = sum(c["capacity"] for c in counted)
-    nights = _sum(counted, "nights")
-    # Units throughout, so occupancy here is the occupancy the KPI page shows.
     otb = round(sum(c["otb_units"] for c in counted), 2)
-    ly_final = round(sum(c["ly_final_nights"] * c["bed_factor"] for c in counted), 2)
-    revenue_native = _sum(priced, "revenue_native")
-    target_native = _sum(priced, "target_native")
-    revenue_vnd = _vnd(priced, "revenue_native", branch_meta)
-    target_vnd = _vnd(priced, "target_native", branch_meta)
-
-    def occ(value):
-        if value is None or not capacity or not capacity_basis:
-            return None
-        return round(value / capacity * 100, 2)
-
-    def hit(value, target):
-        if value is None or not target:
-            return None
-        return round(value / target * 100, 1)
-
     return {
-        "room_nights": nights,
-        "room_nights_low": _sum(counted, "low"),
-        "room_nights_high": _sum(counted, "high"),
         "otb_room_nights": otb,
         "available_room_nights": capacity if capacity_basis else None,
-        "occ_pct": occ(nights),
-        "occ_pct_low": occ(_sum(counted, "low")),
-        "occ_pct_high": occ(_sum(counted, "high")),
-        "ly_final_room_nights": ly_final,
-        "ly_final_occ_pct": occ(ly_final),
-        "occ_pts_vs_ly": (
-            round((nights - ly_final) / capacity * 100, 2)
-            if nights is not None and capacity and capacity_basis else None
-        ),
-        "revenue_native": revenue_native,
-        "revenue_low_native": _sum(priced, "revenue_low_native"),
-        "revenue_high_native": _sum(priced, "revenue_high_native"),
-        "revenue_vnd": revenue_vnd,
-        "target_native": target_native,
-        "target_vnd": target_vnd,
-        "achievement_pct": hit(revenue_native, target_native),
-        "achievement_low_pct": hit(_sum(priced, "revenue_low_native"), target_native),
-        "achievement_high_pct": hit(_sum(priced, "revenue_high_native"), target_native),
-        "achievement_vnd_pct": hit(revenue_vnd, target_vnd),
-        "achievement_low_vnd_pct": hit(
-            _vnd(priced, "revenue_low_native", branch_meta), target_vnd),
-        "achievement_high_vnd_pct": hit(
-            _vnd(priced, "revenue_high_native", branch_meta), target_vnd),
-        "basis": sorted({c["basis"] for c in cells}),
-        "capacity_capped": any(c["capacity_capped"] for c in counted),
+        "otb_occ_pct": (round(otb / capacity * 100, 2)
+                        if capacity and capacity_basis else None),
         "months_counted": len(counted),
         "months_in_scope": len(cells),
-        # No basis to project from: neither a year-ago month nor months of
-        # their own. Out of the nights, out of the inventory, out of the money.
-        "unforecastable": _named(no_base, branch_meta),
-        # Projected, but with no rate to price the nights still to come at, so
-        # out of the money figures and out of the target they are read against.
-        "unpriced": _named(unpriced, branch_meta),
-        # Projected from their own recent occupancy, carrying no seasonality.
-        "run_rate_months": _named(
-            [c for c in counted if c["basis"] == "own_run_rate"],
-            branch_meta, occ_pct="run_rate_occ_pct"),
+        "run_rate": _run_rate_block(cells, branch_meta, capacity_basis),
     }
-
-
-def _blended_adr(cells: list[dict], branch_meta: dict) -> Optional[float]:
-    """One rate over a set of branch-months, or None where one cannot exist."""
-    currencies = {branch_meta.get(c["branch_id"], {}).get("currency") for c in cells}
-    if len(currencies) != 1:
-        return None
-    nights = sum(c["run_rate"]["room_nights_added"] for c in cells
-                 if c["run_rate"]["adr"])
-    if not nights:
-        return None
-    return round(sum(c["run_rate"]["room_nights_added"] * c["run_rate"]["adr"]
-                     for c in cells if c["run_rate"]["adr"]) / nights, 2)
 
 
 def _run_rate_block(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict:
@@ -984,7 +717,6 @@ def _roll_up(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> dict
     currencies.discard(None)
     block = _block(cells, branch_meta, capacity_basis)
     block["currency"] = currencies.pop() if len(currencies) == 1 else None
-    block["run_rate"] = _run_rate_block(cells, branch_meta, capacity_basis)
     return block
 
 
@@ -1010,8 +742,7 @@ def _by_branch(cells: list[dict], branch_meta: dict, capacity_basis: bool) -> li
             "branch_name": meta.get("name"),
             "currency": meta.get("currency"),
             "adr_yoy": rows[0].get("adr_yoy"),
-            "run_rate": _run_rate_block(rows, branch_meta, capacity_basis),
             **_block(rows, branch_meta, capacity_basis),
         })
-    out.sort(key=lambda r: -(r["room_nights"] or 0))
+    out.sort(key=lambda r: -(r["run_rate"]["room_nights"] or 0))
     return out
