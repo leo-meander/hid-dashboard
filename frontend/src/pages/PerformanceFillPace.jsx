@@ -690,7 +690,7 @@ function ForecastCard({ data, oneMonth }) {
     <div className="bg-white border border-gray-200 rounded-xl p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-sm font-semibold text-gray-800">
-          At this speed, {oneMonth ? "does it" : "do they"} reach target?
+          At this speed, {oneMonth ? "does this month" : "do these months"} reach target?
         </h2>
         <span className="text-xs text-gray-400">
           on the books + room-nights a day × days left to sell
