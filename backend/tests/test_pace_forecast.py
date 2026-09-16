@@ -370,3 +370,20 @@ def test_a_branch_with_no_year_ago_rate_is_priced_off_its_own_settled_months(mon
     row = out["branches"][0]
     remaining = row["room_nights"] - 304
     assert row["revenue_native"] == pytest.approx(2_418_373 + remaining * 3_753, rel=1e-3)
+
+
+def test_a_rejected_year_ago_month_cannot_price_the_month_either(monkeypatch):
+    """The gate that throws out a ramp month's volume throws out its rate with
+    it. Oani's October 2025 ran 37 room-nights; whatever those few bookings
+    paid is not October's rate."""
+    occ = dm("b-oani", 2026, 0.700, rooms=92, revenue_per_night=3_500.0)
+    occ[("b-oani", 2025, 10)] = {"revenue": 807_800.0, "nights": 37, "adr": 21_832.0}
+    occ[("b-oani", 2026, 10)] = {"revenue": 5_373_798.0, "nights": 1159, "adr": 4_636.0}
+    out = _run(monkeypatch,
+               [cell("b-oani", capacity=2852, otb=1159, ly_otb=0, ly_final=37)],
+               occ=occ)
+    row = out["branches"][0]
+    assert row["basis"] == ["own_run_rate"]
+    remaining = row["room_nights"] - 1159
+    # Priced off its own settled months, not off a 37-night October.
+    assert row["revenue_native"] == pytest.approx(5_373_798 + remaining * 3_500, rel=1e-3)

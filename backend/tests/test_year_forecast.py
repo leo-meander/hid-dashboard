@@ -71,6 +71,15 @@ def cell(bid, month, revenue, *, low=None, high=None, target=0.0):
         "revenue_high_native": high if high is not None else (
             revenue * 1.1 if revenue is not None else None),
         "target_native": target,
+        "otb_room_nights": 400.0,
+        "ly_otb_room_nights": 300.0,
+        "ly_final_room_nights": 900.0,
+        "available_room_nights": 1200.0,
+        "run_rate_occ_pct": None,
+        "adr_remaining": 1000.0,
+        "adr_yoy": 1.0,
+        "booked_revenue_native": 400_000.0,
+        "booked_room_nights": 400,
     }
 
 

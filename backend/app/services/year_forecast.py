@@ -165,14 +165,28 @@ def forecast_year(
 
         projected = low = high = 0.0
         missing = []
+        # One line per projected month, carrying what it was built from. The
+        # page shows its working from this rather than asserting a total.
+        detail = []
         for m in open_months:
             c = by_cell.get((bid, m))
             if not c or c["revenue_native"] is None:
                 missing.append(m)
                 continue
-            projected += _adjust(c["revenue_native"], branch)
+            adjusted = _adjust(c["revenue_native"], branch)
+            projected += adjusted
             low += _adjust(c["revenue_low_native"], branch)
             high += _adjust(c["revenue_high_native"], branch)
+            detail.append({
+                "month": m,
+                "revenue_native": round(adjusted, 2),
+                "target_native": targets.get((bid, m), {}).get("target", 0.0),
+                "basis": c["basis"],
+                "room_nights": c["room_nights"],
+                "otb_room_nights": c["otb_room_nights"],
+                "booked_revenue_native": c["booked_revenue_native"],
+                "adr_remaining": c["adr_remaining"],
+            })
 
         covered = [m for m in range(1, 13) if m not in missing]
         target_covered = sum(targets.get((bid, m), {}).get("target", 0.0) for m in covered)
@@ -213,6 +227,8 @@ def forecast_year(
             "achievement_high_pct": (round((actual + high) / target_covered * 100, 1)
                                      if target_covered else None),
             "months_not_projected": missing,
+            "projected_detail": detail,
+            "settled_count": len(settled),
             "q4_projection_native": round(q4_projection, 2) if q4_complete else None,
             "q4_target_native": round(q4_target, 2),
             "q4_achievement_pct": (round(q4_projection / q4_target * 100, 1)

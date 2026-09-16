@@ -25,6 +25,7 @@ import {
 } from "recharts";
 import SyncBadge from "../components/SyncBadge";
 import { useBranch } from "../context/BranchContext";
+import HoverTooltip from "../components/HoverTooltip";
 
 const THIS_YEAR = "#4f46e5";   // indigo-600
 const LAST_YEAR = "#f59e0b";   // amber-500
@@ -553,6 +554,166 @@ function PaceTable({ title, subtitle, rows, nameKey, nameLabel, currency, compar
 // ── forecast ─────────────────────────────────────────────────────────────────
 
 /**
+ * The tooltips that show a projected number's arithmetic.
+ *
+ * Every figure on these cards is the end of a chain — on the books, plus last
+ * year's remaining pickup, priced at a rate derived from two other numbers —
+ * and a chain nobody can follow is a number nobody should act on. The same
+ * hover panel the KPI forecast uses on Home, with the same job: the inputs,
+ * the operation, the result, in the order they happen.
+ */
+function TipRow({ label, children, strong, note }) {
+  return (
+    <div className={`flex items-baseline gap-2 ${strong ? "text-white font-semibold" : ""}`}>
+      <span className={strong ? "" : "text-gray-300"}>{label}</span>
+      <span className="ml-auto font-mono whitespace-nowrap">{children}</span>
+      {note && <span className="text-gray-500">{note}</span>}
+    </div>
+  );
+}
+
+/** How a set of branch-months reaches its room-night figure. */
+function nightsWorking(cells, block, title) {
+  return (
+    <>
+      <div className="font-semibold text-white mb-1">{title}</div>
+      <div className="text-gray-300 mb-1.5">
+        on the books + what last year still had to come from here
+      </div>
+      <div className="space-y-0.5">
+        {cells.map((c) => (
+          <TipRow key={`${c.branch_id}-${c.stay_month}`} label={c.branch_name.replace("MEANDER ", "")}>
+            {c.basis === "ly_pickup"
+              ? `${nights(c.otb_room_nights)} + (${nights(c.ly_final_room_nights)} − ${nights(c.ly_otb_room_nights)}) = ${nights(c.room_nights)}`
+              : `${nights(c.otb_room_nights)} → ${occ(c.run_rate_occ_pct)} of ${nights(c.available_room_nights)} = ${nights(c.room_nights)}`}
+            {c.capacity_capped ? " ⌐" : ""}
+          </TipRow>
+        ))}
+      </div>
+      <div className="border-t border-gray-700 mt-1.5 pt-1.5 space-y-0.5">
+        <TipRow label="Finishes at" strong>
+          {nights(block.room_nights)}
+          {block.available_room_nights
+            ? ` of ${nights(block.available_room_nights)} = ${occ(block.occ_pct)}`
+            : ""}
+        </TipRow>
+        <TipRow label="Range">
+          {nights(block.room_nights_low)}–{nights(block.room_nights_high)}
+        </TipRow>
+      </div>
+      {cells.some((c) => c.basis === "own_run_rate") && (
+        <div className="text-gray-500 mt-1.5">
+          → = no year-ago month worth reading, so the branch is held at the occupancy it has
+          been running this year. Nothing is borrowed from another branch.
+        </div>
+      )}
+      {cells.some((c) => c.capacity_capped) && (
+        <div className="text-gray-500 mt-1">⌐ = pinned to 95% of the house.</div>
+      )}
+    </>
+  );
+}
+
+/** How a set of branch-months reaches its revenue figure. */
+function moneyWorking(cells, block, title) {
+  const priced = cells.filter((c) => c.revenue_native !== null && c.revenue_native !== undefined);
+  return (
+    <>
+      <div className="font-semibold text-white mb-1">{title}</div>
+      <div className="text-gray-300 mb-1.5">
+        already booked + nights still to come × ADR
+      </div>
+      <div className="space-y-1">
+        {priced.map((c) => (
+          <div key={`${c.branch_id}-${c.stay_month}`}>
+            <TipRow label={c.branch_name.replace("MEANDER ", "")}>
+              {money(c.revenue_native, c.currency)}
+            </TipRow>
+            <div className="text-gray-400 ml-2 font-mono text-[10px]">
+              {money(c.booked_revenue_native, c.currency)} + {nights(c.room_nights - c.booked_room_nights)}
+              {" × "}{money(c.adr_remaining, c.currency)}
+              {c.basis !== "ly_pickup" && <span className="text-gray-500"> · own rate</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="border-t border-gray-700 mt-1.5 pt-1.5 space-y-0.5">
+        <TipRow label="Projected" strong>
+          {block.currency ? money(block.revenue_native, block.currency)
+                          : money(block.revenue_vnd, "VND")}
+        </TipRow>
+        <TipRow label="Target">
+          {block.currency ? money(block.target_native, block.currency)
+                          : money(block.target_vnd, "VND")}
+        </TipRow>
+        <TipRow label="Hit" strong>
+          {(() => {
+            const h = block.currency ? block.achievement_pct : block.achievement_vnd_pct;
+            return h === null || h === undefined ? "—" : `${h.toFixed(0)}%`;
+          })()}
+        </TipRow>
+      </div>
+      <div className="text-gray-500 mt-1.5">
+        ADR = last year's rate for the same month × this year's own rate trend — or, where the
+        year-ago month was rejected as unrepresentative, what the branch has actually been
+        charging this year, which carries no seasonal lift. Nights already sold keep what they
+        sold for and are not re-priced.
+      </div>
+    </>
+  );
+}
+
+/** One line per stay month, for a selection that spans several. */
+function monthsWorking(months, block, title, kind) {
+  return (
+    <>
+      <div className="font-semibold text-white mb-1">{title}</div>
+      <div className="text-gray-300 mb-1.5">
+        {kind === "money"
+          ? "each month projected on its own, then added"
+          : "on the books + what last year still had to come, month by month"}
+      </div>
+      <div className="space-y-0.5">
+        {months.map((m) => (
+          <TipRow key={m.stay_month} label={monthLabel(m.stay_month)}>
+            {kind === "money"
+              ? `${m.currency ? money(m.revenue_native, m.currency) : money(m.revenue_vnd, "VND")}${
+                  (m.currency ? m.achievement_pct : m.achievement_vnd_pct) != null
+                    ? ` = ${(m.currency ? m.achievement_pct : m.achievement_vnd_pct).toFixed(0)}%`
+                    : ""}`
+              : `${nights(m.otb_room_nights)} + ${nights(m.room_nights - m.otb_room_nights)} = ${nights(m.room_nights)}`}
+          </TipRow>
+        ))}
+      </div>
+      <div className="border-t border-gray-700 mt-1.5 pt-1.5 space-y-0.5">
+        {kind === "money" ? (
+          <>
+            <TipRow label="Projected" strong>
+              {block.currency ? money(block.revenue_native, block.currency)
+                              : money(block.revenue_vnd, "VND")}
+            </TipRow>
+            <TipRow label="Target">
+              {block.currency ? money(block.target_native, block.currency)
+                              : money(block.target_vnd, "VND")}
+            </TipRow>
+          </>
+        ) : (
+          <TipRow label="Finishes at" strong>
+            {nights(block.room_nights)}
+            {block.available_room_nights
+              ? ` of ${nights(block.available_room_nights)} = ${occ(block.occ_pct)}`
+              : ""}
+          </TipRow>
+        )}
+      </div>
+      <div className="text-gray-500 mt-1.5">
+        Hover a month in the table below to see it broken down by branch.
+      </div>
+    </>
+  );
+}
+
+/**
  * Where the selected months land if they keep filling the way they are, and
  * what that is against the target.
  *
@@ -572,6 +733,17 @@ function ForecastCard({ data, oneMonth }) {
   const missing = t.unforecastable || [];
   const unpriced = t.unpriced || [];
   const nameMonth = (m) => `${m.branch_name} ${monthLabel(m.stay_month)}`;
+  const cells = f.cells || [];
+  const oneMonthOnly = f.months.length === 1;
+  // With one stay month the branch lines fit and are the more useful view;
+  // across a quarter they run to fifteen rows, so the tile shows the month
+  // subtotals and the table underneath carries the branch detail.
+  const nightsTip = oneMonthOnly
+    ? nightsWorking(cells, t, "Where it lands")
+    : monthsWorking(f.months, t, "Where they land", "nights");
+  const moneyTip = oneMonthOnly
+    ? moneyWorking(cells, t, "Projected revenue")
+    : monthsWorking(f.months, t, "Projected revenue", "money");
   const moneyCurrency = t.currency || "VND";
   const lowHit = t.currency ? t.achievement_low_pct : t.achievement_low_vnd_pct;
   const highHit = t.currency ? t.achievement_high_pct : t.achievement_high_vnd_pct;
@@ -617,11 +789,13 @@ function ForecastCard({ data, oneMonth }) {
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
             Revenue vs target
           </div>
-          <div className={`text-3xl font-bold mt-1 tabular-nums ${
-            hit === null || hit === undefined ? "text-gray-900"
-              : hit >= 100 ? "text-emerald-600" : "text-red-600"}`}>
-            {hit === null || hit === undefined ? "—" : `${hit.toFixed(0)}%`}
-          </div>
+          <HoverTooltip content={moneyTip} width="w-96">
+            <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
+              hit === null || hit === undefined ? "text-gray-900"
+                : hit >= 100 ? "text-emerald-600" : "text-red-600"}`}>
+              {hit === null || hit === undefined ? "—" : `${hit.toFixed(0)}%`}
+            </div>
+          </HoverTooltip>
           <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
             {lowHit === null || lowHit === undefined
               ? "of target"
@@ -638,9 +812,11 @@ function ForecastCard({ data, oneMonth }) {
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
             {gap === null ? "Revenue projected" : gap >= 0 ? "Ahead by" : "Short by"}
           </div>
-          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
-            {gap === null ? shortMoney(revenue, moneyCurrency) : shortMoney(Math.abs(gap), moneyCurrency)}
-          </div>
+          <HoverTooltip content={moneyTip} width="w-96">
+            <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline">
+              {gap === null ? shortMoney(revenue, moneyCurrency) : shortMoney(Math.abs(gap), moneyCurrency)}
+            </div>
+          </HoverTooltip>
           <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
             {revenue === null || revenue === undefined
               ? "nothing to price"
@@ -658,9 +834,11 @@ function ForecastCard({ data, oneMonth }) {
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
             Finishes at
           </div>
-          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
-            {t.occ_pct === null ? nights(t.room_nights) : occ(t.occ_pct)}
-          </div>
+          <HoverTooltip content={nightsTip} width="w-96">
+            <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline">
+              {t.occ_pct === null ? nights(t.room_nights) : occ(t.occ_pct)}
+            </div>
+          </HoverTooltip>
           <div className={`text-sm mt-0.5 tabular-nums ${toneFor(t.occ_pts_vs_ly, 0.5)}`}>
             {gapLabel(t.occ_pts_vs_ly)}
           </div>
@@ -692,6 +870,8 @@ function ForecastCard({ data, oneMonth }) {
             <tbody>
               {f.months.map((m) => {
                 const mHit = m.currency ? m.achievement_pct : m.achievement_vnd_pct;
+                const mCells = cells.filter((c) => c.stay_month === m.stay_month);
+                const label = monthLabel(m.stay_month);
                 return (
                   <tr key={m.stay_month} className="border-b border-gray-100 last:border-0">
                     <td className="py-1.5 text-gray-700">
@@ -705,7 +885,13 @@ function ForecastCard({ data, oneMonth }) {
                           : null)}
                     </td>
                     <td className="text-right tabular-nums font-medium text-gray-900">
-                      {m.occ_pct === null ? nights(m.room_nights) : occ(m.occ_pct)}
+                      <HoverTooltip
+                        content={nightsWorking(mCells, m, label)}
+                        width="w-96"
+                        className="decoration-dotted underline-offset-4 hover:underline"
+                      >
+                        {m.occ_pct === null ? nights(m.room_nights) : occ(m.occ_pct)}
+                      </HoverTooltip>
                     </td>
                     <td className="text-right tabular-nums text-gray-500">
                       {m.ly_final_occ_pct === null
@@ -714,7 +900,13 @@ function ForecastCard({ data, oneMonth }) {
                     </td>
                     <td className={`text-right tabular-nums ${toneFor(
                       mHit === null || mHit === undefined ? null : mHit - 100, 2)}`}>
-                      {mHit === null || mHit === undefined ? "—" : `${mHit.toFixed(0)}%`}
+                      <HoverTooltip
+                        content={moneyWorking(mCells, m, `${label} revenue`)}
+                        width="w-96"
+                        className="decoration-dotted underline-offset-4 hover:underline"
+                      >
+                        {mHit === null || mHit === undefined ? "—" : `${mHit.toFixed(0)}%`}
+                      </HoverTooltip>
                     </td>
                   </tr>
                 );
@@ -736,8 +928,9 @@ function ForecastCard({ data, oneMonth }) {
             that had not opened, or one whose year-ago month never traded normally. Nothing is
             borrowed from another branch to fill that in; {runRate.length === 1 ? "it is" : "they are"}{" "}
             projected at the occupancy {runRate.length === 1 ? "it has" : "they have"} actually
-            been running this year ({runRate.map((m) => occ(m.occ_pct)).join(", ")}), which
-            carries no seasonality at all — and Q4 is not August.
+            been running this year ({runRate.map((m) => occ(m.occ_pct)).join(", ")}), and priced
+            at the rate {runRate.length === 1 ? "it has" : "they have"} been charging this year.
+            Neither carries any seasonal lift — and Q4 is not August.
           </li>
         )}
         {unpriced.length > 0 && (
@@ -793,6 +986,102 @@ function monthSpan(months) {
     : `${MONTH_ABBR[months[0] - 1]}–${MONTH_ABBR[months[months.length - 1] - 1]}`;
 }
 
+/** One branch's year: what it banked, then every month still open. */
+function yearWorking(row, months) {
+  const cur = row.currency;
+  const shown = row.projected_detail.filter(
+    (d) => !months || months.includes(d.month));
+  const total = months
+    ? shown.reduce((a, d) => a + d.revenue_native, 0)
+    : row.projection_native;
+  const target = months
+    ? shown.reduce((a, d) => a + d.target_native, 0)
+    : row.target_native;
+  return (
+    <>
+      <div className="font-semibold text-white mb-1">
+        {row.branch_name} · {months ? "Q4" : "full year"}
+      </div>
+      <div className="text-gray-300 mb-1.5">
+        {months
+          ? "each month projected from booking pace"
+          : "months that have finished + months still open"}
+      </div>
+      <div className="space-y-0.5">
+        {!months && (
+          <TipRow label={`Banked · ${row.settled_count} months`}>
+            {money(row.actual_to_date_native, cur)}
+          </TipRow>
+        )}
+        {shown.map((d) => (
+          <TipRow
+            key={d.month}
+            label={MONTH_ABBR[d.month - 1]}
+            note={d.basis === "own_run_rate" ? "run rate" : null}
+          >
+            {money(d.revenue_native, cur)}
+          </TipRow>
+        ))}
+        {row.months_not_projected.length > 0 && (
+          <TipRow label="Not projected">
+            {row.months_not_projected.map((m) => MONTH_ABBR[m - 1]).join(", ")}
+          </TipRow>
+        )}
+      </div>
+      <div className="border-t border-gray-700 mt-1.5 pt-1.5 space-y-0.5">
+        <TipRow label={months ? "Q4 projection" : "Full year"} strong>
+          {money(total, cur)}
+        </TipRow>
+        <TipRow label="Target">{money(target, cur)}</TipRow>
+        <TipRow label="Hit" strong>
+          {target ? `${(total / target * 100).toFixed(0)}%` : "—"}
+        </TipRow>
+      </div>
+      {!months && (
+        <div className="text-gray-500 mt-1.5">
+          Banked months are the KPI grid's own figures, accounting overrides included. Projected
+          months carry the same deduction and other-revenue treatment, so both halves are on the
+          basis the target was set against.
+        </div>
+      )}
+    </>
+  );
+}
+
+/** The group's year, one line per branch, summed in VND. */
+function yearGroupWorking(data) {
+  const t = data.total;
+  return (
+    <>
+      <div className="font-semibold text-white mb-1">Full year {data.year}</div>
+      <div className="text-gray-300 mb-1.5">
+        each branch in its own currency, summed in VND
+      </div>
+      <div className="space-y-0.5">
+        {data.branches.map((b) => (
+          <TipRow key={b.branch_id} label={b.branch_name.replace("MEANDER ", "")}>
+            {money(b.projection_native, b.currency)} / {money(b.target_native, b.currency)}
+            {b.achievement_pct === null ? "" : ` = ${b.achievement_pct.toFixed(0)}%`}
+          </TipRow>
+        ))}
+      </div>
+      <div className="border-t border-gray-700 mt-1.5 pt-1.5 space-y-0.5">
+        <TipRow label="Banked">{money(t.actual_to_date_vnd, "VND")}</TipRow>
+        <TipRow label="Still to sell">{money(t.forecast_remaining_vnd, "VND")}</TipRow>
+        <TipRow label="Full year" strong>{money(t.projection_vnd, "VND")}</TipRow>
+        <TipRow label="Target">{money(t.target_vnd, "VND")}</TipRow>
+        <TipRow label="Hit" strong>
+          {t.achievement_pct === null ? "—" : `${t.achievement_pct.toFixed(0)}%`}
+        </TipRow>
+      </div>
+      <div className="text-gray-500 mt-1.5">
+        TWD and JPY are converted at the rate the app holds (830 / 165), which has never come
+        from a live feed — read the group figure as the planning number it is.
+      </div>
+    </>
+  );
+}
+
 /**
  * Does the YEAR clear its revenue target — the question the stay-month picker
  * above cannot answer, because eight of the twelve months are behind us and
@@ -838,6 +1127,7 @@ function YearOutlook({ branchId }) {
   const gap = projection - target;
   const q4Hit = single ? single.q4_achievement_pct : t.q4_achievement_pct;
   const bankedPct = target ? (banked / target) * 100 : null;
+  const yearTip = single ? yearWorking(single, null) : yearGroupWorking(data);
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4">
@@ -855,10 +1145,12 @@ function YearOutlook({ branchId }) {
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
             Full year on this pace
           </div>
-          <div className={`text-3xl font-bold mt-1 tabular-nums ${
-            hit === null ? "text-gray-900" : hit >= 100 ? "text-emerald-600" : "text-red-600"}`}>
-            {hit === null ? "—" : `${hit.toFixed(0)}%`}
-          </div>
+          <HoverTooltip content={yearTip} width="w-96">
+            <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
+              hit === null ? "text-gray-900" : hit >= 100 ? "text-emerald-600" : "text-red-600"}`}>
+              {hit === null ? "—" : `${hit.toFixed(0)}%`}
+            </div>
+          </HoverTooltip>
           <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
             {low === null ? "of target" : `${low.toFixed(0)}–${high.toFixed(0)}% of target`}
           </div>
@@ -868,9 +1160,11 @@ function YearOutlook({ branchId }) {
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
             {gap >= 0 ? "Ahead by" : "Short by"}
           </div>
-          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
-            {shortMoney(Math.abs(gap), cur)}
-          </div>
+          <HoverTooltip content={yearTip} width="w-96">
+            <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline">
+              {shortMoney(Math.abs(gap), cur)}
+            </div>
+          </HoverTooltip>
           <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
             {shortMoney(projection, cur)} of {shortMoney(target, cur)}
           </div>
@@ -932,7 +1226,13 @@ function YearOutlook({ branchId }) {
                     {shortMoney(b.forecast_remaining_native, b.currency)}
                   </td>
                   <td className="text-right tabular-nums font-medium text-gray-900">
-                    {shortMoney(b.projection_native, b.currency)}
+                    <HoverTooltip
+                      content={yearWorking(b, null)}
+                      width="w-96"
+                      className="decoration-dotted underline-offset-4 hover:underline"
+                    >
+                      {shortMoney(b.projection_native, b.currency)}
+                    </HoverTooltip>
                   </td>
                   <td className="text-right tabular-nums text-gray-500">
                     {shortMoney(b.target_native, b.currency)}
@@ -948,7 +1248,13 @@ function YearOutlook({ branchId }) {
                   <td className={`text-right tabular-nums ${
                     b.q4_achievement_pct === null ? "text-gray-400"
                       : b.q4_achievement_pct >= 100 ? "text-emerald-600" : "text-red-600"}`}>
-                    {b.q4_achievement_pct === null ? "—" : `${b.q4_achievement_pct.toFixed(0)}%`}
+                    <HoverTooltip
+                      content={yearWorking(b, [10, 11, 12])}
+                      width="w-96"
+                      className="decoration-dotted underline-offset-4 hover:underline"
+                    >
+                      {b.q4_achievement_pct === null ? "—" : `${b.q4_achievement_pct.toFixed(0)}%`}
+                    </HoverTooltip>
                   </td>
                 </tr>
               ))}
