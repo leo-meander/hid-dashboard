@@ -587,7 +587,7 @@ function pointsWorking(cells, block, which) {
     if (which === "otb")
       return `${nights(r.otb_room_nights)} of ${nights(cap)} = ${occ(r.otb_occ_pct)}`;
     if (which === "speed")
-      return `${r.room_nights_per_day.toFixed(1)}/d × ${r.days_left}d = ${nights(r.room_nights_added)} = +${occ(r.points_added)}`;
+      return `${r.room_nights_per_day.toFixed(2)}/d × ${r.days_left}d = ${nights(r.room_nights_added)} = +${occ(r.points_added)}`;
     return r.needed_occ_pct == null
       ? "—"
       : `${nights(r.needed_room_nights)} of ${nights(cap)} = ${occ(r.needed_occ_pct)}`;
@@ -722,14 +722,14 @@ function ForecastCard({ data, oneMonth }) {
   const tiles = [
     ["otb", "OCC on the books", occ(rr.otb_occ_pct), `${nights(t.otb_room_nights)} room-nights sold`],
     ["speed", "At this speed", `+${occ(rr.points_added)}`,
-     `${rr.room_nights_per_day.toFixed(0)}/day × ${runway} left`],
+     `${rr.room_nights_per_day.toFixed(2)}/day × ${runway} left`],
     ["needed", "Needed for target",
      rr.needed_occ_pct == null ? "—" : occ(rr.needed_occ_pct),
      shortBy == null
        ? "no target to price"
        : shortBy <= 0.05
          ? "clear at this speed"
-         : `+${rr.needed_extra_per_day.toFixed(0)}/day to reach target`],
+         : `+${rr.needed_extra_per_day.toFixed(2)}/day to reach target`],
     ["revenue", "Revenue at this speed", shortMoney(revenue, currency),
      hit == null
        ? "no target to compare"
