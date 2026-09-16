@@ -689,7 +689,7 @@ function ForecastCard({ data, oneMonth }) {
        ? "no target to price"
        : shortBy <= 0.05
          ? "clear at this speed"
-         : `needs ${(rr.room_nights_per_day + rr.needed_extra_per_day).toFixed(0)}/day, doing ${rr.room_nights_per_day.toFixed(0)}`],
+         : `+${rr.needed_extra_per_day.toFixed(0)}/day to reach target`],
   ];
 
   return (
