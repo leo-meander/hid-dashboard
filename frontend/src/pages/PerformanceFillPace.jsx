@@ -630,6 +630,46 @@ function pointsWorking(cells, block, which) {
   );
 }
 
+/** How the projected revenue is built, per branch-month. */
+function revenueWorking(cells, block, currency) {
+  return (
+    <>
+      <div className="font-semibold text-white mb-1">Revenue at this speed</div>
+      <div className="text-gray-300 mb-1.5">
+        booked already + nights still to come × the rate they are selling at
+      </div>
+      <div className="space-y-1">
+        {cells.filter((c) => c.run_rate.revenue_native != null).map((c) => {
+          const r = c.run_rate;
+          return (
+            <div key={`${c.branch_id}-${c.stay_month}`}>
+              <TipRow label={`${c.branch_name.replace("MEANDER ", "")} ${monthLabel(c.stay_month).slice(0, 3)}`}>
+                {money(r.revenue_native, c.currency)}
+              </TipRow>
+              <div className="text-gray-400 ml-2 font-mono text-[10px]">
+                {money(c.booked_revenue_native, c.currency)} + {nights(r.room_nights_added)} ×{" "}
+                {money(r.adr, c.currency)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="border-t border-gray-700 mt-1.5 pt-1.5 space-y-0.5">
+        <TipRow label="At this speed" strong>
+          {currency ? money(block.revenue_native, currency) : money(block.revenue_vnd, "VND")}
+        </TipRow>
+        <TipRow label="Target">
+          {currency ? money(block.target_native, currency) : money(block.target_vnd, "VND")}
+        </TipRow>
+      </div>
+      <div className="text-gray-500 mt-1.5">
+        Nights already booked keep the revenue they actually sold for; only the nights still to
+        come are priced at the window's rate.
+      </div>
+    </>
+  );
+}
+
 /**
  * Does this month reach its revenue target at the rate rooms are filling now?
  *
@@ -690,6 +730,11 @@ function ForecastCard({ data, oneMonth }) {
        : shortBy <= 0.05
          ? "clear at this speed"
          : `+${rr.needed_extra_per_day.toFixed(0)}/day to reach target`],
+    ["revenue", "Revenue at this speed", shortMoney(revenue, currency),
+     hit == null
+       ? "no target to compare"
+       : `${hit.toFixed(0)}% of target · ${gap >= 0 ? "ahead by" : "short by"} ${
+           shortMoney(Math.abs(gap), currency)}`],
   ];
 
   return (
@@ -703,13 +748,20 @@ function ForecastCard({ data, oneMonth }) {
         </span>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-3">
         {tiles.map(([key, label, value, sub]) => (
           <div key={key}>
             <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</div>
-            <HoverTooltip content={pointsWorking(cells, rr, key)} width="w-96">
+            <HoverTooltip
+              content={key === "revenue"
+                ? revenueWorking(cells, rr, t.currency)
+                : pointsWorking(cells, rr, key)}
+              width="w-96"
+            >
               <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
-                key === "needed" && rr.needed_occ_pct > 100 ? "text-red-600" : "text-gray-900"}`}>
+                key === "needed" && rr.needed_occ_pct > 100 ? "text-red-600"
+                  : key === "revenue" && hit != null ? (hit >= 100 ? "text-emerald-600" : "text-red-600")
+                  : "text-gray-900"}`}>
                 {value}
               </div>
             </HoverTooltip>
@@ -720,19 +772,8 @@ function ForecastCard({ data, oneMonth }) {
 
       {revenue != null && (
         <div className="mt-3 text-sm text-gray-600 tabular-nums">
-          At this speed that is{" "}
           <span className="font-semibold text-gray-900">{money(revenue, currency)}</span> of{" "}
           {money(target, currency)} target
-          {hit != null && (
-            <span className={hit >= 100 ? "text-emerald-600" : "text-red-600"}>
-              {" "}= {hit.toFixed(0)}%
-            </span>
-          )}
-          {gap != null && (
-            <span className="text-gray-500">
-              {" "}· {gap >= 0 ? "ahead by" : "short by"} {shortMoney(Math.abs(gap), currency)}
-            </span>
-          )}
           {/* Name the rate. A revenue figure whose price nobody showed is a
               figure nobody can check. */}
           <div className="text-xs text-gray-500 mt-1">
@@ -747,7 +788,8 @@ function ForecastCard({ data, oneMonth }) {
       )}
 
       <p className="text-xs text-gray-500 mt-3 leading-snug">
-        All three are points of the same house, so they read against each other directly.
+        The first three are points of the same house, so they read against each other directly;
+        the fourth is what they come to in money.
         <span className="font-medium text-gray-600"> At this speed</span> is arithmetic, not a
         forecast: today's rate carried flat. Bookings crowd towards check-in rather than arriving
         evenly, so a month still months away sits low here by construction — read it as the floor
