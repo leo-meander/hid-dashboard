@@ -328,7 +328,8 @@ def _days_left(year: int, month: int, as_of: date) -> int:
 
 
 def _run_rate(cell: dict, book: dict, as_of: date,
-              adr: Optional[float], target: Optional[float]) -> dict:
+              adr: Optional[float], target: Optional[float],
+              deduction_pct: float = 0.0, other_revenue: float = 0.0) -> dict:
     """The month in points of occupancy: what is sold, what each source of
     nights adds on top, and what the target asks for.
 
@@ -343,6 +344,17 @@ def _run_rate(cell: dict, book: dict, as_of: date,
     Nights are carried in the unit the target is set in; money is not
     converted, because revenue per reservation-night multiplied back over
     reservation-nights cancels the factor out.
+
+    Money also carries the branch's two standing adjustments, because the
+    target was set against a figure that already has them:
+
+        revenue = (booked + nights still to come × rate) × (1 − deduct%)
+                  + other revenue
+
+    They are not cosmetic. Osaka runs a 6% deduction, and 1948, Oani and
+    Saigon each add a fixed monthly amount — Saigon's is 48m VND. Left off,
+    Osaka's October reads 101% of target where the KPI page would call the
+    same month short.
 
     `needed` is the one that repays reading first. It comes out above 100% for
     a month whose target cannot be reached on rooms at the rate the branch is
@@ -375,12 +387,17 @@ def _run_rate(cell: dict, book: dict, as_of: date,
     # `adr` (last year's rate moved by the trend) is only the fallback for a
     # window with no pickup to take a rate from.
     rate = window_adr or adr
+    mult = 1 - deduction_pct / 100
+    # Undo the adjustments to find the raw revenue the target implies, then ask
+    # how many nights that is. Dividing the target itself by the rate would ask
+    # the wrong question on any branch that carries either.
+    raw_target = ((target - other_revenue) / mult) if (target and mult) else None
     needed = None
     adr_needed = None
-    if target and rate and booked_revenue is not None:
-        needed = otb + max(0.0, (target - booked_revenue) / rate)
+    if raw_target and rate and booked_revenue is not None:
+        needed = otb + max(0.0, (raw_target - booked_revenue) / rate)
         if needed > ceiling and ceiling > otb:
-            adr_needed = (target - booked_revenue) / (ceiling - otb)
+            adr_needed = (raw_target - booked_revenue) / (ceiling - otb)
 
     def pts(nights):
         return round(nights / capacity * 100, 2) if capacity and nights is not None else None
@@ -390,8 +407,10 @@ def _run_rate(cell: dict, book: dict, as_of: date,
     # acted on in: "three more room-nights a day", not "4.7 points".
     extra = max(0.0, needed - reach) if needed is not None else None
     extra_per_day = (extra / days_left) if (extra is not None and days_left) else None
-    revenue = (booked_revenue + (reach - otb) / factor * window_adr
-               if booked_revenue is not None and window_adr and factor else None)
+    revenue = (
+        (booked_revenue + (reach - otb) / factor * window_adr) * mult + other_revenue
+        if booked_revenue is not None and window_adr and factor else None
+    )
     return {
         "days_left": days_left,
         "window_days": window,
@@ -628,8 +647,11 @@ def build_forecast(
         target = targets.get((bid, y, m), {})
         priced.append({
             **c,
-            "run_rate": _run_rate(c, book, as_of, adr_remaining,
-                                  target.get("native")),
+            "run_rate": _run_rate(
+                c, book, as_of, adr_remaining, target.get("native"),
+                deduction_pct=branch_meta.get(bid, {}).get("deduction_pct", 0.0),
+                other_revenue=branch_meta.get(bid, {}).get("other_revenue_native", 0.0),
+            ),
             "adr_remaining": round(adr_remaining, 2) if adr_remaining else None,
             "adr_yoy": round(trend, 3) if trend is not None else None,
             "adr_yoy_clipped": trend is not None and clipped != trend,

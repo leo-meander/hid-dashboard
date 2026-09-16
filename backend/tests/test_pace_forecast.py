@@ -638,3 +638,50 @@ def test_the_gap_is_also_given_as_a_change_of_speed(monkeypatch):
     clear = _run(monkeypatch, [rr_cell()], occ=occ,
                  targets={("b-1948", 2026, 10): {"native": 100_000.0, "vnd": 0.0}})
     assert clear["cells"][0]["run_rate"]["needed_extra_per_day"] == 0
+
+
+def test_the_branch_adjustments_are_applied_where_the_money_is_made(monkeypatch):
+    """A Cloudbeds month becomes the KPI figure as `revenue × (1 − deduct%) +
+    other revenue`, and the target was set against that. Osaka carries a 6%
+    deduction and Saigon adds a fixed 48m a month; left off, a month reads
+    above target that the KPI page would call short."""
+    occ = {("b-osaka", 2026, 10): {"revenue": 1_000_000.0, "nights": 500, "adr": 2_000.0}}
+    meta = {**BRANCHES}
+    meta["b-osaka"] = {**meta["b-osaka"], "deduction_pct": 6.0,
+                       "other_revenue_native": 100_000.0}
+    monkeypatch.setattr(pace_forecast, "_monthly_adr", lambda *a, **k: occ)
+    monkeypatch.setattr(pace_forecast, "_targets", lambda *a, **k: {})
+    monkeypatch.setattr(pace_forecast, "get_cached_rate", lambda c, t="VND": 1.0)
+    out = build_forecast(
+        None,
+        [rr_cell("b-osaka", capacity=2201, otb=500, ly_otb=1082, ly_final=1892,
+                 city="Osaka", pickup_nights=300.0, pickup_revenue=900_000.0)],
+        as_of=date(2026, 9, 15), branch_meta=meta, scoped_sources=False,
+    )
+    r = out["cells"][0]["run_rate"]
+    raw = 1_000_000.0 + r["room_nights_added"] * r["adr"]
+    assert r["revenue_native"] == pytest.approx(raw * 0.94 + 100_000, rel=1e-3)
+
+
+def test_needed_undoes_the_adjustments_before_dividing(monkeypatch):
+    """The target is a figure that already has the deduction taken and the
+    other revenue added. Dividing it straight by the rate asks how many nights
+    reach a number the branch never has to reach."""
+    occ = {("b-osaka", 2026, 10): {"revenue": 1_000_000.0, "nights": 500, "adr": 2_000.0}}
+    meta = {**BRANCHES}
+    meta["b-osaka"] = {**meta["b-osaka"], "deduction_pct": 6.0,
+                       "other_revenue_native": 100_000.0}
+    monkeypatch.setattr(pace_forecast, "_monthly_adr", lambda *a, **k: occ)
+    monkeypatch.setattr(pace_forecast, "_targets", lambda *a, **k:
+                        {("b-osaka", 2026, 10): {"native": 3_000_000.0, "vnd": 0.0}})
+    monkeypatch.setattr(pace_forecast, "get_cached_rate", lambda c, t="VND": 1.0)
+    out = build_forecast(
+        None,
+        [rr_cell("b-osaka", capacity=2201, otb=500, ly_otb=1082, ly_final=1892,
+                 city="Osaka", pickup_nights=300.0, pickup_revenue=900_000.0)],
+        as_of=date(2026, 9, 15), branch_meta=meta, scoped_sources=False,
+    )
+    r = out["cells"][0]["run_rate"]
+    raw_target = (3_000_000 - 100_000) / 0.94
+    assert r["needed_room_nights"] == pytest.approx(
+        500 + (raw_target - 1_000_000) / r["adr"], abs=1)

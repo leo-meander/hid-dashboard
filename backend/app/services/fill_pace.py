@@ -509,6 +509,11 @@ def get_fill_pace(
             "city": b.city,
             "total_rooms": b.total_rooms or 0,
             "units": getattr(b, inv_attr, None) or 0,
+            # The two standing adjustments between a Cloudbeds sum and the
+            # number the KPI target was set against. The projection has to
+            # carry them or it is compared with a target on another basis.
+            "deduction_pct": float(b.deduction_pct or 0),
+            "other_revenue_native": float(b.other_revenue_native or 0),
         }
         for b in db.query(Branch).filter_by(is_active=True).all()
     }

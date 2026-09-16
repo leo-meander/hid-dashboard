@@ -165,18 +165,18 @@ def test_an_accounting_override_is_used_exactly_as_typed(scenario):
         7 * (1_000_000 * 0.9 + 50_000) + 500_000)
 
 
-def test_the_forecast_carries_the_same_adjustment_a_cloudbeds_month_does(scenario):
-    """The target was set against revenue net of the deduction and gross of
-    other revenue. A forecast compared with it un-adjusted measures something
-    else."""
+def test_the_projection_is_not_adjusted_a_second_time(scenario):
+    """The deduction and the other revenue are applied where the money is made
+    — pace_forecast, which prices the nights — so a second pass here would take
+    10% off a figure that has already had it taken off, and add the fixed
+    amount twice."""
     out = scenario(
         [FakeBranch("b1", "1948", deduction_pct=10, other_revenue=50_000)],
         targets=flat(1_000_000.0),
         cloudbeds={},
-        cells=[cell("b1", 12, 1_000_000.0)],
+        cells=[cell("b1", 12, 900_000.0)],
     )
-    assert out["branches"][0]["forecast_remaining_native"] == pytest.approx(
-        1_000_000 * 0.9 + 50_000)
+    assert out["branches"][0]["forecast_remaining_native"] == 900_000.0
 
 
 # ── a month that cannot be projected ─────────────────────────────────────────

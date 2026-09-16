@@ -20,9 +20,9 @@ The second half is `pace_forecast`'s run-rate reading: what is on the books
 now, plus the room-nights a booking day is currently adding, carried flat to
 the end of each month and priced at the rate those nights are selling at. The
 month underway is projected rather than read — a month three days old has most
-of its revenue still ahead of it — and it gets the same deduction and
-other-revenue treatment the settled months get, or the projection would be
-compared against a target on a different basis.
+of its revenue still ahead of it. It arrives already carrying the branch's
+deduction and other revenue, applied where the money is made rather than here,
+so both halves of the year sit on the basis the target was set against.
 
 That half is a floor, not a prediction: bookings crowd towards check-in rather
 than arriving evenly, so months still far off project low here by
@@ -180,7 +180,8 @@ def forecast_year(
             if not c or (c.get("run_rate") or {}).get("revenue_native") is None:
                 missing.append(m)
                 continue
-            adjusted = _adjust(c["run_rate"]["revenue_native"], branch)
+            # Already adjusted where it was made — see pace_forecast._run_rate.
+            adjusted = c["run_rate"]["revenue_native"]
             if adjusted is None:
                 missing.append(m)
                 continue
@@ -208,7 +209,7 @@ def forecast_year(
         # The same reading as the year above it — mixing the two would make
         # the quarter and the year it sits inside disagree.
         q4_projection = sum(
-            _adjust(c["run_rate"]["revenue_native"], branch) or 0
+            c["run_rate"]["revenue_native"] or 0
             for c in q4_cells if c and c["run_rate"]["revenue_native"] is not None
         ) + sum(
             month_actual_and_target(
