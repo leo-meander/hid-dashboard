@@ -39,6 +39,15 @@ const WINDOWS = [7, 14, 30, 60];
 // the page rather than buried in the service, and the API takes it as a
 // parameter. Mirrors MIN_SETTABLE_OCC / MAX_SETTABLE_OCC on the endpoint.
 const DEFAULT_MAX_OCC = 95;
+// Never "every room" or "a full house": the ceiling is whatever the field above
+// is set to, and a card that says "full" while the arithmetic stopped at 85%
+// is telling the reader something that is not true.
+const fullAt = (pct) => `${pct ?? DEFAULT_MAX_OCC}%`;
+// 99.7 rounded to "100%" sitting beside "still falls short" reads as a
+// contradiction, and the colour beside it says short while the digits say met.
+// Keep a decimal whenever rounding would carry the number across that line.
+const ceilPct = (v) =>
+  v == null ? "—" : (Math.round(v) === 100 && v < 100) ? `${v.toFixed(1)}%` : `${v.toFixed(0)}%`;
 const MIN_MAX_OCC = 50;
 // Mirrors MAX_WINDOW_DAYS on the endpoint. A custom range longer than this is
 // clamped server-side, so the page says so rather than showing a range it is
@@ -611,7 +620,7 @@ const POINTS_TIP = {
 };
 
 /** How a set of branch-months reaches one of its three point figures. */
-function pointsWorking(cells, block, which) {
+function pointsWorking(cells, block, which, maxOcc) {
   const [title, sub] = POINTS_TIP[which];
   const line = (c) => {
     const r = c.run_rate;
@@ -654,8 +663,8 @@ function pointsWorking(cells, block, which) {
           `Target revenue minus what is already booked, divided by the same rate the nights
            beside it are priced at — the ${block.window_days}-day window's own. The branch's
            deduction and other revenue are taken back off the target first, so both sides of
-           the comparison sit on one basis. Above 100% means a full house would still be short,
-           which is a rate problem, not a pace one.`}
+           the comparison sit on one basis. Above ${fullAt(maxOcc)} means the house would be
+           short even filled that far, which is a rate problem, not a pace one.`}
       </div>
       <div className="text-gray-500 mt-1">
         Percentages are divided out of the totals once — never averaged across months or branches.
@@ -859,7 +868,7 @@ function ForecastCard({ data, oneMonth }) {
         <div className="mt-1 opacity-90">
           Booking pace can be narrowed to {by.includes("source") ? "one source" : "one room type"},
           but the things it has to be measured against cannot: the booked revenue and the rate
-          both come from a table with no source column and no room split, and the KPI target is
+          both come from a table with no source column, and the KPI target is
           set for the whole branch. Every figure would be a slice divided by a whole — a wrong
           number that looks right. Clear the filter to read the projection.
         </div>
@@ -911,7 +920,7 @@ function ForecastCard({ data, oneMonth }) {
      rr.needed_occ_pct == null
        ? "no target to price"
        : rr.needed_occ_pct > 100
-         ? `a full house still falls short of ${occ(rr.needed_occ_pct)}`
+         ? `${fullAt(f.max_occ_pct)} full still falls short of ${occ(rr.needed_occ_pct)}`
          : shortBy <= 0.05
            ? `already past the ${occ(rr.needed_occ_pct)} it needs`
            : `more room-nights a day · needs ${occ(rr.needed_occ_pct)}`],
@@ -953,7 +962,7 @@ function ForecastCard({ data, oneMonth }) {
             <HoverTooltip
               content={key === "revenue"
                 ? revenueWorking(cells, rr, t.currency)
-                : pointsWorking(cells, rr, key)}
+                : pointsWorking(cells, rr, key, f.max_occ_pct)}
               width="w-96"
             >
               <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
@@ -981,8 +990,8 @@ function ForecastCard({ data, oneMonth }) {
             {rr.over_capacity.map((o) => (
               <li key={`${o.branch_id}-${o.stay_month}`} className="tabular-nums">
                 {o.branch_name} {monthLabel(o.stay_month)}: needs {occ(o.needed_occ_pct)} of the
-                house at {money(o.adr_now, o.currency)} a night. A full house clears the target
-                only at {money(o.adr_needed, o.currency)}
+                house at {money(o.adr_now, o.currency)} a night. Filling to{" "}
+                {fullAt(f.max_occ_pct)} clears the target only at {money(o.adr_needed, o.currency)}
                 {o.adr_now ? ` (${o.adr_needed >= o.adr_now ? "+" : ""}${
                   Math.round((o.adr_needed / o.adr_now - 1) * 100)}%)` : ""}.
               </li>
@@ -1024,7 +1033,7 @@ function ForecastCard({ data, oneMonth }) {
                     <td className="text-right tabular-nums text-gray-500">{occ(r.otb_occ_pct)}</td>
                     <td className="text-right tabular-nums font-medium text-gray-900">
                       <HoverTooltip
-                        content={pointsWorking(mCells, r, "speed")}
+                        content={pointsWorking(mCells, r, "speed", f.max_occ_pct)}
                         width="w-96"
                         className="decoration-dotted underline-offset-4 hover:underline"
                       >
@@ -1318,7 +1327,7 @@ function YearOutlook({ branchId, days, maxOcc = DEFAULT_MAX_OCC }) {
 
         <div>
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            If every room sells<Tag kind="projected" />
+            If it fills to {fullAt(data.max_occ_pct)}<Tag kind="projected" />
           </div>
           <HoverTooltip width="w-96" content={
             <>
@@ -1326,14 +1335,15 @@ function YearOutlook({ branchId, days, maxOcc = DEFAULT_MAX_OCC }) {
                 The most {data.year} can still produce
               </div>
               <div className="text-gray-300 mb-1.5">
-                months already finished + every room left, sold at today&apos;s rate
+                months already finished + the rest filled to {fullAt(data.max_occ_pct)},
+                at today&apos;s rate
               </div>
               <div className="space-y-0.5">
                 <TipRow label={monthSpan(data.settled_months)}>
                   counted as they happened
                 </TipRow>
                 <TipRow label={monthSpan(data.projected_months)}>
-                  booked + every unsold room
+                  booked + filled to {fullAt(data.max_occ_pct)}
                 </TipRow>
                 {yearAdr && <TipRow label="Priced at" strong>{money(yearAdr, cur)}</TipRow>}
               </div>
@@ -1344,9 +1354,10 @@ function YearOutlook({ branchId, days, maxOcc = DEFAULT_MAX_OCC }) {
                 left is the rate.
               </div>
               <div className="text-gray-500 mt-1">
-                &quot;Every room&quot; means {data.max_occ_pct ?? 95}% of the house, not all of
-                it. A hotel does not sell its last bed every night of a month, and a ceiling
-                that assumed it would be a number nobody could act on.
+                {fullAt(data.max_occ_pct)} is the field above, not a fact — set it to whatever
+                this house really sells and every figure here moves with it. It defaults to
+                95% rather than 100% because a hotel does not sell its last bed every night of
+                a month, and a ceiling that assumed it would be a number nobody could act on.
               </div>
               <div className="text-gray-500 mt-1">
                 The rate is held where it is now — no price rise is assumed — and the months
@@ -1361,7 +1372,7 @@ function YearOutlook({ branchId, days, maxOcc = DEFAULT_MAX_OCC }) {
             <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
               ceilingPct == null ? "text-gray-900"
                 : ceilingPct >= 100 ? "text-emerald-600" : "text-red-600"}`}>
-              {ceilingPct == null ? "—" : `${ceilingPct.toFixed(0)}%`}
+              {ceilPct(ceilingPct)}
             </div>
           </HoverTooltip>
           <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
@@ -1380,15 +1391,15 @@ function YearOutlook({ branchId, days, maxOcc = DEFAULT_MAX_OCC }) {
               </div>
               <div className="text-gray-300 mb-1.5">
                 {reachable === false
-                  ? "a full house is already short — only the rate moves this"
+                  ? `${fullAt(data.max_occ_pct)} full is already short — only the rate moves this`
                   : "the gap to target ÷ the booking days left to close it"}
               </div>
               <div className="space-y-0.5">
                 <TipRow label="At this speed">
                   {hit == null ? "—" : `${hit.toFixed(0)}% of target`}
                 </TipRow>
-                <TipRow label="If every room sells">
-                  {ceilingPct == null ? "—" : `${ceilingPct.toFixed(0)}% of target`}
+                <TipRow label={`If it fills to ${fullAt(data.max_occ_pct)}`}>
+                  {ceilingPct == null ? "—" : `${ceilPct(ceilingPct)} of target`}
                 </TipRow>
                 <TipRow label={gap >= 0 ? "Ahead by" : "Short by"} strong>
                   {shortMoney(Math.abs(gap), cur)}
@@ -1396,9 +1407,9 @@ function YearOutlook({ branchId, days, maxOcc = DEFAULT_MAX_OCC }) {
               </div>
               {reachable === false ? (
                 <div className="text-gray-500 mt-1.5">
-                  Selling every remaining room still lands under target, so no number of extra
-                  room-nights closes this. It says &quot;rate&quot; because that is the only
-                  lever left — the branches named below say what rate each would need.
+                  Filling to {fullAt(data.max_occ_pct)} still lands under target, so no number
+                  of extra room-nights closes this. It says &quot;rate&quot; because that is the
+                  only lever left — the branches named below say what rate each would need.
                 </div>
               ) : (
                 <div className="text-gray-500 mt-1.5">
@@ -1422,7 +1433,7 @@ function YearOutlook({ branchId, days, maxOcc = DEFAULT_MAX_OCC }) {
             {gap >= 0
               ? `ahead by ${shortMoney(gap, cur)}`
               : reachable === false
-                ? "a full house still falls short"
+                ? `${fullAt(data.max_occ_pct)} full still falls short`
                 : `more room-nights a day, ${monthSpan(data.projected_months)}`}
           </div>
         </div>
@@ -1482,13 +1493,15 @@ function YearOutlook({ branchId, days, maxOcc = DEFAULT_MAX_OCC }) {
         <div className="mt-3 bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-900">
           <div className="font-semibold">
             {notReachable.length === 1 ? "One branch cannot" : `${notReachable.length} branches cannot`}
-            {" "}reach the year on rooms — selling out would still fall short
+            {" "}reach the year on rooms — filling to {fullAt(data.max_occ_pct)} would still
+            fall short
           </div>
           <ul className="mt-1 space-y-0.5">
             {notReachable.map((b) => (
               <li key={b.branch_id} className="tabular-nums">
-                {b.branch_name}: a full house at today's rate reaches{" "}
-                {b.ceiling_pct == null ? "—" : `${b.ceiling_pct.toFixed(0)}%`} of the year.
+                {b.branch_name}: filling to {fullAt(data.max_occ_pct)} at today's rate
+                reaches{" "}
+                {ceilPct(b.ceiling_pct)} of the year.
                 {b.adr_for_target
                   ? ` Clearing it needs ${money(b.adr_for_target, b.currency)} a night.`
                   : ""}
