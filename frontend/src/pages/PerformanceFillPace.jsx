@@ -740,6 +740,46 @@ function revenueWorking(cells, block, currency) {
   );
 }
 
+/** Everything the card used to say in paragraphs under itself. */
+function cardWorking(rr, revenue, target, currency, oneMonth) {
+  return (
+    <>
+      <div className="font-semibold text-white mb-1">
+        At this speed, {oneMonth ? "does this month" : "do these months"} reach target?
+      </div>
+      <div className="text-gray-300 mb-1.5">
+        on the books + room-nights a day × days left to sell
+      </div>
+      <div className="space-y-0.5">
+        <TipRow label="On the books">sold already</TipRow>
+        <TipRow label="At this speed">today's rate × the days left</TipRow>
+        <TipRow label="Needed">what the target implies at today's rate</TipRow>
+        {revenue != null && (
+          <TipRow label="Revenue" strong>
+            {money(revenue, currency)} of {money(target, currency)}
+          </TipRow>
+        )}
+      </div>
+      <div className="text-gray-500 mt-1.5">
+        The first three are points of the same house, so they read against each other directly;
+        the fourth is what they come to in money.
+      </div>
+      <div className="text-gray-500 mt-1">
+        <span className="text-gray-300">At this speed is arithmetic, not a forecast.</span>{" "}
+        Today's rate carried flat. Bookings crowd towards check-in rather than arriving evenly,
+        so a month still months away sits low here by construction — read it as the floor if
+        nothing accelerates.
+      </div>
+      {rr.adr != null && (
+        <div className="text-gray-500 mt-1">
+          Nights still to come priced at {money(rr.adr, currency)} each, what the last{" "}
+          {rr.window_days} days actually sold at. Nights already booked keep what they sold for.
+        </div>
+      )}
+    </>
+  );
+}
+
 /**
  * Does this month reach its revenue target at the rate rooms are filling now?
  *
@@ -812,9 +852,14 @@ function ForecastCard({ data, oneMonth }) {
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-sm font-semibold text-gray-800">
-          At this speed, {oneMonth ? "does this month" : "do these months"} reach target?
-        </h2>
+        <HoverTooltip
+          content={cardWorking(rr, revenue, target, currency, oneMonth)}
+          width="w-96"
+        >
+          <h2 className="text-sm font-semibold text-gray-800 decoration-dotted underline-offset-4 hover:underline">
+            At this speed, {oneMonth ? "does this month" : "do these months"} reach target?
+          </h2>
+        </HoverTooltip>
         <div className="flex items-center gap-3 ml-auto">
           {rr.adr != null && (
             <HoverTooltip content={adrWorking(cells, rr, t.currency)} width="w-96">
@@ -854,28 +899,6 @@ function ForecastCard({ data, oneMonth }) {
           </div>
         ))}
       </div>
-
-      {revenue != null && (
-        <div className="mt-3 text-sm text-gray-600 tabular-nums">
-          <span className="font-semibold text-gray-900">{money(revenue, currency)}</span> of{" "}
-          {money(target, currency)} target
-          {/* Name the rate. A revenue figure whose price nobody showed is a
-              figure nobody can check. */}
-          <div className="text-xs text-gray-500 mt-1">
-            Nights already booked keep what they sold for; only the nights still to come are
-            priced at the rate above.
-          </div>
-        </div>
-      )}
-
-      <p className="text-xs text-gray-500 mt-3 leading-snug">
-        The first three are points of the same house, so they read against each other directly;
-        the fourth is what they come to in money.
-        <span className="font-medium text-gray-600"> At this speed</span> is arithmetic, not a
-        forecast: today's rate carried flat. Bookings crowd towards check-in rather than arriving
-        evenly, so a month still months away sits low here by construction — read it as the floor
-        if nothing accelerates.
-      </p>
 
       {/* A target a full house cannot reach is not a pace problem, and the
           card must not let it be read as one. */}
@@ -1122,9 +1145,41 @@ function YearOutlook({ branchId, days }) {
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-sm font-semibold text-gray-800">
-          At this speed, does {data.year} reach target?
-        </h2>
+        <HoverTooltip width="w-96" content={
+          <>
+            <div className="font-semibold text-white mb-1">
+              At this speed, does {data.year} reach target?
+            </div>
+            <div className="text-gray-300 mb-1.5">
+              months that have finished + months still open, at today's speed
+            </div>
+            <div className="space-y-0.5">
+              <TipRow label={monthSpan(data.settled_months)}>
+                counted as they happened
+              </TipRow>
+              <TipRow label={monthSpan(data.projected_months)}>
+                carried at the speed rooms are filling now
+              </TipRow>
+            </div>
+            <div className="text-gray-500 mt-1.5">
+              The banked half is the same figure the KPI grid shows, accounting overrides
+              included. The month underway is projected rather than read, because a month two
+              weeks old still has most of its revenue ahead of it.
+            </div>
+            <div className="text-gray-500 mt-1">
+              Months still far off sit low here by construction — this is the floor if nothing
+              accelerates, not a call on where the year ends.
+            </div>
+            <div className="text-gray-500 mt-1">
+              Follows the branch and the booking window. Not the stay month above, and not the
+              source or room-type filters.
+            </div>
+          </>
+        }>
+          <h2 className="text-sm font-semibold text-gray-800 decoration-dotted underline-offset-4 hover:underline">
+            At this speed, does {data.year} reach target?
+          </h2>
+        </HoverTooltip>
         <div className="flex items-center gap-3 ml-auto">
           {yearAdr && (
             <HoverTooltip width="w-96" content={
@@ -1290,25 +1345,16 @@ function YearOutlook({ branchId, days }) {
         </div>
       )}
 
-      <p className="text-xs text-gray-500 mt-3 leading-snug">
-        {monthSpan(data.settled_months)} counted as {data.settled_months.length === 1 ? "it" : "they"}{" "}
-        happened — the same figure the KPI grid shows, accounting overrides included.{" "}
-        {monthSpan(data.projected_months)} carried at the speed rooms are filling now, the month
-        underway included, because a month two weeks old still has most of its revenue ahead of
-        it. Months still far off sit low here by construction — this is the floor if nothing
-        accelerates, not a call on where the year ends.
-        {data.branches.some((b) => b.months_not_projected.length > 0) && (
-          <>
-            {" "}
-            {data.branches
-              .filter((b) => b.months_not_projected.length > 0)
-              .map((b) => `${b.branch_name} (${b.months_not_projected.map((m) => MONTH_ABBR[m - 1]).join(", ")})`)
-              .join(", ")}{" "}
-            could not be projected, so those months are out of both the projection and the
-            target it is read against.
-          </>
-        )}
-      </p>
+      {data.branches.some((b) => b.months_not_projected.length > 0) && (
+        <p className="text-xs text-amber-700 mt-3 leading-snug">
+          Not projected:{" "}
+          {data.branches
+            .filter((b) => b.months_not_projected.length > 0)
+            .map((b) => `${b.branch_name} (${b.months_not_projected.map((m) => MONTH_ABBR[m - 1]).join(", ")})`)
+            .join(", ")}{" "}
+          — those months are out of both the projection and the target it is read against.
+        </p>
+      )}
     </div>
   );
 }
@@ -1697,7 +1743,7 @@ export default function PerformanceFillPace() {
                 ? `${pctLabel(data.vs_last_year.pickup_room_nights_pct)} vs LY · LY ${nights(data.last_year.pickup_room_nights)}`
                 : `${data.current.pickup_bookings} bookings`}
               subTone={compare ? toneFor(data.vs_last_year.pickup_room_nights_pct, 2) : "text-gray-500"}
-              hint="Room-nights for this stay month that were booked inside the window — whenever the guest arrives, this is what the last stretch actually sold, and so the speed"
+              hint={`Room-nights for this stay month booked inside the window, whenever the guest arrives — this is the speed. The only tile the window moves: the other three are read at ${shortDate(data.as_of)} whatever it is set to.`}
             />
             {onPrev ? (
             <Stat
@@ -1760,14 +1806,6 @@ export default function PerformanceFillPace() {
             />
           </div>
 
-          {/* The window control moves exactly one of the four cards above, and
-              it is not obvious which — so it is stated rather than inferred. */}
-          <p className="text-xs text-gray-500 -mt-2">
-            Only <span className="font-medium text-gray-600">Booked in last {data.days}d</span> follows the booking
-            window. The other three are read at {shortDate(data.as_of)} whatever the window is:
-            on the books is everything sold so far, and the year-ago figures are the same date
-            counted back from each stay month.
-          </p>
 
           {compare && <ForecastCard data={data} oneMonth={oneMonth} />}
 
@@ -1777,16 +1815,26 @@ export default function PerformanceFillPace() {
               dropped: a line that only ever rises said less about pace than
               its own slope does, and the position it carried is on the cards. */}
           <div className="bg-white border border-gray-200 rounded-xl p-4">
-            <h2 className="text-sm font-semibold text-gray-800">
-              How fast it is selling
-            </h2>
-            <p className="text-xs text-gray-500 mt-0.5 mb-3">
-              Room-nights sold per booking day, smoothed over {SMOOTHING_DAYS} days. Above the
-              other line means selling faster than {onPrev ? `the ${data.days} days before` : "the same run-up last year"}.
-              Each point is the week ending on it, and the week before the window opens is
-              read too, so the line covers the window end to end{endsToday
-                ? " — bar today, a day still in progress." : "."}
-            </p>
+            <HoverTooltip width="w-80" content={
+              <>
+                <div className="font-semibold text-white mb-1">How fast it is selling</div>
+                <div className="text-gray-300">
+                  Room-nights sold per booking day, smoothed over {SMOOTHING_DAYS} days. Above
+                  the other line means selling faster than{" "}
+                  {onPrev ? `the ${data.days} days before` : "the same run-up last year"}.
+                </div>
+                <div className="text-gray-500 mt-1.5">
+                  Each point is the week ending on it, and the week before the window opens is
+                  read too, so the line covers the window end to end{endsToday
+                    ? " — bar today, a day still in progress." : "."}
+                </div>
+              </>
+            }>
+              <h2 className="text-sm font-semibold text-gray-800 decoration-dotted underline-offset-4 hover:underline">
+                How fast it is selling
+              </h2>
+            </HoverTooltip>
+            <div className="mb-3" />
             <ResponsiveContainer width="100%" height={240}>
               <LineChart data={speedData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />

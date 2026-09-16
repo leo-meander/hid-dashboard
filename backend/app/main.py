@@ -5,6 +5,7 @@ import os
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
@@ -69,6 +70,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Nothing was compressing anything. The built frontend went out as 1.27 MB of
+# JavaScript where 342 KB of gzip says the same thing, on every first visit and
+# again after every deploy — the asset filename is content-hashed, so a deploy
+# invalidates the browser's copy and the whole bundle is fetched again. The API
+# was uncompressed too: a three-month Fill Pace payload is ~90 KB of JSON,
+# which is mostly repeated key names and compresses to a fraction.
+#
+# minimum_size skips the small responses, where the CPU and the extra header
+# cost more than the bytes saved.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Auth
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
