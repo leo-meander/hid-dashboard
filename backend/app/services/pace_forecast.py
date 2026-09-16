@@ -524,6 +524,7 @@ def build_forecast(
     as_of: date,
     branch_meta: dict,
     scoped_sources: bool,
+    room_category: Optional[str] = None,
 ) -> dict:
     """Where the selected stay months land, and what that is against target.
 
@@ -533,14 +534,30 @@ def build_forecast(
         branch_id, year, month, city, days_out, capacity, status,
         otb_nights, ly_otb_nights, ly_final_nights
 
-    `scoped_sources` says whether the caller narrowed to a set of booking
-    sources. It does, because a forecast for "Agoda only" cannot be capped at
-    95% of the house — the rest of the house is being filled by everyone else.
-    Under a source filter the nights forecast still runs; the capacity ceiling
-    and the occupancy percentages do not.
+    `scoped_sources` and `room_category` say whether the caller narrowed the
+    selection, and if either did, NOTHING is returned. Not a partial answer —
+    none.
+
+    The reason is that only half of this can be narrowed. The booking curve
+    comes from `reservations`, which carries a source and a room type and
+    filters cleanly. Everything the curve is measured against does not:
+    `daily_metrics` has no source column at all and is not split by room type,
+    so the book, the money in it and the ADR would stay whole-house while the
+    pickup beside them was a slice; and the KPI target is set for the branch,
+    not for Agoda, and not for dorms. Every figure would be a slice divided by
+    a whole, which is not a small error — it is a plausible-looking wrong
+    number, which is worse. The page says the projection is unavailable for
+    that filter instead.
     """
     if not cells:
         return {"available": False, "reason": "no_months"}
+    if scoped_sources or room_category:
+        return {
+            "available": False,
+            "reason": "filtered",
+            "filtered_by": ([] if not scoped_sources else ["source"])
+                           + ([] if not room_category else ["room_category"]),
+        }
 
     months = sorted({(c["year"], c["month"]) for c in cells})
     branch_ids = sorted({c["branch_id"] for c in cells})

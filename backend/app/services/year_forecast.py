@@ -16,12 +16,19 @@ other-revenue adjustments are applied to the Cloudbeds sum and to nothing else.
 Two pages disagreeing about what a settled month earned would make every
 comparison below worthless.
 
-The second half is `pace_forecast`: on the books now, plus what last year still
-had to come from this same distance out, per branch, per month. The month
-underway is forecast rather than read — a month three days old has most of its
-revenue still ahead of it — and it gets the same deduction and other-revenue
-treatment the settled months get, or the projection would be compared against a
-target on a different basis.
+The second half is `pace_forecast`'s run-rate reading: what is on the books
+now, plus the room-nights a booking day is currently adding, carried flat to
+the end of each month and priced at the rate those nights are selling at. The
+month underway is projected rather than read — a month three days old has most
+of its revenue still ahead of it — and it gets the same deduction and
+other-revenue treatment the settled months get, or the projection would be
+compared against a target on a different basis.
+
+That half is a floor, not a prediction: bookings crowd towards check-in rather
+than arriving evenly, so months still far off project low here by
+construction. It answers "if the rest of the year sells at the rate it is
+selling now, where does the year finish" — which is the question, and it is
+the only reading this returns.
 
 Currencies are summed in VND, because the group runs TWD, JPY and VND and plans
 in VND. The rate is whatever `currency.get_cached_rate` holds, which in
@@ -170,22 +177,27 @@ def forecast_year(
         detail = []
         for m in open_months:
             c = by_cell.get((bid, m))
-            if not c or c["revenue_native"] is None:
+            if not c or (c.get("run_rate") or {}).get("revenue_native") is None:
                 missing.append(m)
                 continue
-            adjusted = _adjust(c["revenue_native"], branch)
+            adjusted = _adjust(c["run_rate"]["revenue_native"], branch)
+            if adjusted is None:
+                missing.append(m)
+                continue
             projected += adjusted
-            low += _adjust(c["revenue_low_native"], branch)
-            high += _adjust(c["revenue_high_native"], branch)
+            low += adjusted
+            high += adjusted
             detail.append({
                 "month": m,
                 "revenue_native": round(adjusted, 2),
                 "target_native": targets.get((bid, m), {}).get("target", 0.0),
-                "basis": c["basis"],
-                "room_nights": c["room_nights"],
-                "otb_room_nights": c["otb_room_nights"],
+                "basis": "run_rate",
+                "room_nights": c["run_rate"]["room_nights"],
+                "otb_room_nights": c["run_rate"]["otb_room_nights"],
+                "room_nights_per_day": c["run_rate"]["room_nights_per_day"],
+                "days_left": c["run_rate"]["days_left"],
                 "booked_revenue_native": c["booked_revenue_native"],
-                "adr_remaining": c["adr_remaining"],
+                "adr_remaining": c["run_rate"]["adr"],
             })
 
         covered = [m for m in range(1, 13) if m not in missing]
@@ -193,9 +205,11 @@ def forecast_year(
         target_full = sum(targets.get((bid, m), {}).get("target", 0.0) for m in range(1, 13))
         q4_cells = [by_cell.get((bid, m)) for m in Q4 if m in open_months]
         q4_settled = [m for m in Q4 if m in settled]
+        # The same reading as the year above it — mixing the two would make
+        # the quarter and the year it sits inside disagree.
         q4_projection = sum(
-            _adjust(c["revenue_native"], branch) or 0
-            for c in q4_cells if c and c["revenue_native"] is not None
+            _adjust(c["run_rate"]["revenue_native"], branch) or 0
+            for c in q4_cells if c and c["run_rate"]["revenue_native"] is not None
         ) + sum(
             month_actual_and_target(
                 branch, targets.get((bid, m), {}).get("target", 0.0),

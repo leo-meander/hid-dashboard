@@ -572,131 +572,28 @@ function TipRow({ label, children, strong, note }) {
   );
 }
 
-/** How a set of branch-months reaches its room-night figure. */
-function nightsWorking(cells, block, title) {
-  return (
-    <>
-      <div className="font-semibold text-white mb-1">{title}</div>
-      <div className="text-gray-300 mb-1.5">
-        on the books + what last year still had to come from here
-      </div>
-      <div className="space-y-0.5">
-        {cells.map((c) => (
-          <TipRow key={`${c.branch_id}-${c.stay_month}`} label={c.branch_name.replace("MEANDER ", "")}>
-            {c.basis === "ly_pickup"
-              ? `${nights(c.otb_room_nights)} + (${nights(c.ly_final_room_nights)} − ${nights(c.ly_otb_room_nights)})${
-                  c.bed_factor > 1.005 ? ` × ${c.bed_factor.toFixed(2)}` : ""} = ${nights(c.room_nights)}`
-              : `${nights(c.otb_room_nights)} → ${occ(c.run_rate_occ_pct)} of ${nights(c.available_room_nights)} = ${nights(c.room_nights)}`}
-            {c.capacity_capped ? " ⌐" : ""}
-          </TipRow>
-        ))}
-      </div>
-      <div className="border-t border-gray-700 mt-1.5 pt-1.5 space-y-0.5">
-        <TipRow label="Finishes at" strong>
-          {nights(block.room_nights)}
-          {block.available_room_nights
-            ? ` of ${nights(block.available_room_nights)} = ${occ(block.occ_pct)}`
-            : ""}
-        </TipRow>
-        <TipRow label="Range">
-          {nights(block.room_nights_low)}–{nights(block.room_nights_high)}
-        </TipRow>
-      </div>
-      {cells.some((c) => c.basis === "own_run_rate") && (
-        <div className="text-gray-500 mt-1.5">
-          → = no year-ago month worth reading, so the branch is held at the occupancy it has
-          been running this year. Nothing is borrowed from another branch.
-        </div>
-      )}
-      {cells.some((c) => c.capacity_capped) && (
-        <div className="text-gray-500 mt-1">⌐ = pinned to 95% of the house.</div>
-      )}
-      {cells.some((c) => c.bed_factor > 1.005) && (
-        <div className="text-gray-500 mt-1.5">
-          × = one booking can hold several beds. On the books counts the beds; last year's
-          curve counts the bookings, so its pickup is converted at what this branch's own book
-          reads between the two ({cells.filter((c) => c.bed_factor > 1.005)
-            .map((c) => `${c.branch_name.replace("MEANDER ", "")} ${c.bed_factor.toFixed(2)}`)
-            .join(", ")}).
-        </div>
-      )}
-    </>
-  );
-}
-
-/** How a set of branch-months reaches its revenue figure. */
-function moneyWorking(cells, block, title) {
-  const priced = cells.filter((c) => c.revenue_native !== null && c.revenue_native !== undefined);
-  return (
-    <>
-      <div className="font-semibold text-white mb-1">{title}</div>
-      <div className="text-gray-300 mb-1.5">
-        already booked + nights still to come × ADR
-      </div>
-      <div className="space-y-1">
-        {priced.map((c) => (
-          <div key={`${c.branch_id}-${c.stay_month}`}>
-            <TipRow label={c.branch_name.replace("MEANDER ", "")}>
-              {money(c.revenue_native, c.currency)}
-            </TipRow>
-            <div className="text-gray-400 ml-2 font-mono text-[10px]">
-              {money(c.booked_revenue_native, c.currency)} + {nights(c.room_nights - c.booked_room_nights)}
-              {" × "}{money(c.adr_remaining, c.currency)}
-              {c.basis !== "ly_pickup" && <span className="text-gray-500"> · own rate</span>}
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="border-t border-gray-700 mt-1.5 pt-1.5 space-y-0.5">
-        <TipRow label="Projected" strong>
-          {block.currency ? money(block.revenue_native, block.currency)
-                          : money(block.revenue_vnd, "VND")}
-        </TipRow>
-        <TipRow label="Target">
-          {block.currency ? money(block.target_native, block.currency)
-                          : money(block.target_vnd, "VND")}
-        </TipRow>
-        <TipRow label="Hit" strong>
-          {(() => {
-            const h = block.currency ? block.achievement_pct : block.achievement_vnd_pct;
-            return h === null || h === undefined ? "—" : `${h.toFixed(0)}%`;
-          })()}
-        </TipRow>
-      </div>
-      <div className="text-gray-500 mt-1.5">
-        ADR = last year's rate for the same month × this year's own rate trend — or, where the
-        year-ago month was rejected as unrepresentative, what the branch has actually been
-        charging this year, which carries no seasonal lift. Nights already sold keep what they
-        sold for and are not re-priced.
-      </div>
-    </>
-  );
-}
-
 const POINTS_TIP = {
   otb: ["On the books", "room-nights sold ÷ room-nights the house has"],
   speed: ["At this speed", "room-nights a day now × days left to sell"],
-  ly: ["Last year, from here", "what the same run-in actually delivered a year ago"],
   needed: ["Needed for target", "the occupancy the revenue target implies at today's rate"],
 };
 
-/** How a set of branch-months reaches one of its four point figures. */
+/** How a set of branch-months reaches one of its three point figures. */
 function pointsWorking(cells, block, which) {
   const [title, sub] = POINTS_TIP[which];
   const line = (c) => {
     const r = c.run_rate;
     const cap = c.available_room_nights;
-    if (which === "otb") return `${nights(r.otb_room_nights)} of ${nights(cap)} = ${occ(r.otb_occ_pct)}`;
+    if (which === "otb")
+      return `${nights(r.otb_room_nights)} of ${nights(cap)} = ${occ(r.otb_occ_pct)}`;
     if (which === "speed")
       return `${r.room_nights_per_day.toFixed(1)}/d × ${r.days_left}d = ${nights(r.room_nights_added)} = +${occ(r.points_added)}`;
-    if (which === "ly") return `${nights(r.ly_room_nights_added)} = +${occ(r.ly_points_added)}`;
-    return r.needed_occ_pct == null ? "—"
+    return r.needed_occ_pct == null
+      ? "—"
       : `${nights(r.needed_room_nights)} of ${nights(cap)} = ${occ(r.needed_occ_pct)}`;
   };
-  const totalLine = {
-    otb: block.otb_occ_pct, speed: block.points_added,
-    ly: block.ly_points_added, needed: block.needed_occ_pct,
-  }[which];
+  const total = { otb: block.otb_occ_pct, speed: block.points_added,
+                  needed: block.needed_occ_pct }[which];
   return (
     <>
       <div className="font-semibold text-white mb-1">{title}</div>
@@ -710,21 +607,19 @@ function pointsWorking(cells, block, which) {
         ))}
       </div>
       <div className="border-t border-gray-700 mt-1.5 pt-1.5">
-        <TipRow label={which === "otb" || which === "needed" ? "Together" : "Adds"} strong>
-          {which === "otb" || which === "needed" ? occ(totalLine) : `+${occ(totalLine)}`}
+        <TipRow label={which === "speed" ? "Adds" : "Together"} strong>
+          {which === "speed" ? `+${occ(total)}` : occ(total)}
         </TipRow>
       </div>
       <div className="text-gray-500 mt-1.5">
-        {which === "speed" &&
-          `Speed comes from the ${block.window_days}-day window set above, carried flat. Bookings
-           crowd towards check-in rather than arriving evenly, so this is the floor if nothing
-           speeds up — the year-ago column beside it is what the run-in actually delivered.`}
-        {which === "ly" &&
-          "Read at the same distance from each month, not the same calendar date. What actually happened, not a projection."}
-        {which === "needed" &&
-          "Target revenue minus what is already booked, divided by the rate the branch is selling at now. Above 100% means a full house would still be short."}
         {which === "otb" &&
           "Everything sold so far for these months, whenever it was booked. Counted in beds, the way the KPI page counts them."}
+        {which === "speed" &&
+          `Room-nights a day over the ${block.window_days}-day window set above, carried flat to
+           the end of each stay month. Bookings crowd towards check-in rather than arriving
+           evenly, so this is the floor if nothing speeds up.`}
+        {which === "needed" &&
+          "Target revenue minus what is already booked, divided by the rate the branch is selling at now. Above 100% means a full house would still be short."}
       </div>
       <div className="text-gray-500 mt-1">
         Percentages are divided out of the totals once — never averaged across months or branches.
@@ -733,119 +628,63 @@ function pointsWorking(cells, block, which) {
   );
 }
 
-/** One line per stay month, for a selection that spans several. */
-function monthsWorking(months, block, title, kind) {
-  return (
-    <>
-      <div className="font-semibold text-white mb-1">{title}</div>
-      <div className="text-gray-300 mb-1.5">
-        {kind === "money"
-          ? "each month projected on its own, then added"
-          : "on the books + what last year still had to come, month by month"}
-      </div>
-      <div className="space-y-0.5">
-        {months.map((m) => (
-          <TipRow key={m.stay_month} label={monthLabel(m.stay_month)}>
-            {kind === "money"
-              ? `${m.currency ? money(m.revenue_native, m.currency) : money(m.revenue_vnd, "VND")}${
-                  (m.currency ? m.achievement_pct : m.achievement_vnd_pct) != null
-                    ? ` = ${(m.currency ? m.achievement_pct : m.achievement_vnd_pct).toFixed(0)}%`
-                    : ""}`
-              : `${nights(m.otb_room_nights)} + ${nights(m.room_nights - m.otb_room_nights)} = ${nights(m.room_nights)}`}
-          </TipRow>
-        ))}
-      </div>
-      <div className="border-t border-gray-700 mt-1.5 pt-1.5 space-y-0.5">
-        {kind === "money" ? (
-          <>
-            <TipRow label="Projected" strong>
-              {block.currency ? money(block.revenue_native, block.currency)
-                              : money(block.revenue_vnd, "VND")}
-            </TipRow>
-            <TipRow label="Target">
-              {block.currency ? money(block.target_native, block.currency)
-                              : money(block.target_vnd, "VND")}
-            </TipRow>
-          </>
-        ) : (
-          <TipRow label="Finishes at" strong>
-            {nights(block.room_nights)}
-            {block.available_room_nights
-              ? ` of ${nights(block.available_room_nights)} = ${occ(block.occ_pct)}`
-              : ""}
-          </TipRow>
-        )}
-      </div>
-      <div className="text-gray-500 mt-1.5">
-        Hover a month in the table below to see it broken down by branch.
-      </div>
-    </>
-  );
-}
-
 /**
- * Where the selected months land if they keep filling the way they are, and
- * what that is against the target.
+ * Does this month reach its revenue target at the rate rooms are filling now?
  *
- * The arithmetic is one line — what is on the books, plus what last year still
- * had to come from this same distance out — and it is stated on the card
- * rather than left in the service, because a projection nobody can reconstruct
- * is a projection nobody should act on. Everything that weakens it is on the
- * card too: months borrowed from a neighbour, months pinned to the ceiling,
- * and the measured error the range comes from.
+ * Three readings in one unit — what is sold, what today's speed adds, what the
+ * target asks for — and none of them a prediction: two are arithmetic and one
+ * is a division on the target. The reader does the comparing.
+ *
+ * Deliberately narrow. An earlier version also projected where the month lands
+ * by the shape of the year before, and carried both; it answered a question
+ * nobody had asked and doubled the numbers on screen.
  */
 function ForecastCard({ data, oneMonth }) {
   const f = data.forecast;
-  if (!f?.available) return null;
-  const t = f.total;
-
-  const runRate = t.run_rate_months || [];
-  const missing = t.unforecastable || [];
-  const unpriced = t.unpriced || [];
-  const nameMonth = (m) => `${m.branch_name} ${monthLabel(m.stay_month)}`;
-  const cells = f.cells || [];
-  const oneMonthOnly = f.months.length === 1;
-  // With one stay month the branch lines fit and are the more useful view;
-  // across a quarter they run to fifteen rows, so the tile shows the month
-  // subtotals and the table underneath carries the branch detail.
-  const nightsTip = oneMonthOnly
-    ? nightsWorking(cells, t, "Where it lands")
-    : monthsWorking(f.months, t, "Where they land", "nights");
-  const moneyTip = oneMonthOnly
-    ? moneyWorking(cells, t, "Projected revenue")
-    : monthsWorking(f.months, t, "Projected revenue", "money");
-  const rr = t.run_rate;
-  const rrHit = t.currency ? rr.achievement_pct : rr.achievement_vnd_pct;
-  const rrRevenue = t.currency ? rr.revenue_native : rr.revenue_vnd;
-  const rrTarget = t.currency ? rr.target_native : rr.target_vnd;
-  const rrGap = rrRevenue == null || !rrTarget ? null : rrRevenue - rrTarget;
-  const moneyCurrency = t.currency || "VND";
-  const lowHit = t.currency ? t.achievement_low_pct : t.achievement_low_vnd_pct;
-  const highHit = t.currency ? t.achievement_high_pct : t.achievement_high_vnd_pct;
-  const money_ = (v) => money(v, moneyCurrency);
-  const revenue = t.currency ? t.revenue_native : t.revenue_vnd;
-  const target = t.currency ? t.target_native : t.target_vnd;
-  const hit = t.currency ? t.achievement_pct : t.achievement_vnd_pct;
-  const gap = revenue === null || revenue === undefined || !target
-    ? null : revenue - target;
-
-  if (t.room_nights === null) {
+  if (f && !f.available && f.reason === "filtered") {
+    const by = f.filtered_by || [];
     return (
       <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900">
-        <div className="font-semibold">No pace forecast for this selection</div>
+        <div className="font-semibold">
+          No projection for {by.includes("source") ? "a source" : "a room-type"} selection
+        </div>
         <div className="mt-1 opacity-90">
-          {missing.length
-            ? `${missing.map(nameMonth).join(", ")} ${missing.length === 1 ? "has" : "have"} no
-               year-ago month to read a finish from and no settled months of ${
-                 missing.length === 1 ? "its" : "their"
-               } own to hold a rate from. Nothing is borrowed from another branch to fill
-               that in — a 69-room hostel's October says nothing reliable about a 92-room
-               hotel's.`
-            : "Nothing in this selection has a month to read a finish from."}
+          Booking pace can be narrowed to {by.includes("source") ? "one source" : "one room type"},
+          but the things it has to be measured against cannot: the booked revenue and the rate
+          both come from a table with no source column and no room split, and the KPI target is
+          set for the whole branch. Every figure would be a slice divided by a whole — a wrong
+          number that looks right. Clear the filter to read the projection.
         </div>
       </div>
     );
   }
+  if (!f?.available) return null;
+
+  const t = f.total;
+  const rr = t.run_rate;
+  const cells = f.cells || [];
+  const currency = t.currency || "VND";
+  const revenue = t.currency ? rr.revenue_native : rr.revenue_vnd;
+  const target = t.currency ? rr.target_native : rr.target_vnd;
+  const hit = t.currency ? rr.achievement_pct : rr.achievement_vnd_pct;
+  const gap = revenue == null || !target ? null : revenue - target;
+  const shortBy = rr.needed_occ_pct == null
+    ? null
+    : Math.max(0, rr.needed_occ_pct - rr.otb_occ_pct - rr.points_added);
+
+  const runwayDays = [...new Set(cells.map((c) => c.run_rate.days_left))].sort((a, b) => a - b);
+  const runway = runwayDays.length === 1
+    ? `${runwayDays[0]} days`
+    : `${runwayDays[0]}–${runwayDays[runwayDays.length - 1]} days`;
+
+  const tiles = [
+    ["otb", "On the books", occ(rr.otb_occ_pct), `${nights(t.otb_room_nights)} room-nights sold`],
+    ["speed", "At this speed", `+${occ(rr.points_added)}`,
+     `${rr.room_nights_per_day.toFixed(0)}/day × ${runway} left`],
+    ["needed", "Needed for target",
+     rr.needed_occ_pct == null ? "—" : occ(rr.needed_occ_pct),
+     shortBy == null ? "no target to price" : `${occ(shortBy)} short at this speed`],
+  ];
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4">
@@ -858,26 +697,10 @@ function ForecastCard({ data, oneMonth }) {
         </span>
       </div>
 
-      {/* Four readings, one unit, and not one of them a prediction: what is
-          sold, what today's speed adds, what last year's run-in added, and
-          what the target asks for. The reader does the comparing. */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-3">
-        {[
-          ["otb", "On the books", occ(rr.otb_occ_pct),
-           `${nights(t.otb_room_nights)} room-nights sold`],
-          ["speed", "At this speed", `+${occ(rr.points_added)}`,
-           `${rr.room_nights_per_day.toFixed(0)}/day × days left`],
-          ["ly", "Last year, from here", `+${occ(rr.ly_points_added)}`,
-           "what the run-in delivered"],
-          ["needed", "Needed for target",
-           rr.needed_occ_pct == null ? "—" : occ(rr.needed_occ_pct),
-           rr.needed_occ_pct == null ? "no target to price"
-             : `${occ(Math.max(0, rr.needed_occ_pct - rr.otb_occ_pct - rr.points_added))} short at this speed`],
-        ].map(([key, label, value, sub]) => (
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-3">
+        {tiles.map(([key, label, value, sub]) => (
           <div key={key}>
-            <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-              {label}
-            </div>
+            <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</div>
             <HoverTooltip content={pointsWorking(cells, rr, key)} width="w-96">
               <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
                 key === "needed" && rr.needed_occ_pct > 100 ? "text-red-600" : "text-gray-900"}`}>
@@ -889,33 +712,30 @@ function ForecastCard({ data, oneMonth }) {
         ))}
       </div>
 
-      {/* The same reading in money, because the target is a money target and
-          occupancy points alone do not settle it. */}
-      {rrRevenue != null && (
+      {revenue != null && (
         <div className="mt-3 text-sm text-gray-600 tabular-nums">
           At this speed that is{" "}
-          <span className="font-semibold text-gray-900">{money(rrRevenue, moneyCurrency)}</span>
-          {" "}of {money(rrTarget, moneyCurrency)} target
-          {rrHit != null && (
-            <span className={rrHit >= 100 ? "text-emerald-600" : "text-red-600"}>
-              {" "}= {rrHit.toFixed(0)}%
+          <span className="font-semibold text-gray-900">{money(revenue, currency)}</span> of{" "}
+          {money(target, currency)} target
+          {hit != null && (
+            <span className={hit >= 100 ? "text-emerald-600" : "text-red-600"}>
+              {" "}= {hit.toFixed(0)}%
             </span>
           )}
-          {rrGap != null && (
+          {gap != null && (
             <span className="text-gray-500">
-              {" "}· {rrGap >= 0 ? "ahead by" : "short by"} {shortMoney(Math.abs(rrGap), moneyCurrency)}
+              {" "}· {gap >= 0 ? "ahead by" : "short by"} {shortMoney(Math.abs(gap), currency)}
             </span>
           )}
         </div>
       )}
 
       <p className="text-xs text-gray-500 mt-3 leading-snug">
-        All four are points of the same house, so they read against each other directly.
+        All three are points of the same house, so they read against each other directly.
         <span className="font-medium text-gray-600"> At this speed</span> is arithmetic, not a
-        forecast: today's rate carried flat, which is the floor if nothing accelerates.
-        <span className="font-medium text-gray-600"> Last year, from here</span> is what the same
-        run-in actually delivered, and the distance between the two is the acceleration the
-        target is asking for.
+        forecast: today's rate carried flat. Bookings crowd towards check-in rather than arriving
+        evenly, so a month still months away sits low here by construction — read it as the floor
+        if nothing accelerates.
       </p>
 
       {/* A target a full house cannot reach is not a pace problem, and the
@@ -923,8 +743,9 @@ function ForecastCard({ data, oneMonth }) {
       {rr.over_capacity?.length > 0 && (
         <div className="mt-3 bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-900">
           <div className="font-semibold">
-            {rr.over_capacity.length === 1 ? "One month needs" : `${rr.over_capacity.length} months need`}
-            {" "}more than the house holds — selling out would still miss the target
+            {rr.over_capacity.length === 1
+              ? "One month needs" : `${rr.over_capacity.length} months need`}{" "}
+            more than the house holds — selling out would still miss the target
           </div>
           <ul className="mt-1 space-y-0.5">
             {rr.over_capacity.map((o) => (
@@ -937,92 +758,9 @@ function ForecastCard({ data, oneMonth }) {
               </li>
             ))}
           </ul>
-          <div className="mt-1 opacity-80">
-            Rate, not pace. No amount of filling fixes these.
-          </div>
+          <div className="mt-1 opacity-80">Rate, not pace. No amount of filling fixes these.</div>
         </div>
       )}
-
-      <div className="border-t border-gray-200 mt-4 pt-3">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className="text-sm font-semibold text-gray-800">
-            Where {oneMonth ? "it landed" : "they landed"} last year, from here
-          </h3>
-          <span className="text-xs text-gray-400">
-            on the books + what last year still had to come from this point
-          </span>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-3">
-        {/* The question this card is asked. Occupancy is how it gets there. */}
-        <div>
-          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Revenue vs target
-          </div>
-          <HoverTooltip content={moneyTip} width="w-96">
-            <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
-              hit === null || hit === undefined ? "text-gray-900"
-                : hit >= 100 ? "text-emerald-600" : "text-red-600"}`}>
-              {hit === null || hit === undefined ? "—" : `${hit.toFixed(0)}%`}
-            </div>
-          </HoverTooltip>
-          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
-            {lowHit === null || lowHit === undefined
-              ? "of target"
-              : `${lowHit.toFixed(0)}–${highHit.toFixed(0)}% of target`}
-          </div>
-          <div className="text-xs text-gray-400 mt-1 leading-snug">
-            {revenue === null || revenue === undefined
-              ? "No year-ago rate to price the nights still to come, so this is left unpriced rather than guessed at."
-              : "Nights still to come priced at last year's rate for the same month, moved by this year's own rate trend. Nights already sold keep what they sold for."}
-          </div>
-        </div>
-
-        <div>
-          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            {gap === null ? "Revenue projected" : gap >= 0 ? "Ahead by" : "Short by"}
-          </div>
-          <HoverTooltip content={moneyTip} width="w-96">
-            <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline">
-              {gap === null ? shortMoney(revenue, moneyCurrency) : shortMoney(Math.abs(gap), moneyCurrency)}
-            </div>
-          </HoverTooltip>
-          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
-            {revenue === null || revenue === undefined
-              ? "nothing to price"
-              : `${shortMoney(revenue, moneyCurrency)} of ${shortMoney(target, moneyCurrency)} target`}
-          </div>
-          <div className="text-xs text-gray-400 mt-1 leading-snug">
-            {money_(revenue)}
-            {target ? ` against ${money_(target)}` : ""}
-            {t.months_counted < t.months_in_scope
-              && `. Covers ${t.months_counted} of ${t.months_in_scope} branch-months in scope.`}
-          </div>
-        </div>
-
-        <div>
-          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Finishes at
-          </div>
-          <HoverTooltip content={nightsTip} width="w-96">
-            <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline">
-              {t.occ_pct === null ? nights(t.room_nights) : occ(t.occ_pct)}
-            </div>
-          </HoverTooltip>
-          <div className={`text-sm mt-0.5 tabular-nums ${toneFor(t.occ_pts_vs_ly, 0.5)}`}>
-            {gapLabel(t.occ_pts_vs_ly)}
-          </div>
-          <div className="text-xs text-gray-400 mt-1 leading-snug">
-            {t.occ_pct === null
-              ? `${nights(t.room_nights_low)}–${nights(t.room_nights_high)} room-nights. `
-              : `${occ(t.occ_pct_low)}–${occ(t.occ_pct_high)}, from ${nights(t.otb_room_nights)} sold so far. `}
-            Last year finished at {occ(t.ly_final_occ_pct)}. The range is the measured error of
-            this method, not a guess at one: {f.band.low_pct.toFixed(0)}% to
-            +{f.band.high_pct.toFixed(0)}% across the settled months it was tested on.
-          </div>
-        </div>
-      </div>
 
       {/* Per month, because a quarter that clears its target routinely hides a
           month that does not. */}
@@ -1033,51 +771,41 @@ function ForecastCard({ data, oneMonth }) {
               <tr className="text-xs text-gray-500 border-b border-gray-200">
                 <th className="text-left font-medium py-1.5">Month</th>
                 <th className="text-right font-medium">On the books</th>
-                <th className="text-right font-medium">Finishes at</th>
-                <th className="text-right font-medium">Last year</th>
+                <th className="text-right font-medium">At this speed</th>
+                <th className="text-right font-medium">Needed</th>
                 <th className="text-right font-medium">vs target</th>
               </tr>
             </thead>
             <tbody>
               {f.months.map((m) => {
-                const mHit = m.currency ? m.achievement_pct : m.achievement_vnd_pct;
+                const r = m.run_rate;
+                const mHit = m.currency ? r.achievement_pct : r.achievement_vnd_pct;
                 const mCells = cells.filter((c) => c.stay_month === m.stay_month);
-                const label = monthLabel(m.stay_month);
                 return (
                   <tr key={m.stay_month} className="border-b border-gray-100 last:border-0">
                     <td className="py-1.5 text-gray-700">
                       {monthLabel(m.stay_month)}
-                      <span className="text-xs text-gray-400 ml-1.5">{m.days_out}d out</span>
+                      <span className="text-xs text-gray-400 ml-1.5">
+                        {mCells[0]?.run_rate.days_left}d left
+                      </span>
                     </td>
-                    <td className="text-right tabular-nums text-gray-500">
-                      {m.occ_pct === null ? nights(m.otb_room_nights) : occ(
-                        m.available_room_nights
-                          ? (m.otb_room_nights / m.available_room_nights) * 100
-                          : null)}
-                    </td>
+                    <td className="text-right tabular-nums text-gray-500">{occ(r.otb_occ_pct)}</td>
                     <td className="text-right tabular-nums font-medium text-gray-900">
                       <HoverTooltip
-                        content={nightsWorking(mCells, m, label)}
+                        content={pointsWorking(mCells, r, "speed")}
                         width="w-96"
                         className="decoration-dotted underline-offset-4 hover:underline"
                       >
-                        {m.occ_pct === null ? nights(m.room_nights) : occ(m.occ_pct)}
+                        +{occ(r.points_added)}
                       </HoverTooltip>
                     </td>
-                    <td className="text-right tabular-nums text-gray-500">
-                      {m.ly_final_occ_pct === null
-                        ? nights(m.ly_final_room_nights)
-                        : occ(m.ly_final_occ_pct)}
+                    <td className={`text-right tabular-nums ${
+                      r.needed_occ_pct > 100 ? "text-red-600" : "text-gray-500"}`}>
+                      {occ(r.needed_occ_pct)}
                     </td>
                     <td className={`text-right tabular-nums ${toneFor(
-                      mHit === null || mHit === undefined ? null : mHit - 100, 2)}`}>
-                      <HoverTooltip
-                        content={moneyWorking(mCells, m, `${label} revenue`)}
-                        width="w-96"
-                        className="decoration-dotted underline-offset-4 hover:underline"
-                      >
-                        {mHit === null || mHit === undefined ? "—" : `${mHit.toFixed(0)}%`}
-                      </HoverTooltip>
+                      mHit == null ? null : mHit - 100, 2)}`}>
+                      {mHit == null ? "—" : `${mHit.toFixed(0)}%`}
                     </td>
                   </tr>
                 );
@@ -1086,63 +814,6 @@ function ForecastCard({ data, oneMonth }) {
           </table>
         </div>
       )}
-
-      {/* Everything that makes the number above weaker than it looks. Kept on
-          the card rather than in a tooltip: a projection reads as fact, and
-          the reasons it might not be are what stop it doing so. */}
-      <ul className="mt-3 space-y-1 text-xs text-gray-500 leading-snug">
-        {runRate.length > 0 && (
-          <li>
-            <span className="font-medium text-amber-700">Held at this year's run rate: </span>
-            {runRate.map(nameMonth).join(", ")}{" "}
-            {runRate.length === 1 ? "has" : "have"} no year-ago month worth reading — a branch
-            that had not opened, or one whose year-ago month never traded normally. Nothing is
-            borrowed from another branch to fill that in; {runRate.length === 1 ? "it is" : "they are"}{" "}
-            projected at the occupancy {runRate.length === 1 ? "it has" : "they have"} actually
-            been running this year ({runRate.map((m) => occ(m.occ_pct)).join(", ")}), and priced
-            at the rate {runRate.length === 1 ? "it has" : "they have"} been charging this year.
-            Neither carries any seasonal lift — and Q4 is not August.
-          </li>
-        )}
-        {unpriced.length > 0 && (
-          <li>
-            <span className="font-medium text-amber-700">Not priced: </span>
-            {unpriced.map(nameMonth).join(", ")} had no year-ago rate to price the nights still
-            to come at. {unpriced.length === 1 ? "Its" : "Their"} nights are counted above;{" "}
-            {unpriced.length === 1 ? "its" : "their"} revenue is not, and neither is the target
-            it would have been read against.
-          </li>
-        )}
-        {t.capacity_capped && (
-          <li>
-            <span className="font-medium text-amber-700">At the ceiling: </span>
-            the projection ran past what the house holds and was pinned to 95% occupancy. Read
-            those months as "sells out or close to it", not as a number.
-          </li>
-        )}
-        {missing.length > 0 && (
-          <li>
-            <span className="font-medium text-amber-700">Not counted: </span>
-            {missing.map(nameMonth).join(", ")} could not be projected from anything of{" "}
-            {missing.length === 1 ? "its" : "their"} own, so the totals leave{" "}
-            {missing.length === 1 ? "it" : "them"} out — along with{" "}
-            {missing.length === 1 ? "its" : "their"} rooms and{" "}
-            {missing.length === 1 ? "its" : "their"} target, so the percentages above stay
-            like-for-like.
-          </li>
-        )}
-        {t.available_room_nights === null && (
-          <li>
-            A source filter is on, so this projects that source alone. Occupancy is left blank:
-            the rest of the house is being filled by everyone else.
-          </li>
-        )}
-        <li>
-          Cancellations are the known lean in this: today's book is gross of the ones still to
-          come, last year's finish is net of the ones that already did, so the projection sits a
-          little high by construction.
-        </li>
-      </ul>
     </div>
   );
 }
@@ -1266,11 +937,11 @@ function yearGroupWorking(data) {
  * have earned 79% of the year's target" and "we are on course for 96% of it"
  * are different claims, and only the second is a forecast.
  */
-function YearOutlook({ branchId }) {
+function YearOutlook({ branchId, days }) {
   const { data, isPending, isError } = useQuery({
-    queryKey: ["kpi-pace-forecast", branchId || "all"],
+    queryKey: ["kpi-pace-forecast", branchId || "all", days],
     queryFn: () => axios
-      .get(`/api/kpi/pace-forecast${branchId ? `?branch_id=${branchId}` : ""}`)
+      .get(`/api/kpi/pace-forecast?days=${days}${branchId ? `&branch_id=${branchId}` : ""}`)
       .then((r) => r.data.data),
     staleTime: 5 * 60 * 1000,
   });
@@ -1304,17 +975,18 @@ function YearOutlook({ branchId }) {
     <div className="bg-white border border-gray-200 rounded-xl p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-sm font-semibold text-gray-800">
-          Does {data.year} hit its revenue target?
+          At this speed, does {data.year} reach target?
         </h2>
         <span className="text-xs text-gray-400">
-          the whole year, whatever the stay month above is set to
+          the whole year — follows the branch and the booking window, not the stay month or the
+          source and room-type filters
         </span>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mt-3">
         <div>
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Full year on this pace
+            Full year at this speed
           </div>
           <HoverTooltip content={yearTip} width="w-96">
             <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
@@ -1322,9 +994,7 @@ function YearOutlook({ branchId }) {
               {hit === null ? "—" : `${hit.toFixed(0)}%`}
             </div>
           </HoverTooltip>
-          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
-            {low === null ? "of target" : `${low.toFixed(0)}–${high.toFixed(0)}% of target`}
-          </div>
+          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">of target</div>
         </div>
 
         <div>
@@ -1363,7 +1033,7 @@ function YearOutlook({ branchId }) {
           <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
             {q4Hit === null || q4Hit === undefined
               ? "Q4 not fully projected"
-              : `Q4 alone lands at ${q4Hit.toFixed(0)}% of its target`}
+              : `Q4 alone reaches ${q4Hit.toFixed(0)}% of its target`}
           </div>
         </div>
       </div>
@@ -1437,8 +1107,10 @@ function YearOutlook({ branchId }) {
       <p className="text-xs text-gray-500 mt-3 leading-snug">
         {monthSpan(data.settled_months)} counted as {data.settled_months.length === 1 ? "it" : "they"}{" "}
         happened — the same figure the KPI grid shows, accounting overrides included.{" "}
-        {monthSpan(data.projected_months)} projected from booking pace, the month underway
-        included, because a month two weeks old still has most of its revenue ahead of it.
+        {monthSpan(data.projected_months)} carried at the speed rooms are filling now, the month
+        underway included, because a month two weeks old still has most of its revenue ahead of
+        it. Months still far off sit low here by construction — this is the floor if nothing
+        accelerates, not a call on where the year ends.
         {data.branches.some((b) => b.months_not_projected.length > 0) && (
           <>
             {" "}
@@ -1903,7 +1575,7 @@ export default function PerformanceFillPace() {
 
           {compare && <ForecastCard data={data} oneMonth={oneMonth} />}
 
-          <YearOutlook branchId={!isAll && selected ? selected : null} />
+          <YearOutlook branchId={!isAll && selected ? selected : null} days={effectiveDays} />
 
           {/* The speed. The cumulative curve that used to sit above this was
               dropped: a line that only ever rises said less about pace than
