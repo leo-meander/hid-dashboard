@@ -1,8 +1,17 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" translate="no">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Chrome offers to translate an English page for a Vietnamese reader, and
+         accepting rewrites every text node into a <font> element. React then
+         holds references to nodes that are no longer where it left them, and the
+         next subtree it removes throws "removeChild: the node to be removed is
+         not a child of this node" and blanks the whole app. Selecting a second
+         stay month on Fill Pace is one such removal; there are many others.
+         The numbers are the point of this dashboard and they do not translate,
+         so the offer is declined here rather than left to crash the page. -->
+    <meta name="google" content="notranslate" />
     <title>HiD — Hotel Intelligence Dashboard</title>
   </head>
   <body>
