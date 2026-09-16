@@ -851,10 +851,16 @@ function ForecastCard({ data, oneMonth }) {
            ? `already past the ${occ(rr.needed_occ_pct)} it needs`
            : `more room-nights a day · needs ${occ(rr.needed_occ_pct)}`],
     ["revenue", "Revenue at this speed", shortMoney(revenue, currency),
-     hit == null
-       ? "no target to compare"
-       : `${hit.toFixed(0)}% of target · ${gap >= 0 ? "ahead by" : "short by"} ${
-           shortMoney(Math.abs(gap), currency)}`],
+     hit == null ? "no target to compare" : (
+       <>
+         <span className={`font-bold text-base ${
+           hit >= 100 ? "text-emerald-700" : "text-red-700"}`}>
+           {hit.toFixed(2)}%
+         </span>
+         {" of target · "}{gap >= 0 ? "ahead by" : "short by"}{" "}
+         {shortMoney(Math.abs(gap), currency)}
+       </>
+     )],
   ];
 
   return (
@@ -976,7 +982,7 @@ function ForecastCard({ data, oneMonth }) {
                     </td>
                     <td className={`text-right tabular-nums ${toneFor(
                       mHit == null ? null : mHit - 100, 2)}`}>
-                      {mHit == null ? "—" : `${mHit.toFixed(0)}%`}
+                      {mHit == null ? "—" : `${mHit.toFixed(2)}%`}
                     </td>
                   </tr>
                 );
