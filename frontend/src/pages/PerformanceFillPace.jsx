@@ -992,7 +992,9 @@ function ForecastCard({ data, oneMonth }) {
                 <th className="text-right font-medium">OCC on the books</th>
                 <th className="text-right font-medium">OCC at this speed</th>
                 <th className="text-right font-medium">Needed</th>
-                <th className="text-right font-medium">vs target</th>
+                {/* Three columns of occupancy and then one of money — the
+                    header has to say which, or it reads as a fourth. */}
+                <th className="text-right font-medium">Revenue vs target</th>
               </tr>
             </thead>
             <tbody>
