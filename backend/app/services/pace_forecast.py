@@ -388,7 +388,13 @@ def build_forecast(
         clipped = None
         if trend is not None:
             clipped = min(max(trend, ADR_YOY_MIN), ADR_YOY_MAX)
-        ly_adr = (adr_map.get((bid, y - 1, m)) or {}).get("adr")
+        # A year-ago month rejected as a volume base is rejected as a rate
+        # base too. Oani's October 2025 ran 37 room-nights; whatever those few
+        # bookings paid is not October's rate, and taking it would have priced
+        # 789 nights at 6,562 against the 3,500 the branch actually averages.
+        # Whatever the nights came from, the money follows the same judgement.
+        ly_adr = ((adr_map.get((bid, y - 1, m)) or {}).get("adr")
+                  if c["basis"] in ("ly_pickup", "actual") else None)
         book = adr_map.get((bid, y, m)) or {}
         # Nights already sold are already priced — they are in the book at
         # whatever they were sold for. Only what is still to come needs an ADR,
@@ -463,6 +469,18 @@ def _cell_row(c: dict, branch_meta: dict) -> dict:
         "revenue_low_native": c["revenue_low_native"],
         "revenue_high_native": c["revenue_high_native"],
         "target_native": c["target_native"],
+        # Every input the arithmetic used, so the page can show its working
+        # rather than assert a number. A projection nobody can reconstruct is
+        # a projection nobody should act on.
+        "otb_room_nights": c["otb_nights"],
+        "ly_otb_room_nights": c["ly_otb_nights"],
+        "ly_final_room_nights": c["ly_final_nights"],
+        "available_room_nights": c["capacity"],
+        "run_rate_occ_pct": c.get("run_rate_occ_pct"),
+        "adr_remaining": c["adr_remaining"],
+        "adr_yoy": c["adr_yoy"],
+        "booked_revenue_native": c["booked_revenue_native"],
+        "booked_room_nights": c["booked_nights_metrics"],
     }
 
 

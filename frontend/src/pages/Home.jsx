@@ -4,6 +4,7 @@
  * Single branch selected → KPI card + OCC heatmap
  */
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import HoverTooltip from "../components/HoverTooltip";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import axios from "axios";
 import { useBranch, CURRENCY_SYMBOLS } from "../context/BranchContext";
@@ -36,36 +37,6 @@ function fmtPlain(value) {
 function fmtPctRound(p) {
   if (p == null) return "—";
   return Math.round(p * 100) + "%";
-}
-
-// Hover tooltip — uses fixed positioning so it isn't clipped by the
-// table's overflow-x-auto wrapper. Positions itself above the trigger.
-function HoverTooltip({ children, content, className = "" }) {
-  const [show, setShow] = useState(false);
-  const [pos, setPos] = useState({ x: 0, y: 0 });
-  const onEnter = (e) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    setPos({ x: r.left + r.width / 2, y: r.top });
-    setShow(true);
-  };
-  const onLeave = () => setShow(false);
-  return (
-    <span
-      className={"cursor-help " + className}
-      onMouseEnter={onEnter}
-      onMouseLeave={onLeave}
-    >
-      {children}
-      {show && (
-        <div
-          className="fixed z-50 w-80 p-3 bg-gray-900 text-white text-[11px] leading-relaxed rounded-lg shadow-xl pointer-events-none text-left"
-          style={{ left: pos.x, top: pos.y - 10, transform: "translate(-50%, -100%)" }}
-        >
-          {content}
-        </div>
-      )}
-    </span>
-  );
 }
 
 // Build the breakdown content for the forecast tooltip.
