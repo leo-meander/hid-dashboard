@@ -763,6 +763,19 @@ def get_fill_pace(
             db, cells, as_of=as_of, branch_meta=branches,
             scoped_sources=bool(wanted), room_category=room_category,
         )
+        # "On the books" is the one figure on this page that is a statement
+        # about occupancy rather than about pace, and the two are not counted
+        # the same way. Pace lives in `reservations`, one row per booking, so a
+        # booking holding three dorm beds counts once — which is right for
+        # comparing one curve against another, and wrong as an occupancy: it
+        # reads ~9% below what daily_metrics, the KPI page and the target all
+        # say. The forecast has already looked the unit count up, so the tile
+        # borrows it. The pace figures beside it stay where they are, both
+        # years counted the same way.
+        rr = ((result["forecast"].get("total") or {}).get("run_rate") or {})
+        if rr.get("otb_room_nights") is not None:
+            result["current"]["otb_units_room_nights"] = rr["otb_room_nights"]
+            result["current"]["otb_units_occ_pct"] = rr["otb_occ_pct"]
     return result
 
 

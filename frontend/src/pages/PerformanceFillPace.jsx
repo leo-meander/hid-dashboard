@@ -573,7 +573,7 @@ function TipRow({ label, children, strong, note }) {
 }
 
 const POINTS_TIP = {
-  otb: ["On the books", "room-nights sold ÷ room-nights the house has"],
+  otb: ["OCC on the books", "room-nights sold ÷ room-nights the house has"],
   speed: ["At this speed", "room-nights a day now × days left to sell"],
   needed: ["Needed for target", "the occupancy the revenue target implies at today's rate"],
 };
@@ -680,7 +680,7 @@ function ForecastCard({ data, oneMonth }) {
     : `${runwayDays[0]}–${runwayDays[runwayDays.length - 1]} days`;
 
   const tiles = [
-    ["otb", "On the books", occ(rr.otb_occ_pct), `${nights(t.otb_room_nights)} room-nights sold`],
+    ["otb", "OCC on the books", occ(rr.otb_occ_pct), `${nights(t.otb_room_nights)} room-nights sold`],
     ["speed", "At this speed", `+${occ(rr.points_added)}`,
      `${rr.room_nights_per_day.toFixed(0)}/day × ${runway} left`],
     ["needed", "Needed for target",
@@ -786,7 +786,7 @@ function ForecastCard({ data, oneMonth }) {
             <thead>
               <tr className="text-xs text-gray-500 border-b border-gray-200">
                 <th className="text-left font-medium py-1.5">Month</th>
-                <th className="text-right font-medium">On the books</th>
+                <th className="text-right font-medium">OCC on the books</th>
                 <th className="text-right font-medium">At this speed</th>
                 <th className="text-right font-medium">Needed</th>
                 <th className="text-right font-medium">vs target</th>
@@ -1184,6 +1184,11 @@ export default function PerformanceFillPace() {
   });
 
   const compare = Boolean(data?.last_year);
+  // Room-nights counted in beds. Absent when the projection is (a source or
+  // room-type filter, or no year-ago comparison), and the tile falls back to
+  // the booking count with no claim that it is the KPI figure.
+  const otbUnits = data?.current?.otb_units_room_nights ?? null;
+  const otbUnitsPct = data?.current?.otb_units_occ_pct ?? null;
   const onPrev = basis === "previous";
   const prev = data?.previous_period;
   const vsPrev = data?.vs_previous_period;
@@ -1505,10 +1510,15 @@ export default function PerformanceFillPace() {
           {/* Headline numbers */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Stat
-              label="On the books"
-              value={occ(data.current.otb_occ_pct)}
-              sub={`${nights(data.current.otb_room_nights)} of ${nights(data.scope.available_room_nights)} room-nights`}
-              hint={`${data.scope.units_in_scope} units × ${data.stay_days} nights`}
+              label="OCC on the books"
+              // Beds, not bookings — the count the KPI page and the target
+              // use. The pace figures beside this one stay on the booking
+              // count, which is what they compare like for like.
+              value={occ(otbUnitsPct ?? data.current.otb_occ_pct)}
+              sub={`${nights(otbUnits ?? data.current.otb_room_nights)} of ${nights(data.scope.available_room_nights)} room-nights`}
+              hint={otbUnits
+                ? `${data.scope.units_in_scope} units × ${data.stay_days} nights, counting every bed sold — the same count the KPI page uses`
+                : `${data.scope.units_in_scope} units × ${data.stay_days} nights`}
             />
             <Stat
               label={`Picked up (${data.days}d)`}
