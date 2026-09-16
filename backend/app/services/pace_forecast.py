@@ -925,6 +925,10 @@ def _run_rate_block(cells: list[dict], branch_meta: dict, capacity_basis: bool) 
         # on the same booking days, so the shortfalls add.
         "needed_extra_per_day": round(sum(c["run_rate"]["needed_extra_per_day"] or 0
                                           for c in counted), 2),
+        # Also published as a count, not only as a rate: Fill Pace's own "OCC
+        # on the books" tile reads it, so that the two cards do not print two
+        # different occupancies for the same month.
+        "otb_room_nights": nights(counted, "otb_room_nights"),
         "otb_occ_pct": pts(nights(counted, "otb_room_nights")),
         "points_added": pts(nights(counted, "room_nights_added")),
         "ly_points_added": pts(nights(counted, "ly_room_nights_added")),

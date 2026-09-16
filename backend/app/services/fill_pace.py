@@ -778,7 +778,7 @@ def get_fill_pace(
         # borrows it. The pace figures beside it stay where they are, both
         # years counted the same way.
         rr = ((result["forecast"].get("total") or {}).get("run_rate") or {})
-        if rr.get("otb_room_nights") is not None:
+        if rr.get("otb_occ_pct") is not None:
             result["current"]["otb_units_room_nights"] = rr["otb_room_nights"]
             result["current"]["otb_units_occ_pct"] = rr["otb_occ_pct"]
     return result

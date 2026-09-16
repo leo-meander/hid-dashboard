@@ -1203,3 +1203,34 @@ def test_a_base_worth_dividing_by_does_give_a_norm(branches, stub_rows):
     r = _two_windows(branches, stub_rows, now=91, before=28, ly_now=134, ly_before=30)
     assert r["vs_previous_period"]["natural_acceleration"] == round(134 / 30, 3)
     assert r["vs_previous_period"]["excess_acceleration"] is not None
+
+
+def test_on_the_books_is_published_in_the_unit_the_kpi_page_counts(
+        branches, stub_rows, monkeypatch):
+    """The page's own "OCC on the books" tile reads this, so that it and the
+    projection below it do not print two different occupancies for the same
+    month. It went missing once already, when the projection's roll-up was
+    rewritten and quietly dropped the field the tile keys off."""
+    from app.services import pace_forecast
+
+    # daily_metrics counts beds; the reservations rows below count bookings.
+    monkeypatch.setattr(pace_forecast, "_monthly_adr", lambda *a, **k: {
+        ("b-taipei", 2026, 10): {"revenue": 400_000.0, "nights": 240, "adr": 1666.7},
+    })
+    monkeypatch.setattr(pace_forecast, "_targets", lambda *a, **k: {})
+    monkeypatch.setattr(pace_forecast, "get_cached_rate", lambda c, t="VND": 1.0)
+
+    stub_rows({
+        (2026, 10): [Row("b-taipei", date(2026, 9, 1), 200)],
+        (2025, 10): [Row("b-taipei", date(2025, 8, 1), 500)],
+    })
+    result = get_fill_pace(
+        FakeDB(branches), branch_id=None, months=[(2026, 10)], days=30,
+        as_of=date(2026, 9, 15), include_forecast=True,
+    )
+
+    assert result["forecast"]["available"] is True
+    # 240 beds against the 200 bookings the reservations rows carry.
+    assert result["current"]["otb_room_nights"] == 200
+    assert result["current"]["otb_units_room_nights"] == 240
+    assert result["current"]["otb_units_occ_pct"] > result["current"]["otb_occ_pct"]
