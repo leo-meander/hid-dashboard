@@ -673,53 +673,61 @@ function moneyWorking(cells, block, title) {
   );
 }
 
-/** How a set of branch-months reaches its run-rate figure. */
-function runRateWorking(cells, block, title, currency) {
+const POINTS_TIP = {
+  otb: ["On the books", "room-nights sold ÷ room-nights the house has"],
+  speed: ["At this speed", "room-nights a day now × days left to sell"],
+  ly: ["Last year, from here", "what the same run-in actually delivered a year ago"],
+  needed: ["Needed for target", "the occupancy the revenue target implies at today's rate"],
+};
+
+/** How a set of branch-months reaches one of its four point figures. */
+function pointsWorking(cells, block, which) {
+  const [title, sub] = POINTS_TIP[which];
+  const line = (c) => {
+    const r = c.run_rate;
+    const cap = c.available_room_nights;
+    if (which === "otb") return `${nights(r.otb_room_nights)} of ${nights(cap)} = ${occ(r.otb_occ_pct)}`;
+    if (which === "speed")
+      return `${r.room_nights_per_day.toFixed(1)}/d × ${r.days_left}d = ${nights(r.room_nights_added)} = +${occ(r.points_added)}`;
+    if (which === "ly") return `${nights(r.ly_room_nights_added)} = +${occ(r.ly_points_added)}`;
+    return r.needed_occ_pct == null ? "—"
+      : `${nights(r.needed_room_nights)} of ${nights(cap)} = ${occ(r.needed_occ_pct)}`;
+  };
+  const totalLine = {
+    otb: block.otb_occ_pct, speed: block.points_added,
+    ly: block.ly_points_added, needed: block.needed_occ_pct,
+  }[which];
   return (
     <>
       <div className="font-semibold text-white mb-1">{title}</div>
-      <div className="text-gray-300 mb-1.5">
-        on the books + room-nights per booking day × days left to sell
+      <div className="text-gray-300 mb-1.5">{sub}</div>
+      <div className="space-y-0.5">
+        {cells.map((c) => (
+          <TipRow key={`${c.branch_id}-${c.stay_month}`}
+                  label={`${c.branch_name.replace("MEANDER ", "")} ${monthLabel(c.stay_month).slice(0, 3)}`}>
+            {line(c)}
+          </TipRow>
+        ))}
       </div>
-      <div className="space-y-1">
-        {cells.map((c) => {
-          const r = c.run_rate;
-          return (
-            <div key={`${c.branch_id}-${c.stay_month}`}>
-              <TipRow label={c.branch_name.replace("MEANDER ", "")}>
-                {nights(c.otb_room_nights)} + {r.room_nights_per_day.toFixed(1)}/d × {r.days_left}d
-                {" = "}{nights(r.room_nights)}{r.capacity_capped ? " ⌐" : ""}
-              </TipRow>
-              {r.revenue_native != null && (
-                <div className="text-gray-400 ml-2 font-mono text-[10px]">
-                  {money(r.revenue_native, c.currency)} — {nights(r.room_nights_added)} ×{" "}
-                  {money(r.adr, c.currency)} on top of what is booked
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      <div className="border-t border-gray-700 mt-1.5 pt-1.5 space-y-0.5">
-        <TipRow label="Speed now" strong>
-          {block.room_nights_per_day.toFixed(0)} room-nights a day
-        </TipRow>
-        <TipRow label="Gets to" strong>
-          {nights(block.room_nights)}
-          {block.occ_pct != null ? ` = ${occ(block.occ_pct)}` : ""}
-        </TipRow>
-        <TipRow label="Revenue">
-          {currency ? money(block.revenue_native, currency) : money(block.revenue_vnd, "VND")}
-        </TipRow>
-        <TipRow label="Target">
-          {currency ? money(block.target_native, currency) : money(block.target_vnd, "VND")}
+      <div className="border-t border-gray-700 mt-1.5 pt-1.5">
+        <TipRow label={which === "otb" || which === "needed" ? "Together" : "Adds"} strong>
+          {which === "otb" || which === "needed" ? occ(totalLine) : `+${occ(totalLine)}`}
         </TipRow>
       </div>
       <div className="text-gray-500 mt-1.5">
-        Speed and rate both come from the {block.window_days}-day window set above — change it
-        and this changes. Bookings crowd towards check-in rather than arriving evenly, so a month
-        read months out lands low here by construction: this is the floor if nothing speeds up,
-        not a call on where the month ends.
+        {which === "speed" &&
+          `Speed comes from the ${block.window_days}-day window set above, carried flat. Bookings
+           crowd towards check-in rather than arriving evenly, so this is the floor if nothing
+           speeds up — the year-ago column beside it is what the run-in actually delivered.`}
+        {which === "ly" &&
+          "Read at the same distance from each month, not the same calendar date. What actually happened, not a projection."}
+        {which === "needed" &&
+          "Target revenue minus what is already booked, divided by the rate the branch is selling at now. Above 100% means a full house would still be short."}
+        {which === "otb" &&
+          "Everything sold so far for these months, whenever it was booked. Counted in beds, the way the KPI page counts them."}
+      </div>
+      <div className="text-gray-500 mt-1">
+        Percentages are divided out of the totals once — never averaged across months or branches.
       </div>
     </>
   );
@@ -811,7 +819,6 @@ function ForecastCard({ data, oneMonth }) {
   const rrRevenue = t.currency ? rr.revenue_native : rr.revenue_vnd;
   const rrTarget = t.currency ? rr.target_native : rr.target_vnd;
   const rrGap = rrRevenue == null || !rrTarget ? null : rrRevenue - rrTarget;
-  const rrTip = runRateWorking(cells, rr, "At today's speed", t.currency);
   const moneyCurrency = t.currency || "VND";
   const lowHit = t.currency ? t.achievement_low_pct : t.achievement_low_vnd_pct;
   const highHit = t.currency ? t.achievement_high_pct : t.achievement_high_vnd_pct;
@@ -851,70 +858,90 @@ function ForecastCard({ data, oneMonth }) {
         </span>
       </div>
 
-      {/* The question the card is asked, answered with nothing but the speed
-          on the page and the days left to use it. */}
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mt-3">
-        <div>
-          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Revenue vs target
-          </div>
-          <HoverTooltip content={rrTip} width="w-96">
-            <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
-              rrHit == null ? "text-gray-900" : rrHit >= 100 ? "text-emerald-600" : "text-red-600"}`}>
-              {rrHit == null ? "—" : `${rrHit.toFixed(0)}%`}
+      {/* Four readings, one unit, and not one of them a prediction: what is
+          sold, what today's speed adds, what last year's run-in added, and
+          what the target asks for. The reader does the comparing. */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-3">
+        {[
+          ["otb", "On the books", occ(rr.otb_occ_pct),
+           `${nights(t.otb_room_nights)} room-nights sold`],
+          ["speed", "At this speed", `+${occ(rr.points_added)}`,
+           `${rr.room_nights_per_day.toFixed(0)}/day × days left`],
+          ["ly", "Last year, from here", `+${occ(rr.ly_points_added)}`,
+           "what the run-in delivered"],
+          ["needed", "Needed for target",
+           rr.needed_occ_pct == null ? "—" : occ(rr.needed_occ_pct),
+           rr.needed_occ_pct == null ? "no target to price"
+             : `${occ(Math.max(0, rr.needed_occ_pct - rr.otb_occ_pct - rr.points_added))} short at this speed`],
+        ].map(([key, label, value, sub]) => (
+          <div key={key}>
+            <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+              {label}
             </div>
-          </HoverTooltip>
-          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
-            {rrGap == null ? "nothing to price"
-              : `${rrGap >= 0 ? "ahead by" : "short by"} ${shortMoney(Math.abs(rrGap), moneyCurrency)}`}
+            <HoverTooltip content={pointsWorking(cells, rr, key)} width="w-96">
+              <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
+                key === "needed" && rr.needed_occ_pct > 100 ? "text-red-600" : "text-gray-900"}`}>
+                {value}
+              </div>
+            </HoverTooltip>
+            <div className="text-sm text-gray-500 mt-0.5 tabular-nums">{sub}</div>
           </div>
-        </div>
-
-        <div>
-          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Filling at
-          </div>
-          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
-            {rr.room_nights_per_day.toFixed(0)}
-          </div>
-          <div className="text-sm text-gray-500 mt-0.5">
-            room-nights a day, last {rr.window_days} days
-          </div>
-        </div>
-
-        <div>
-          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Gets to
-          </div>
-          <HoverTooltip content={rrTip} width="w-96">
-            <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline">
-              {rr.occ_pct == null ? nights(rr.room_nights) : occ(rr.occ_pct)}
-            </div>
-          </HoverTooltip>
-          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
-            {nights(rr.room_nights)} room-nights
-          </div>
-        </div>
-
-        <div>
-          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Revenue at this speed
-          </div>
-          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
-            {shortMoney(rrRevenue, moneyCurrency)}
-          </div>
-          <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
-            of {shortMoney(rrTarget, moneyCurrency)} target
-          </div>
-        </div>
+        ))}
       </div>
 
+      {/* The same reading in money, because the target is a money target and
+          occupancy points alone do not settle it. */}
+      {rrRevenue != null && (
+        <div className="mt-3 text-sm text-gray-600 tabular-nums">
+          At this speed that is{" "}
+          <span className="font-semibold text-gray-900">{money(rrRevenue, moneyCurrency)}</span>
+          {" "}of {money(rrTarget, moneyCurrency)} target
+          {rrHit != null && (
+            <span className={rrHit >= 100 ? "text-emerald-600" : "text-red-600"}>
+              {" "}= {rrHit.toFixed(0)}%
+            </span>
+          )}
+          {rrGap != null && (
+            <span className="text-gray-500">
+              {" "}· {rrGap >= 0 ? "ahead by" : "short by"} {shortMoney(Math.abs(rrGap), moneyCurrency)}
+            </span>
+          )}
+        </div>
+      )}
+
       <p className="text-xs text-gray-500 mt-3 leading-snug">
-        Straight-line: today's speed and today's rate, carried to the end of each stay month.
-        Bookings crowd towards check-in rather than arriving evenly, so a month read months out
-        sits low here by construction — read it as the floor if nothing speeds up. What the same
-        months did a year ago is underneath.
+        All four are points of the same house, so they read against each other directly.
+        <span className="font-medium text-gray-600"> At this speed</span> is arithmetic, not a
+        forecast: today's rate carried flat, which is the floor if nothing accelerates.
+        <span className="font-medium text-gray-600"> Last year, from here</span> is what the same
+        run-in actually delivered, and the distance between the two is the acceleration the
+        target is asking for.
       </p>
+
+      {/* A target a full house cannot reach is not a pace problem, and the
+          card must not let it be read as one. */}
+      {rr.over_capacity?.length > 0 && (
+        <div className="mt-3 bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-900">
+          <div className="font-semibold">
+            {rr.over_capacity.length === 1 ? "One month needs" : `${rr.over_capacity.length} months need`}
+            {" "}more than the house holds — selling out would still miss the target
+          </div>
+          <ul className="mt-1 space-y-0.5">
+            {rr.over_capacity.map((o) => (
+              <li key={`${o.branch_id}-${o.stay_month}`} className="tabular-nums">
+                {o.branch_name} {monthLabel(o.stay_month)}: needs {occ(o.needed_occ_pct)} of the
+                house at {money(o.adr_now, o.currency)} a night. A full house clears the target
+                only at {money(o.adr_needed, o.currency)}
+                {o.adr_now ? ` (${o.adr_needed >= o.adr_now ? "+" : ""}${
+                  Math.round((o.adr_needed / o.adr_now - 1) * 100)}%)` : ""}.
+              </li>
+            ))}
+          </ul>
+          <div className="mt-1 opacity-80">
+            Rate, not pace. No amount of filling fixes these.
+          </div>
+        </div>
+      )}
 
       <div className="border-t border-gray-200 mt-4 pt-3">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
