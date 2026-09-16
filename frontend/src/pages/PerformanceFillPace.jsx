@@ -619,7 +619,9 @@ function pointsWorking(cells, block, which) {
            the end of each stay month. Bookings crowd towards check-in rather than arriving
            evenly, so this is the floor if nothing speeds up.`}
         {which === "needed" &&
-          "Target revenue minus what is already booked, divided by the rate the branch is selling at now. Above 100% means a full house would still be short."}
+          `Target revenue minus what is already booked, divided by the same rate the nights
+           beside it are priced at — the ${block.window_days}-day window's own. Above 100% means
+           a full house would still be short, which is a rate problem, not a pace one.`}
       </div>
       <div className="text-gray-500 mt-1">
         Percentages are divided out of the totals once — never averaged across months or branches.
@@ -683,7 +685,11 @@ function ForecastCard({ data, oneMonth }) {
      `${rr.room_nights_per_day.toFixed(0)}/day × ${runway} left`],
     ["needed", "Needed for target",
      rr.needed_occ_pct == null ? "—" : occ(rr.needed_occ_pct),
-     shortBy == null ? "no target to price" : `${occ(shortBy)} short at this speed`],
+     shortBy == null
+       ? "no target to price"
+       : shortBy <= 0.05
+         ? "clear at this speed"
+         : `needs ${(rr.room_nights_per_day + rr.needed_extra_per_day).toFixed(0)}/day, doing ${rr.room_nights_per_day.toFixed(0)}`],
   ];
 
   return (

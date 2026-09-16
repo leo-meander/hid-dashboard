@@ -598,3 +598,43 @@ def test_points_are_divided_out_of_the_totals_not_averaged(monkeypatch):
     assert total["otb_occ_pct"] == pytest.approx((662 + 936) / (2139 + 4278) * 100, abs=0.1)
     # Not the mean of 31.0% and 21.9%.
     assert total["otb_occ_pct"] < 26.5
+
+
+def test_needed_and_the_money_line_divide_by_the_same_rate(monkeypatch):
+    """The card is named after the window's own rate, so both halves use it.
+    Dividing `needed` by last year's rate while multiplying the revenue by the
+    window's put "4.7 points short" directly above "101% of target" — same
+    inputs, same card, opposite answers."""
+    occ = {("b-1948", 2026, 10): {"revenue": 1_000_000.0, "nights": 662, "adr": 1_500.0},
+           # Last year's rate is far below what the window is selling at.
+           ("b-1948", 2025, 10): {"revenue": 1_755_000.0, "nights": 1755, "adr": 1_000.0}}
+    out = _run(monkeypatch,
+               [rr_cell(pickup_nights=300.0, pickup_revenue=900_000.0)],   # window ADR 3,000
+               occ=occ,
+               targets={("b-1948", 2026, 10): {"native": 2_500_000.0, "vnd": 0.0}})
+    r = out["cells"][0]["run_rate"]
+
+    assert r["adr"] == 3000.0
+    # Needed divides the money still owed by that same 3,000, not by 1,000.
+    assert r["needed_room_nights"] == pytest.approx(662 + (2_500_000 - 1_000_000) / 3000, abs=1)
+    # So the two readings agree: clearing the target on points means clearing
+    # it on money too.
+    reach_pts = r["otb_occ_pct"] + r["points_added"]
+    assert (reach_pts >= r["needed_occ_pct"]) == (r["revenue_native"] >= 2_500_000)
+
+
+def test_the_gap_is_also_given_as_a_change_of_speed(monkeypatch):
+    """"Three more room-nights a day" can be acted on; "4.7 points" cannot."""
+    occ = {("b-1948", 2026, 10): {"revenue": 500_000.0, "nights": 662, "adr": 1_500.0}}
+    out = _run(monkeypatch, [rr_cell()], occ=occ,
+               targets={("b-1948", 2026, 10): {"native": 4_000_000.0, "vnd": 0.0}})
+    r = out["cells"][0]["run_rate"]
+
+    assert r["needed_extra_room_nights"] == pytest.approx(
+        r["needed_room_nights"] - r["room_nights"], abs=0.2)
+    assert r["needed_extra_per_day"] == pytest.approx(
+        r["needed_extra_room_nights"] / r["days_left"], abs=0.02)
+    # And a month already clear of its target asks for nothing extra.
+    clear = _run(monkeypatch, [rr_cell()], occ=occ,
+                 targets={("b-1948", 2026, 10): {"native": 100_000.0, "vnd": 0.0}})
+    assert clear["cells"][0]["run_rate"]["needed_extra_per_day"] == 0

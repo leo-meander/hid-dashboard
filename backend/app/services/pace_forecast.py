@@ -367,10 +367,18 @@ def _run_rate(cell: dict, book: dict, as_of: date,
     ly_added = max(0.0, cell["ly_final_nights"] - cell["ly_otb_nights"]) * factor
 
     booked_revenue = book.get("revenue")
+    # ONE rate for the whole card. `needed` divides the money still owed to the
+    # target by the rate the nights beside it are being multiplied by, which is
+    # the window's own — the rate this reading is named after. Dividing by a
+    # different one put "4.7 points short" directly above "101% of target" on
+    # the same card, both from the same inputs, which is how it was found.
+    # `adr` (last year's rate moved by the trend) is only the fallback for a
+    # window with no pickup to take a rate from.
+    rate = window_adr or adr
     needed = None
     adr_needed = None
-    if target and adr and booked_revenue is not None:
-        needed = otb + max(0.0, (target - booked_revenue) / adr)
+    if target and rate and booked_revenue is not None:
+        needed = otb + max(0.0, (target - booked_revenue) / rate)
         if needed > ceiling and ceiling > otb:
             adr_needed = (target - booked_revenue) / (ceiling - otb)
 
@@ -378,6 +386,10 @@ def _run_rate(cell: dict, book: dict, as_of: date,
         return round(nights / capacity * 100, 2) if capacity and nights is not None else None
 
     reach = min(otb + added, ceiling)
+    # What the gap is worth as a change of speed, which is the form it can be
+    # acted on in: "three more room-nights a day", not "4.7 points".
+    extra = max(0.0, needed - reach) if needed is not None else None
+    extra_per_day = (extra / days_left) if (extra is not None and days_left) else None
     revenue = (booked_revenue + (reach - otb) / factor * window_adr
                if booked_revenue is not None and window_adr and factor else None)
     return {
@@ -390,6 +402,8 @@ def _run_rate(cell: dict, book: dict, as_of: date,
         "room_nights_added": round(added, 1),
         "ly_room_nights_added": round(ly_added, 1),
         "needed_room_nights": round(needed, 1) if needed is not None else None,
+        "needed_extra_room_nights": round(extra, 1) if extra is not None else None,
+        "needed_extra_per_day": round(extra_per_day, 2) if extra_per_day is not None else None,
         "room_nights": round(reach, 1),
         # and the same four as points of the house
         "otb_occ_pct": pts(otb),
@@ -843,6 +857,10 @@ def _run_rate_block(cells: list[dict], branch_meta: dict, capacity_basis: bool) 
         "room_nights": reach,
         "room_nights_per_day": round(sum(c["run_rate"]["room_nights_per_day"]
                                          for c in counted), 2),
+        # Summed across the selection: every one of these months is being sold
+        # on the same booking days, so the shortfalls add.
+        "needed_extra_per_day": round(sum(c["run_rate"]["needed_extra_per_day"] or 0
+                                          for c in counted), 2),
         "otb_occ_pct": pts(nights(counted, "otb_room_nights")),
         "points_added": pts(nights(counted, "room_nights_added")),
         "ly_points_added": pts(nights(counted, "ly_room_nights_added")),
