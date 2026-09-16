@@ -387,3 +387,68 @@ def test_a_rejected_year_ago_month_cannot_price_the_month_either(monkeypatch):
     remaining = row["room_nights"] - 1159
     # Priced off its own settled months, not off a 37-night October.
     assert row["revenue_native"] == pytest.approx(5_373_798 + remaining * 3_500, rel=1e-3)
+
+
+# ── two ways of counting a sold night ────────────────────────────────────────
+
+def test_the_forecast_is_in_the_unit_the_target_is_set_in(monkeypatch):
+    """`reservations` counts a booking of three dorm beds once; daily_metrics
+    counts the beds. Taipei is 108 beds to 30 rooms and reads 1.28x between the
+    two, so a forecast built straight out of reservations would quote occupancy
+    a fifth below the KPI page it is compared against — and price a fifth too
+    few nights."""
+    occ = {("b-taipei", 2026, 10): {"revenue": 1_711_956.0, "nights": 936,
+                                    "adr": 1_829.0}}
+    out = _run(monkeypatch,
+               [cell("b-taipei", capacity=4278, otb=729, ly_otb=400, ly_final=2200,
+                     days_out=16)],
+               occ=occ)
+    row = out["branches"][0]
+
+    # 936 / 729 — the same bookings, counted both ways.
+    assert row["otb_room_nights"] == 936
+    assert out["cells"][0]["bed_factor"] == pytest.approx(936 / 729, abs=0.01)
+    # And the year-ago pickup is converted before it is added, never after.
+    assert out["cells"][0]["room_nights"] == pytest.approx(
+        936 + (2200 - 400) * (936 / 729), abs=1)
+
+
+def test_the_ramp_gate_reads_on_the_converted_basis_too(monkeypatch):
+    """`ly_final_nights` counts reservations and `capacity` counts units, so on
+    a dorm-heavy branch the raw ratio reads a fifth low — and a year-ago month
+    that traded at 44% would be thrown out as a ramp it never was."""
+    occ = {("b-taipei", 2026, 10): {"revenue": 1.0, "nights": 936, "adr": 1.0}}
+    # 1,450 reservation-nights of 4,278 reads 33.9%, under the 40% floor;
+    # converted at 1.28 it is 43.5%, which is a month that traded.
+    out = _run(monkeypatch,
+               [cell("b-taipei", capacity=4278, otb=729, ly_otb=400, ly_final=1450)],
+               occ=occ)
+    assert out["cells"][0]["basis"] == "ly_pickup"
+
+
+def test_a_thin_book_is_not_enough_to_take_the_ratio_from(monkeypatch):
+    """Twelve nights sold against fourteen counted is not a 1.17x branch, it is
+    two bookings. Under the floor the two counts are treated as the same."""
+    occ = {("b-taipei", 2026, 12): {"revenue": 20_000.0, "nights": 14, "adr": 1_400.0}}
+    out = _run(monkeypatch,
+               [cell("b-taipei", month=12, capacity=4278, otb=12,
+                     ly_otb=400, ly_final=3039, days_out=77)],
+               occ=occ)
+    assert out["cells"][0]["bed_factor"] == 1.0
+
+
+def test_the_ratio_is_pooled_across_the_months_in_scope(monkeypatch):
+    """A December read at six per cent sold has too little book to divide by,
+    but the quarter it sits in does not."""
+    occ = {
+        ("b-taipei", 2026, 10): {"revenue": 1.0, "nights": 936, "adr": 1.0},
+        ("b-taipei", 2026, 12): {"revenue": 1.0, "nights": 20, "adr": 1.0},
+    }
+    out = _run(monkeypatch, [
+        cell("b-taipei", month=10, capacity=4278, otb=729, ly_otb=400, ly_final=1128),
+        cell("b-taipei", month=12, capacity=4278, otb=12, ly_otb=400, ly_final=3039,
+             days_out=77),
+    ], occ=occ)
+    factors = {c["stay_month"]: c["bed_factor"] for c in out["cells"]}
+    assert factors["2026-10"] == factors["2026-12"] == pytest.approx(
+        (936 + 20) / (729 + 12), abs=0.01)

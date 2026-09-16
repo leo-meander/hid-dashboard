@@ -584,7 +584,8 @@ function nightsWorking(cells, block, title) {
         {cells.map((c) => (
           <TipRow key={`${c.branch_id}-${c.stay_month}`} label={c.branch_name.replace("MEANDER ", "")}>
             {c.basis === "ly_pickup"
-              ? `${nights(c.otb_room_nights)} + (${nights(c.ly_final_room_nights)} − ${nights(c.ly_otb_room_nights)}) = ${nights(c.room_nights)}`
+              ? `${nights(c.otb_room_nights)} + (${nights(c.ly_final_room_nights)} − ${nights(c.ly_otb_room_nights)})${
+                  c.bed_factor > 1.005 ? ` × ${c.bed_factor.toFixed(2)}` : ""} = ${nights(c.room_nights)}`
               : `${nights(c.otb_room_nights)} → ${occ(c.run_rate_occ_pct)} of ${nights(c.available_room_nights)} = ${nights(c.room_nights)}`}
             {c.capacity_capped ? " ⌐" : ""}
           </TipRow>
@@ -609,6 +610,15 @@ function nightsWorking(cells, block, title) {
       )}
       {cells.some((c) => c.capacity_capped) && (
         <div className="text-gray-500 mt-1">⌐ = pinned to 95% of the house.</div>
+      )}
+      {cells.some((c) => c.bed_factor > 1.005) && (
+        <div className="text-gray-500 mt-1.5">
+          × = one booking can hold several beds. On the books counts the beds; last year's
+          curve counts the bookings, so its pickup is converted at what this branch's own book
+          reads between the two ({cells.filter((c) => c.bed_factor > 1.005)
+            .map((c) => `${c.branch_name.replace("MEANDER ", "")} ${c.bed_factor.toFixed(2)}`)
+            .join(", ")}).
+        </div>
       )}
     </>
   );
