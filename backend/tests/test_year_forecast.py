@@ -80,6 +80,15 @@ def cell(bid, month, revenue, *, low=None, high=None, target=0.0):
         "adr_yoy": 1.0,
         "booked_revenue_native": 400_000.0,
         "booked_room_nights": 400,
+        # The run-rate reading is the half the year projection is built from.
+        "run_rate": {
+            "revenue_native": revenue,
+            "room_nights": 1000.0,
+            "otb_room_nights": 400.0,
+            "room_nights_per_day": 10.0,
+            "days_left": 46,
+            "adr": 1000.0,
+        },
     }
 
 
@@ -258,7 +267,11 @@ def test_branches_are_added_in_vnd_because_nothing_else_adds(scenario):
         total["projection_vnd"] / total["target_vnd"] * 100, abs=0.1)
 
 
-def test_the_range_travels_with_the_projection(scenario):
+def test_the_projection_carries_no_error_band(scenario):
+    """The run-rate half is arithmetic — today's speed times days left — so
+    there is no measured error to put a range around. An earlier version
+    projected by the shape of the year before and did carry one; the band went
+    when that reading did."""
     out = scenario(
         [FakeBranch("b1", "1948")],
         targets=flat(1_000_000.0),
@@ -266,7 +279,5 @@ def test_the_range_travels_with_the_projection(scenario):
         cells=[cell("b1", m, 1_000_000.0) for m in (9, 10, 11, 12)],
     )
     row = out["branches"][0]
-    # Only the projected half moves: eight settled months are not a forecast.
-    assert row["projection_low_native"] == pytest.approx(8_000_000 + 3_600_000)
-    assert row["projection_high_native"] == pytest.approx(8_000_000 + 4_400_000)
-    assert row["achievement_low_pct"] < row["achievement_pct"] < row["achievement_high_pct"]
+    assert row["projection_low_native"] == row["projection_native"]
+    assert row["projection_high_native"] == row["projection_native"]

@@ -285,14 +285,19 @@ def test_months_are_summed_and_the_rate_divided_once(nights_only):
     assert [m["stay_month"] for m in out["months"]] == ["2026-10", "2026-11"]
 
 
-def test_a_source_filter_removes_the_house_from_the_answer(nights_only):
-    """Forecasting "Agoda only" against 95% of the house is meaningless — the
-    rest of the house is being filled by everyone else. Nights still forecast;
-    occupancy does not."""
-    total = only(nights_only([cell()], scoped_sources=True))
-    assert total["room_nights"] is not None
-    assert total["occ_pct"] is None
-    assert total["available_room_nights"] is None
+def test_a_filtered_selection_gets_no_projection_at_all(nights_only):
+    """Pace narrows to one source or one room type; nothing it is measured
+    against does. `daily_metrics` has no source column and no room split, so
+    the book, its money and the ADR would stay whole-house beside a sliced
+    pickup — and the KPI target is the branch's, not Agoda's. Every figure
+    would be a slice over a whole: a wrong number that looks right."""
+    for kw in ({"scoped_sources": True}, {"room_category": "Dorm"}):
+        out = build_forecast(None, [cell()], as_of=date(2026, 9, 15),
+                             branch_meta=BRANCHES, **{"scoped_sources": False, **kw})
+        assert out["available"] is False
+        assert out["reason"] == "filtered"
+        assert out["filtered_by"] == (["source"] if "scoped_sources" in kw
+                                      else ["room_category"])
 
 
 def test_mixed_currencies_lose_the_symbol_but_keep_the_vnd_total(with_money):

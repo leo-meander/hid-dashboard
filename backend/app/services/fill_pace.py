@@ -761,7 +761,7 @@ def get_fill_pace(
     if include_forecast and compare_last_year:
         result["forecast"] = build_forecast(
             db, cells, as_of=as_of, branch_meta=branches,
-            scoped_sources=bool(wanted),
+            scoped_sources=bool(wanted), room_category=room_category,
         )
     return result
 
