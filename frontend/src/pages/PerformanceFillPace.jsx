@@ -610,7 +610,7 @@ function pointsWorking(cells, block, which) {
     if (which === "otb")
       return `${nights(r.otb_room_nights)} of ${nights(cap)} = ${occ(r.otb_occ_pct)}`;
     if (which === "speed")
-      return `${r.room_nights_per_day.toFixed(2)}/d × ${r.days_left}d = ${nights(r.room_nights_added)} = +${occ(r.points_added)}`;
+      return `${nights(r.otb_room_nights)} + ${r.room_nights_per_day.toFixed(2)}/d × ${r.days_left}d = ${nights(r.room_nights)} = ${occ(r.occ_pct)}`;
     return r.needed_occ_pct == null
       ? "—"
       : `${nights(r.needed_room_nights)} of ${nights(cap)} = ${occ(r.needed_occ_pct)}`;
@@ -630,8 +630,8 @@ function pointsWorking(cells, block, which) {
         ))}
       </div>
       <div className="border-t border-gray-700 mt-1.5 pt-1.5">
-        <TipRow label={which === "speed" ? "Adds" : "Together"} strong>
-          {which === "speed" ? `+${occ(total)}` : occ(total)}
+        <TipRow label={which === "speed" ? "Gets to" : "Together"} strong>
+          {occ(which === "speed" ? block.occ_pct : total)}
         </TipRow>
       </div>
       <div className="text-gray-500 mt-1.5">
@@ -833,15 +833,23 @@ function ForecastCard({ data, oneMonth }) {
                       needed: "target", revenue: "both" };
   const tiles = [
     ["otb", "OCC on the books", occ(rr.otb_occ_pct), `${nights(t.otb_room_nights)} room-nights sold`],
-    ["speed", "At this speed", `+${occ(rr.points_added)}`,
-     `${rr.room_nights_per_day.toFixed(2)}/day × ${runway} left`],
-    ["needed", "Needed for target",
-     rr.needed_occ_pct == null ? "—" : occ(rr.needed_occ_pct),
-     shortBy == null
+    ["speed", "Gets to at this speed", occ(rr.occ_pct),
+     `${occ(rr.otb_occ_pct)} + ${occ(rr.points_added)} · ${rr.room_nights_per_day.toFixed(2)}/day × ${runway}`],
+    // The occupancy the target implies is a line to measure against, not a
+    // headline — so the tile leads with what it would take to get there and
+    // keeps the line underneath it.
+    ["needed", "To reach target",
+     rr.needed_occ_pct == null ? "—"
+       : rr.needed_occ_pct > 100 ? "rate"
+       : shortBy <= 0.05 ? "met"
+       : `+${rr.needed_extra_per_day.toFixed(2)}/day`,
+     rr.needed_occ_pct == null
        ? "no target to price"
-       : shortBy <= 0.05
-         ? "already met at this speed"
-         : `+${rr.needed_extra_per_day.toFixed(2)}/day to reach target`],
+       : rr.needed_occ_pct > 100
+         ? `a full house still falls short of ${occ(rr.needed_occ_pct)}`
+         : shortBy <= 0.05
+           ? `already past the ${occ(rr.needed_occ_pct)} it needs`
+           : `more room-nights a day · needs ${occ(rr.needed_occ_pct)}`],
     ["revenue", "Revenue at this speed", shortMoney(revenue, currency),
      hit == null
        ? "no target to compare"
@@ -933,7 +941,7 @@ function ForecastCard({ data, oneMonth }) {
               <tr className="text-xs text-gray-500 border-b border-gray-200">
                 <th className="text-left font-medium py-1.5">Month</th>
                 <th className="text-right font-medium">OCC on the books</th>
-                <th className="text-right font-medium">At this speed</th>
+                <th className="text-right font-medium">Gets to</th>
                 <th className="text-right font-medium">Needed</th>
                 <th className="text-right font-medium">vs target</th>
               </tr>
@@ -958,7 +966,8 @@ function ForecastCard({ data, oneMonth }) {
                         width="w-96"
                         className="decoration-dotted underline-offset-4 hover:underline"
                       >
-                        +{occ(r.points_added)}
+                        {occ(r.occ_pct)}
+                        <span className="text-gray-400 font-normal"> (+{occ(r.points_added)})</span>
                       </HoverTooltip>
                     </td>
                     <td className={`text-right tabular-nums ${
