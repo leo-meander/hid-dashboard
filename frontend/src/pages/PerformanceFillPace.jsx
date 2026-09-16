@@ -30,7 +30,10 @@ import HoverTooltip from "../components/HoverTooltip";
 const THIS_YEAR = "#4f46e5";   // indigo-600
 const LAST_YEAR = "#f59e0b";   // amber-500
 
-const WINDOWS = [30, 60, 90, 180];
+// A booking window is a reading of current speed, so the short ones are the
+// useful ones. 90 and 180 reached so far back that the "speed now" they
+// reported was mostly last quarter's, and Custom still covers a long look.
+const WINDOWS = [7, 14, 30, 60];
 // Mirrors MAX_WINDOW_DAYS on the endpoint. A custom range longer than this is
 // clamped server-side, so the page says so rather than showing a range it is
 // not actually reading.
@@ -1300,11 +1303,50 @@ function YearOutlook({ branchId, days }) {
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
             If every room sells<Tag kind="projected" />
           </div>
-          <div className={`text-3xl font-bold mt-1 tabular-nums ${
-            ceilingPct == null ? "text-gray-900"
-              : ceilingPct >= 100 ? "text-emerald-600" : "text-red-600"}`}>
-            {ceilingPct == null ? "—" : `${ceilingPct.toFixed(0)}%`}
-          </div>
+          <HoverTooltip width="w-96" content={
+            <>
+              <div className="font-semibold text-white mb-1">
+                The most {data.year} can still produce
+              </div>
+              <div className="text-gray-300 mb-1.5">
+                months already finished + every room left, sold at today&apos;s rate
+              </div>
+              <div className="space-y-0.5">
+                <TipRow label={monthSpan(data.settled_months)}>
+                  counted as they happened
+                </TipRow>
+                <TipRow label={monthSpan(data.projected_months)}>
+                  booked + every unsold room
+                </TipRow>
+                {yearAdr && <TipRow label="Priced at" strong>{money(yearAdr, cur)}</TipRow>}
+              </div>
+              <div className="text-gray-500 mt-1.5">
+                Read it as the line between two different problems. Above 100% the target can
+                still be reached by filling — a question of pace, and the tile beside this one
+                prices that. Below 100% no amount of filling reaches it, and the only lever
+                left is the rate.
+              </div>
+              <div className="text-gray-500 mt-1">
+                &quot;Every room&quot; means {data.max_occ_pct ?? 95}% of the house, not all of
+                it. A hotel does not sell its last bed every night of a month, and a ceiling
+                that assumed it would be a number nobody could act on.
+              </div>
+              <div className="text-gray-500 mt-1">
+                The rate is held where it is now — no price rise is assumed — and the months
+                already banked are not re-priced at all.
+              </div>
+              <div className="text-gray-500 mt-1">
+                A ceiling, not a forecast. Where the year is actually heading is the first
+                tile: {hit == null ? "—" : `${hit.toFixed(0)}% of target`}.
+              </div>
+            </>
+          }>
+            <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
+              ceilingPct == null ? "text-gray-900"
+                : ceilingPct >= 100 ? "text-emerald-600" : "text-red-600"}`}>
+              {ceilingPct == null ? "—" : `${ceilingPct.toFixed(0)}%`}
+            </div>
+          </HoverTooltip>
           <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
             {shortMoney(ceiling, cur)} at today's rate
           </div>
@@ -1314,10 +1356,51 @@ function YearOutlook({ branchId, days }) {
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
             To reach target<Tag kind="target" />
           </div>
-          <div className={`text-3xl font-bold mt-1 tabular-nums ${
-            reachable === false ? "text-red-600" : "text-gray-900"}`}>
-            {gap >= 0 ? "met" : reachable === false ? "rate" : `+${(perDay || 0).toFixed(1)}/day`}
-          </div>
+          <HoverTooltip width="w-96" content={
+            <>
+              <div className="font-semibold text-white mb-1">
+                What it takes from here
+              </div>
+              <div className="text-gray-300 mb-1.5">
+                {reachable === false
+                  ? "a full house is already short — only the rate moves this"
+                  : "the gap to target ÷ the booking days left to close it"}
+              </div>
+              <div className="space-y-0.5">
+                <TipRow label="At this speed">
+                  {hit == null ? "—" : `${hit.toFixed(0)}% of target`}
+                </TipRow>
+                <TipRow label="If every room sells">
+                  {ceilingPct == null ? "—" : `${ceilingPct.toFixed(0)}% of target`}
+                </TipRow>
+                <TipRow label={gap >= 0 ? "Ahead by" : "Short by"} strong>
+                  {shortMoney(Math.abs(gap), cur)}
+                </TipRow>
+              </div>
+              {reachable === false ? (
+                <div className="text-gray-500 mt-1.5">
+                  Selling every remaining room still lands under target, so no number of extra
+                  room-nights closes this. It says &quot;rate&quot; because that is the only
+                  lever left — the branches named below say what rate each would need.
+                </div>
+              ) : (
+                <div className="text-gray-500 mt-1.5">
+                  Extra room-nights a day on top of the speed already being achieved, every
+                  booking day from now to the end of the year. Not a total to catch up — a new
+                  speed to hold.
+                </div>
+              )}
+              <div className="text-gray-500 mt-1">
+                Each remaining month adds its own shortfall, and they add rather than average:
+                all of them are being sold on the same booking days.
+              </div>
+            </>
+          }>
+            <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
+              reachable === false ? "text-red-600" : "text-gray-900"}`}>
+              {gap >= 0 ? "met" : reachable === false ? "rate" : `+${(perDay || 0).toFixed(1)}/day`}
+            </div>
+          </HoverTooltip>
           <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
             {gap >= 0
               ? `ahead by ${shortMoney(gap, cur)}`
@@ -1331,9 +1414,37 @@ function YearOutlook({ branchId, days }) {
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
             Still to sell · {monthSpan(data.projected_months)}<Tag kind="projected" />
           </div>
-          <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
-            {shortMoney(toCome, cur)}
-          </div>
+          <HoverTooltip width="w-96" content={
+            <>
+              <div className="font-semibold text-white mb-1">
+                Money the open months are on course to add
+              </div>
+              <div className="text-gray-300 mb-1.5">
+                the whole year at this speed − what is already banked
+              </div>
+              <div className="space-y-0.5">
+                <TipRow label={monthSpan(data.settled_months)}>
+                  {shortMoney(banked, cur)} banked
+                </TipRow>
+                <TipRow label={monthSpan(data.projected_months)} strong>
+                  {shortMoney(toCome, cur)} projected
+                </TipRow>
+              </div>
+              <div className="text-gray-500 mt-1.5">
+                What the months still open are worth if they keep filling at the speed they are
+                filling now — the part of the year still in play, including the nights already
+                on the books for those months.
+              </div>
+              <div className="text-gray-500 mt-1">
+                Months far out sit low here by construction: almost nothing is booked yet and
+                the speed is read off a thin window. Treat it as a floor.
+              </div>
+            </>
+          }>
+            <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline">
+              {shortMoney(toCome, cur)}
+            </div>
+          </HoverTooltip>
           <div className="text-sm text-gray-500 mt-0.5 tabular-nums">
             {q4Hit === null || q4Hit === undefined
               ? "Q4 not fully projected"

@@ -52,6 +52,7 @@ from app.models.kpi import KPITarget
 from app.services import fill_pace
 from app.services.currency import get_cached_rate
 from app.services.kpi_engine import month_actual_and_target
+from app.services.pace_forecast import MAX_FORECAST_OCC
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,10 @@ def forecast_year(
         "as_of": as_of.isoformat(),
         "settled_months": settled,
         "projected_months": open_months,
+        # What "if every room sells" actually means. The ceiling stops here
+        # rather than at a full house, and the page says which it is instead
+        # of letting a reader assume 100%.
+        "max_occ_pct": round(MAX_FORECAST_OCC * 100, 1),
         "branches": rows,
         "total": _group_total(rows),
     }
