@@ -452,3 +452,144 @@ def test_the_ratio_is_pooled_across_the_months_in_scope(monkeypatch):
     factors = {c["stay_month"]: c["bed_factor"] for c in out["cells"]}
     assert factors["2026-10"] == factors["2026-12"] == pytest.approx(
         (936 + 20) / (729 + 12), abs=0.01)
+
+
+# ── keeping today's speed ────────────────────────────────────────────────────
+
+def rr_cell(bid="b-1948", **kw):
+    """A cell carrying what the run-rate reading needs: the window, what it
+    picked up, and what that pickup sold for."""
+    base = cell(bid, **{k: v for k, v in kw.items() if k not in
+                        ("pickup_nights", "pickup_revenue", "window_days")})
+    base.update({
+        "pickup_nights": kw.get("pickup_nights", 300.0),
+        "pickup_revenue": kw.get("pickup_revenue", 600_000.0),
+        "window_days": kw.get("window_days", 30),
+    })
+    return base
+
+
+def test_todays_speed_is_carried_flat_to_the_end_of_the_month(monkeypatch):
+    """300 nights in 30 days is 10 a day; 46 days left to sell is 460 more."""
+    occ = {("b-1948", 2026, 10): {"revenue": 1_324_000.0, "nights": 662, "adr": 2000.0}}
+    out = _run(monkeypatch, [rr_cell()], occ=occ)
+    rr = out["cells"][0]["run_rate"]
+
+    # 15 Sep through 31 Oct, today included — it is still a booking day.
+    assert rr["days_left"] == 47
+    assert rr["room_nights_per_day"] == 10.0
+    assert rr["room_nights"] == pytest.approx(662 + 470, abs=1)
+    # Priced at what the window itself sold at: 600,000 over 300 nights.
+    assert rr["adr"] == 2000.0
+    assert rr["revenue_native"] == pytest.approx(1_324_000 + 470 * 2000)
+
+
+def test_the_window_control_moves_the_whole_answer(monkeypatch):
+    """Reading the speed over 90 days instead of 30 is a different speed and so
+    a different answer — which is what the control on the page is for."""
+    occ = {("b-1948", 2026, 10): {"revenue": 1_324_000.0, "nights": 662, "adr": 2000.0}}
+    fast = _run(monkeypatch, [rr_cell(window_days=30, pickup_nights=300.0)], occ=occ)
+    slow = _run(monkeypatch, [rr_cell(window_days=90, pickup_nights=300.0)], occ=occ)
+    assert fast["cells"][0]["run_rate"]["room_nights_per_day"] == 10.0
+    assert slow["cells"][0]["run_rate"]["room_nights_per_day"] == pytest.approx(3.33, abs=0.01)
+    assert fast["cells"][0]["run_rate"]["room_nights"] > slow["cells"][0]["run_rate"]["room_nights"]
+
+
+def test_a_month_that_is_over_has_no_days_left_to_sell(monkeypatch):
+    out = _run(monkeypatch, [rr_cell(status="finished", otb=1700)])
+    rr = out["cells"][0]["run_rate"]
+    assert rr["days_left"] == 0
+    assert rr["room_nights"] == pytest.approx(1700, abs=1)
+
+
+def test_the_run_rate_cannot_sell_more_than_the_house_holds(monkeypatch):
+    """Nothing about extrapolating a speed knows inventory exists."""
+    out = _run(monkeypatch, [rr_cell(otb=1500, pickup_nights=3000.0)])
+    rr = out["cells"][0]["run_rate"]
+    assert rr["room_nights"] == pytest.approx(2139 * MAX_FORECAST_OCC, abs=1)
+    assert rr["capacity_capped"] is True
+
+
+def test_the_run_rate_rolls_up_the_way_everything_else_does(monkeypatch):
+    """Nights and money summed, the rate divided once, and the target paired
+    with the branch-months that actually contributed revenue."""
+    occ = {
+        ("b-1948", 2026, 10): {"revenue": 1_324_000.0, "nights": 662, "adr": 2000.0},
+        ("b-1948", 2026, 11): {"revenue": 500_000.0, "nights": 250, "adr": 2000.0},
+    }
+    targets = {("b-1948", 2026, 10): {"native": 4_500_000.0, "vnd": 0.0},
+               ("b-1948", 2026, 11): {"native": 4_000_000.0, "vnd": 0.0}}
+    out = _run(monkeypatch,
+               [rr_cell(month=10), rr_cell(month=11, capacity=2070, otb=250, days_out=47)],
+               occ=occ, targets=targets)
+    total = out["total"]["run_rate"]
+    months = [m["run_rate"] for m in out["months"]]
+
+    assert total["room_nights"] == pytest.approx(sum(m["room_nights"] for m in months))
+    assert total["room_nights_per_day"] == 20.0          # 10 a day on each month
+    assert total["target_native"] == 8_500_000.0
+    assert total["achievement_pct"] == pytest.approx(
+        total["revenue_native"] / 8_500_000 * 100, abs=0.1)
+
+
+# ── the month in points of occupancy ─────────────────────────────────────────
+
+def test_the_four_readings_are_all_points_of_the_same_house(monkeypatch):
+    """Sold, what today's speed adds, what last year's run-in added, and what
+    the target asks for — one unit, so they can be read against each other."""
+    occ = {("b-1948", 2026, 10): {"revenue": 1_324_000.0, "nights": 662, "adr": 2000.0},
+           ("b-1948", 2025, 10): {"revenue": 3_510_000.0, "nights": 1755, "adr": 2000.0},
+           ("b-1948", 2026, 8): {"revenue": 2_000_000.0, "nights": 1000, "adr": 2000.0},
+           ("b-1948", 2025, 8): {"revenue": 2_000_000.0, "nights": 1000, "adr": 2000.0}}
+    out = _run(monkeypatch, [rr_cell()], occ=occ,
+               targets={("b-1948", 2026, 10): {"native": 3_500_000.0, "vnd": 0.0}})
+    r = out["cells"][0]["run_rate"]
+
+    assert r["otb_occ_pct"] == pytest.approx(662 / 2139 * 100, abs=0.1)
+    # 300 nights in 30 days, 47 days left: 470 more, on a 2,139-night house.
+    assert r["points_added"] == pytest.approx(470 / 2139 * 100, abs=0.2)
+    # What last year still had to come from the same countdown position.
+    assert r["ly_points_added"] == pytest.approx((1755 - 434) / 2139 * 100, abs=0.1)
+    # And the occupancy the revenue target implies at the rate it is selling at.
+    needed = 662 + (3_500_000 - 1_324_000) / 2000
+    assert r["needed_occ_pct"] == pytest.approx(needed / 2139 * 100, abs=0.1)
+    assert r["needed_over_capacity"] is False
+
+
+def test_a_target_a_full_house_cannot_reach_is_a_pricing_problem(monkeypatch):
+    """Osaka's December needs 123% of the house at the rate it is currently
+    selling at. No amount of pace fixes that, and calling it a pace problem
+    hides the only lever there is."""
+    occ = {("b-osaka", 2026, 12): {"revenue": 2_088_822.0, "nights": 129, "adr": 16_190.0},
+           ("b-osaka", 2025, 12): {"revenue": 1.0, "nights": 1580, "adr": 10_081.0}}
+    out = _run(monkeypatch,
+               [rr_cell("b-osaka", month=12, capacity=2201, otb=129,
+                        ly_otb=209, ly_final=1580, days_out=77, city="Osaka")],
+               occ=occ,
+               targets={("b-osaka", 2026, 12): {"native": 28_100_000.0, "vnd": 0.0}})
+    r = out["cells"][0]["run_rate"]
+
+    assert r["needed_occ_pct"] > 100
+    assert r["needed_over_capacity"] is True
+    # The rate that would clear the target with the house full.
+    assert r["adr_needed"] == pytest.approx(
+        (28_100_000 - 2_088_822) / (2201 * MAX_FORECAST_OCC - 129), rel=1e-3)
+
+    flagged = out["total"]["run_rate"]["over_capacity"]
+    assert [f["stay_month"] for f in flagged] == ["2026-12"]
+    assert flagged[0]["adr_needed"] > flagged[0]["adr_now"]
+
+
+def test_points_are_divided_out_of_the_totals_not_averaged(monkeypatch):
+    """A 31-night month and a 30-night one do not carry equal weight, and a
+    69-unit branch does not outvote a 138-unit one."""
+    occ = {("b-1948", 2026, 10): {"revenue": 1_000.0, "nights": 662, "adr": 2.0},
+           ("b-taipei", 2026, 10): {"revenue": 1_000.0, "nights": 936, "adr": 2.0}}
+    out = _run(monkeypatch, [
+        rr_cell("b-1948", capacity=2139, otb=662),
+        rr_cell("b-taipei", capacity=4278, otb=936),
+    ], occ=occ)
+    total = out["total"]["run_rate"]
+    assert total["otb_occ_pct"] == pytest.approx((662 + 936) / (2139 + 4278) * 100, abs=0.1)
+    # Not the mean of 31.0% and 21.9%.
+    assert total["otb_occ_pct"] < 26.5
