@@ -259,11 +259,11 @@ function verdict(d) {
       ? {
           tone: "neutral",
           headline: "No year-ago pace to compare with",
-          detail: `${nights(picked)} room-nights picked up this window. The same countdown to ${monthsLabel(d.last_year?.stay_months)} booked nothing, so there is no speed to be faster than.`,
+          detail: `${nights(picked)} room-nights booked in this window. The same countdown to ${monthsLabel(d.last_year?.stay_months)} booked nothing, so there is no speed to be faster than.`,
         }
       : {
           tone: "neutral",
-          headline: "Nothing picked up in this window",
+          headline: "Nothing booked in this window",
           detail: `Neither this year nor the same countdown to ${monthsLabel(d.last_year?.stay_months)} booked anything. Widen the window or check a different source.`,
         };
   }
@@ -653,6 +653,53 @@ function pointsWorking(cells, block, which) {
   );
 }
 
+/**
+ * Where the rate comes from.
+ *
+ * Half the projected revenue is this number, and it was living in a sentence
+ * under the tiles. It is the one input a reader is most likely to want to
+ * argue with, so it gets its own chip and its own working.
+ */
+function adrWorking(cells, block, currency) {
+  const priced = cells.filter((c) => c.run_rate.adr);
+  return (
+    <>
+      <div className="font-semibold text-white mb-1">
+        Rate for the nights still to come
+      </div>
+      <div className="text-gray-300 mb-1.5">
+        revenue booked in the window ÷ room-nights booked in it
+      </div>
+      <div className="space-y-0.5">
+        {priced.map((c) => (
+          <TipRow key={`${c.branch_id}-${c.stay_month}`}
+                  label={`${c.branch_name.replace("MEANDER ", "")} ${monthLabel(c.stay_month).slice(0, 3)}`}>
+            {money(c.run_rate.adr, c.currency)}
+          </TipRow>
+        ))}
+      </div>
+      {block.adr && (
+        <div className="border-t border-gray-700 mt-1.5 pt-1.5">
+          <TipRow label="Weighted" strong>{money(block.adr, currency)}</TipRow>
+        </div>
+      )}
+      <div className="text-gray-500 mt-1.5">
+        What the last {block.window_days} days of bookings actually sold at for these stay
+        months — not a list rate and not last year's. Move the booking window and it moves.
+      </div>
+      <div className="text-gray-500 mt-1">
+        Nights already on the books keep the revenue they sold for and are never re-priced. A
+        window that booked nothing has no rate of its own; those fall back to last year's rate
+        for the same month, moved by the branch's own rate trend.
+      </div>
+      <div className="text-gray-500 mt-1">
+        Thin books make it jumpy: a handful of holiday bookings can set it well above what the
+        branch averages, and the projected revenue moves with it.
+      </div>
+    </>
+  );
+}
+
 /** How the projected revenue is built, per branch-month. */
 function revenueWorking(cells, block, currency) {
   return (
@@ -768,9 +815,20 @@ function ForecastCard({ data, oneMonth }) {
         <h2 className="text-sm font-semibold text-gray-800">
           At this speed, {oneMonth ? "does this month" : "do these months"} reach target?
         </h2>
-        <span className="text-xs text-gray-400">
-          on the books + room-nights a day × days left to sell
-        </span>
+        <div className="flex items-center gap-3 ml-auto">
+          {rr.adr != null && (
+            <HoverTooltip content={adrWorking(cells, rr, t.currency)} width="w-96">
+              <span className="text-xs px-2 py-1 rounded-lg bg-gray-50 border border-gray-200
+                               text-gray-600 tabular-nums decoration-dotted underline-offset-2 hover:underline">
+                ADR <span className="font-semibold text-gray-900">{money(rr.adr, currency)}</span>
+                <span className="text-gray-400"> · last {rr.window_days}d</span>
+              </span>
+            </HoverTooltip>
+          )}
+          <span className="text-xs text-gray-400">
+            on the books + room-nights a day × days left to sell
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-3">
@@ -804,12 +862,8 @@ function ForecastCard({ data, oneMonth }) {
           {/* Name the rate. A revenue figure whose price nobody showed is a
               figure nobody can check. */}
           <div className="text-xs text-gray-500 mt-1">
-            {rr.adr
-              ? `Nights still to come priced at ${money(rr.adr, currency)} each — what the last
-                 ${rr.window_days} days actually sold at. Nights already booked keep what they
-                 sold for.`
-              : `Nights still to come priced at what each branch's last ${rr.window_days} days
-                 actually sold at. Nights already booked keep what they sold for.`}
+            Nights already booked keep what they sold for; only the nights still to come are
+            priced at the rate above.
           </div>
         </div>
       )}
@@ -1055,6 +1109,15 @@ function YearOutlook({ branchId, days }) {
   const q4Hit = single ? single.q4_achievement_pct : t.q4_achievement_pct;
   const bankedPct = target ? (banked / target) * 100 : null;
   const yearTip = single ? yearWorking(single, null) : yearGroupWorking(data);
+  // One rate only where one currency can carry it; weighted by the nights
+  // each projected month adds.
+  const yearAdr = (() => {
+    if (!single) return null;
+    const rows = single.projected_detail.filter((d) => d.adr_remaining);
+    const added = rows.reduce((a, d) => a + (d.room_nights - d.otb_room_nights), 0);
+    if (!added) return null;
+    return rows.reduce((a, d) => a + (d.room_nights - d.otb_room_nights) * d.adr_remaining, 0) / added;
+  })();
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4">
@@ -1062,10 +1125,42 @@ function YearOutlook({ branchId, days }) {
         <h2 className="text-sm font-semibold text-gray-800">
           At this speed, does {data.year} reach target?
         </h2>
-        <span className="text-xs text-gray-400">
-          the whole year — follows the branch and the booking window, not the stay month or the
-          source and room-type filters
-        </span>
+        <div className="flex items-center gap-3 ml-auto">
+          {yearAdr && (
+            <HoverTooltip width="w-96" content={
+              <>
+                <div className="font-semibold text-white mb-1">
+                  Rate for the nights still to come
+                </div>
+                <div className="text-gray-300 mb-1.5">
+                  revenue booked in the window ÷ room-nights booked in it
+                </div>
+                <div className="space-y-0.5">
+                  {single.projected_detail.map((d) => (
+                    <TipRow key={d.month} label={MONTH_ABBR[d.month - 1]}>
+                      {money(d.adr_remaining, cur)}
+                    </TipRow>
+                  ))}
+                </div>
+                <div className="text-gray-500 mt-1.5">
+                  What the last {data.window_days || ""} days of bookings actually sold at for
+                  each remaining month. Months already banked are not priced at all — they are
+                  counted as they happened.
+                </div>
+              </>
+            }>
+              <span className="text-xs px-2 py-1 rounded-lg bg-gray-50 border border-gray-200
+                               text-gray-600 tabular-nums decoration-dotted underline-offset-2 hover:underline">
+                ADR <span className="font-semibold text-gray-900">{money(yearAdr, cur)}</span>
+                <span className="text-gray-400"> · {monthSpan(data.projected_months)}</span>
+              </span>
+            </HoverTooltip>
+          )}
+          <span className="text-xs text-gray-400">
+            the whole year — follows the branch and the booking window, not the stay month or the
+            source and room-type filters
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mt-3">
@@ -1596,13 +1691,13 @@ export default function PerformanceFillPace() {
                 : `${data.scope.units_in_scope} units × ${data.stay_days} nights`}
             />
             <Stat
-              label={`Picked up (${data.days}d)`}
+              label={`Booked in last ${data.days}d`}
               value={nights(data.current.pickup_room_nights)}
               sub={compare
                 ? `${pctLabel(data.vs_last_year.pickup_room_nights_pct)} vs LY · LY ${nights(data.last_year.pickup_room_nights)}`
                 : `${data.current.pickup_bookings} bookings`}
               subTone={compare ? toneFor(data.vs_last_year.pickup_room_nights_pct, 2) : "text-gray-500"}
-              hint="Room-nights added inside the window — this is the speed"
+              hint="Room-nights for this stay month that were booked inside the window — whenever the guest arrives, this is what the last stretch actually sold, and so the speed"
             />
             {onPrev ? (
             <Stat
@@ -1668,7 +1763,7 @@ export default function PerformanceFillPace() {
           {/* The window control moves exactly one of the four cards above, and
               it is not obvious which — so it is stated rather than inferred. */}
           <p className="text-xs text-gray-500 -mt-2">
-            Only <span className="font-medium text-gray-600">Picked up</span> follows the booking
+            Only <span className="font-medium text-gray-600">Booked in last {data.days}d</span> follows the booking
             window. The other three are read at {shortDate(data.as_of)} whatever the window is:
             on the books is everything sold so far, and the year-ago figures are the same date
             counted back from each stay month.
