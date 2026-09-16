@@ -395,3 +395,24 @@ def test_months_and_branches_each_carry_their_own_reading(monkeypatch):
 
 def test_settled_months_walks_backwards_across_the_year_boundary():
     assert _settled_months(date(2026, 2, 10), 3) == [(2026, 1), (2025, 12), (2025, 11)]
+
+
+def test_the_warning_quotes_the_rate_it_divided_by(monkeypatch):
+    """Quoting one rate while dividing by another printed "needs 121% of the
+    house at 2,029 a night, and a full house clears it at 1,841" — which cannot
+    both be true. The rate that would clear the target is always above the one
+    being taken now, or the month would not be over the ceiling at all."""
+    occ = {("b-taipei", 2026, 12): {"revenue": 292_654.0, "nights": 149, "adr": 1_964.0},
+           # Last year's rate is far above what the window is selling at, and
+           # it used to be the one quoted.
+           ("b-taipei", 2025, 12): {"revenue": 6_039_021.0, "nights": 3039, "adr": 1_987.0}}
+    out = run(monkeypatch,
+              [cell("b-taipei", month=12, capacity=4278, otb=149, days_out=77,
+                    pickup_nights=80.0, pickup_revenue=114_000.0)],
+              occ=occ,
+              targets={("b-taipei", 2026, 12): {"native": 7_500_000.0, "vnd": 0.0}})
+    flagged = out["total"]["run_rate"]["over_capacity"]
+
+    assert len(flagged) == 1
+    assert flagged[0]["adr_now"] == out["cells"][0]["run_rate"]["adr"]
+    assert flagged[0]["adr_needed"] > flagged[0]["adr_now"]

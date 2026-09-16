@@ -702,9 +702,12 @@ def _run_rate_block(cells: list[dict], branch_meta: dict, capacity_basis: bool) 
              "stay_month": f"{c['year']:04d}-{c['month']:02d}",
              "currency": branch_meta.get(c["branch_id"], {}).get("currency"),
              "needed_occ_pct": c["run_rate"]["needed_occ_pct"],
-             # The same rate `needed` was computed with, not the window's own —
-             # quoting one and dividing by the other reads as a contradiction.
-             "adr_now": c["adr_remaining"],
+             # The same rate `needed` was divided by. It was the fallback
+             # once and is the window's own now, and quoting one while
+             # dividing by the other printed "needs 121% of the house at
+             # 2,029 a night, and a full house clears it at 1,841" — which
+             # cannot both be true.
+             "adr_now": c["run_rate"]["adr"] or c["adr_remaining"],
              "adr_needed": c["run_rate"]["adr_needed"]}
             for c in over
         ],

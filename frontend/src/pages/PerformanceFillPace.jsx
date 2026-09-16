@@ -878,9 +878,18 @@ function ForecastCard({ data, oneMonth }) {
     ["otb", "OCC on the books", occ(rr.otb_occ_pct), `${nights(t.otb_room_nights)} room-nights sold`],
     ["speed", "OCC at this speed", occ(rr.occ_pct),
      `${occ(rr.otb_occ_pct)} + ${occ(rr.points_added)} · ${rr.room_nights_per_day.toFixed(2)}/day × ${runway}`],
-    // The occupancy the target implies is a line to measure against, not a
-    // headline — so the tile leads with what it would take to get there and
-    // keeps the line underneath it.
+    ["revenue", "Revenue at this speed", shortMoney(revenue, currency),
+     hit == null ? "no target to compare" : (
+       <>
+         <span className={`font-bold text-base ${
+           hit >= 100 ? "text-emerald-700" : "text-red-700"}`}>
+           {hit.toFixed(2)}%
+         </span>
+         {" of target"}
+       </>
+     )],
+    // What is still missing comes last, because it is the takeaway rather
+    // than a step in the chain.
     ["needed", "To reach target",
      rr.needed_occ_pct == null ? "—"
        : rr.needed_occ_pct > 100 ? "rate"
@@ -893,17 +902,6 @@ function ForecastCard({ data, oneMonth }) {
          : shortBy <= 0.05
            ? `already past the ${occ(rr.needed_occ_pct)} it needs`
            : `more room-nights a day · needs ${occ(rr.needed_occ_pct)}`],
-    ["revenue", "Revenue at this speed", shortMoney(revenue, currency),
-     hit == null ? "no target to compare" : (
-       <>
-         <span className={`font-bold text-base ${
-           hit >= 100 ? "text-emerald-700" : "text-red-700"}`}>
-           {hit.toFixed(2)}%
-         </span>
-         {" of target · "}{gap >= 0 ? "ahead by" : "short by"}{" "}
-         {shortMoney(Math.abs(gap), currency)}
-       </>
-     )],
   ];
 
   return (
@@ -991,10 +989,10 @@ function ForecastCard({ data, oneMonth }) {
                 <th className="text-left font-medium py-1.5">Month</th>
                 <th className="text-right font-medium">OCC on the books</th>
                 <th className="text-right font-medium">OCC at this speed</th>
-                <th className="text-right font-medium">Needed</th>
-                {/* Three columns of occupancy and then one of money — the
-                    header has to say which, or it reads as a fourth. */}
+                {/* Occupancy, then the money it produces, then what is
+                    still missing — the header names the unit each time. */}
                 <th className="text-right font-medium">Revenue vs target</th>
+                <th className="text-right font-medium">OCC needed</th>
               </tr>
             </thead>
             <tbody>
@@ -1021,13 +1019,13 @@ function ForecastCard({ data, oneMonth }) {
                         <span className="text-gray-400 font-normal"> (+{occ(r.points_added)})</span>
                       </HoverTooltip>
                     </td>
-                    <td className={`text-right tabular-nums ${
-                      r.needed_occ_pct > 100 ? "text-red-600" : "text-gray-500"}`}>
-                      {occ(r.needed_occ_pct)}
-                    </td>
                     <td className={`text-right tabular-nums ${toneFor(
                       mHit == null ? null : mHit - 100, 2)}`}>
                       {mHit == null ? "—" : `${mHit.toFixed(2)}%`}
+                    </td>
+                    <td className={`text-right tabular-nums ${
+                      r.needed_occ_pct > 100 ? "text-red-600" : "text-gray-500"}`}>
+                      {occ(r.needed_occ_pct)}
                     </td>
                   </tr>
                 );
