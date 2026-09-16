@@ -562,6 +562,29 @@ function PaceTable({ title, subtitle, rows, nameKey, nameLabel, currency, compar
  * hover panel the KPI forecast uses on Home, with the same job: the inputs,
  * the operation, the result, in the order they happen.
  */
+/**
+ * What kind of number this is. Cards here put revenue that has been earned
+ * next to revenue that has been projected, in the same typeface at the same
+ * size, and only a paragraph at the bottom said which was which — so a
+ * projection could be read as money in the bank. Every figure now carries its
+ * own provenance.
+ */
+function Tag({ kind }) {
+  const style = {
+    actual: "bg-gray-100 text-gray-600",
+    projected: "bg-indigo-50 text-indigo-700",
+    both: "bg-indigo-50 text-indigo-700",
+    target: "bg-amber-50 text-amber-700",
+  }[kind];
+  const label = { actual: "actual", projected: "projected",
+                  both: "actual + projected", target: "from target" }[kind];
+  return (
+    <span className={`ml-1.5 align-middle text-[10px] font-medium px-1.5 py-px rounded ${style}`}>
+      {label}
+    </span>
+  );
+}
+
 function TipRow({ label, children, strong, note }) {
   return (
     <div className={`flex items-baseline gap-2 ${strong ? "text-white font-semibold" : ""}`}>
@@ -719,6 +742,8 @@ function ForecastCard({ data, oneMonth }) {
     ? `${runwayDays[0]} days`
     : `${runwayDays[0]}–${runwayDays[runwayDays.length - 1]} days`;
 
+  const TILE_KIND = { otb: "actual", speed: "projected",
+                      needed: "target", revenue: "both" };
   const tiles = [
     ["otb", "OCC on the books", occ(rr.otb_occ_pct), `${nights(t.otb_room_nights)} room-nights sold`],
     ["speed", "At this speed", `+${occ(rr.points_added)}`,
@@ -751,7 +776,9 @@ function ForecastCard({ data, oneMonth }) {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-3">
         {tiles.map(([key, label, value, sub]) => (
           <div key={key}>
-            <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</div>
+            <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+              {label}<Tag kind={TILE_KIND[key]} />
+            </div>
             <HoverTooltip
               content={key === "revenue"
                 ? revenueWorking(cells, rr, t.currency)
@@ -1044,7 +1071,7 @@ function YearOutlook({ branchId, days }) {
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mt-3">
         <div>
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Full year at this speed
+            Full year at this speed<Tag kind="both" />
           </div>
           <HoverTooltip content={yearTip} width="w-96">
             <div className={`text-3xl font-bold mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline ${
@@ -1057,7 +1084,7 @@ function YearOutlook({ branchId, days }) {
 
         <div>
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            {gap >= 0 ? "Ahead by" : "Short by"}
+            {gap >= 0 ? "Ahead by" : "Short by"}<Tag kind="both" />
           </div>
           <HoverTooltip content={yearTip} width="w-96">
             <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums decoration-dotted underline-offset-4 hover:underline">
@@ -1071,7 +1098,7 @@ function YearOutlook({ branchId, days }) {
 
         <div>
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Banked · {monthSpan(data.settled_months)}
+            Banked · {monthSpan(data.settled_months)}<Tag kind="actual" />
           </div>
           <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
             {shortMoney(banked, cur)}
@@ -1083,7 +1110,7 @@ function YearOutlook({ branchId, days }) {
 
         <div>
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Still to sell · {monthSpan(data.projected_months)}
+            Still to sell · {monthSpan(data.projected_months)}<Tag kind="projected" />
           </div>
           <div className="text-3xl font-bold text-gray-900 mt-1 tabular-nums">
             {shortMoney(toCome, cur)}
@@ -1102,9 +1129,15 @@ function YearOutlook({ branchId, days }) {
             <thead>
               <tr className="text-xs text-gray-500 border-b border-gray-200">
                 <th className="text-left font-medium py-1.5">Branch</th>
-                <th className="text-right font-medium">Banked</th>
-                <th className="text-right font-medium">Still to sell</th>
-                <th className="text-right font-medium">Full year</th>
+                <th className="text-right font-medium">
+                  Banked<div className="font-normal text-gray-400">actual</div>
+                </th>
+                <th className="text-right font-medium">
+                  Still to sell<div className="font-normal text-indigo-500">projected</div>
+                </th>
+                <th className="text-right font-medium">
+                  Full year<div className="font-normal text-indigo-500">actual + projected</div>
+                </th>
                 <th className="text-right font-medium">Target</th>
                 <th className="text-right font-medium">Gap</th>
                 <th className="text-right font-medium">Year</th>
