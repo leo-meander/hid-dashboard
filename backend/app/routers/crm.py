@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session, undefer
 
 from app.database import get_db
 from app.models.reservation import Reservation
+from app.models.user import User
+from app.routers.auth import require_admin
 from app.services.crm_filters import crm_reservation_filter
 
 router = APIRouter()
@@ -473,12 +475,21 @@ def crm_reservation_contacts(
     branch_id: Optional[UUID] = Query(None),
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
+    _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Return CRM reservation contacts (id, cb_id, email, name) per branch.
+    """Return CRM reservation contacts (id, cb_id, email, name) per branch. Admin only.
 
     Filters: optional rate_plan_contains (default = all CRM-related), branch_id,
     and check_in_date range. raw_data is undeferred to extract guestEmail/guestName.
+
+    This is the only endpoint in the app that returns guest names, emails and
+    phone numbers in bulk, and it shipped without an auth dependency: a plain
+    GET with a wide date range handed back every CRM guest's contact details
+    for all five branches, to anyone who knew the path. CORS is open to `*`, so
+    any page in any browser could read it too. Admin-gated now. Anything
+    outside HiD that needs this data should go through /api/public, which
+    authenticates with a revocable X-API-Key.
     """
     try:
         today = datetime.now(timezone.utc).date()
