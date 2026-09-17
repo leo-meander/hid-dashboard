@@ -3,23 +3,38 @@ Sync real data from Cloudbeds into daily_metrics + reservations.
 Pulls last 90 days of getDashboard + getTransactions for each branch.
 Run: python sync_real_data.py
 """
-import urllib.request, json, time, psycopg2
+import os, urllib.request, json, time, psycopg2
 from datetime import date, timedelta
 
 DB = dict(
-    host="aws-1-ap-southeast-1.pooler.supabase.com",
-    port=5432, dbname="postgres",
-    user="postgres.xxaqopjdkxwwzrwlusbs",
-    password="Meander2026_.", sslmode="require",
+    host=os.environ["HID_DB_HOST"],
+    port=int(os.environ.get("HID_DB_PORT", "5432")),
+    dbname=os.environ.get("HID_DB_NAME", "postgres"),
+    user=os.environ["HID_DB_USER"],
+    password=os.environ["HID_DB_PASSWORD"],
+    sslmode="require",
 )
+def _key(property_id):
+    """Cloudbeds token for one property, from the environment.
+
+    These were hardcoded here, in a public repo, from the initial commit until
+    2026-09-17. Never put one back in this file — export
+    CLOUDBEDS_KEY_<property_id> before running.
+    """
+    var = f"CLOUDBEDS_KEY_{property_id}"
+    try:
+        return os.environ[var]
+    except KeyError:
+        raise SystemExit(f"Missing {var} in the environment")
+
 BASE = "https://hotels.cloudbeds.com/api/v1.2"
 
 BRANCHES = [
-    ("11111111-1111-1111-1111-111111111101", "MEANDER Taipei",  "25496",  "cbat_UnJezJUNCKPnyre1YeewOvKGLHIAABhN", "TWD"),
-    ("11111111-1111-1111-1111-111111111102", "MEANDER Saigon",  "185944", "cbat_CLbBoz9KsiMF8VuHexwhe2FoTXnOyvmf", "VND"),
-    ("11111111-1111-1111-1111-111111111103", "MEANDER 1948",    "22872",  "cbat_z1yUm28bgKSZRVnisFo5SwigZi5wK2Rn",  "VND"),
-    ("11111111-1111-1111-1111-111111111104", "MEANDER Oani",    "318301", "cbat_fMUrxDEPvb0setdICb9GfMzNHKpWXU0F", "VND"),
-    ("11111111-1111-1111-1111-111111111105", "MEANDER Osaka",   "301582", "cbat_opm3MzseiOu2VlGpxKOogDNca0IHIhUy", "JPY"),
+    ("11111111-1111-1111-1111-111111111101", "MEANDER Taipei",  "25496", "TWD"),
+    ("11111111-1111-1111-1111-111111111102", "MEANDER Saigon",  "185944", "VND"),
+    ("11111111-1111-1111-1111-111111111103", "MEANDER 1948",    "22872",  "VND"),
+    ("11111111-1111-1111-1111-111111111104", "MEANDER Oani",    "318301", "VND"),
+    ("11111111-1111-1111-1111-111111111105", "MEANDER Osaka",   "301582", "JPY"),
 ]
 DAYS_BACK = 90
 
@@ -71,7 +86,8 @@ cur = conn.cursor()
 
 today = date.today()
 
-for branch_id, name, prop_id, api_key, currency in BRANCHES:
+for branch_id, name, prop_id, currency in BRANCHES:
+    api_key = _key(prop_id)
     print(f"\n[{name}] syncing {DAYS_BACK} days...")
     ok_days = 0
     for i in range(DAYS_BACK - 1, -1, -1):
