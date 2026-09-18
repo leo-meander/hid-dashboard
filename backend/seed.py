@@ -2,16 +2,17 @@
 Seed script — inserts sample data for HiD dashboard testing.
 Run: python seed.py
 """
+import os
 import psycopg2
 import random
 from datetime import date, timedelta
 
 DB = dict(
-    host="aws-1-ap-southeast-1.pooler.supabase.com",
-    port=5432,
-    dbname="postgres",
-    user="postgres.xxaqopjdkxwwzrwlusbs",
-    password="Meander2026_.",
+    host=os.environ["HID_DB_HOST"],
+    port=int(os.environ.get("HID_DB_PORT", "5432")),
+    dbname=os.environ.get("HID_DB_NAME", "postgres"),
+    user=os.environ["HID_DB_USER"],
+    password=os.environ["HID_DB_PASSWORD"],
     sslmode="require",
 )
 

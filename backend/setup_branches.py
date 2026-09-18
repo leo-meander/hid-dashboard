@@ -2,16 +2,30 @@
 Setup real branches with actual Cloudbeds property IDs.
 Run: python setup_branches.py
 """
+import os
 import psycopg2
 
 DB = dict(
-    host="aws-1-ap-southeast-1.pooler.supabase.com",
-    port=5432,
-    dbname="postgres",
-    user="postgres.xxaqopjdkxwwzrwlusbs",
-    password="Meander2026_.",
+    host=os.environ["HID_DB_HOST"],
+    port=int(os.environ.get("HID_DB_PORT", "5432")),
+    dbname=os.environ.get("HID_DB_NAME", "postgres"),
+    user=os.environ["HID_DB_USER"],
+    password=os.environ["HID_DB_PASSWORD"],
     sslmode="require",
 )
+
+def _key(property_id):
+    """Cloudbeds token for one property, from the environment.
+
+    These were hardcoded here, in a public repo, from the initial commit until
+    2026-09-17. Never put one back in this file — export
+    CLOUDBEDS_KEY_<property_id> before running.
+    """
+    var = f"CLOUDBEDS_KEY_{property_id}"
+    try:
+        return os.environ[var]
+    except KeyError:
+        raise SystemExit(f"Missing {var} in the environment")
 
 # Real branch definitions
 BRANCHES = [
@@ -24,7 +38,7 @@ BRANCHES = [
         "total_rooms": 30,
         "timezone": "Asia/Taipei",
         "cloudbeds_property_id": "25496",
-        "cloudbeds_api_key": "cbat_UnJezJUNCKPnyre1YeewOvKGLHIAABhN",
+        "cloudbeds_api_key": _key("25496"),
     },
     {
         "id":   "11111111-1111-1111-1111-111111111102",
@@ -35,7 +49,7 @@ BRANCHES = [
         "total_rooms": 40,
         "timezone": "Asia/Ho_Chi_Minh",
         "cloudbeds_property_id": "185944",
-        "cloudbeds_api_key": "cbat_CLbBoz9KsiMF8VuHexwhe2FoTXnOyvmf",
+        "cloudbeds_api_key": _key("185944"),
     },
     {
         "id":   "11111111-1111-1111-1111-111111111103",
@@ -46,7 +60,7 @@ BRANCHES = [
         "total_rooms": 35,
         "timezone": "Asia/Ho_Chi_Minh",
         "cloudbeds_property_id": "22872",
-        "cloudbeds_api_key": "cbat_z1yUm28bgKSZRVnisFo5SwigZi5wK2Rn",
+        "cloudbeds_api_key": _key("22872"),
     },
     {
         "id":   "11111111-1111-1111-1111-111111111104",
@@ -57,7 +71,7 @@ BRANCHES = [
         "total_rooms": 25,
         "timezone": "Asia/Ho_Chi_Minh",
         "cloudbeds_property_id": "318301",
-        "cloudbeds_api_key": "cbat_fMUrxDEPvb0setdICb9GfMzNHKpWXU0F",
+        "cloudbeds_api_key": _key("318301"),
     },
     {
         "id":   "11111111-1111-1111-1111-111111111105",
@@ -68,7 +82,7 @@ BRANCHES = [
         "total_rooms": 30,
         "timezone": "Asia/Tokyo",
         "cloudbeds_property_id": "301582",
-        "cloudbeds_api_key": "cbat_opm3MzseiOu2VlGpxKOogDNca0IHIhUy",
+        "cloudbeds_api_key": _key("301582"),
     },
 ]
 

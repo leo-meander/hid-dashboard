@@ -2,20 +2,35 @@
 Test Cloudbeds API connection for all properties.
 Run: python test_cloudbeds.py
 """
+import os
 import urllib.request
 import json
 
 PROPERTIES = [
-    ("HiD Taipei",  "25496",  "cbat_UnJezJUNCKPnyre1YeewOvKGLHIAABhN"),
-    ("HiD Saigon",  "185944", "cbat_CLbBoz9KsiMF8VuHexwhe2FoTXnOyvmf"),
-    ("HiD 1948",    "22872",  "cbat_z1yUm28bgKSZRVnisFo5SwigZi5wK2Rn"),
-    ("HiD Oani",    "318301", "cbat_fMUrxDEPvb0setdICb9GfMzNHKpWXU0F"),
-    ("HiD Osaka",   "301582", "cbat_opm3MzseiOu2VlGpxKOogDNca0IHIhUy"),
+    ("HiD Taipei",  "25496"),
+    ("HiD Saigon",  "185944"),
+    ("HiD 1948",    "22872"),
+    ("HiD Oani",    "318301"),
+    ("HiD Osaka",   "301582"),
 ]
+
+def _key(property_id):
+    """Cloudbeds token for one property, from the environment.
+
+    These were hardcoded here, in a public repo, from the initial commit until
+    2026-09-17. Never put one back in this file — export
+    CLOUDBEDS_KEY_<property_id> before running.
+    """
+    var = f"CLOUDBEDS_KEY_{property_id}"
+    try:
+        return os.environ[var]
+    except KeyError:
+        raise SystemExit(f"Missing {var} in the environment")
 
 BASE = "https://hotels.cloudbeds.com/api/v1.2"
 
-for name, prop_id, api_key in PROPERTIES:
+for name, prop_id in PROPERTIES:
+    api_key = _key(prop_id)
     url = f"{BASE}/getProperty?propertyID={prop_id}"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
     try:
