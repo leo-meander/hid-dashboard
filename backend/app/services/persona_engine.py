@@ -5,7 +5,7 @@ length of stay, room vs dorm, channel mix, party size, cancellation rate) and
 value (ADR, avg booking value) over a trailing window, and synthesises a short
 human-readable headline from the dominant value in each dimension.
 
-Demographic columns (gender, date_of_birth) are backfilled asynchronously from
+Demographic columns (gender, birth_year) are backfilled asynchronously from
 Cloudbeds, so coverage is reported per dimension — the UI can show "based on
 N% of bookings" and the headline omits demographic clauses when coverage is
 too thin to be meaningful. See [[demographics-backfill]].
@@ -103,9 +103,11 @@ def build_persona(db: Session, branch: Branch, df: date, dt: date) -> dict:
         "coverage_pct": _pct(gender_attempted, total),
     }
 
-    # ── Age (from date_of_birth) ─────────────────────────────────────────
-    age_expr = func.extract("year", func.age(Reservation.date_of_birth))
-    age_base = and_(base, Reservation.date_of_birth.isnot(None),
+    # ── Age (from birth_year) ────────────────────────────────────────────
+    # Only the year is stored, so this is age-at-year-end, within a year of the
+    # true age. The 16..100 guard also drops Cloudbeds' 1900 placeholder.
+    age_expr = func.extract("year", func.current_date()) - Reservation.birth_year
+    age_base = and_(base, Reservation.birth_year.isnot(None),
                     age_expr >= 16, age_expr <= 100)
     band_cols = [
         func.count(case((and_(age_expr >= lo, age_expr <= hi), 1)))

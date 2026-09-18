@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Date, Numeric, DateTime, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, Date, Numeric, DateTime, ForeignKey, Index, Text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship, deferred
 from app.database import Base
@@ -21,12 +21,22 @@ class Reservation(Base):
     guest_country = Column(String(100), nullable=True)
     guest_country_code = Column(String(50), nullable=True)
     # Guest demographics — backfilled from Cloudbeds /getReservation guestList:
-    # gender = "M"/"F"/"N/A" (guestGender); date_of_birth from guestBirthdate.
+    # gender = "M"/"F"/"N/A" (guestGender); birth_year from guestBirthdate.
     # Columns (not raw_data) because the bulk sync overwrites raw_data, same as
     # guest_country. "N/A" doubles as the "already fetched, none on file" marker
     # so re-runs of backfill_guest_demographics skip already-attempted rows.
     gender = Column(String(10), nullable=True)
-    date_of_birth = Column(Date, nullable=True)
+    # Birth YEAR, not a date. Every consumer turns the value into an age band
+    # (_age_bucket in marketing_activity, AGE_BANDS in persona_engine), so the
+    # exact day was detail nobody used and everybody could read. Age derived
+    # from the year alone is off by at most one year, which moves a handful of
+    # rows across a band edge and changes no conclusion.
+    birth_year = Column(Integer, nullable=True)
+    # Guest name, AES-GCM encrypted by app.services.pii_crypto. NULL when no
+    # PII_ENCRYPTION_KEY is set — the name is then not kept at all, rather than
+    # kept in the clear. Never read this column directly; go through
+    # pii_crypto.decrypt.
+    guest_name_enc = Column(Text, nullable=True)
     room_type = Column(String(100), nullable=True)
     room_type_category = Column(String(10), nullable=True)   # "Room" or "Dorm"
     rate_plan_name = Column(String(200), nullable=True)

@@ -1126,9 +1126,9 @@ def tool_get_country_profile(db: Session, inp: dict, default_branch: Optional[st
         WITH base AS (
             SELECT r.guest_country, r.guest_country_code, r.adults, r.nights,
                    r.room_type_category, r.grand_total_vnd,
-                   r.gender, r.date_of_birth,
-                   CASE WHEN r.date_of_birth IS NOT NULL
-                        THEN DATE_PART('year', AGE(r.date_of_birth))::int END AS age,
+                   r.gender, r.birth_year,
+                   CASE WHEN r.birth_year IS NOT NULL
+                        THEN (DATE_PART('year', CURRENT_DATE) - r.birth_year)::int END AS age,
                    CASE WHEN r.reservation_date IS NOT NULL AND r.check_in_date IS NOT NULL
                         THEN (r.check_in_date - r.reservation_date) END AS lead_days
             FROM reservations r

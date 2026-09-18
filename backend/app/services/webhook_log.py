@@ -31,6 +31,22 @@ _SEEN_CACHE_MAX = 5000
 SERVICES = ("ghl", "meta", "google_ads", "tiktok")
 
 
+def mask_email(value: Optional[str]) -> Optional[str]:
+    """`ariel@example.com` -> `ar***@example.com`.
+
+    This column exists so a human can recognise a row in the Webhook Monitor,
+    which the masked form does just as well. Storing the address in full made
+    the table one more readable copy of guests' email for anyone who reached
+    the database.
+    """
+    if not value:
+        return value
+    local, sep, domain = value.partition("@")
+    if not sep:
+        return "***"
+    return f"{local[:2]}***@{domain}" if local else f"***@{domain}"
+
+
 def _is_failure(result: Optional[dict]) -> bool:
     """A service failed only if it reported success=False.
 
@@ -84,7 +100,7 @@ def record(
             WebhookEvent(
                 reservation_id=str(reservation_id),
                 branch=branch,
-                guest_email=guest_email,
+                guest_email=mask_email(guest_email),
                 source=source,
                 has_failure=any(_is_failure(r) for r in results.values()),
                 reservation_created_at=reservation_created_at,

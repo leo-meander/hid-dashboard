@@ -62,22 +62,34 @@ def test_cancelled_wins_over_source():
 
 # ── Age ──────────────────────────────────────────────────────────────────────
 
-def test_age_counts_whole_years_at_check_in():
-    # Birthday already passed by check-in.
-    assert _age_on(date(1990, 1, 10), date(2026, 6, 1)) == 36
-    # Birthday still to come that year.
-    assert _age_on(date(1990, 12, 10), date(2026, 6, 1)) == 35
-    # Exactly on the birthday.
-    assert _age_on(date(1990, 6, 1), date(2026, 6, 1)) == 36
+def test_age_is_the_year_difference_at_check_in():
+    """Only the birth year is stored, so age is a year subtraction.
+
+    Exact dates of birth were dropped in migration 067: every consumer bucketed
+    them into an age band anyway, and a stored birthdate identifies a person in
+    a way a year does not.
+    """
+    assert _age_on(1990, date(2026, 6, 1)) == 36
+    assert _age_on(2001, date(2026, 6, 1)) == 25
 
 
-def test_placeholder_and_missing_birthdates_are_not_ages():
+def test_age_reads_up_to_a_year_high_and_that_is_accepted():
+    """A guest whose birthday has not arrived yet reads one year older.
+
+    Worth pinning rather than hiding: it is the whole cost of storing the year
+    instead of the date. Someone born in December 1990 is 35 on a June 2026
+    check-in, and this returns 36.
+    """
+    assert _age_on(1990, date(2026, 6, 1)) == 36
+
+
+def test_placeholder_and_missing_birth_years_are_not_ages():
     assert _age_on(None, date(2026, 6, 1)) is None
-    assert _age_on(date(1990, 1, 1), None) is None
+    assert _age_on(1990, None) is None
     # Cloudbeds placeholder year — 126 years old is not a guest.
-    assert _age_on(date(1900, 1, 1), date(2026, 6, 1)) is None
-    # A birthdate after the stay is data entry noise, not a newborn.
-    assert _age_on(date(2027, 1, 1), date(2026, 6, 1)) is None
+    assert _age_on(1900, date(2026, 6, 1)) is None
+    # A birth year after the stay is data entry noise, not a newborn.
+    assert _age_on(2027, date(2026, 6, 1)) is None
 
 
 def test_age_buckets_at_their_boundaries():

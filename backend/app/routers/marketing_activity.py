@@ -744,11 +744,17 @@ def _crm_row_exclusion(status: Optional[str], source: Optional[str]) -> Optional
     return None
 
 
-def _age_on(dob: Optional[date], on_date: Optional[date]) -> Optional[int]:
-    """Age in whole years at `on_date` (check-in), or None when unknowable."""
-    if not dob or not on_date:
+def _age_on(birth_year: Optional[int], on_date: Optional[date]) -> Optional[int]:
+    """Age in whole years at `on_date` (check-in), or None when unknowable.
+
+    Only the birth year is stored, so this is accurate to within a year — a
+    guest who has not yet had their birthday reads one year older. At band
+    edges that moves a small number of rows one bucket over, which is well
+    inside the noise these bands are read against.
+    """
+    if not birth_year or not on_date:
         return None
-    years = on_date.year - dob.year - ((on_date.month, on_date.day) < (dob.month, dob.day))
+    years = on_date.year - birth_year
     # Cloudbeds carries placeholder birthdates (year 1900, or a date after the
     # stay). Treat an implausible age as missing rather than charting it.
     if years < 0 or years > 120:
@@ -831,7 +837,7 @@ def crm_rate_plan_detail(
                 Reservation.guest_country,
                 Reservation.guest_country_code,
                 Reservation.gender,
-                Reservation.date_of_birth,
+                Reservation.birth_year,
                 Reservation.room_type,
                 Reservation.room_type_category,
                 Reservation.nights,
@@ -919,7 +925,7 @@ def crm_rate_plan_detail(
                 label = "Unknown"
             _bump_counter(gender, label, "gender", rev)
 
-            bucket = _age_bucket(_age_on(r.date_of_birth, r.check_in_date))
+            bucket = _age_bucket(_age_on(r.birth_year, r.check_in_date))
             if bucket:
                 age_known += 1
             _bump_counter(age, bucket or "Unknown", "bucket", rev)

@@ -60,12 +60,15 @@ def _reservation_out(r: Reservation, branch_name: str | None) -> dict:
     """Map reservation to the exact field list requested by the user."""
     raw = r.raw_data or {}
     return {
-        "name": _extract_raw(raw, "guestName"),
+        # No guest name. It used to come straight out of raw_data and flow on
+        # into whatever consumed this API — a Google Sheet, in the one case we
+        # know about. The reservation number identifies a booking without
+        # naming the person who made it.
         "email": _extract_raw(raw, "guestEmail"),
         "phone_number": _extract_raw(raw, "guestPhone"),
         "mobile": _extract_raw(raw, "guestCellPhone"),
         "gender": r.gender,
-        "date_of_birth": r.date_of_birth.isoformat() if r.date_of_birth else None,
+        "birth_year": r.birth_year,
         "reservation_number": r.cloudbeds_reservation_id,
         "third_party_confirmation_number": _extract_raw(raw, "thirdPartyIdentifier"),
         "type_of_document": _extract_raw(raw, "documentType"),

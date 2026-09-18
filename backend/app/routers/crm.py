@@ -15,6 +15,7 @@ from app.database import get_db
 from app.models.reservation import Reservation
 from app.models.user import User
 from app.routers.auth import require_admin
+from app.services import pii_crypto
 from app.services.crm_filters import crm_reservation_filter
 
 router = APIRouter()
@@ -481,7 +482,8 @@ def crm_reservation_contacts(
     """Return CRM reservation contacts (id, cb_id, email, name) per branch. Admin only.
 
     Filters: optional rate_plan_contains (default = all CRM-related), branch_id,
-    and check_in_date range. raw_data is undeferred to extract guestEmail/guestName.
+    and check_in_date range. The name is decrypted from guest_name_enc;
+    raw_data is undeferred for the remaining Cloudbeds fields.
 
     This is the only endpoint in the app that returns guest names, emails and
     phone numbers in bulk, and it shipped without an auth dependency: a plain
@@ -524,7 +526,7 @@ def crm_reservation_contacts(
                 "reservation_uid": str(r.id),
                 "cloudbeds_reservation_id": r.cloudbeds_reservation_id,
                 "branch_id": str(r.branch_id),
-                "guest_name": raw.get("guestName"),
+                "guest_name": pii_crypto.decrypt(r.guest_name_enc),
                 "guest_email": raw.get("guestEmail"),
                 "guest_phone": raw.get("guestPhone") or raw.get("guestCellPhone"),
                 "rate_plan_name": r.rate_plan_name,
