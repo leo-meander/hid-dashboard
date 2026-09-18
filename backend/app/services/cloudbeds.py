@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import SessionLocal
 from app.models.reservation import Reservation
+from app.services import pii_crypto
 from app.services.currency import convert_to_vnd, get_cached_rate
 
 logger = logging.getLogger(__name__)
@@ -101,14 +102,19 @@ def _extract_guest_country_from_detail(data: dict) -> Optional[str]:
 
 def _extract_guest_demographics_from_detail(
     data: dict,
-) -> tuple[Optional[str], Optional[date]]:
-    """Extract (gender, date_of_birth) for the main guest from a /getReservation
+) -> tuple[Optional[str], Optional[int]]:
+    """Extract (gender, birth_year) for the main guest from a /getReservation
     detail response.
 
     guestList[*] carries guestGender ('M' / 'F' / 'N/A') and guestBirthdate
     (ISO 'YYYY-MM-DD' or ''). Prefers the main guest (isMainGuest), then falls
     back to the first guest that has a usable value. 'N/A' and '' are treated as
     missing → returned as None. Returns (None, None) when nothing usable.
+
+    Only the YEAR of the birthdate is kept. Every consumer buckets it into an
+    age band, so the day and month were precision nobody used — and precision
+    that made a stored row identify a person. Cloudbeds' 1900 placeholder is
+    passed through unchanged; the age filters downstream already discard it.
     """
     gl = data.get("guestList") or {}
     if not isinstance(gl, dict):
@@ -119,17 +125,19 @@ def _extract_guest_demographics_from_detail(
     guests.sort(key=lambda g: 0 if g.get("isMainGuest") in (True, 1, "1", "true") else 1)
 
     gender: Optional[str] = None
-    dob: Optional[date] = None
+    birth_year: Optional[int] = None
     for g in guests:
         if gender is None:
             gv = (g.get("guestGender") or "").strip()
             if gv and gv.upper() != "N/A":
                 gender = gv.upper()
-        if dob is None:
-            dob = _parse_date((g.get("guestBirthdate") or "").strip())
-        if gender and dob:
+        if birth_year is None:
+            parsed = _parse_date((g.get("guestBirthdate") or "").strip())
+            if parsed is not None:
+                birth_year = parsed.year
+        if gender and birth_year:
             break
-    return gender, dob
+    return gender, birth_year
 
 
 def probe_guest_detail_fields(
@@ -1083,14 +1091,14 @@ def backfill_guest_demographics(
     checkin_to: Optional[date] = None,
     limit: Optional[int] = None,
 ) -> dict:
-    """Backfill gender + date_of_birth from Cloudbeds /getReservation detail.
+    """Backfill gender + birth_year from Cloudbeds /getReservation detail.
 
     Reads guestList[*].guestGender / guestBirthdate for the main guest and writes
-    the `gender` and `date_of_birth` columns (NOT raw_data, which the bulk sync
+    the `gender` and `birth_year` columns (NOT raw_data, which the bulk sync
     overwrites). Targets rows where gender IS NULL (never attempted) and writes
     gender='N/A' when Cloudbeds carries none, so re-runs skip already-fetched
     rows instead of re-hitting the API forever. Birthdate is sparse in practice —
-    most guests have none on file — so date_of_birth stays NULL for most rows.
+    most guests have none on file — so birth_year stays NULL for most rows.
     Rows whose API call fails are left untouched (gender stays NULL) so a later
     run retries them. Idempotent.
 
@@ -1163,7 +1171,7 @@ def backfill_guest_demographics(
                     for cb_id, gv, dv in batch_buf:
                         result = _s.execute(_text(
                             "UPDATE reservations "
-                            "SET gender=:g, date_of_birth=:d, updated_at=:t "
+                            "SET gender=:g, birth_year=:d, updated_at=:t "
                             "WHERE cloudbeds_reservation_id=:cid AND gender IS NULL"
                         ), {"g": gv, "d": dv, "t": now, "cid": cb_id})
                         if result.rowcount:
@@ -1359,7 +1367,16 @@ def ingest_reservations(
             payload["grand_total_native"] = grand_total_native
             payload["grand_total_vnd"] = grand_total_vnd
         if raw:
+            # guestName is pulled out of raw_data and stored encrypted instead.
+            # Nothing computed by this dashboard reads a guest's name — only two
+            # endpoints ever returned it — so keeping it in a readable JSONB
+            # column was risk with no use behind it.
+            raw = dict(raw)
+            guest_name = raw.pop("guestName", None)
             payload["raw_data"] = raw
+            name_enc = pii_crypto.encrypt(guest_name)
+            if name_enc is not None:
+                payload["guest_name_enc"] = name_enc
 
         existing = db.query(Reservation).filter_by(cloudbeds_reservation_id=cloudbeds_id).first()
         if existing:

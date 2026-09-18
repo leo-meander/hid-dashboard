@@ -88,7 +88,7 @@ def run_migrations(_auth: None = Depends(verify_sync_token)):
         cols = [row[0] for row in _s.execute(_sqltext(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_name='reservations' "
-            "AND column_name IN ('gender','date_of_birth')"
+            "AND column_name IN ('gender','birth_year')"
         )).all()]
     finally:
         _s.close()
@@ -376,7 +376,7 @@ def trigger_guest_country_backfill(
 
 
 def _run_demographics_backfill_bg(branch_configs: list, df, dt, total_limit=None):
-    """Background worker: runs gender/date_of_birth backfill for each branch.
+    """Background worker: runs gender/birth_year backfill for each branch.
 
     `total_limit` is a budget shared ACROSS branches (not per-branch): each
     branch consumes from the remaining budget, so a cron can drive a bounded
@@ -414,12 +414,12 @@ def trigger_demographics_backfill(
     db: Session = Depends(get_db),
 ):
     """
-    Backfill gender + date_of_birth for reservations where gender IS NULL.
+    Backfill gender + birth_year for reservations where gender IS NULL.
     Calls Cloudbeds /getReservation per row and reads guestList[*].guestGender /
     guestBirthdate — the bulk endpoint never includes guest detail.
 
     gender='N/A' is written when Cloudbeds has none, so re-runs skip already-
-    fetched rows. Birthdate is sparse, so date_of_birth fills for few rows.
+    fetched rows. Birthdate is sparse, so birth_year fills for few rows.
     Default window 2025-01-01..today+365d (pre-2025 detail carries no guest
     demographics). Returns immediately; backfill runs in background — this is a
     multi-hour run across all branches. Check logs for progress.
@@ -470,7 +470,7 @@ def demographics_coverage(
     _auth: None = Depends(verify_sync_token),
     db: Session = Depends(get_db),
 ):
-    """Read-only coverage stats for the gender/date_of_birth backfill, scoped to
+    """Read-only coverage stats for the gender/birth_year backfill, scoped to
     the backfill window (check-in >= 2025-01-01). Per branch: total rows,
     gender_known (M/F), gender_na ('N/A' = fetched but none on file),
     gender_pending (NULL = not yet fetched), dob_known. Use to watch backfill
@@ -487,7 +487,7 @@ def demographics_coverage(
             func.count(case((Reservation.gender.in_(("M", "F")), 1))).label("gender_known"),
             func.count(case((Reservation.gender == "N/A", 1))).label("gender_na"),
             func.count(case((Reservation.gender.is_(None), 1))).label("gender_pending"),
-            func.count(Reservation.date_of_birth).label("dob_known"),
+            func.count(Reservation.birth_year).label("dob_known"),
         )
         .join(Reservation, Reservation.branch_id == Branch.id)
         .filter(Reservation.check_in_date >= df)
@@ -623,6 +623,67 @@ def backfill_cancellation_date_from_raw(
         "updated": updated,
         "message": ("Dry-run — pass ?apply=true to write." if not apply
                     else f"Filled cancellation_date on {updated} rows."),
+    })
+
+
+@router.post("/backfill-guest-name-encryption")
+def backfill_guest_name_encryption(
+    apply: bool = Query(False, description="False = dry-run (count only); True = encrypt and strip."),
+    limit: int = Query(5000, description="Rows per call. Re-run until remaining is 0."),
+    _auth: None = Depends(verify_sync_token),
+    db: Session = Depends(get_db),
+):
+    """Move guest names out of raw_data and into the encrypted column.
+
+    Migration 067 adds guest_name_enc but cannot fill it: encrypting needs the
+    application key and SQL has no access to it. This walks the existing rows —
+    reads raw_data->>'guestName', writes the ciphertext, deletes the plaintext
+    key from the JSONB. Idempotent, batched, dry-run by default.
+
+    Refuses to do anything without PII_ENCRYPTION_KEY. Stripping the name while
+    the ciphertext silently failed to be written would destroy the names
+    outright, which is a different outcome from protecting them.
+    """
+    from sqlalchemy import text
+    from app.services import pii_crypto
+
+    if not pii_crypto.is_configured():
+        return {"success": False, "data": None,
+                "error": "PII_ENCRYPTION_KEY is not set — refusing to strip names with nowhere to put them.",
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+    where = " raw_data ? 'guestName'"
+    remaining = db.execute(text("SELECT COUNT(*) FROM reservations WHERE" + where)).scalar() or 0
+
+    updated = 0
+    if apply and remaining:
+        rows = db.execute(text(
+            "SELECT cloudbeds_reservation_id, raw_data->>'guestName' AS n FROM reservations"
+            " WHERE" + where + " LIMIT :lim"
+        ), {"lim": limit}).fetchall()
+        for cb_id, name in rows:
+            enc = pii_crypto.encrypt(name)
+            if enc is None:
+                # Nothing worth keeping (blank name) — still strip the key so
+                # the row stops matching and the walk terminates.
+                db.execute(text(
+                    "UPDATE reservations SET raw_data = raw_data - 'guestName'"
+                    " WHERE cloudbeds_reservation_id = :cid"), {"cid": cb_id})
+            else:
+                db.execute(text(
+                    "UPDATE reservations SET guest_name_enc = :e,"
+                    " raw_data = raw_data - 'guestName'"
+                    " WHERE cloudbeds_reservation_id = :cid"), {"e": enc, "cid": cb_id})
+            updated += 1
+        db.commit()
+        remaining = db.execute(text("SELECT COUNT(*) FROM reservations WHERE" + where)).scalar() or 0
+
+    return _envelope({
+        "applied": apply,
+        "updated": updated,
+        "remaining": int(remaining),
+        "message": ("Dry-run — pass ?apply=true to encrypt." if not apply
+                    else f"Encrypted {updated} names; {remaining} rows still carry one."),
     })
 
 

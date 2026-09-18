@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     # Required: without it the push endpoint rejects everything, rather than
     # accepting unsigned bodies from anyone who finds the URL.
     CLOUDBEDS_WEBHOOK_SECRET: str = ""
+    # base64 of 32 random bytes; encrypts guest names (app.services.pii_crypto).
+    # Unset means guest names are not stored at all — never a plaintext fallback.
+    PII_ENCRYPTION_KEY: str = ""
     # Branches moved off the 10-minute poller onto Cloudbeds push webhooks.
     # Comma-separated slugs, e.g. "oani". Empty means every branch stays on
     # polling — exactly the behaviour from before realtime existed, so this
